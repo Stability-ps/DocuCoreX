@@ -1,3 +1,4 @@
+import Link from "next/link";
 import type { LucideIcon } from "lucide-react";
 
 export function PageHeader({
@@ -81,9 +82,9 @@ export function PrimaryButton({ children, href }: { children: React.ReactNode; h
     "inline-flex items-center justify-center gap-2 rounded-full bg-royal-600 px-5 py-3 text-sm font-black text-white shadow-glow transition hover:-translate-y-0.5 hover:bg-royal-700";
   if (href) {
     return (
-      <a className={className} href={href}>
+      <Link className={className} href={href}>
         {children}
-      </a>
+      </Link>
     );
   }
   return <button className={className}>{children}</button>;

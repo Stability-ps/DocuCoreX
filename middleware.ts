@@ -19,6 +19,14 @@ const protectedPrefixes = [
 
 export async function middleware(request: NextRequest) {
   const pathname = request.nextUrl.pathname;
+  const host = request.headers.get("host") ?? "";
+
+  if (host === "docucorex.com") {
+    const canonicalUrl = request.nextUrl.clone();
+    canonicalUrl.protocol = "https";
+    canonicalUrl.host = "www.docucorex.com";
+    return NextResponse.redirect(canonicalUrl, 308);
+  }
 
   if (pathname.startsWith("/_next") || pathname.startsWith("/api") || pathname.includes(".")) {
     return NextResponse.next();
