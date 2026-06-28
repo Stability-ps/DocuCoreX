@@ -538,6 +538,13 @@ begin
     'owner'
   );
 
+  insert into public.team_members (workspace_id, user_id, email, role, status)
+  values (new_workspace_id, new.id, new.email, 'Owner', 'Active')
+  on conflict (workspace_id, email) do update
+    set user_id = excluded.user_id,
+        role = excluded.role,
+        status = excluded.status;
+
   return new;
 end;
 $$;

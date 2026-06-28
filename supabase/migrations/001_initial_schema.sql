@@ -200,28 +200,45 @@ alter table public.api_keys enable row level security;
 alter table public.audit_logs enable row level security;
 alter table public.usage_counters enable row level security;
 
-create policy if not exists "Users can read own profile" on public.profiles for select using (auth.uid() = id);
-create policy if not exists "Users can update own profile" on public.profiles for update using (auth.uid() = id);
-create policy if not exists "Workspace owners can access workspace" on public.workspaces for all using (auth.uid() = owner_id);
-create policy if not exists "Users can access workspace documents" on public.documents for all using (workspace_id in (select workspace_id from public.profiles where id = auth.uid()));
-create policy if not exists "Users can access document versions" on public.document_versions for all using (document_id in (select id from public.documents where workspace_id in (select workspace_id from public.profiles where id = auth.uid())));
-create policy if not exists "Users can access document jobs" on public.processing_jobs for all using (document_id in (select id from public.documents where workspace_id in (select workspace_id from public.profiles where id = auth.uid())));
-create policy if not exists "Users can access OCR results" on public.ocr_results for all using (document_id in (select id from public.documents where workspace_id in (select workspace_id from public.profiles where id = auth.uid())));
-create policy if not exists "Users can access extraction results" on public.extraction_results for all using (document_id in (select id from public.documents where workspace_id in (select workspace_id from public.profiles where id = auth.uid())));
-create policy if not exists "Users can access AI insights" on public.ai_insights for all using (document_id in (select id from public.documents where workspace_id in (select workspace_id from public.profiles where id = auth.uid())));
-create policy if not exists "Users can access conversions" on public.conversions for all using (document_id in (select id from public.documents where workspace_id in (select workspace_id from public.profiles where id = auth.uid())));
-create policy if not exists "Users can access comments" on public.document_comments for all using (document_id in (select id from public.documents where workspace_id in (select workspace_id from public.profiles where id = auth.uid())));
-create policy if not exists "Users can access API keys" on public.api_keys for all using (workspace_id in (select workspace_id from public.profiles where id = auth.uid()));
-create policy if not exists "Users can access audit logs" on public.audit_logs for select using (workspace_id in (select workspace_id from public.profiles where id = auth.uid()));
-create policy if not exists "Users can access usage counters" on public.usage_counters for select using (workspace_id in (select workspace_id from public.profiles where id = auth.uid()));
+drop policy if exists "Users can read own profile" on public.profiles;
+create policy "Users can read own profile" on public.profiles for select using (auth.uid() = id);
+drop policy if exists "Users can update own profile" on public.profiles;
+create policy "Users can update own profile" on public.profiles for update using (auth.uid() = id);
+drop policy if exists "Workspace owners can access workspace" on public.workspaces;
+create policy "Workspace owners can access workspace" on public.workspaces for all using (auth.uid() = owner_id);
+drop policy if exists "Users can access workspace documents" on public.documents;
+create policy "Users can access workspace documents" on public.documents for all using (workspace_id in (select workspace_id from public.profiles where id = auth.uid()));
+drop policy if exists "Users can access document versions" on public.document_versions;
+create policy "Users can access document versions" on public.document_versions for all using (document_id in (select id from public.documents where workspace_id in (select workspace_id from public.profiles where id = auth.uid())));
+drop policy if exists "Users can access document jobs" on public.processing_jobs;
+create policy "Users can access document jobs" on public.processing_jobs for all using (document_id in (select id from public.documents where workspace_id in (select workspace_id from public.profiles where id = auth.uid())));
+drop policy if exists "Users can access OCR results" on public.ocr_results;
+create policy "Users can access OCR results" on public.ocr_results for all using (document_id in (select id from public.documents where workspace_id in (select workspace_id from public.profiles where id = auth.uid())));
+drop policy if exists "Users can access extraction results" on public.extraction_results;
+create policy "Users can access extraction results" on public.extraction_results for all using (document_id in (select id from public.documents where workspace_id in (select workspace_id from public.profiles where id = auth.uid())));
+drop policy if exists "Users can access AI insights" on public.ai_insights;
+create policy "Users can access AI insights" on public.ai_insights for all using (document_id in (select id from public.documents where workspace_id in (select workspace_id from public.profiles where id = auth.uid())));
+drop policy if exists "Users can access conversions" on public.conversions;
+create policy "Users can access conversions" on public.conversions for all using (document_id in (select id from public.documents where workspace_id in (select workspace_id from public.profiles where id = auth.uid())));
+drop policy if exists "Users can access comments" on public.document_comments;
+create policy "Users can access comments" on public.document_comments for all using (document_id in (select id from public.documents where workspace_id in (select workspace_id from public.profiles where id = auth.uid())));
+drop policy if exists "Users can access API keys" on public.api_keys;
+create policy "Users can access API keys" on public.api_keys for all using (workspace_id in (select workspace_id from public.profiles where id = auth.uid()));
+drop policy if exists "Users can access audit logs" on public.audit_logs;
+create policy "Users can access audit logs" on public.audit_logs for select using (workspace_id in (select workspace_id from public.profiles where id = auth.uid()));
+drop policy if exists "Users can access usage counters" on public.usage_counters;
+create policy "Users can access usage counters" on public.usage_counters for select using (workspace_id in (select workspace_id from public.profiles where id = auth.uid()));
 
 insert into storage.buckets (id, name, public)
 values ('documents', 'documents', false)
 on conflict (id) do nothing;
 
-create policy if not exists "Users can read workspace document objects" on storage.objects for select using (bucket_id = 'documents' and split_part(name, '/', 1) in (select workspace_id::text from public.profiles where id = auth.uid()));
-create policy if not exists "Users can upload workspace document objects" on storage.objects for insert with check (bucket_id = 'documents' and split_part(name, '/', 1) in (select workspace_id::text from public.profiles where id = auth.uid()));
-create policy if not exists "Users can update workspace document objects" on storage.objects for update using (bucket_id = 'documents' and split_part(name, '/', 1) in (select workspace_id::text from public.profiles where id = auth.uid()));
+drop policy if exists "Users can read workspace document objects" on storage.objects;
+create policy "Users can read workspace document objects" on storage.objects for select using (bucket_id = 'documents' and split_part(name, '/', 1) in (select workspace_id::text from public.profiles where id = auth.uid()));
+drop policy if exists "Users can upload workspace document objects" on storage.objects;
+create policy "Users can upload workspace document objects" on storage.objects for insert with check (bucket_id = 'documents' and split_part(name, '/', 1) in (select workspace_id::text from public.profiles where id = auth.uid()));
+drop policy if exists "Users can update workspace document objects" on storage.objects;
+create policy "Users can update workspace document objects" on storage.objects for update using (bucket_id = 'documents' and split_part(name, '/', 1) in (select workspace_id::text from public.profiles where id = auth.uid()));
 
 create or replace function public.handle_new_user()
 returns trigger

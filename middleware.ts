@@ -14,6 +14,10 @@ const protectedPrefixes = [
 ];
 
 export async function middleware(request: NextRequest) {
+  if (request.nextUrl.pathname.startsWith("/debug") && process.env.NODE_ENV === "production") {
+    return new NextResponse("Not found", { status: 404 });
+  }
+
   const isProtected = protectedPrefixes.some((prefix) => request.nextUrl.pathname.startsWith(prefix));
 
   if (!isProtected) {
@@ -69,5 +73,6 @@ export const config = {
     "/automations/:path*",
     "/team/:path*",
     "/settings/:path*",
+    "/debug/:path*",
   ],
 };
