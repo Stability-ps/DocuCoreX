@@ -1,7 +1,8 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { Bot, CheckCircle2, Download, FileJson, FileSpreadsheet, MessageSquareText, Send, ScanText, Trash2 } from "lucide-react";
+import Link from "next/link";
+import { Bot, CheckCircle2, Download, FileJson, FileSpreadsheet, MessageSquareText, Send, ScanText, Share2, Trash2 } from "lucide-react";
 import { PdfViewer } from "@/components/pdf-viewer";
 import {
   comments,
@@ -179,6 +180,25 @@ export function DocumentWorkspace({ documentId }: { documentId: string }) {
     }
   }
 
+  async function shareDocument() {
+    if (!doc) return;
+    setWorkflowStatus("Updating share state…");
+    const response = await fetch(`/api/documents/${documentId}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ shared: !doc.shared }),
+    });
+
+    if (!response.ok) {
+      setWorkflowStatus("Share update failed");
+      return;
+    }
+
+    const data = (await response.json()) as { document: DocumentRecord };
+    setWorkspaceData((current) => ({ ...current, document: data.document }));
+    setWorkflowStatus(data.document.shared ? "Document shared" : "Document unshared");
+  }
+
   const doc = workspaceData.document;
   const displayName = doc?.name ?? fallbackDoc.name;
   const displayStatus = doc ? titleCase(doc.status) : fallbackDoc.status;
@@ -224,8 +244,20 @@ export function DocumentWorkspace({ documentId }: { documentId: string }) {
             </p>
           </div>
           <div className="flex flex-wrap gap-2">
-            <button title="Share: Coming soon" disabled className="rounded-2xl border border-slate-200 bg-slate-100 px-4 py-3 text-sm font-black text-slate-400 shadow-sm cursor-not-allowed">Share</button>
-            <a href={`/api/download-file/${doc?.id ?? fallbackDoc.id}`} className="rounded-2xl bg-royal-600 px-4 py-3 text-sm font-black text-white shadow-glow hover:bg-royal-700 transition">Download</a>
+            <Link href="/documents" className="rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm font-black text-slate-600 shadow-sm">
+              Back
+            </Link>
+            <button onClick={shareDocument} className="inline-flex items-center gap-2 rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm font-black text-slate-600 shadow-sm">
+              <Share2 className="h-4 w-4" />
+              {doc?.shared ? "Unshare" : "Share"}
+            </button>
+            <button
+              type="button"
+              onClick={() => setTab("Downloads")}
+              className="rounded-2xl bg-royal-600 px-4 py-3 text-sm font-black text-white shadow-glow hover:bg-royal-700 transition"
+            >
+              Downloads
+            </button>
             <button onClick={deleteDocument} className="rounded-2xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm font-black text-rose-700 shadow-sm hover:bg-rose-100 transition">
               <Trash2 className="h-4 w-4 inline mr-2" />
               Move to Trash
@@ -558,13 +590,7 @@ function CommentsTab({
 }
 
 function DownloadsTab({ downloads }: { downloads?: DocumentDownload[] }) {
-  const visibleDownloads =
-    downloads ??
-    ([
-      { id: "fallback_xlsx", label: "Excel workbook", format: "xlsx", status: "ready", href: "#", documentId: "fallback", createdAt: new Date().toISOString() },
-      { id: "fallback_json", label: "JSON payload", format: "json", status: "ready", href: "#", documentId: "fallback", createdAt: new Date().toISOString() },
-      { id: "fallback_txt", label: "OCR text file", format: "txt", status: "ready", href: "#", documentId: "fallback", createdAt: new Date().toISOString() },
-    ] as DocumentDownload[]);
+  const visibleDownloads = downloads ?? [];
 
   const iconByFormat = {
     xlsx: FileSpreadsheet,
@@ -577,10 +603,22 @@ function DownloadsTab({ downloads }: { downloads?: DocumentDownload[] }) {
   return (
     <SectionPanel title="Downloads" description="Export structured data and document artifacts when processing completes.">
       <div className="grid gap-4 sm:grid-cols-3">
+        {!visibleDownloads.length ? (
+          <div className="rounded-2xl border border-slate-200 bg-slate-50 p-5 text-sm font-bold text-slate-500 sm:col-span-3">
+            No downloads are ready yet. Run OCR, extraction or conversion to create downloadable outputs.
+          </div>
+        ) : null}
         {visibleDownloads.map((download) => {
           const Icon = iconByFormat[download.format];
           return (
-          <a key={download.id} href={download.href} className="rounded-2xl border border-slate-200 bg-slate-50 p-5 text-left hover:bg-white hover:shadow-sm">
+          <a
+            key={download.id}
+            href={download.status === "ready" ? download.href : undefined}
+            aria-disabled={download.status !== "ready"}
+            className={`rounded-2xl border border-slate-200 p-5 text-left ${
+              download.status === "ready" ? "bg-slate-50 hover:bg-white hover:shadow-sm" : "pointer-events-none bg-slate-100 text-slate-400"
+            }`}
+          >
             <Icon className="h-6 w-6 text-royal-600" />
             <p className="mt-4 font-black text-navy-950">{download.label}</p>
             <p className="mt-1 text-sm capitalize text-slate-500">{download.status} • {download.format}</p>
