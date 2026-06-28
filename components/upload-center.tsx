@@ -12,6 +12,7 @@ type UploadItem = {
   size: string;
   progress: number;
   status: "Uploading" | "Processing" | "Complete" | "Paused" | "Failed";
+  file?: File;
 };
 
 type PreparedUpload = {
@@ -51,6 +52,7 @@ export function UploadCenter({ workflow }: { workflow?: string }) {
       size: formatBytes(file.size),
       progress: 12,
       status: "Uploading" as const,
+      file,
     }));
 
     setUploads((current) => [...pendingUploads, ...current]);
@@ -118,7 +120,7 @@ export function UploadCenter({ workflow }: { workflow?: string }) {
       if (!response?.ok) {
         setSessionLabel("Upload registration failed");
         setUploads((current) =>
-          current.map((item) => (pendingUploads.some((upload) => upload.id === item.id) ? { ...item, progress: 100, status: "Paused" } : item)),
+          current.map((item) => (pendingUploads.some((upload) => upload.id === item.id) ? { ...item, progress: 100, status: "Failed" } : item)),
         );
         return;
       }
@@ -144,6 +146,7 @@ export function UploadCenter({ workflow }: { workflow?: string }) {
             id: accepted?.id ?? item.id,
             progress: 100,
             status: "Complete",
+            file: undefined,
           };
         }),
       );
@@ -170,11 +173,14 @@ export function UploadCenter({ workflow }: { workflow?: string }) {
   }
 
   function retryUpload(id: string) {
-    setUploads((current) => current.map((upload) => (upload.id === id ? { ...upload, progress: 28, status: "Uploading" } : upload)));
-  }
-
-  function pauseUpload(id: string) {
-    setUploads((current) => current.map((upload) => (upload.id === id ? { ...upload, status: "Paused" } : upload)));
+    const upload = uploads.find((item) => item.id === id);
+    if (!upload?.file) {
+      setUploads((current) => current.map((item) => (item.id === id ? { ...item, status: "Failed" } : item)));
+      setSessionLabel("Choose the file again to retry this completed upload");
+      return;
+    }
+    setUploads((current) => current.filter((item) => item.id !== id));
+    addUploadItems([upload.file]);
   }
 
   return (
@@ -216,6 +222,7 @@ export function UploadCenter({ workflow }: { workflow?: string }) {
           <button
             type="button"
             onClick={() => inputRef.current?.click()}
+            aria-label="Choose files to upload"
             className="mt-6 rounded-full bg-royal-600 px-6 py-3 text-sm font-black text-white shadow-glow transition hover:-translate-y-0.5 hover:bg-royal-700"
           >
             Choose Files
@@ -263,13 +270,32 @@ export function UploadCenter({ workflow }: { workflow?: string }) {
                   </div>
                 </div>
                 <div className="flex items-center gap-2">
-                  <button onClick={() => retryUpload(upload.id)} className="rounded-xl bg-white p-2 text-slate-500 shadow-sm hover:text-royal-700" title="Retry upload">
+                  <button
+                    type="button"
+                    onClick={() => retryUpload(upload.id)}
+                    disabled={upload.status !== "Failed" || !upload.file}
+                    aria-label={`Retry upload for ${upload.name}`}
+                    className="rounded-xl bg-white p-2 text-slate-500 shadow-sm hover:text-royal-700 disabled:cursor-not-allowed disabled:opacity-40"
+                    title={upload.file ? "Retry upload" : "Choose the file again to retry"}
+                  >
                     <RefreshCcw className="h-4 w-4" />
                   </button>
-                  <button onClick={() => pauseUpload(upload.id)} className="rounded-xl bg-white p-2 text-slate-500 shadow-sm hover:text-amber-600" title="Pause upload">
+                  <button
+                    type="button"
+                    disabled
+                    aria-label={`Pause upload for ${upload.name}`}
+                    className="rounded-xl bg-white p-2 text-slate-500 opacity-40 shadow-sm"
+                    title="Pause and resume are coming soon"
+                  >
                     <Pause className="h-4 w-4" />
                   </button>
-                  <button onClick={() => cancelUpload(upload.id)} className="rounded-xl bg-white p-2 text-slate-500 shadow-sm hover:text-rose-600" title="Cancel upload">
+                  <button
+                    type="button"
+                    onClick={() => cancelUpload(upload.id)}
+                    aria-label={`Cancel upload for ${upload.name}`}
+                    className="rounded-xl bg-white p-2 text-slate-500 shadow-sm hover:text-rose-600"
+                    title="Cancel upload"
+                  >
                     <Trash2 className="h-4 w-4" />
                   </button>
                 </div>

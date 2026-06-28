@@ -10,6 +10,7 @@ export function TeamConsole() {
   const [email, setEmail] = useState("");
   const [role, setRole] = useState<TeamMemberRecord["role"]>("Viewer");
   const [status, setStatus] = useState("");
+  const [isInviting, setIsInviting] = useState(false);
   const admins = useMemo(() => members.filter((member) => member.role === "Owner" || member.role === "Admin").length, [members]);
 
   useEffect(() => {
@@ -25,23 +26,27 @@ export function TeamConsole() {
 
   async function invite() {
     setStatus("");
-    if (!email || !email.includes("@")) {
+    const normalizedEmail = email.trim().toLowerCase();
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalizedEmail)) {
       setStatus("Enter a valid email address.");
       return;
     }
+    setIsInviting(true);
     const response = await fetch("/api/team", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ email, role }),
+      body: JSON.stringify({ email: normalizedEmail, role }),
     });
     if (!response.ok) {
       setStatus("Invite failed. The user may already be a member.");
+      setIsInviting(false);
       return;
     }
     const data = (await response.json()) as { member: TeamMemberRecord };
     setMembers((current) => [data.member, ...current]);
     setEmail("");
-    setStatus(`Invite sent to ${email}`);
+    setStatus(`Invite sent to ${normalizedEmail}`);
+    setIsInviting(false);
   }
 
   return (
@@ -78,9 +83,15 @@ export function TeamConsole() {
               <option key={item} value={item}>{item}</option>
             ))}
           </select>
-          <button onClick={invite} className="inline-flex items-center justify-center gap-2 rounded-2xl bg-royal-600 px-4 py-3 text-sm font-black text-white shadow-glow">
+          <button
+            type="button"
+            onClick={invite}
+            disabled={isInviting}
+            aria-label="Invite team member"
+            className="inline-flex items-center justify-center gap-2 rounded-2xl bg-royal-600 px-4 py-3 text-sm font-black text-white shadow-glow disabled:cursor-wait disabled:bg-slate-300"
+          >
             <MailPlus className="h-4 w-4" />
-            Add User
+            {isInviting ? "Sending" : "Add User"}
           </button>
         </div>
         {status ? <p className="mt-3 text-sm font-black text-royal-700">{status}</p> : null}

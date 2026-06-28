@@ -108,10 +108,13 @@ export function DocumentLibrary() {
               value={query}
             />
           </div>
-          <button className="inline-flex items-center justify-center gap-2 rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm font-black text-slate-600 shadow-sm">
+          <div
+            aria-live="polite"
+            className="inline-flex items-center justify-center gap-2 rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm font-black text-slate-600 shadow-sm"
+          >
             <Filter className="h-4 w-4" />
             {status}
-          </button>
+          </div>
         </div>
         <div className="mt-4 flex gap-2 overflow-x-auto">
           {libraryFilters.map((filter) => (
@@ -158,21 +161,27 @@ export function DocumentLibrary() {
               <p className="text-sm text-slate-500">{new Date(document.updatedAt).toLocaleDateString()}</p>
               <div className="flex items-center gap-1">
                 <button
+                  type="button"
                   onClick={() => patchDocument(document.id, { starred: !document.starred })}
+                  aria-label={`${document.starred ? "Unstar" : "Star"} ${document.name}`}
                   className={`rounded-xl p-2 shadow-sm ${document.starred ? "bg-amber-100 text-amber-700" : "bg-white text-slate-500 hover:text-amber-600"}`}
                   title="Star"
                 >
                   <Star className="h-4 w-4" />
                 </button>
                 <button
+                  type="button"
                   onClick={() => patchDocument(document.id, { shared: !document.shared })}
+                  aria-label={`${document.shared ? "Unshare" : "Share"} ${document.name}`}
                   className={`rounded-xl p-2 shadow-sm ${document.shared ? "bg-royal-100 text-royal-700" : "bg-white text-slate-500 hover:text-royal-600"}`}
                   title="Share"
                 >
                   <Share2 className="h-4 w-4" />
                 </button>
                 <button
+                  type="button"
                   onClick={() => patchDocument(document.id, { deletedAt: document.deletedAt ? null : new Date().toISOString() })}
+                  aria-label={`${document.deletedAt ? "Restore" : "Move to trash"} ${document.name}`}
                   className="rounded-xl bg-white p-2 text-slate-500 shadow-sm hover:text-rose-600"
                   title={document.deletedAt ? "Restore" : "Move to trash"}
                 >
@@ -180,7 +189,9 @@ export function DocumentLibrary() {
                 </button>
                 {document.deletedAt ? (
                   <button
+                    type="button"
                     onClick={() => permanentlyDeleteDocument(document.id)}
+                    aria-label={`Delete ${document.name} permanently`}
                     className="rounded-xl bg-rose-50 px-3 py-2 text-xs font-black text-rose-700 shadow-sm hover:bg-rose-100"
                     title="Delete permanently"
                   >
