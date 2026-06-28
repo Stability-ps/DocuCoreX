@@ -59,7 +59,6 @@ function LoginContent() {
     const nextPath = searchParams.get("next") || "/dashboard";
 
     if (mode === "signin") {
-      await supabase?.auth.signOut({ scope: "local" }).catch(() => undefined);
       const response = await fetch("/api/auth/signin", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -78,7 +77,6 @@ function LoginContent() {
     }
 
     if (mode === "signup") {
-      await supabase?.auth.signOut({ scope: "local" }).catch(() => undefined);
       const response = await fetch("/api/auth/signup", {
         method: "POST",
         headers: { "Content-Type": "application/json" },

@@ -123,9 +123,9 @@ export const dashboardStats = [
 export const quickActions = [
   { label: "Upload Document", href: "/upload", icon: CloudUpload, description: "PDF, Office, images and ZIP" },
   { label: "Convert File", href: "/convert", icon: RefreshCcw, description: "PDF, Word, Excel and images" },
-  { label: "Edit PDF", href: "/documents/statement-q2", icon: Edit3, description: "Viewer first, editor coming next" },
-  { label: "OCR Scan", href: "/documents/statement-q2?tab=ocr", icon: ScanText, description: "Extract text and layout" },
-  { label: "AI Analysis", href: "/documents/statement-q2?tab=ai", icon: Bot, description: "Ask document questions" },
+  { label: "Edit PDF", href: "/documents", icon: Edit3, description: "Open a document workspace" },
+  { label: "OCR Scan", href: "/convert/ocr", icon: ScanText, description: "Extract text and layout" },
+  { label: "AI Analysis", href: "/convert/summaries", icon: Bot, description: "Ask document questions" },
 ];
 
 export const recentActivity = [

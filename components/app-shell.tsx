@@ -21,9 +21,8 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const [showProfile, setShowProfile] = useState(false);
   const [showNewMenu, setShowNewMenu] = useState(false);
   const [expandedGroups, setExpandedGroups] = useState<Record<string, boolean>>({
-    Documents: true,
-    "Convert Files": true,
-    Settings: true,
+    Documents: false,
+    "Convert Files": false,
   });
   const [shellError, setShellError] = useState("");
 
@@ -120,7 +119,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         <nav className="space-y-1 px-4 py-5">
           {appNav.map((item) => {
             const active = isActive(item.href) || Boolean(item.children?.some((child) => isActive(child.href)));
-            const expanded = expandedGroups[item.title] ?? active;
+            const expanded = expandedGroups[item.title] ?? false;
 
             if (item.children?.length) {
               return (
