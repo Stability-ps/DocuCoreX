@@ -50,46 +50,79 @@ function LoginContent() {
 
     const redirectTo = `${getSiteUrl()}/auth/callback`;
 
-    const result =
-      mode === "signin"
-        ? await supabase.auth.signInWithPassword({ email, password })
-        : mode === "signup"
-          ? await supabase.auth.signUp({
-              email,
-              password,
-              options: {
-                emailRedirectTo: redirectTo,
-                data: { product: "DocuCoreX" },
-              },
-            })
-          : await supabase.auth.resetPasswordForEmail(email, { redirectTo });
+    // For signin and signup, use server endpoints that properly handle cookies
+    if (mode === "signin") {
+      try {
+        const response = await fetch("/api/auth/signin", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ email, password }),
+        });
 
-    if (result.error) {
-      setStatus(`${result.error.message}. You can continue to the product workspace while Supabase is being set up.`);
-      setIsSubmitting(false);
-      return;
+        if (!response.ok) {
+          const error = await response.json();
+          setStatus(`${error.error}. You can continue to the product workspace while Supabase is being set up.`);
+          setIsSubmitting(false);
+          return;
+        }
+
+        window.location.href = "/dashboard";
+        return;
+      } catch (error) {
+        setStatus(
+          `${error instanceof Error ? error.message : "Unknown error"}. You can continue to the product workspace while Supabase is being set up.`
+        );
+        setIsSubmitting(false);
+        return;
+      }
     }
 
+    if (mode === "signup") {
+      try {
+        const response = await fetch("/api/auth/signup", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ email, password }),
+        });
+
+        const data = await response.json();
+
+        if (!response.ok) {
+          setStatus(`${data.error}. You can continue to the product workspace while Supabase is being set up.`);
+          setIsSubmitting(false);
+          return;
+        }
+
+        if (data.requiresEmailVerification) {
+          setStatus("Account created. Check your inbox to verify your email address, or continue to the product workspace now.");
+        } else {
+          window.location.href = "/dashboard";
+        }
+        setIsSubmitting(false);
+        return;
+      } catch (error) {
+        setStatus(
+          `${error instanceof Error ? error.message : "Unknown error"}. You can continue to the product workspace while Supabase is being set up.`
+        );
+        setIsSubmitting(false);
+        return;
+      }
+    }
+
+    // For forgot password, still use client-side Supabase
     if (mode === "forgot") {
+      const result = await supabase.auth.resetPasswordForEmail(email, { redirectTo });
+
+      if (result.error) {
+        setStatus(`${result.error.message}. You can continue to the product workspace while Supabase is being set up.`);
+        setIsSubmitting(false);
+        return;
+      }
+
       setStatus("Recovery link sent. Check your inbox for the secure reset email.");
       setIsSubmitting(false);
       return;
     }
-
-    if (mode === "signup") {
-      const authData = result.data as { session?: unknown };
-
-      if (authData.session) {
-        window.location.href = "/dashboard";
-        return;
-      }
-
-      setStatus("Account created. Check your inbox to verify your email address, or continue to the product workspace now.");
-      setIsSubmitting(false);
-      return;
-    }
-
-    window.location.href = "/dashboard";
   }
 
   async function handleOAuth(provider: "google" | "azure") {
