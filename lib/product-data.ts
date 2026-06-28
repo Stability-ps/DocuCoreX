@@ -99,20 +99,6 @@ export const appNav: NavGroup[] = [
     title: "Settings",
     href: "/settings",
     icon: Settings,
-    children: [
-      { title: "General", href: "/settings", icon: Settings },
-      { title: "Workspace", href: "/settings/workspace", icon: Globe },
-      { title: "Appearance", href: "/settings/appearance", icon: Palette },
-      { title: "Notifications", href: "/settings/notifications", icon: Bell },
-      { title: "Security", href: "/settings/security", icon: ShieldCheck },
-      { title: "Storage", href: "/settings/storage", icon: CloudUpload },
-      { title: "API Keys", href: "/settings/api-keys", icon: KeyRound },
-      { title: "Integrations", href: "/settings/integrations", icon: PlugZap },
-      { title: "Automations", href: "/settings/automations", icon: Workflow },
-      { title: "Developer", href: "/settings/developer", icon: Code2 },
-      { title: "Advanced", href: "/settings/advanced", icon: Gauge },
-      { title: "Danger Zone", href: "/settings/danger-zone", icon: LockKeyhole },
-    ],
   },
 ];
 
