@@ -117,7 +117,7 @@ const NAV_GROUPS: Array<{
     label: "Platform",
     items: [
       { id: "storage", label: "Storage", icon: Database },
-      { id: "ocr-ai", label: "OCR & AI", icon: Bot },
+      { id: "ocr-ai", label: "OCR & Processing", icon: Bot },
       { id: "integrations", label: "Integrations", icon: Globe },
       { id: "api-keys", label: "API & Webhooks", icon: Key },
     ],
@@ -193,7 +193,7 @@ function ActionButton({
   children: React.ReactNode;
   disabled?: boolean;
 }) {
-  const base = "inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-sm font-semibold transition disabled:opacity-50";
+  const base = "inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-sm font-semibold transition disabled:cursor-not-allowed disabled:opacity-50";
   const variants = {
     primary: "bg-blue-600 text-white hover:bg-blue-700",
     secondary: "border border-slate-200 bg-white text-slate-700 hover:bg-slate-50",
@@ -750,11 +750,11 @@ function SecuritySection() {
         <h3 className="mb-3 text-xs font-bold uppercase tracking-widest text-slate-400">Password</h3>
         <div className="rounded-xl border border-slate-100">
           <SettingRow label="Password" description="Keep your password strong and unique.">
-            <ActionButton>Change password</ActionButton>
+            <ActionButton disabled>Change password</ActionButton>
           </SettingRow>
           <SettingRow label="Recovery codes" description="Emergency codes if you lose access to your 2FA device." last>
             <div className="flex items-center gap-2">
-              <ActionButton>Generate codes</ActionButton>
+              <ActionButton disabled>Generate codes</ActionButton>
               <StatusBadge label="Not set" variant="inactive" />
             </div>
           </SettingRow>
@@ -777,7 +777,7 @@ function SecuritySection() {
             <StatusBadge label="Disabled" variant="warning" />
           </div>
           <div className="mt-4">
-            <ActionButton variant="primary">Enable 2FA</ActionButton>
+            <ActionButton variant="primary" disabled>Enable 2FA</ActionButton>
           </div>
         </div>
       </div>
@@ -793,7 +793,7 @@ function SecuritySection() {
               </div>
               <p className="mt-0.5 text-xs text-slate-400">Browser · This device · DocuCoreX Web</p>
             </div>
-            <ActionButton variant="danger">Revoke</ActionButton>
+            <ActionButton variant="danger" disabled>Revoke</ActionButton>
           </div>
         </div>
       </div>
@@ -895,12 +895,12 @@ function StorageSection() {
   );
 }
 
-// ─── OCR & AI ─────────────────────────────────────────────────────────────────
+// ─── OCR & Processing ─────────────────────────────────────────────────────────
 
 function OcrAiSection() {
   return (
     <div className="space-y-8">
-      <SectionHeader title="OCR & AI" description="Configure the OCR engine, AI model, and document intelligence." />
+      <SectionHeader title="OCR & Processing" description="Configure OCR, document processing and extraction readiness." />
       <div className="rounded-xl border border-slate-100">
         <SettingRow label="OCR engine" description="Text extraction engine for uploaded documents.">
           <div className="flex items-center gap-2">
@@ -908,7 +908,7 @@ function OcrAiSection() {
             <StatusBadge label="Ready" variant="healthy" />
           </div>
         </SettingRow>
-        <SettingRow label="AI model" description="Language model for summarisation and Q&A.">
+        <SettingRow label="Document intelligence provider" description="Provider used for summarisation, Q&A and extraction assistance.">
           <div className="flex items-center gap-2">
             <span className="text-sm text-slate-600">GPT-4o</span>
             <StatusBadge label="Ready" variant="healthy" />
@@ -933,7 +933,7 @@ function IntegrationsSection() {
         <p className="text-sm font-semibold text-slate-700">Manage integrations</p>
         <p className="mt-1 text-sm text-slate-500">Connect cloud storage, accounting systems, and webhooks from the Integrations page.</p>
         <div className="mt-5">
-          <Link href="/integrations" className="inline-flex items-center gap-2 rounded-lg bg-blue-600 px-4 py-2 text-sm font-semibold text-white transition hover:bg-blue-700">
+          <Link href="/settings/integrations" className="inline-flex items-center gap-2 rounded-lg bg-blue-600 px-4 py-2 text-sm font-semibold text-white transition hover:bg-blue-700">
             Open Integrations <ArrowRight className="h-4 w-4" />
           </Link>
         </div>
@@ -1089,7 +1089,7 @@ function DangerSection() {
               <p className="text-sm font-semibold text-slate-900">Export workspace data</p>
               <p className="mt-0.5 text-sm text-slate-500">Download all documents, extracted data, and settings as a ZIP archive.</p>
             </div>
-            <ActionButton variant="secondary">Export</ActionButton>
+            <ActionButton variant="secondary" disabled>Export</ActionButton>
           </div>
         </div>
         <div className="rounded-xl border border-rose-200 bg-rose-50 p-5">
@@ -1101,7 +1101,7 @@ function DangerSection() {
                 <strong className="block mt-1">This action cannot be undone.</strong>
               </p>
             </div>
-            <ActionButton variant="danger">
+            <ActionButton variant="danger" disabled>
               <Trash2 className="h-4 w-4" />
               Delete
             </ActionButton>

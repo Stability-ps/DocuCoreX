@@ -39,10 +39,11 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         setProfile(data.profile ?? null);
         setShellError("");
       } else if (profileResponse.status === 401) {
-        setShellError("Your session is not available on this route. Please sign in again or open diagnostics.");
+        setProfile(null);
+        setShellError("");
       } else {
         const data = (await profileResponse.json().catch(() => ({}))) as { error?: string };
-        setShellError(data.error ?? "Workspace profile could not be loaded.");
+        setShellError(data.error ?? "Workspace profile could not be loaded. Refresh the page or open diagnostics if this continues.");
       }
 
       if (notificationsResponse.ok) {

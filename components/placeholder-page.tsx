@@ -29,7 +29,7 @@ export function PlaceholderPage({
     <>
       <PageHeader eyebrow={eyebrow} title={title} description={description} />
       <div className="space-y-6 p-4 sm:p-6 lg:p-8">
-        <SectionPanel title={title} description="This route is part of the production navigation structure and is ready for the full workflow implementation.">
+        <SectionPanel title={title} description="Coming soon. This workflow is available as a routed workspace and will be enabled when the underlying provider or data model is connected.">
           <div className="grid gap-5 lg:grid-cols-[0.8fr_1fr]">
             <div className="rounded-3xl border border-royal-100 bg-royal-50 p-5">
               <div className="flex h-12 w-12 items-center justify-center rounded-2xl bg-white text-royal-600 shadow-sm">
@@ -41,7 +41,7 @@ export function PlaceholderPage({
               </div>
             </div>
             <div className="grid gap-3">
-              {(capabilities.length ? capabilities : ["Workflow shell", "Permission-ready route", "Navigation mapping"]).map((capability) => (
+              {(capabilities.length ? capabilities : ["Coming soon", "Access-controlled route", "Ready for provider connection"]).map((capability) => (
                 <div key={capability} className="flex items-center gap-3 rounded-2xl border border-slate-200 bg-slate-50 p-4">
                   <ArrowRight className="h-4 w-4 text-royal-600" />
                   <span className="text-sm font-black text-navy-950">{capability}</span>
