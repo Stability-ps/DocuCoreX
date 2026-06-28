@@ -13,7 +13,7 @@ Required Storage bucket:
 
 `documents`
 
-The initial migration creates the private `documents` bucket and workspace-scoped Storage policies. If the bucket is missing in an existing Supabase project, create it as a private bucket named `documents`, then rerun the Storage policy section from `supabase/schema.sql`.
+The initial migration creates the private `documents` bucket and workspace-scoped Storage policies. If the bucket is missing in an existing Supabase project, run `supabase/bucket_setup.sql`.
 
 Provider environment variables are optional. Without them, DocuCoreX uses internal mock providers for OCR, extraction, and conversion:
 

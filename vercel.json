@@ -1,0 +1,12 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "buildCommand": "pnpm build",
+  "installCommand": "pnpm install",
+  "outputDirectory": ".next",
+  "crons": [
+    {
+      "path": "/api/jobs/process",
+      "schedule": "0 * * * *"
+    }
+  ]
+}
