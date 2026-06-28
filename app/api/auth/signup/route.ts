@@ -2,6 +2,7 @@ import { createServerClient } from "@supabase/ssr";
 import { ensureUserWorkspace } from "@/lib/workspace-bootstrap";
 import { NextRequest, NextResponse } from "next/server";
 import type { CookieOptions } from "@supabase/ssr";
+import { dedupeCookies, setSupabaseAuthCookie } from "@/lib/auth-cookies";
 
 export async function POST(request: NextRequest) {
   const { email, password } = await request.json();
@@ -23,7 +24,7 @@ export async function POST(request: NextRequest) {
       {
         cookies: {
           getAll() {
-            return request.cookies.getAll();
+            return dedupeCookies(request.cookies.getAll());
           },
           setAll(cookiesToSet) {
             cookiesToSet.forEach(({ name, value, options }) => {
@@ -79,13 +80,7 @@ export async function POST(request: NextRequest) {
     // Copy auth cookies set by Supabase onto the final response
     if (data.session) {
       pendingCookies.forEach(({ name, value, options }) => {
-        response.cookies.set(name, value, {
-          ...options,
-          httpOnly: true,
-          secure: process.env.NODE_ENV === "production",
-          sameSite: "lax",
-          path: "/",
-        });
+        setSupabaseAuthCookie(response.cookies, { name, value, options });
       });
     }
 

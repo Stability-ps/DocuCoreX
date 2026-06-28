@@ -1,5 +1,6 @@
 import { createServerClient } from "@supabase/ssr";
 import { NextResponse, type NextRequest } from "next/server";
+import { dedupeCookies } from "@/lib/auth-cookies";
 
 const publicPrefixes = ["/", "/login", "/signup", "/auth/callback", "/auth/signout", "/debug/auth"];
 
@@ -52,7 +53,7 @@ export async function middleware(request: NextRequest) {
   const supabase = createServerClient(supabaseUrl, supabaseAnonKey, {
     cookies: {
       getAll() {
-        return request.cookies.getAll();
+        return dedupeCookies(request.cookies.getAll());
       },
       setAll(cookiesToSet) {
         cookiesToSet.forEach(({ name, value, options }) => {

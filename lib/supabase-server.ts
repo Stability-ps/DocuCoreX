@@ -2,6 +2,7 @@ import { createServerClient } from "@supabase/ssr";
 import { createClient } from "@supabase/supabase-js";
 import { cookies } from "next/headers";
 import { isSupabaseConfigured } from "@/lib/supabase";
+import { dedupeCookies } from "@/lib/auth-cookies";
 
 export async function createSupabaseServerClient() {
   if (!isSupabaseConfigured) {
@@ -16,7 +17,7 @@ export async function createSupabaseServerClient() {
     {
       cookies: {
         getAll() {
-          return cookieStore.getAll();
+          return dedupeCookies(cookieStore.getAll());
         },
         setAll(cookiesToSet) {
           cookiesToSet.forEach(({ name, value, options }) => {

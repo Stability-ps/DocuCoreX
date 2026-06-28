@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { createServerClient, type CookieOptions } from "@supabase/ssr";
 import { isSupabaseConfigured } from "@/lib/supabase";
 import { ensureUserWorkspace } from "@/lib/workspace-bootstrap";
+import { dedupeCookies, setSupabaseAuthCookie } from "@/lib/auth-cookies";
 
 export async function GET(request: NextRequest) {
   const requestUrl = new URL(request.url);
@@ -26,7 +27,7 @@ export async function GET(request: NextRequest) {
       {
         cookies: {
           getAll() {
-            return request.cookies.getAll();
+            return dedupeCookies(request.cookies.getAll());
           },
           setAll(cookiesToSet) {
             cookiesToSet.forEach(({ name, value, options }) => {
@@ -75,12 +76,7 @@ export async function GET(request: NextRequest) {
 
     redirectResponse = NextResponse.redirect(new URL(next, origin));
     pendingCookies.forEach(({ name, value, options }) => {
-      redirectResponse.cookies.set(name, value, {
-        ...options,
-        secure: process.env.NODE_ENV === "production",
-        sameSite: "lax",
-        path: "/",
-      });
+      setSupabaseAuthCookie(redirectResponse.cookies, { name, value, options }, false);
     });
 
     return redirectResponse;
