@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { Bot, CheckCircle2, Download, FileJson, FileSpreadsheet, MessageSquareText, Send, ScanText } from "lucide-react";
+import { Bot, CheckCircle2, Download, FileJson, FileSpreadsheet, MessageSquareText, Send, ScanText, Trash2 } from "lucide-react";
 import { PdfViewer } from "@/components/pdf-viewer";
 import {
   comments,
@@ -163,6 +163,22 @@ export function DocumentWorkspace({ documentId }: { documentId: string }) {
     setWorkflowStatus("Extraction completed");
   }
 
+  async function deleteDocument() {
+    setWorkflowStatus("Moving to trash…");
+    const response = await fetch(`/api/documents/${documentId}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ deletedAt: new Date().toISOString() }),
+    });
+
+    if (response.ok) {
+      setWorkflowStatus("Document moved to trash");
+      window.location.href = "/documents";
+    } else {
+      setWorkflowStatus("Failed to delete document");
+    }
+  }
+
   const doc = workspaceData.document;
   const displayName = doc?.name ?? fallbackDoc.name;
   const displayStatus = doc ? titleCase(doc.status) : fallbackDoc.status;
@@ -208,8 +224,12 @@ export function DocumentWorkspace({ documentId }: { documentId: string }) {
             </p>
           </div>
           <div className="flex flex-wrap gap-2">
-            <button className="rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm font-black text-slate-600 shadow-sm">Share</button>
-            <a href="/api/download-file/download_xlsx_statement_q2" className="rounded-2xl bg-royal-600 px-4 py-3 text-sm font-black text-white shadow-glow">Download</a>
+            <button title="Share: Coming soon" disabled className="rounded-2xl border border-slate-200 bg-slate-100 px-4 py-3 text-sm font-black text-slate-400 shadow-sm cursor-not-allowed">Share</button>
+            <a href={`/api/download-file/${doc?.id ?? fallbackDoc.id}`} className="rounded-2xl bg-royal-600 px-4 py-3 text-sm font-black text-white shadow-glow hover:bg-royal-700 transition">Download</a>
+            <button onClick={deleteDocument} className="rounded-2xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm font-black text-rose-700 shadow-sm hover:bg-rose-100 transition">
+              <Trash2 className="h-4 w-4 inline mr-2" />
+              Move to Trash
+            </button>
           </div>
         </div>
         {workflowStatus ? <p className="mt-4 rounded-2xl bg-slate-50 px-4 py-3 text-sm font-black text-slate-600">{workflowStatus}</p> : null}

@@ -16,6 +16,10 @@ type ConversionResponse = {
   };
 };
 
+type JobsResponse = {
+  jobs?: Array<{ id: string; document_id?: string; documentId?: string; type: string; status: string; progress: number; message: string }>;
+};
+
 function normalizeFormat(value: string) {
   const normalized = value.toLowerCase();
   if (normalized === "images") return "image";
@@ -33,6 +37,7 @@ export function ConversionWorkflow() {
   const [jobLabel, setJobLabel] = useState("Ready");
   const [downloadHref, setDownloadHref] = useState("");
   const [isConverting, setIsConverting] = useState(false);
+  const [error, setError] = useState("");
 
   useEffect(() => {
     async function loadDocuments() {
@@ -53,8 +58,14 @@ export function ConversionWorkflow() {
   );
 
   async function startConversion() {
+    if (!selectedDocumentId) {
+      setError("Select a source document before starting conversion.");
+      return;
+    }
+
     setComplete(false);
     setDownloadHref("");
+    setError("");
     setIsConverting(true);
     setProgress(18);
     setJobLabel("Creating conversion job");
@@ -69,23 +80,48 @@ export function ConversionWorkflow() {
       }),
     }).catch(() => null);
 
-    if (response?.ok) {
-      const data = (await response.json().catch(() => null)) as ConversionResponse | null;
-      setJobLabel("Job queued");
-      setDownloadHref(data?.conversion?.downloadUrl ?? `/api/download-file/${data?.conversion?.id ?? `conversion_${Date.now()}`}`);
-    } else {
-      setJobLabel("Job queued");
-      setDownloadHref(`/api/download-file/conversion_${Date.now()}`);
+    if (!response?.ok) {
+      const data = (await response?.json().catch(() => null)) as { error?: string } | null;
+      setJobLabel("Conversion failed");
+      setError(data?.error ?? "Unable to create conversion job.");
+      setIsConverting(false);
+      setProgress(0);
+      return;
     }
 
+    const data = (await response.json().catch(() => null)) as ConversionResponse | null;
+    const conversionId = data?.conversion?.id;
+    setJobLabel("Job queued");
     setProgress(34);
-    window.setTimeout(() => setProgress(76), 350);
-    window.setTimeout(() => {
-      setProgress(100);
-      setComplete(true);
+
+    const processResponse = await fetch("/api/jobs/process", { method: "POST" }).catch(() => null);
+
+    if (!processResponse?.ok) {
+      setJobLabel("Processing failed");
+      setError("Conversion job was created, but processing could not start.");
       setIsConverting(false);
-      setJobLabel("Download ready");
-    }, 900);
+      return;
+    }
+
+    setProgress(76);
+    const jobsResponse = await fetch("/api/jobs").catch(() => null);
+    const jobsData = jobsResponse?.ok ? ((await jobsResponse.json().catch(() => null)) as JobsResponse | null) : null;
+    const matchingJob = jobsData?.jobs?.find(
+      (job) => job.type === "conversion" && (job.documentId === selectedDocumentId || job.document_id === selectedDocumentId),
+    );
+
+    if (matchingJob?.status === "failed") {
+      setJobLabel("Conversion failed");
+      setError(matchingJob.message || "Conversion failed.");
+      setIsConverting(false);
+      return;
+    }
+
+    setProgress(100);
+    setComplete(true);
+    setIsConverting(false);
+    setJobLabel("Download ready");
+    setDownloadHref(data?.conversion?.downloadUrl ?? `/api/download-file/${conversionId ?? `conversion_${selectedDocumentId}`}`);
   }
 
   return (
@@ -99,7 +135,9 @@ export function ConversionWorkflow() {
             className="w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm font-black text-navy-950 outline-none focus:border-royal-300 focus:bg-white"
             onChange={(event) => setSelectedDocumentId(event.target.value)}
             value={selectedDocumentId}
+            disabled={!documents.length}
           >
+            {!documents.length ? <option value="">No documents available</option> : null}
             {documents.map((document) => (
               <option key={document.id} value={document.id}>
                 {document.name}
@@ -130,15 +168,16 @@ export function ConversionWorkflow() {
         <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
           <div>
             <h2 className="text-xl font-black text-navy-950">Conversion Job</h2>
-            <p className="mt-1 text-sm text-slate-500">Selected workflow: {selected} • {jobLabel}</p>
+          <p className="mt-1 text-sm text-slate-500">Selected workflow: {selected} • {jobLabel}</p>
+            {error ? <p className="mt-2 text-sm font-black text-rose-600">{error}</p> : null}
           </div>
           <button
             onClick={startConversion}
-            disabled={isConverting || !selectedDocumentId}
+            disabled={isConverting || !selectedDocumentId || !documents.length}
             className="inline-flex items-center justify-center gap-2 rounded-full bg-royal-600 px-5 py-3 text-sm font-black text-white shadow-glow disabled:cursor-wait disabled:bg-slate-300"
           >
             <Play className="h-4 w-4" />
-            {isConverting ? "Converting" : "Start Conversion"}
+            {isConverting ? "Converting" : !documents.length ? "Upload a document first" : "Start Conversion"}
           </button>
         </div>
 

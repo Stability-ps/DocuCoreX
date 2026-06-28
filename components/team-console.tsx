@@ -25,19 +25,23 @@ export function TeamConsole() {
 
   async function invite() {
     setStatus("");
+    if (!email || !email.includes("@")) {
+      setStatus("Enter a valid email address.");
+      return;
+    }
     const response = await fetch("/api/team", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ email, role }),
     });
     if (!response.ok) {
-      setStatus("Enter a valid email address.");
+      setStatus("Invite failed. The user may already be a member.");
       return;
     }
     const data = (await response.json()) as { member: TeamMemberRecord };
     setMembers((current) => [data.member, ...current]);
     setEmail("");
-    setStatus("Invite created");
+    setStatus(`Invite sent to ${email}`);
   }
 
   return (

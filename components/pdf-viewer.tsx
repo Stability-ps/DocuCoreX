@@ -81,7 +81,7 @@ export function PdfViewer() {
           <button onClick={enterFullscreen} className="rounded-xl border border-slate-200 p-2 text-slate-600 hover:text-royal-700" title="Fullscreen">
             <Maximize2 className="h-4 w-4" />
           </button>
-          <a href="/api/download-file/download_xlsx_statement_q2" className="rounded-xl border border-slate-200 p-2 text-slate-600 hover:text-royal-700" title="Download">
+          <a href="/api/download-file/preview_document" className="rounded-xl border border-slate-200 p-2 text-slate-600 hover:text-royal-700" title="Download">
             <Download className="h-4 w-4" />
           </a>
           <button onClick={printDocument} className="rounded-xl border border-slate-200 p-2 text-slate-600 hover:text-royal-700" title="Print">

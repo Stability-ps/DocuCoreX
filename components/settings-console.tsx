@@ -1,9 +1,11 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
+import Link from "next/link";
 import { CheckCircle2, Copy, KeyRound, Plus, ShieldCheck, Smartphone } from "lucide-react";
 import { SectionPanel } from "@/components/ui";
 import type { UserSettingsRecord } from "@/lib/app-state";
+import { settingsGroups } from "@/lib/product-data";
 
 type ProfilePayload = {
   profile: {
@@ -99,7 +101,12 @@ export function SettingsConsole() {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(profile),
     });
-    setStatus(response.ok ? "Profile saved" : "Profile save failed");
+    if (response.ok) {
+      setStatus("Profile saved successfully");
+      setTimeout(() => setStatus("Ready"), 2000);
+    } else {
+      setStatus("Profile save failed");
+    }
   }
 
   async function createApiKey() {
@@ -147,6 +154,21 @@ export function SettingsConsole() {
     setStatus(response.ok ? "Settings saved" : "Settings save failed");
   }
 
+  function applyTheme(theme: UserSettingsRecord["theme"]) {
+    if (theme === "dark") {
+      document.documentElement.classList.add("dark");
+      document.body.classList.add("bg-slate-950");
+    } else {
+      document.documentElement.classList.remove("dark");
+      document.body.classList.remove("bg-slate-950");
+    }
+  }
+
+  async function updateTheme(theme: UserSettingsRecord["theme"]) {
+    applyTheme(theme);
+    await saveUserSettings({ theme });
+  }
+
   const securityItems = useMemo(
     () => [
       ["Email verification", "Required for new workspaces", CheckCircle2],
@@ -159,12 +181,33 @@ export function SettingsConsole() {
 
   return (
     <div className="space-y-6">
+      <section className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+        {settingsGroups.map((group) => (
+          <button
+            key={group.title}
+            type="button"
+            onClick={() => setActiveSection(group.title)}
+            className={`rounded-3xl border p-5 text-left shadow-sm transition hover:-translate-y-0.5 hover:shadow-soft ${
+              activeSection === group.title ? "border-royal-300 bg-royal-50" : "border-slate-200 bg-white"
+            }`}
+          >
+            <group.icon className="h-6 w-6 text-royal-600" />
+            <h2 className="mt-4 text-lg font-black text-navy-950">{group.title}</h2>
+            <p className="mt-2 text-sm leading-6 text-slate-500">{group.detail}</p>
+          </button>
+        ))}
+      </section>
+
+      <SectionPanel title={`${activeSection} Controls`} description="Selected settings section action surface.">
+        <SettingsSection activeSection={activeSection} />
+      </SectionPanel>
+
       <div className="grid gap-6 xl:grid-cols-[1fr_0.9fr]">
       <SectionPanel title="Preferences" description={`Active section: ${activeSection}. ${status}`}>
         <div className="grid gap-4 sm:grid-cols-2">
           <label className="block">
             <span className="mb-2 block text-sm font-black text-slate-700">Theme</span>
-            <select className="w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm font-black outline-none" onChange={(event) => saveUserSettings({ theme: event.target.value as UserSettingsRecord["theme"] })} value={userSettings.theme}>
+            <select className="w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm font-black outline-none" onChange={(event) => updateTheme(event.target.value as UserSettingsRecord["theme"])} value={userSettings.theme}>
               <option value="light">Light</option>
               <option value="dark">Dark</option>
               <option value="system">System</option>
@@ -289,5 +332,57 @@ export function SettingsConsole() {
       </SectionPanel>
       </div>
     </div>
+  );
+}
+
+function SettingsSection({ activeSection }: { activeSection: string }) {
+  if (activeSection === "Connected Apps") {
+    return <ActionLink href="/integrations" label="Open integrations" detail="Manage accounting, storage and webhook connections." />;
+  }
+
+  if (activeSection === "Access") {
+    return <ActionLink href="/team" label="Open team access" detail="Invite users and review roles." />;
+  }
+
+  if (activeSection === "Billing") {
+    return <DisabledAction label="Stripe billing is not configured yet" detail="Add Stripe keys before enabling subscription management." />;
+  }
+
+  if (activeSection === "Storage") {
+    return <DisabledAction label="Storage usage loads from uploaded documents" detail="No storage management action is needed until plan limits are configured." />;
+  }
+
+  if (activeSection === "Security") {
+    return <ActionLink href="/debug/auth" label="Open auth diagnostics" detail="Review session, profile, workspace and cookie status." />;
+  }
+
+  if (["Search", "Downloads", "Viewer"].includes(activeSection)) {
+    return <DisabledAction label={`${activeSection} advanced controls coming soon`} detail="Current defaults are active; provider-specific controls are not enabled yet." />;
+  }
+
+  return <DisabledAction label={`${activeSection} settings are available below`} detail="Use the editable controls on this page to save changes." />;
+}
+
+function ActionLink({ href, label, detail }: { href: string; label: string; detail: string }) {
+  return (
+    <Link href={href} className="inline-flex flex-col rounded-2xl bg-royal-600 px-4 py-3 text-sm font-black text-white shadow-glow">
+      <span>{label}</span>
+      <span className="mt-1 text-xs font-bold text-blue-100">{detail}</span>
+    </Link>
+  );
+}
+
+function DisabledAction({ label, detail }: { label: string; detail: string }) {
+  return (
+    <button
+      type="button"
+      disabled
+      aria-disabled="true"
+      title={label}
+      className="rounded-2xl border border-slate-200 bg-slate-100 px-4 py-3 text-left text-sm font-black text-slate-500"
+    >
+      <span className="block">{label}</span>
+      <span className="mt-1 block text-xs font-bold">{detail}</span>
+    </button>
   );
 }

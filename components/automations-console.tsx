@@ -52,7 +52,10 @@ export function AutomationsConsole() {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ type: "request", body: requests }),
     });
-    if (response.ok) setRequests("");
+    if (response.ok) {
+      setRequests("");
+      alert("Request submitted! Our team will review your automation requirements.");
+    }
   }
 
   return (

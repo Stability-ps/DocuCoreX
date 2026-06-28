@@ -70,13 +70,17 @@ export function IntegrationsConsole() {
             </div>
             {setupId === id ? (
               <div className="border-t border-slate-100 p-5">
+                <div className="rounded-2xl bg-amber-50 border border-amber-200 p-4 mb-4 text-sm font-black text-amber-900">
+                  Coming soon: {connector.name} connection setup. This integration requires API key configuration in your workspace settings.
+                </div>
                 <div className="grid gap-3 sm:grid-cols-[1fr_auto]">
                   <input
                     className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm font-semibold outline-none"
                     placeholder={`${connector.name} account, folder, sheet or webhook destination`}
+                    disabled
                   />
-                  <button onClick={() => toggle(id)} className="rounded-2xl bg-royal-600 px-4 py-3 text-sm font-black text-white">
-                    Save connection
+                  <button onClick={() => setSetupId("")} className="rounded-2xl bg-slate-300 px-4 py-3 text-sm font-black text-slate-600 cursor-not-allowed" disabled>
+                    Unavailable
                   </button>
                 </div>
               </div>

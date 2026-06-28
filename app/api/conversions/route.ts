@@ -31,7 +31,7 @@ export async function POST(request: Request) {
 
     return NextResponse.json({
       conversion: {
-        id: `conversion_${Date.now()}`,
+        id: `conversion_${body.documentId}`,
         documentId: body.documentId,
         from: body.from,
         to: body.to,
