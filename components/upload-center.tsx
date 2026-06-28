@@ -1,186 +1,496 @@
 "use client";
 
-import { useMemo, useRef, useState, type ChangeEvent, type DragEvent } from "react";
-import { CheckCircle2, File, Pause, RefreshCcw, Trash2, UploadCloud, XCircle } from "lucide-react";
-import { uploadTypes } from "@/lib/product-data";
-import { supabase } from "@/lib/supabase";
+import Link from "next/link";
+import { useCallback, useEffect, useMemo, useRef, useState, type DragEvent } from "react";
+import {
+  Archive,
+  CheckCircle2,
+  Clock3,
+  Download,
+  Eye,
+  File,
+  FileArchive,
+  FileImage,
+  FileSpreadsheet,
+  FileText,
+  FileType2,
+  FolderUp,
+  Pause,
+  Play,
+  RefreshCcw,
+  Save,
+  Trash2,
+  UploadCloud,
+  X,
+  XCircle,
+} from "lucide-react";
 
-type UploadItem = {
+type ConversionTarget = "pdf" | "word" | "excel" | "images" | "zip";
+type QueueStatus = "queued" | "uploading" | "paused" | "uploaded" | "processing" | "ocr" | "converting" | "packaging" | "completed" | "failed" | "cancelled";
+
+type QueueItem = {
   id: string;
+  documentId?: string;
+  conversionId?: string;
   name: string;
-  type: string;
-  size: string;
+  size: number;
+  mimeType: string;
   progress: number;
-  status: "Uploading" | "Processing" | "Complete" | "Paused" | "Failed";
+  uploadProgress: number;
+  processProgress: number;
+  status: QueueStatus;
+  stage: string;
+  speedBps: number;
+  startedAt: number;
+  updatedAt: number;
+  etaSeconds?: number;
+  elapsedSeconds: number;
+  error?: string;
   file?: File;
+  downloadUrl?: string;
+  savedToLibrary?: boolean;
 };
 
-type PreparedUpload = {
-  file: File;
-  storagePath?: string;
-  mode?: string;
+type WorkflowItem = {
+  documentId: string;
+  name: string;
+  mimeType: string;
+  size: number;
+  status: string;
+  stage: string;
+  progress: number;
+  conversion?: { id: string; to: string; status: string; downloadUrl: string } | null;
 };
 
-const seedUploads: UploadItem[] = [];
+const supportedExtensions = [
+  ".pdf",
+  ".doc",
+  ".docx",
+  ".xls",
+  ".xlsx",
+  ".ppt",
+  ".pptx",
+  ".txt",
+  ".csv",
+  ".rtf",
+  ".jpg",
+  ".jpeg",
+  ".png",
+  ".tif",
+  ".tiff",
+  ".bmp",
+  ".gif",
+  ".heic",
+  ".zip",
+];
+
+const conversionTargets: Array<{
+  id: ConversionTarget;
+  title: string;
+  icon: React.ElementType;
+  description: string;
+  disabled?: boolean;
+  disabledReason?: string;
+}> = [
+  { id: "pdf", title: "PDF", icon: FileText, description: "Convert Office files, text files and images into a generated PDF." },
+  { id: "word", title: "Word", icon: FileType2, description: "Extract available text and metadata into an editable DOCX file." },
+  { id: "excel", title: "Excel", icon: FileSpreadsheet, description: "Extract document metadata and table-like data into XLSX." },
+  {
+    id: "images",
+    title: "Images",
+    icon: FileImage,
+    description: "Export document pages as PNG or JPG.",
+    disabled: true,
+    disabledReason: "Requires a PDF/image rendering provider before page export can run.",
+  },
+  { id: "zip", title: "ZIP", icon: FileArchive, description: "Bundle processed results into a ZIP archive." },
+];
+
+const terminalStatuses = new Set<QueueStatus>(["completed", "failed", "cancelled"]);
+
+function formatBytes(bytes: number) {
+  if (!bytes) return "0 B";
+  const units = ["B", "KB", "MB", "GB"];
+  const index = Math.min(Math.floor(Math.log(bytes) / Math.log(1024)), units.length - 1);
+  return `${(bytes / 1024 ** index).toFixed(index === 0 ? 0 : 1)} ${units[index]}`;
+}
+
+function formatTime(seconds?: number) {
+  if (seconds === undefined || !Number.isFinite(seconds)) return "--";
+  if (seconds < 60) return `${Math.max(0, Math.round(seconds))}s`;
+  const minutes = Math.floor(seconds / 60);
+  const remainder = Math.round(seconds % 60);
+  return `${minutes}m ${remainder}s`;
+}
+
+function statusTone(status: QueueStatus) {
+  if (status === "completed") return "bg-emerald-50 text-emerald-700 border-emerald-100";
+  if (status === "failed") return "bg-rose-50 text-rose-700 border-rose-100";
+  if (status === "cancelled") return "bg-slate-100 text-slate-500 border-slate-200";
+  if (status === "paused") return "bg-amber-50 text-amber-700 border-amber-100";
+  return "bg-royal-50 text-royal-700 border-royal-100";
+}
+
+function queueStatusFromServer(item: WorkflowItem): QueueStatus {
+  const stage = `${item.stage ?? ""} ${item.status ?? ""}`.toLowerCase();
+  if (item.conversion?.status === "completed" || item.status === "completed") return "completed";
+  if (item.status === "failed") return "failed";
+  if (stage.includes("ocr")) return "ocr";
+  if (stage.includes("convert") || stage.includes("converted")) return "converting";
+  if (stage.includes("upload")) return "uploaded";
+  if (item.status === "queued") return "queued";
+  return "processing";
+}
+
+function serializeQueue(items: QueueItem[]) {
+  return items.map(({ file: _file, ...item }) => item);
+}
 
 export function UploadCenter({ workflow }: { workflow?: string }) {
-  const [uploads, setUploads] = useState(seedUploads);
-  const [sessionLabel, setSessionLabel] = useState("Ready to upload");
-  const [signedUploadLabel, setSignedUploadLabel] = useState("Signed upload ready");
+  const [items, setItems] = useState<QueueItem[]>([]);
+  const [target, setTarget] = useState<ConversionTarget | null>(workflow === "scan_document" ? "word" : null);
   const [dragActive, setDragActive] = useState(false);
-  const inputRef = useRef<HTMLInputElement | null>(null);
+  const [message, setMessage] = useState("Ready to upload");
+  const [isProcessing, setIsProcessing] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const folderInputRef = useRef<HTMLInputElement | null>(null);
+  const requestsRef = useRef<Record<string, XMLHttpRequest>>({});
+
+  const activeItems = items.filter((item) => item.status !== "cancelled");
+  const uploadedItems = activeItems.filter((item) => item.documentId && item.status !== "failed" && item.status !== "cancelled");
+  const completedConversions = activeItems.filter((item) => item.conversionId && item.status === "completed");
   const totalProgress = useMemo(
-    () => (uploads.length ? Math.round(uploads.reduce((sum, upload) => sum + upload.progress, 0) / uploads.length) : 0),
-    [uploads],
+    () => (activeItems.length ? Math.round(activeItems.reduce((sum, item) => sum + item.progress, 0) / activeItems.length) : 0),
+    [activeItems],
   );
 
-  function formatBytes(bytes: number) {
-    if (!bytes) return "0 MB";
-    const mb = bytes / 1024 / 1024;
-    if (mb >= 1024) return `${(mb / 1024).toFixed(1)} GB`;
-    return `${mb.toFixed(1)} MB`;
+  const refreshWorkflow = useCallback(async () => {
+    const response = await fetch("/api/uploads/workflow", { cache: "no-store" }).catch(() => null);
+    if (!response?.ok) return;
+    const data = (await response.json().catch(() => null)) as { items?: WorkflowItem[] } | null;
+    if (!data?.items) return;
+
+    setItems((current) => {
+      const byDocument = new Map(current.filter((item) => item.documentId).map((item) => [item.documentId, item]));
+      const localOnly = current.filter((item) => !item.documentId && item.file && !terminalStatuses.has(item.status));
+      const remoteItems = data.items ?? [];
+      const remote = remoteItems.map((item) => {
+        const existing = byDocument.get(item.documentId);
+        const status = queueStatusFromServer(item);
+        return {
+          id: existing?.id ?? item.documentId,
+          documentId: item.documentId,
+          conversionId: item.conversion?.id ?? existing?.conversionId,
+          name: item.name,
+          size: item.size,
+          mimeType: item.mimeType,
+          progress: status === "completed" ? 100 : Math.max(existing?.progress ?? 0, item.progress ?? 0),
+          uploadProgress: 100,
+          processProgress: status === "completed" ? 100 : item.progress ?? existing?.processProgress ?? 0,
+          status,
+          stage: status === "completed" ? "Completed" : item.stage || existing?.stage || "Queued",
+          speedBps: existing?.speedBps ?? 0,
+          startedAt: existing?.startedAt ?? Date.now(),
+          updatedAt: Date.now(),
+          etaSeconds: existing?.etaSeconds,
+          elapsedSeconds: Math.round((Date.now() - (existing?.startedAt ?? Date.now())) / 1000),
+          error: status === "failed" ? item.stage : undefined,
+          downloadUrl: item.conversion?.status === "completed" ? item.conversion.downloadUrl : existing?.downloadUrl,
+          savedToLibrary: true,
+        } satisfies QueueItem;
+      });
+      const merged = [...localOnly, ...remote];
+      window.localStorage.setItem("docucorex.uploadQueue", JSON.stringify(serializeQueue(merged)));
+      return merged;
+    });
+  }, []);
+
+  useEffect(() => {
+    const stored = window.localStorage.getItem("docucorex.uploadQueue");
+    if (stored) {
+      setItems(JSON.parse(stored) as QueueItem[]);
+    }
+    folderInputRef.current?.setAttribute("webkitdirectory", "");
+    void refreshWorkflow();
+  }, [refreshWorkflow]);
+
+  useEffect(() => {
+    window.localStorage.setItem("docucorex.uploadQueue", JSON.stringify(serializeQueue(items)));
+  }, [items]);
+
+  useEffect(() => {
+    if (!isProcessing) return;
+    const timer = window.setInterval(async () => {
+      await fetch("/api/jobs/process", { method: "POST" }).catch(() => null);
+      await refreshWorkflow();
+    }, 1600);
+    return () => window.clearInterval(timer);
+  }, [isProcessing, refreshWorkflow]);
+
+  useEffect(() => {
+    if (isProcessing && uploadedItems.length && uploadedItems.every((item) => terminalStatuses.has(item.status))) {
+      setIsProcessing(false);
+      setMessage("Processing completed");
+    }
+  }, [isProcessing, uploadedItems]);
+
+  function isSupported(file: File) {
+    const lower = file.name.toLowerCase();
+    return supportedExtensions.some((extension) => lower.endsWith(extension));
   }
 
-  function addUploadItems(files: FileList | File[]) {
-    const items = Array.from(files);
-    if (!items.length) return;
+  function addFiles(files: FileList | File[]) {
+    const selected = Array.from(files);
+    if (!selected.length) return;
 
-    const pendingUploads = items.map((file, index) => ({
-      id: `${Date.now()}_${index}`,
-      name: file.name,
-      type: file.type || "application/octet-stream",
-      size: formatBytes(file.size),
-      progress: 12,
-      status: "Uploading" as const,
-      file,
-    }));
+    selected.forEach((file, index) => {
+      const id = `${Date.now()}_${index}_${file.name}`;
+      const item: QueueItem = {
+        id,
+        name: file.name,
+        size: file.size,
+        mimeType: file.type || "application/octet-stream",
+        progress: 0,
+        uploadProgress: 0,
+        processProgress: 0,
+        status: isSupported(file) ? "queued" : "failed",
+        stage: isSupported(file) ? "Queued" : "Unsupported file type",
+        speedBps: 0,
+        startedAt: Date.now(),
+        updatedAt: Date.now(),
+        elapsedSeconds: 0,
+        error: isSupported(file) ? undefined : "Unsupported file type.",
+        file,
+      };
+      setItems((current) => [item, ...current]);
+      if (isSupported(file)) uploadItem(item, file);
+    });
+  }
 
-    setUploads((current) => [...pendingUploads, ...current]);
+  function uploadItem(item: QueueItem, file: File) {
+    const xhr = new XMLHttpRequest();
+    const formData = new FormData();
+    const start = Date.now();
+    formData.append("file", file, file.name);
+    requestsRef.current[item.id] = xhr;
 
-    void (async () => {
-      const preparedUploads: PreparedUpload[] = [];
+    xhr.upload.onprogress = (event) => {
+      if (!event.lengthComputable) return;
+      const elapsed = Math.max(0.1, (Date.now() - start) / 1000);
+      const speedBps = event.loaded / elapsed;
+      const uploadProgress = Math.round((event.loaded / event.total) * 100);
+      const etaSeconds = speedBps ? (event.total - event.loaded) / speedBps : undefined;
+      setItems((current) =>
+        current.map((currentItem) =>
+          currentItem.id === item.id
+            ? {
+                ...currentItem,
+                status: "uploading",
+                stage: "Uploading",
+                uploadProgress,
+                progress: Math.min(45, Math.round(uploadProgress * 0.45)),
+                speedBps,
+                etaSeconds,
+                elapsedSeconds: Math.round(elapsed),
+                updatedAt: Date.now(),
+              }
+            : currentItem,
+        ),
+      );
+    };
 
-      for (const [index, file] of items.entries()) {
-        const signedUrlResponse = await fetch("/api/uploads/signed-url", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ fileName: file.name, contentType: file.type || "application/octet-stream" }),
-        }).catch(() => null);
+    xhr.onload = () => {
+      delete requestsRef.current[item.id];
+      const data = JSON.parse(xhr.responseText || "{}") as {
+        accepted?: Array<{ id: string; mimeType: string; size: number; name: string; job?: { id: string } }>;
+        error?: string;
+      };
 
-        if (!signedUrlResponse?.ok) {
-          setUploads((current) => current.map((item) => (item.id === pendingUploads[index].id ? { ...item, progress: 100, status: "Failed" } : item)));
-          continue;
-        }
-
-        const signedData = (await signedUrlResponse.json().catch(() => null)) as {
-          bucket?: string;
-          path?: string;
-          token?: string;
-          mode?: string;
-        } | null;
-
-        if (signedData?.path) {
-          setSignedUploadLabel(`${signedData.mode === "demo" ? "Demo" : "Signed"} path: ${signedData.path.split("/").pop()}`);
-        }
-
-        if (signedData?.mode !== "demo" && signedData?.bucket && signedData.path && signedData.token && supabase) {
-          const { error } = await supabase.storage.from(signedData.bucket).uploadToSignedUrl(signedData.path, signedData.token, file, {
-            contentType: file.type || "application/octet-stream",
-            upsert: true,
-          });
-
-          if (error) {
-            setUploads((current) => current.map((item) => (item.id === pendingUploads[index].id ? { ...item, progress: 100, status: "Failed" } : item)));
-            continue;
-          }
-        }
-
-        setUploads((current) => current.map((item) => (item.id === pendingUploads[index].id ? { ...item, progress: 70, status: "Processing" } : item)));
-        preparedUploads.push({ file, storagePath: signedData?.path, mode: signedData?.mode });
-      }
-
-      if (!preparedUploads.length) {
-        setSessionLabel("No files could be uploaded");
-        return;
-      }
-
-      const response = await fetch("/api/uploads", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          files: preparedUploads.map(({ file, storagePath }) => ({
-            name: file.name,
-            size: file.size,
-            type: file.type || "application/octet-stream",
-            storagePath,
-          })),
-        }),
-      }).catch(() => null);
-
-      if (!response?.ok) {
-        setSessionLabel("Upload registration failed");
-        setUploads((current) =>
-          current.map((item) => (pendingUploads.some((upload) => upload.id === item.id) ? { ...item, progress: 100, status: "Failed" } : item)),
+      if (xhr.status < 200 || xhr.status >= 300 || !data.accepted?.[0]) {
+        setItems((current) =>
+          current.map((currentItem) =>
+            currentItem.id === item.id
+              ? { ...currentItem, status: "failed", stage: "Failed", progress: 100, error: data.error ?? "Upload failed", updatedAt: Date.now() }
+              : currentItem,
+          ),
         );
         return;
       }
 
-      const data = (await response.json().catch(() => null)) as {
-        uploadSessionId?: string;
-        accepted?: Array<{ id: string; name: string; size: number; mimeType: string; storagePath?: string }>;
-      } | null;
-
-      setSessionLabel(data?.uploadSessionId ?? "Upload queued");
-
-      setUploads((current) =>
-        current.map((item) => {
-          const acceptedIndex = pendingUploads.findIndex((upload) => upload.id === item.id);
-          const accepted = data?.accepted?.[acceptedIndex];
-
-          if (acceptedIndex === -1) {
-            return item;
-          }
-
-          return {
-            ...item,
-            id: accepted?.id ?? item.id,
-            progress: 100,
-            status: "Complete",
-            file: undefined,
-          };
-        }),
+      const accepted = data.accepted[0];
+      setItems((current) =>
+        current.map((currentItem) =>
+          currentItem.id === item.id
+            ? {
+                ...currentItem,
+                documentId: accepted.id,
+                id: accepted.id,
+                mimeType: accepted.mimeType,
+                size: accepted.size,
+                status: "uploaded",
+                stage: "Uploaded",
+                uploadProgress: 100,
+                progress: 50,
+                processProgress: 0,
+                file: undefined,
+                savedToLibrary: true,
+                updatedAt: Date.now(),
+              }
+            : currentItem,
+        ),
       );
-    })();
+      setMessage(`${accepted.name} saved to the document library`);
+      void refreshWorkflow();
+    };
+
+    xhr.onerror = () => {
+      delete requestsRef.current[item.id];
+      setItems((current) =>
+        current.map((currentItem) =>
+          currentItem.id === item.id ? { ...currentItem, status: "failed", stage: "Failed", progress: 100, error: "Network upload failed" } : currentItem,
+        ),
+      );
+    };
+
+    xhr.onabort = () => {
+      delete requestsRef.current[item.id];
+      setItems((current) =>
+        current.map((currentItem) =>
+          currentItem.id === item.id && currentItem.status === "uploading"
+            ? { ...currentItem, status: "paused", stage: "Paused", error: "Upload paused. Resume restarts the upload." }
+            : currentItem,
+        ),
+      );
+    };
+
+    xhr.open("POST", "/api/uploads");
+    xhr.send(formData);
   }
 
-  function handleInputChange(event: ChangeEvent<HTMLInputElement>) {
-    if (event.target.files?.length) {
-      addUploadItems(event.target.files);
-      event.target.value = "";
+  function pauseItem(item: QueueItem) {
+    requestsRef.current[item.id]?.abort();
+  }
+
+  function resumeItem(item: QueueItem) {
+    if (!item.file) {
+      setMessage("Choose the file again to resume this upload.");
+      return;
     }
+    uploadItem(item, item.file);
+  }
+
+  function cancelItem(item: QueueItem) {
+    requestsRef.current[item.id]?.abort();
+    setItems((current) => current.map((currentItem) => (currentItem.id === item.id ? { ...currentItem, status: "cancelled", stage: "Cancelled" } : currentItem)));
+  }
+
+  function removeItem(item: QueueItem) {
+    requestsRef.current[item.id]?.abort();
+    setItems((current) => current.filter((currentItem) => currentItem.id !== item.id));
+  }
+
+  async function retryItem(item: QueueItem) {
+    if (item.file) {
+      setItems((current) =>
+        current.map((currentItem) =>
+          currentItem.id === item.id ? { ...currentItem, status: "queued", stage: "Queued", error: undefined, progress: 0, uploadProgress: 0 } : currentItem,
+        ),
+      );
+      uploadItem(item, item.file);
+      return;
+    }
+
+    if (item.documentId && target) {
+      await startProcessing([item.documentId]);
+      return;
+    }
+
+    setMessage("Choose the original file again to retry this upload.");
+  }
+
+  async function startProcessing(documentIds = uploadedItems.map((item) => item.documentId).filter(Boolean) as string[]) {
+    if (!target) {
+      setMessage("Choose a conversion format first.");
+      return;
+    }
+
+    const selectedTarget = conversionTargets.find((conversionTarget) => conversionTarget.id === target);
+    if (selectedTarget?.disabled) {
+      setMessage(selectedTarget.disabledReason ?? "This conversion is not configured yet.");
+      return;
+    }
+
+    if (!documentIds.length) {
+      setMessage("Upload at least one file before converting.");
+      return;
+    }
+
+    setIsProcessing(true);
+    setMessage("Conversion jobs queued");
+    setItems((current) =>
+      current.map((item) =>
+        item.documentId && documentIds.includes(item.documentId)
+          ? { ...item, status: "queued", stage: "Queued", progress: Math.max(item.progress, 50), error: undefined }
+          : item,
+      ),
+    );
+
+    const response = await fetch("/api/uploads/workflow", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ documentIds, target }),
+    }).catch(() => null);
+
+    if (!response?.ok) {
+      const data = (await response?.json().catch(() => null)) as { error?: string } | null;
+      setMessage(data?.error ?? "Unable to start conversion.");
+      setIsProcessing(false);
+      return;
+    }
+
+    for (let i = 0; i < 8; i += 1) {
+      await fetch("/api/jobs/process", { method: "POST" }).catch(() => null);
+      await refreshWorkflow();
+    }
+  }
+
+  async function saveToLibrary(item: QueueItem) {
+    if (!item.documentId) return;
+    const response = await fetch(`/api/documents/${item.documentId}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ tags: ["Saved to Library"] }),
+    }).catch(() => null);
+    setMessage(response?.ok ? `${item.name} is saved in Documents` : "Could not update library metadata.");
+  }
+
+  async function downloadAll() {
+    const conversionIds = completedConversions.map((item) => item.conversionId).filter(Boolean);
+    const response = await fetch("/api/uploads/download-all", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ conversionIds }),
+    }).catch(() => null);
+
+    if (!response?.ok) {
+      const data = (await response?.json().catch(() => null)) as { error?: string } | null;
+      setMessage(data?.error ?? "No completed files are ready to download.");
+      return;
+    }
+
+    const blob = await response.blob();
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement("a");
+    anchor.href = url;
+    anchor.download = "docucorex-converted-results.zip";
+    anchor.click();
+    URL.revokeObjectURL(url);
   }
 
   function handleDrop(event: DragEvent<HTMLDivElement>) {
     event.preventDefault();
     setDragActive(false);
-    if (event.dataTransfer.files?.length) {
-      addUploadItems(event.dataTransfer.files);
-    }
-  }
-
-  function cancelUpload(id: string) {
-    setUploads((current) => current.filter((upload) => upload.id !== id));
-  }
-
-  function retryUpload(id: string) {
-    const upload = uploads.find((item) => item.id === id);
-    if (!upload?.file) {
-      setUploads((current) => current.map((item) => (item.id === id ? { ...item, status: "Failed" } : item)));
-      setSessionLabel("Choose the file again to retry this completed upload");
-      return;
-    }
-    setUploads((current) => current.filter((item) => item.id !== id));
-    addUploadItems([upload.file]);
+    if (event.dataTransfer.files?.length) addFiles(event.dataTransfer.files);
   }
 
   return (
@@ -205,36 +515,94 @@ export function UploadCenter({ workflow }: { workflow?: string }) {
           <div className="mx-auto flex h-16 w-16 items-center justify-center rounded-3xl bg-royal-50 text-royal-600">
             <UploadCloud className="h-8 w-8" />
           </div>
-          <h2 className="mt-5 text-2xl font-black text-navy-950">Drag and drop files to upload</h2>
-          {workflow ? <p className="mt-2 text-sm font-black text-royal-700">Selected workflow: {workflow.replace(/_/g, " ")}</p> : null}
+          <h2 className="mt-5 text-2xl font-black text-navy-950">Drag and drop files here</h2>
           <p className="mt-2 text-sm leading-6 text-slate-500">
-            Multi-file uploads support PDF, Word, Excel, images and ZIP files. Uploads continue in the background with progress,
-            retry and cancel controls.
+            Upload PDFs, Office files, text files, images and ZIP archives up to 200 MB per file. Originals are saved to Documents automatically.
           </p>
+          {workflow ? <p className="mt-2 text-sm font-black text-royal-700">Selected workflow: {workflow.replace(/_/g, " ")}</p> : null}
           <input
-            ref={inputRef}
-            accept=".pdf,.doc,.docx,.xls,.xlsx,.csv,.png,.jpg,.jpeg,.webp,.zip"
+            ref={fileInputRef}
+            accept={supportedExtensions.join(",")}
             className="hidden"
             type="file"
             multiple
-            onChange={handleInputChange}
+            onChange={(event) => {
+              if (event.target.files?.length) addFiles(event.target.files);
+              event.target.value = "";
+            }}
           />
+          <input
+            ref={folderInputRef}
+            className="hidden"
+            type="file"
+            multiple
+            onChange={(event) => {
+              if (event.target.files?.length) addFiles(event.target.files);
+              event.target.value = "";
+            }}
+          />
+          <div className="mt-6 flex flex-col justify-center gap-3 sm:flex-row">
+            <button
+              type="button"
+              onClick={() => fileInputRef.current?.click()}
+              className="rounded-full bg-royal-600 px-6 py-3 text-sm font-black text-white shadow-glow transition hover:-translate-y-0.5 hover:bg-royal-700"
+            >
+              Choose Files
+            </button>
+            <button
+              type="button"
+              onClick={() => folderInputRef.current?.click()}
+              className="inline-flex items-center justify-center gap-2 rounded-full border border-slate-200 bg-white px-6 py-3 text-sm font-black text-slate-700 shadow-sm hover:text-royal-700"
+            >
+              <FolderUp className="h-4 w-4" />
+              Choose Folder
+            </button>
+          </div>
+        </div>
+      </section>
+
+      <section className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm sm:p-6">
+        <div className="flex flex-col gap-2 sm:flex-row sm:items-end sm:justify-between">
+          <div>
+            <h2 className="text-xl font-black text-navy-950">After upload, convert to</h2>
+            <p className="mt-1 text-sm text-slate-500">Choose one conversion target for the uploaded queue.</p>
+          </div>
+          <div className="rounded-full bg-slate-100 px-4 py-2 text-sm font-black text-slate-600">{message}</div>
+        </div>
+        <div className="mt-5 grid gap-4 lg:grid-cols-5">
+          {conversionTargets.map((conversionTarget) => {
+            const Icon = conversionTarget.icon;
+            const selected = target === conversionTarget.id;
+            return (
+              <button
+                key={conversionTarget.id}
+                type="button"
+                disabled={conversionTarget.disabled}
+                onClick={() => setTarget(conversionTarget.id)}
+                title={conversionTarget.disabled ? conversionTarget.disabledReason : conversionTarget.description}
+                className={`min-h-44 rounded-3xl border p-5 text-left transition ${
+                  selected ? "border-royal-500 bg-royal-50 shadow-glow" : "border-slate-200 bg-white shadow-sm hover:border-royal-200"
+                } ${conversionTarget.disabled ? "cursor-not-allowed opacity-50" : ""}`}
+              >
+                <Icon className="h-8 w-8 text-royal-600" />
+                <p className="mt-5 text-lg font-black text-navy-950">{conversionTarget.title}</p>
+                <p className="mt-2 text-sm leading-6 text-slate-500">{conversionTarget.description}</p>
+                {conversionTarget.disabled ? <p className="mt-3 text-xs font-black text-amber-700">{conversionTarget.disabledReason}</p> : null}
+              </button>
+            );
+          })}
+        </div>
+        <div className="mt-5 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+          <div className="text-sm font-bold text-slate-500">{activeItems.length} files in queue • {totalProgress}% overall</div>
           <button
             type="button"
-            onClick={() => inputRef.current?.click()}
-            aria-label="Choose files to upload"
-            className="mt-6 rounded-full bg-royal-600 px-6 py-3 text-sm font-black text-white shadow-glow transition hover:-translate-y-0.5 hover:bg-royal-700"
+            onClick={() => void startProcessing()}
+            disabled={!target || !uploadedItems.length || conversionTargets.find((item) => item.id === target)?.disabled || isProcessing}
+            className="rounded-full bg-navy-950 px-6 py-3 text-sm font-black text-white shadow-sm hover:bg-royal-700 disabled:cursor-not-allowed disabled:opacity-45"
+            title={!uploadedItems.length ? "Upload files before converting" : !target ? "Choose a conversion format" : "Start conversion"}
           >
-            Choose Files
+            Convert Now
           </button>
-        </div>
-        <div className="mt-8 grid gap-3 sm:grid-cols-5">
-          {uploadTypes.map((type) => (
-            <div key={type.label} className="flex items-center justify-center gap-2 rounded-2xl border border-slate-200 bg-slate-50 p-3 text-sm font-black text-slate-600">
-              <type.icon className="h-4 w-4 text-royal-600" />
-              {type.label}
-            </div>
-          ))}
         </div>
       </section>
 
@@ -242,74 +610,153 @@ export function UploadCenter({ workflow }: { workflow?: string }) {
         <div className="mb-5 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
           <div>
             <h2 className="text-xl font-black text-navy-950">Upload Queue</h2>
-            <p className="mt-1 text-sm text-slate-500">Chunked uploads, background processing and resumable retries. {signedUploadLabel}</p>
+            <p className="mt-1 text-sm text-slate-500">Persistent queue with upload progress, conversion jobs and completed downloads.</p>
           </div>
-          <div className="rounded-full bg-slate-100 px-4 py-2 text-sm font-black text-slate-600">
-            {totalProgress}% overall • {sessionLabel}
+          <div className="flex gap-2">
+            <button type="button" onClick={() => void refreshWorkflow()} className="rounded-full bg-slate-100 px-4 py-2 text-sm font-black text-slate-600 hover:text-royal-700">
+              Refresh
+            </button>
+            <button
+              type="button"
+              onClick={() => void downloadAll()}
+              disabled={completedConversions.length < 2}
+              className="rounded-full bg-royal-600 px-4 py-2 text-sm font-black text-white hover:bg-royal-700 disabled:cursor-not-allowed disabled:opacity-45"
+              title={completedConversions.length < 2 ? "Process multiple files before downloading all" : "Download all completed conversions as ZIP"}
+            >
+              Download All
+            </button>
           </div>
         </div>
+
+        {!items.length ? (
+          <div className="rounded-2xl border border-slate-200 bg-slate-50 p-8 text-center">
+            <Archive className="mx-auto h-10 w-10 text-slate-400" />
+            <p className="mt-3 font-black text-navy-950">No files in the queue</p>
+            <p className="mt-1 text-sm text-slate-500">Upload files to start a processing workflow.</p>
+          </div>
+        ) : null}
+
         <div className="space-y-3">
-          {!uploads.length ? (
-            <div className="rounded-2xl border border-slate-200 bg-slate-50 p-6 text-center">
-              <p className="font-black text-navy-950">No files in the queue</p>
-              <p className="mt-1 text-sm text-slate-500">Choose files or drag them into the upload area to start processing.</p>
-            </div>
-          ) : null}
-          {uploads.map((upload) => (
-            <div key={upload.id} className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
-              <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
-                <div className="flex items-center gap-4">
+          {items.map((item) => (
+            <article key={item.id} className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
+              <div className="flex flex-col gap-4 xl:flex-row xl:items-center xl:justify-between">
+                <div className="flex min-w-0 items-start gap-4">
                   <div className="rounded-2xl bg-white p-3 text-royal-600 shadow-sm">
                     <File className="h-5 w-5" />
                   </div>
-                  <div>
-                    <p className="font-black text-navy-950">{upload.name}</p>
-                    <p className="text-sm text-slate-500">
-                      {upload.type} • {upload.size} • {upload.status}
+                  <div className="min-w-0">
+                    <p className="truncate font-black text-navy-950">{item.name}</p>
+                    <p className="mt-1 text-sm text-slate-500">
+                      {formatBytes(item.size)} • {item.mimeType || "application/octet-stream"}
                     </p>
+                    {item.error ? <p className="mt-1 text-sm font-bold text-rose-600">{item.error}</p> : null}
                   </div>
                 </div>
-                <div className="flex items-center gap-2">
+                <div className="grid gap-2 sm:grid-cols-2 xl:min-w-[560px] xl:grid-cols-4">
+                  <div className={`rounded-full border px-3 py-2 text-center text-xs font-black capitalize ${statusTone(item.status)}`}>{item.status}</div>
+                  <div className="rounded-full bg-white px-3 py-2 text-center text-xs font-black text-slate-600">{item.stage}</div>
+                  <div className="rounded-full bg-white px-3 py-2 text-center text-xs font-black text-slate-600">
+                    {formatBytes(item.speedBps)}/s
+                  </div>
+                  <div className="rounded-full bg-white px-3 py-2 text-center text-xs font-black text-slate-600">
+                    ETA {formatTime(item.etaSeconds)}
+                  </div>
+                </div>
+              </div>
+
+              <div className="mt-4 grid gap-3 lg:grid-cols-[1fr_auto] lg:items-center">
+                <div>
+                  <div className="flex items-center justify-between text-xs font-black text-slate-500">
+                    <span>Elapsed {formatTime(item.elapsedSeconds)}</span>
+                    <span>{item.progress}%</span>
+                  </div>
+                  <div className="mt-2 h-2 overflow-hidden rounded-full bg-white">
+                    <div className="h-full rounded-full bg-royal-600 transition-all" style={{ width: `${item.progress}%` }} />
+                  </div>
+                </div>
+
+                <div className="flex flex-wrap items-center gap-2">
                   <button
                     type="button"
-                    onClick={() => retryUpload(upload.id)}
-                    disabled={upload.status !== "Failed" || !upload.file}
-                    aria-label={`Retry upload for ${upload.name}`}
-                    className="rounded-xl bg-white p-2 text-slate-500 shadow-sm hover:text-royal-700 disabled:cursor-not-allowed disabled:opacity-40"
-                    title={upload.file ? "Retry upload" : "Choose the file again to retry"}
-                  >
-                    <RefreshCcw className="h-4 w-4" />
-                  </button>
-                  <button
-                    type="button"
-                    disabled
-                    aria-label={`Pause upload for ${upload.name}`}
-                    className="rounded-xl bg-white p-2 text-slate-500 opacity-40 shadow-sm"
-                    title="Pause and resume are coming soon"
+                    onClick={() => pauseItem(item)}
+                    disabled={item.status !== "uploading"}
+                    className="rounded-xl bg-white p-2 text-slate-500 shadow-sm hover:text-royal-700 disabled:cursor-not-allowed disabled:opacity-35"
+                    title="Pause upload"
+                    aria-label={`Pause ${item.name}`}
                   >
                     <Pause className="h-4 w-4" />
                   </button>
                   <button
                     type="button"
-                    onClick={() => cancelUpload(upload.id)}
-                    aria-label={`Cancel upload for ${upload.name}`}
+                    onClick={() => resumeItem(item)}
+                    disabled={item.status !== "paused"}
+                    className="rounded-xl bg-white p-2 text-slate-500 shadow-sm hover:text-royal-700 disabled:cursor-not-allowed disabled:opacity-35"
+                    title="Resume upload from the beginning"
+                    aria-label={`Resume ${item.name}`}
+                  >
+                    <Play className="h-4 w-4" />
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => void retryItem(item)}
+                    disabled={item.status !== "failed"}
+                    className="rounded-xl bg-white p-2 text-slate-500 shadow-sm hover:text-royal-700 disabled:cursor-not-allowed disabled:opacity-35"
+                    title="Retry"
+                    aria-label={`Retry ${item.name}`}
+                  >
+                    <RefreshCcw className="h-4 w-4" />
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => cancelItem(item)}
+                    disabled={terminalStatuses.has(item.status)}
+                    className="rounded-xl bg-white p-2 text-slate-500 shadow-sm hover:text-rose-600 disabled:cursor-not-allowed disabled:opacity-35"
+                    title="Cancel"
+                    aria-label={`Cancel ${item.name}`}
+                  >
+                    <X className="h-4 w-4" />
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => removeItem(item)}
                     className="rounded-xl bg-white p-2 text-slate-500 shadow-sm hover:text-rose-600"
-                    title="Cancel upload"
+                    title="Remove from queue"
+                    aria-label={`Remove ${item.name}`}
                   >
                     <Trash2 className="h-4 w-4" />
                   </button>
+                  {item.downloadUrl ? (
+                    <a href={item.downloadUrl} className="inline-flex items-center gap-2 rounded-xl bg-white px-3 py-2 text-xs font-black text-slate-600 shadow-sm hover:text-royal-700">
+                      <Download className="h-4 w-4" /> Download
+                    </a>
+                  ) : (
+                    <button type="button" disabled className="inline-flex items-center gap-2 rounded-xl bg-white px-3 py-2 text-xs font-black text-slate-400 shadow-sm" title="Download appears after conversion completes">
+                      <Download className="h-4 w-4" /> Download
+                    </button>
+                  )}
+                  {item.documentId ? (
+                    <Link href={`/documents/${item.documentId}?tab=preview`} className="inline-flex items-center gap-2 rounded-xl bg-white px-3 py-2 text-xs font-black text-slate-600 shadow-sm hover:text-royal-700">
+                      <Eye className="h-4 w-4" /> Preview
+                    </Link>
+                  ) : (
+                    <button type="button" disabled className="inline-flex items-center gap-2 rounded-xl bg-white px-3 py-2 text-xs font-black text-slate-400 shadow-sm" title="Preview appears after upload">
+                      <Eye className="h-4 w-4" /> Preview
+                    </button>
+                  )}
+                  {item.documentId ? (
+                    <Link href={`/documents/${item.documentId}`} className="inline-flex items-center gap-2 rounded-xl bg-white px-3 py-2 text-xs font-black text-slate-600 shadow-sm hover:text-royal-700">
+                      <FileText className="h-4 w-4" /> Open Document
+                    </Link>
+                  ) : null}
+                  {item.documentId ? (
+                    <button type="button" onClick={() => void saveToLibrary(item)} className="inline-flex items-center gap-2 rounded-xl bg-white px-3 py-2 text-xs font-black text-slate-600 shadow-sm hover:text-royal-700">
+                      <Save className="h-4 w-4" /> Save to Library
+                    </button>
+                  ) : null}
+                  {item.status === "completed" ? <CheckCircle2 className="h-5 w-5 text-emerald-500" /> : item.status === "failed" ? <XCircle className="h-5 w-5 text-rose-500" /> : <Clock3 className="h-5 w-5 text-royal-500" />}
                 </div>
               </div>
-              <div className="mt-4 flex items-center gap-3">
-                <div className="h-2 flex-1 overflow-hidden rounded-full bg-white">
-                  <div className="h-full rounded-full bg-royal-600" style={{ width: `${upload.progress}%` }} />
-                </div>
-                <div className="flex w-24 items-center justify-end gap-1 text-xs font-black text-slate-500">
-                  {upload.status === "Complete" ? <CheckCircle2 className="h-4 w-4 text-emerald-500" /> : <XCircle className="h-4 w-4 text-amber-500" />}
-                  {upload.progress}%
-                </div>
-              </div>
-            </div>
+            </article>
           ))}
         </div>
       </section>

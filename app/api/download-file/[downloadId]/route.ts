@@ -9,6 +9,8 @@ const mimeByFormat = {
   txt: "text/plain",
   pdf: "application/pdf",
   csv: "text/csv",
+  docx: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+  zip: "application/zip",
 };
 
 export async function GET(_request: Request, { params }: { params: Promise<{ downloadId: string }> }) {
@@ -37,7 +39,7 @@ export async function GET(_request: Request, { params }: { params: Promise<{ dow
     return NextResponse.json({ error: "Download not found" }, { status: 404 });
   }
 
-  const format = data.to_format === "excel" ? "xlsx" : data.to_format;
+  const format = data.to_format === "excel" ? "xlsx" : data.to_format === "word" ? "docx" : data.to_format;
 
   if (data.status !== "completed") {
     return NextResponse.json({ error: "Conversion is not ready for download" }, { status: 409 });

@@ -114,7 +114,7 @@ export async function POST() {
         const converted = await providers.conversion.run(document, { toFormat });
         const upload = await context.supabase.storage
           .from("documents")
-          .upload(converted.downloadPath, new Blob([converted.content], { type: converted.contentType }), {
+          .upload(converted.downloadPath, new Blob([Buffer.from(converted.content)], { type: converted.contentType }), {
             contentType: converted.contentType,
             upsert: true,
           });
@@ -128,6 +128,44 @@ export async function POST() {
             .from("conversions")
             .update({ status: "completed", download_path: converted.downloadPath, updated_at: new Date().toISOString() })
             .eq("id", conversion.id);
+        }
+
+        const { data: convertedDocument } = await context.supabase
+          .from("documents")
+          .insert({
+            workspace_id: context.workspaceId,
+            owner_id: context.userId,
+            name: converted.fileName,
+            mime_type: converted.contentType,
+            size_bytes: converted.content.length,
+            page_count: 1,
+            status: "ready",
+            detected_type: document.detectedType,
+            storage_path: converted.downloadPath,
+            tags: ["Converted", toFormat],
+          })
+          .select("id")
+          .single();
+
+        if (convertedDocument?.id) {
+          await context.supabase.from("document_versions").insert({
+            document_id: convertedDocument.id,
+            version_number: 1,
+            storage_path: converted.downloadPath,
+            change_note: `Converted from ${document.name}`,
+            created_by: context.userId,
+          });
+
+          await context.supabase.from("uploads").insert({
+            workspace_id: context.workspaceId,
+            document_id: convertedDocument.id,
+            file_name: converted.fileName,
+            mime_type: converted.contentType,
+            size_bytes: converted.content.length,
+            storage_path: converted.downloadPath,
+            status: "completed",
+            created_by: context.userId,
+          });
         }
 
         await recordAuditLog({

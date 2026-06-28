@@ -106,17 +106,27 @@ function getMimeType(file: UploadFileInput) {
   return "application/octet-stream";
 }
 
-const maxUploadBytes = 100 * 1024 * 1024;
-const allowedExtensions = /\.(pdf|doc|docx|xls|xlsx|csv|png|jpe?g|webp|zip)$/i;
+const maxUploadBytes = 200 * 1024 * 1024;
+const allowedExtensions = /\.(pdf|doc|docx|xls|xlsx|ppt|pptx|txt|csv|rtf|png|jpe?g|tiff?|bmp|gif|heic|zip)$/i;
 const allowedMimeTypes = new Set([
   "application/pdf",
   "application/msword",
   "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
   "application/vnd.ms-excel",
   "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+  "application/vnd.ms-powerpoint",
+  "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+  "text/plain",
   "text/csv",
+  "application/rtf",
+  "text/rtf",
   "image/png",
   "image/jpeg",
+  "image/tiff",
+  "image/bmp",
+  "image/gif",
+  "image/heic",
+  "image/heif",
   "image/webp",
   "application/zip",
   "application/x-zip-compressed",
@@ -139,7 +149,7 @@ function validateUploadFiles(files: UploadFileInput[]) {
     }
 
     if (file.size > maxUploadBytes) {
-      throw new Error(`${file.name} is larger than the 100 MB upload limit.`);
+      throw new Error(`${file.name} is larger than the 200 MB upload limit.`);
     }
 
     if (mimeType !== "application/octet-stream" && !allowedMimeTypes.has(mimeType)) {
@@ -167,7 +177,7 @@ function estimatePageCount(fileName: string, mimeType: string) {
   const normalized = `${fileName} ${mimeType}`.toLowerCase();
 
   if (normalized.includes("zip")) return 0;
-  if (normalized.includes("image") || /\.(png|jpe?g|webp)$/i.test(fileName)) return 1;
+  if (normalized.includes("image") || /\.(png|jpe?g|webp|tiff?|bmp|gif|heic)$/i.test(fileName)) return 1;
   if (normalized.includes("spreadsheet") || /\.(xls|xlsx|csv)$/i.test(fileName)) return 1;
   if (normalized.includes("word") || /\.(doc|docx)$/i.test(fileName)) return 3;
 
