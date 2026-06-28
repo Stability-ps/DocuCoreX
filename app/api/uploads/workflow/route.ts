@@ -5,6 +5,7 @@ import { getWorkspaceContext } from "@/lib/server-documents";
 type ConversionTarget = "pdf" | "word" | "excel" | "zip";
 
 const supportedTargets = new Set<ConversionTarget>(["pdf", "word", "excel", "zip"]);
+const activeDocumentStatuses = ["uploaded", "queued", "processing", "ready", "review"];
 
 function getSourceFormat(mimeType: string, name: string) {
   const lower = `${mimeType} ${name}`.toLowerCase();
@@ -15,14 +16,31 @@ function getSourceFormat(mimeType: string, name: string) {
   return "pdf";
 }
 
-function statusFromJobs(jobs: Array<{ status: string; type: string; progress: number; message: string }>) {
+function stateFromJobs(
+  jobs: Array<{ status: string; type: string; progress: number; message: string }>,
+  conversion?: { status?: string; download_path?: string | null } | null,
+) {
   const failed = jobs.find((job) => job.status === "failed");
-  if (failed) return { status: "failed", stage: failed.message || "Failed", progress: 100 };
-  const running = jobs.find((job) => job.status === "running");
-  if (running) return { status: "processing", stage: running.message || running.type, progress: running.progress };
-  const queued = jobs.find((job) => job.status === "queued");
-  if (queued) return { status: "queued", stage: queued.message || queued.type, progress: queued.progress };
-  return { status: "completed", stage: "Completed", progress: 100 };
+  if (failed) {
+    return { uploadStatus: "uploaded", conversionStatus: "failed", stage: failed.message || "Failed", uploadProgress: 100, conversionProgress: 100 };
+  }
+
+  if (conversion?.status === "completed" && conversion.download_path) {
+    return { uploadStatus: "uploaded", conversionStatus: "completed", stage: "Completed", uploadProgress: 100, conversionProgress: 100 };
+  }
+
+  const conversionJob = jobs.find((job) => job.type === "conversion" && (job.status === "queued" || job.status === "running"));
+  if (conversionJob) {
+    return {
+      uploadStatus: "uploaded",
+      conversionStatus: conversionJob.status === "running" ? "converting" : "queued",
+      stage: conversionJob.message || "Converting",
+      uploadProgress: 100,
+      conversionProgress: conversionJob.progress,
+    };
+  }
+
+  return { uploadStatus: "uploaded", conversionStatus: "ready", stage: "Ready to convert", uploadProgress: 100, conversionProgress: 0 };
 }
 
 export async function GET() {
@@ -35,10 +53,12 @@ export async function GET() {
   const { data: documents, error } = await context.supabase
     .from("documents")
     .select(
-      "id, name, mime_type, size_bytes, status, storage_path, created_at, updated_at, processing_jobs(id,type,status,progress,message,created_at,updated_at), conversions(id,from_format,to_format,status,download_path,created_at,updated_at)",
+      "id, name, mime_type, size_bytes, status, storage_path, tags, created_at, updated_at, processing_jobs(id,type,status,progress,message,created_at,updated_at), conversions(id,from_format,to_format,status,download_path,created_at,updated_at)",
     )
     .eq("workspace_id", context.workspaceId)
+    .contains("tags", ["Upload Queue"])
     .is("deleted_at", null)
+    .in("status", activeDocumentStatuses)
     .order("updated_at", { ascending: false })
     .limit(50);
 
@@ -47,11 +67,13 @@ export async function GET() {
   }
 
   return NextResponse.json({
-    items: (documents ?? []).map((document) => {
+    items: (documents ?? [])
+      .filter((document) => !Array.isArray(document.tags) || !document.tags.includes("Converted"))
+      .map((document) => {
       const jobs = Array.isArray(document.processing_jobs) ? document.processing_jobs : [];
       const conversions = Array.isArray(document.conversions) ? document.conversions : [];
-      const state = statusFromJobs(jobs);
       const latestConversion = conversions.sort((a, b) => String(b.created_at).localeCompare(String(a.created_at)))[0];
+      const state = stateFromJobs(jobs, latestConversion);
 
       return {
         id: document.id,
@@ -61,9 +83,11 @@ export async function GET() {
         size: document.size_bytes,
         storagePath: document.storage_path,
         documentStatus: document.status,
-        status: latestConversion?.status === "completed" ? "completed" : state.status,
-        stage: latestConversion?.status === "completed" ? "Completed" : state.stage,
-        progress: latestConversion?.status === "completed" ? 100 : state.progress,
+        uploadStatus: state.uploadStatus,
+        conversionStatus: state.conversionStatus,
+        stage: state.stage,
+        uploadProgress: state.uploadProgress,
+        conversionProgress: state.conversionProgress,
         conversion: latestConversion
           ? {
               id: latestConversion.id,
@@ -78,7 +102,7 @@ export async function GET() {
         createdAt: document.created_at,
         updatedAt: document.updated_at,
       };
-    }),
+      }),
   });
 }
 
@@ -108,8 +132,11 @@ export async function POST(request: Request) {
 
   const { data: documents, error: documentError } = await context.supabase
     .from("documents")
-    .select("id, name, mime_type")
+    .select("id, name, mime_type, status, storage_path, tags, deleted_at")
     .eq("workspace_id", context.workspaceId)
+    .contains("tags", ["Upload Queue"])
+    .is("deleted_at", null)
+    .in("status", activeDocumentStatuses)
     .in("id", body.documentIds);
 
   if (documentError) {
@@ -165,4 +192,57 @@ export async function POST(request: Request) {
   );
 
   return NextResponse.json({ conversions: insertedConversions ?? [], jobs: jobs ?? [] });
+}
+
+export async function DELETE(request: Request) {
+  const body = (await request.json().catch(() => ({}))) as { documentId?: string };
+
+  if (!body.documentId) {
+    return NextResponse.json({ error: "documentId is required" }, { status: 400 });
+  }
+
+  const context = await getWorkspaceContext();
+
+  if (!context) {
+    return NextResponse.json({ error: "Supabase is required for live upload workflows." }, { status: 503 });
+  }
+
+  const now = new Date().toISOString();
+  const { data: document, error: documentError } = await context.supabase
+    .from("documents")
+    .select("id, tags")
+    .eq("workspace_id", context.workspaceId)
+    .eq("id", body.documentId)
+    .contains("tags", ["Upload Queue"])
+    .maybeSingle();
+
+  if (documentError) {
+    return NextResponse.json({ error: documentError.message }, { status: 500 });
+  }
+
+  if (!document) {
+    return NextResponse.json({ removed: true });
+  }
+
+  await context.supabase
+    .from("processing_jobs")
+    .update({ status: "cancelled", progress: 100, message: "Removed from upload queue", updated_at: now })
+    .eq("document_id", body.documentId)
+    .in("status", ["queued", "running", "failed"]);
+
+  await context.supabase
+    .from("conversions")
+    .update({ status: "cancelled", updated_at: now })
+    .eq("document_id", body.documentId)
+    .in("status", ["queued", "running", "failed"]);
+
+  await context.supabase.from("uploads").update({ status: "cancelled" }).eq("document_id", body.documentId).eq("workspace_id", context.workspaceId);
+
+  await context.supabase
+    .from("documents")
+    .update({ deleted_at: now, updated_at: now })
+    .eq("workspace_id", context.workspaceId)
+    .eq("id", body.documentId);
+
+  return NextResponse.json({ removed: true });
 }

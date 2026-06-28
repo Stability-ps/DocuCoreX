@@ -26,7 +26,8 @@ import {
 } from "lucide-react";
 
 type ConversionTarget = "pdf" | "word" | "excel" | "images" | "zip";
-type QueueStatus = "queued" | "uploading" | "paused" | "uploaded" | "processing" | "ocr" | "converting" | "packaging" | "completed" | "failed" | "cancelled";
+type UploadStatus = "queued" | "uploading" | "uploaded" | "failed" | "cancelled" | "paused";
+type ConversionStatus = "none" | "ready" | "queued" | "converting" | "completed" | "failed" | "cancelled";
 
 type QueueItem = {
   id: string;
@@ -35,12 +36,12 @@ type QueueItem = {
   name: string;
   size: number;
   mimeType: string;
-  progress: number;
+  uploadStatus: UploadStatus;
+  conversionStatus: ConversionStatus;
   uploadProgress: number;
-  processProgress: number;
-  status: QueueStatus;
+  conversionProgress: number;
   stage: string;
-  speedBps: number;
+  speedBps?: number;
   startedAt: number;
   updatedAt: number;
   etaSeconds?: number;
@@ -56,11 +57,16 @@ type WorkflowItem = {
   name: string;
   mimeType: string;
   size: number;
-  status: string;
+  uploadStatus: UploadStatus;
+  conversionStatus: ConversionStatus;
   stage: string;
-  progress: number;
+  uploadProgress: number;
+  conversionProgress: number;
   conversion?: { id: string; to: string; status: string; downloadUrl: string } | null;
 };
+
+const storageKey = "docucorex.uploadQueue.v2";
+const removedKey = "docucorex.removedUploadDocuments";
 
 const supportedExtensions = [
   ".pdf",
@@ -106,9 +112,7 @@ const conversionTargets: Array<{
   { id: "zip", title: "ZIP", icon: FileArchive, description: "Bundle processed results into a ZIP archive." },
 ];
 
-const terminalStatuses = new Set<QueueStatus>(["completed", "failed", "cancelled"]);
-
-function formatBytes(bytes: number) {
+function formatBytes(bytes?: number) {
   if (!bytes) return "0 B";
   const units = ["B", "KB", "MB", "GB"];
   const index = Math.min(Math.floor(Math.log(bytes) / Math.log(1024)), units.length - 1);
@@ -116,34 +120,90 @@ function formatBytes(bytes: number) {
 }
 
 function formatTime(seconds?: number) {
-  if (seconds === undefined || !Number.isFinite(seconds)) return "--";
+  if (seconds === undefined || !Number.isFinite(seconds)) return "";
   if (seconds < 60) return `${Math.max(0, Math.round(seconds))}s`;
   const minutes = Math.floor(seconds / 60);
   const remainder = Math.round(seconds % 60);
   return `${minutes}m ${remainder}s`;
 }
 
-function statusTone(status: QueueStatus) {
-  if (status === "completed") return "bg-emerald-50 text-emerald-700 border-emerald-100";
+function statusTone(status: UploadStatus | ConversionStatus) {
+  if (status === "completed" || status === "uploaded" || status === "ready") return "bg-emerald-50 text-emerald-700 border-emerald-100";
   if (status === "failed") return "bg-rose-50 text-rose-700 border-rose-100";
   if (status === "cancelled") return "bg-slate-100 text-slate-500 border-slate-200";
   if (status === "paused") return "bg-amber-50 text-amber-700 border-amber-100";
   return "bg-royal-50 text-royal-700 border-royal-100";
 }
 
-function queueStatusFromServer(item: WorkflowItem): QueueStatus {
-  const stage = `${item.stage ?? ""} ${item.status ?? ""}`.toLowerCase();
-  if (item.conversion?.status === "completed" || item.status === "completed") return "completed";
-  if (item.status === "failed") return "failed";
-  if (stage.includes("ocr")) return "ocr";
-  if (stage.includes("convert") || stage.includes("converted")) return "converting";
-  if (stage.includes("upload")) return "uploaded";
-  if (item.status === "queued") return "queued";
-  return "processing";
+function readRemovedIds() {
+  try {
+    return new Set<string>(JSON.parse(window.localStorage.getItem(removedKey) || "[]") as string[]);
+  } catch {
+    return new Set<string>();
+  }
+}
+
+function rememberRemovedId(id?: string) {
+  if (!id) return;
+  const removed = readRemovedIds();
+  removed.add(id);
+  window.localStorage.setItem(removedKey, JSON.stringify(Array.from(removed)));
 }
 
 function serializeQueue(items: QueueItem[]) {
-  return items.map(({ file: _file, ...item }) => item);
+  return items.map(({ file: _file, ...item }) => item).filter((item) => item.uploadStatus !== "cancelled" && item.conversionStatus !== "cancelled");
+}
+
+function visibleProgress(item: QueueItem) {
+  if (item.uploadStatus === "uploading") return item.uploadProgress;
+  if (item.uploadStatus === "uploaded" && item.conversionStatus === "none") return 100;
+  if (item.conversionStatus === "ready") return 100;
+  if (item.conversionStatus === "completed") return 100;
+  if (item.conversionStatus === "converting" || item.conversionStatus === "queued") return item.conversionProgress;
+  if (item.uploadStatus === "failed" || item.conversionStatus === "failed") return 100;
+  return item.uploadProgress;
+}
+
+function primaryStatus(item: QueueItem) {
+  if (item.uploadStatus !== "uploaded") return item.uploadStatus;
+  if (item.conversionStatus === "none" || item.conversionStatus === "ready") return "Uploaded";
+  if (item.conversionStatus === "queued") return "Queued";
+  if (item.conversionStatus === "converting") return "Converting";
+  if (item.conversionStatus === "completed") return "Completed";
+  if (item.conversionStatus === "failed") return "Failed";
+  return "Uploaded";
+}
+
+function secondaryStatus(item: QueueItem) {
+  if (item.uploadStatus === "uploading") return "Uploading";
+  if (item.uploadStatus === "uploaded" && (item.conversionStatus === "none" || item.conversionStatus === "ready")) return "Ready to convert";
+  if (item.conversionStatus === "completed") return "Download ready";
+  if (item.conversionStatus === "converting" || item.conversionStatus === "queued") return `${item.stage} ${item.conversionProgress}%`;
+  if (item.uploadStatus === "failed" || item.conversionStatus === "failed") return item.error ?? "Failed";
+  return item.stage;
+}
+
+function mapWorkflowStatus(item: WorkflowItem): QueueItem {
+  return {
+    id: item.documentId,
+    documentId: item.documentId,
+    conversionId: item.conversion?.id,
+    name: item.name,
+    size: item.size,
+    mimeType: item.mimeType,
+    uploadStatus: item.uploadStatus,
+    conversionStatus: item.conversionStatus,
+    uploadProgress: item.uploadProgress,
+    conversionProgress: item.conversionProgress,
+    stage: item.stage,
+    speedBps: undefined,
+    etaSeconds: undefined,
+    startedAt: Date.now(),
+    updatedAt: Date.now(),
+    elapsedSeconds: 0,
+    downloadUrl: item.conversion?.status === "completed" ? item.conversion.downloadUrl : undefined,
+    savedToLibrary: true,
+  };
 }
 
 export function UploadCenter({ workflow }: { workflow?: string }) {
@@ -156,11 +216,11 @@ export function UploadCenter({ workflow }: { workflow?: string }) {
   const folderInputRef = useRef<HTMLInputElement | null>(null);
   const requestsRef = useRef<Record<string, XMLHttpRequest>>({});
 
-  const activeItems = items.filter((item) => item.status !== "cancelled");
-  const uploadedItems = activeItems.filter((item) => item.documentId && item.status !== "failed" && item.status !== "cancelled");
-  const completedConversions = activeItems.filter((item) => item.conversionId && item.status === "completed");
+  const activeItems = items.filter((item) => item.uploadStatus !== "cancelled" && item.conversionStatus !== "cancelled");
+  const readyToConvertItems = activeItems.filter((item) => item.documentId && item.uploadStatus === "uploaded" && (item.conversionStatus === "none" || item.conversionStatus === "ready"));
+  const completedConversions = activeItems.filter((item) => item.conversionId && item.conversionStatus === "completed");
   const totalProgress = useMemo(
-    () => (activeItems.length ? Math.round(activeItems.reduce((sum, item) => sum + item.progress, 0) / activeItems.length) : 0),
+    () => (activeItems.length ? Math.round(activeItems.reduce((sum, item) => sum + visibleProgress(item), 0) / activeItems.length) : 0),
     [activeItems],
   );
 
@@ -169,53 +229,44 @@ export function UploadCenter({ workflow }: { workflow?: string }) {
     if (!response?.ok) return;
     const data = (await response.json().catch(() => null)) as { items?: WorkflowItem[] } | null;
     if (!data?.items) return;
+    const workflowItems = data.items;
 
     setItems((current) => {
+      const removed = readRemovedIds();
       const byDocument = new Map(current.filter((item) => item.documentId).map((item) => [item.documentId, item]));
-      const localOnly = current.filter((item) => !item.documentId && item.file && !terminalStatuses.has(item.status));
-      const remoteItems = data.items ?? [];
-      const remote = remoteItems.map((item) => {
-        const existing = byDocument.get(item.documentId);
-        const status = queueStatusFromServer(item);
-        return {
-          id: existing?.id ?? item.documentId,
-          documentId: item.documentId,
-          conversionId: item.conversion?.id ?? existing?.conversionId,
-          name: item.name,
-          size: item.size,
-          mimeType: item.mimeType,
-          progress: status === "completed" ? 100 : Math.max(existing?.progress ?? 0, item.progress ?? 0),
-          uploadProgress: 100,
-          processProgress: status === "completed" ? 100 : item.progress ?? existing?.processProgress ?? 0,
-          status,
-          stage: status === "completed" ? "Completed" : item.stage || existing?.stage || "Queued",
-          speedBps: existing?.speedBps ?? 0,
-          startedAt: existing?.startedAt ?? Date.now(),
-          updatedAt: Date.now(),
-          etaSeconds: existing?.etaSeconds,
-          elapsedSeconds: Math.round((Date.now() - (existing?.startedAt ?? Date.now())) / 1000),
-          error: status === "failed" ? item.stage : undefined,
-          downloadUrl: item.conversion?.status === "completed" ? item.conversion.downloadUrl : existing?.downloadUrl,
-          savedToLibrary: true,
-        } satisfies QueueItem;
-      });
+      const localOnly = current.filter((item) => !item.documentId && item.file && item.uploadStatus !== "cancelled");
+      const remote = workflowItems
+        .filter((item) => !removed.has(item.documentId))
+        .map((item) => {
+          const existing = byDocument.get(item.documentId);
+          return {
+            ...mapWorkflowStatus(item),
+            startedAt: existing?.startedAt ?? Date.now(),
+            elapsedSeconds: Math.round((Date.now() - (existing?.startedAt ?? Date.now())) / 1000),
+          };
+        });
       const merged = [...localOnly, ...remote];
-      window.localStorage.setItem("docucorex.uploadQueue", JSON.stringify(serializeQueue(merged)));
+      window.localStorage.setItem(storageKey, JSON.stringify(serializeQueue(merged)));
       return merged;
     });
   }, []);
 
   useEffect(() => {
-    const stored = window.localStorage.getItem("docucorex.uploadQueue");
+    const stored = window.localStorage.getItem(storageKey);
     if (stored) {
-      setItems(JSON.parse(stored) as QueueItem[]);
+      try {
+        const removed = readRemovedIds();
+        setItems((JSON.parse(stored) as QueueItem[]).filter((item) => !item.documentId || !removed.has(item.documentId)));
+      } catch {
+        window.localStorage.removeItem(storageKey);
+      }
     }
     folderInputRef.current?.setAttribute("webkitdirectory", "");
     void refreshWorkflow();
   }, [refreshWorkflow]);
 
   useEffect(() => {
-    window.localStorage.setItem("docucorex.uploadQueue", JSON.stringify(serializeQueue(items)));
+    window.localStorage.setItem(storageKey, JSON.stringify(serializeQueue(items)));
   }, [items]);
 
   useEffect(() => {
@@ -228,11 +279,11 @@ export function UploadCenter({ workflow }: { workflow?: string }) {
   }, [isProcessing, refreshWorkflow]);
 
   useEffect(() => {
-    if (isProcessing && uploadedItems.length && uploadedItems.every((item) => terminalStatuses.has(item.status))) {
+    if (isProcessing && readyToConvertItems.length === 0 && activeItems.some((item) => item.conversionStatus === "completed" || item.conversionStatus === "failed")) {
       setIsProcessing(false);
       setMessage("Processing completed");
     }
-  }, [isProcessing, uploadedItems]);
+  }, [activeItems, isProcessing, readyToConvertItems.length]);
 
   function isSupported(file: File) {
     const lower = file.name.toLowerCase();
@@ -250,12 +301,12 @@ export function UploadCenter({ workflow }: { workflow?: string }) {
         name: file.name,
         size: file.size,
         mimeType: file.type || "application/octet-stream",
-        progress: 0,
+        uploadStatus: isSupported(file) ? "queued" : "failed",
+        conversionStatus: "none",
         uploadProgress: 0,
-        processProgress: 0,
-        status: isSupported(file) ? "queued" : "failed",
+        conversionProgress: 0,
         stage: isSupported(file) ? "Queued" : "Unsupported file type",
-        speedBps: 0,
+        speedBps: undefined,
         startedAt: Date.now(),
         updatedAt: Date.now(),
         elapsedSeconds: 0,
@@ -285,10 +336,10 @@ export function UploadCenter({ workflow }: { workflow?: string }) {
           currentItem.id === item.id
             ? {
                 ...currentItem,
-                status: "uploading",
+                uploadStatus: "uploading",
+                conversionStatus: "none",
                 stage: "Uploading",
                 uploadProgress,
-                progress: Math.min(45, Math.round(uploadProgress * 0.45)),
                 speedBps,
                 etaSeconds,
                 elapsedSeconds: Math.round(elapsed),
@@ -310,7 +361,7 @@ export function UploadCenter({ workflow }: { workflow?: string }) {
         setItems((current) =>
           current.map((currentItem) =>
             currentItem.id === item.id
-              ? { ...currentItem, status: "failed", stage: "Failed", progress: 100, error: data.error ?? "Upload failed", updatedAt: Date.now() }
+              ? { ...currentItem, uploadStatus: "failed", stage: "Failed", uploadProgress: 100, error: data.error ?? "Upload failed", updatedAt: Date.now() }
               : currentItem,
           ),
         );
@@ -327,11 +378,13 @@ export function UploadCenter({ workflow }: { workflow?: string }) {
                 id: accepted.id,
                 mimeType: accepted.mimeType,
                 size: accepted.size,
-                status: "uploaded",
-                stage: "Uploaded",
+                uploadStatus: "uploaded",
+                conversionStatus: "ready",
+                stage: "Ready to convert",
                 uploadProgress: 100,
-                progress: 50,
-                processProgress: 0,
+                conversionProgress: 0,
+                speedBps: undefined,
+                etaSeconds: undefined,
                 file: undefined,
                 savedToLibrary: true,
                 updatedAt: Date.now(),
@@ -339,7 +392,7 @@ export function UploadCenter({ workflow }: { workflow?: string }) {
             : currentItem,
         ),
       );
-      setMessage(`${accepted.name} saved to the document library`);
+      setMessage(`${accepted.name} uploaded and ready to convert`);
       void refreshWorkflow();
     };
 
@@ -347,7 +400,7 @@ export function UploadCenter({ workflow }: { workflow?: string }) {
       delete requestsRef.current[item.id];
       setItems((current) =>
         current.map((currentItem) =>
-          currentItem.id === item.id ? { ...currentItem, status: "failed", stage: "Failed", progress: 100, error: "Network upload failed" } : currentItem,
+          currentItem.id === item.id ? { ...currentItem, uploadStatus: "failed", stage: "Failed", uploadProgress: 100, error: "Network upload failed" } : currentItem,
         ),
       );
     };
@@ -356,8 +409,8 @@ export function UploadCenter({ workflow }: { workflow?: string }) {
       delete requestsRef.current[item.id];
       setItems((current) =>
         current.map((currentItem) =>
-          currentItem.id === item.id && currentItem.status === "uploading"
-            ? { ...currentItem, status: "paused", stage: "Paused", error: "Upload paused. Resume restarts the upload." }
+          currentItem.id === item.id && currentItem.uploadStatus === "uploading"
+            ? { ...currentItem, uploadStatus: "paused", stage: "Paused", error: "Upload paused. Resume restarts the upload." }
             : currentItem,
         ),
       );
@@ -379,21 +432,28 @@ export function UploadCenter({ workflow }: { workflow?: string }) {
     uploadItem(item, item.file);
   }
 
-  function cancelItem(item: QueueItem) {
+  async function cancelItem(item: QueueItem) {
     requestsRef.current[item.id]?.abort();
-    setItems((current) => current.map((currentItem) => (currentItem.id === item.id ? { ...currentItem, status: "cancelled", stage: "Cancelled" } : currentItem)));
+    if (item.documentId) rememberRemovedId(item.documentId);
+    setItems((current) => current.filter((currentItem) => currentItem.id !== item.id));
+    if (item.documentId) {
+      await fetch("/api/uploads/workflow", {
+        method: "DELETE",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ documentId: item.documentId }),
+      }).catch(() => null);
+    }
   }
 
-  function removeItem(item: QueueItem) {
-    requestsRef.current[item.id]?.abort();
-    setItems((current) => current.filter((currentItem) => currentItem.id !== item.id));
+  async function removeItem(item: QueueItem) {
+    await cancelItem(item);
   }
 
   async function retryItem(item: QueueItem) {
     if (item.file) {
       setItems((current) =>
         current.map((currentItem) =>
-          currentItem.id === item.id ? { ...currentItem, status: "queued", stage: "Queued", error: undefined, progress: 0, uploadProgress: 0 } : currentItem,
+          currentItem.id === item.id ? { ...currentItem, uploadStatus: "queued", conversionStatus: "none", stage: "Queued", error: undefined, uploadProgress: 0 } : currentItem,
         ),
       );
       uploadItem(item, item.file);
@@ -408,20 +468,23 @@ export function UploadCenter({ workflow }: { workflow?: string }) {
     setMessage("Choose the original file again to retry this upload.");
   }
 
-  async function startProcessing(documentIds = uploadedItems.map((item) => item.documentId).filter(Boolean) as string[]) {
-    if (!target) {
+  async function startProcessing(
+    documentIds = readyToConvertItems.map((item) => item.documentId).filter(Boolean) as string[],
+    selectedTarget = target,
+  ) {
+    if (!selectedTarget) {
       setMessage("Choose a conversion format first.");
       return;
     }
 
-    const selectedTarget = conversionTargets.find((conversionTarget) => conversionTarget.id === target);
-    if (selectedTarget?.disabled) {
-      setMessage(selectedTarget.disabledReason ?? "This conversion is not configured yet.");
+    const targetConfig = conversionTargets.find((conversionTarget) => conversionTarget.id === selectedTarget);
+    if (targetConfig?.disabled) {
+      setMessage(targetConfig.disabledReason ?? "This conversion is not configured yet.");
       return;
     }
 
     if (!documentIds.length) {
-      setMessage("Upload at least one file before converting.");
+      setMessage("Upload at least one ready file before converting.");
       return;
     }
 
@@ -430,7 +493,7 @@ export function UploadCenter({ workflow }: { workflow?: string }) {
     setItems((current) =>
       current.map((item) =>
         item.documentId && documentIds.includes(item.documentId)
-          ? { ...item, status: "queued", stage: "Queued", progress: Math.max(item.progress, 50), error: undefined }
+          ? { ...item, conversionStatus: "queued", stage: "Queued", conversionProgress: 0, error: undefined }
           : item,
       ),
     );
@@ -438,7 +501,7 @@ export function UploadCenter({ workflow }: { workflow?: string }) {
     const response = await fetch("/api/uploads/workflow", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ documentIds, target }),
+      body: JSON.stringify({ documentIds, target: selectedTarget }),
     }).catch(() => null);
 
     if (!response?.ok) {
@@ -573,36 +636,58 @@ export function UploadCenter({ workflow }: { workflow?: string }) {
           {conversionTargets.map((conversionTarget) => {
             const Icon = conversionTarget.icon;
             const selected = target === conversionTarget.id;
+            const canConvert = !conversionTarget.disabled && readyToConvertItems.length > 0 && !isProcessing;
             return (
-              <button
+              <article
                 key={conversionTarget.id}
-                type="button"
-                disabled={conversionTarget.disabled}
-                onClick={() => setTarget(conversionTarget.id)}
                 title={conversionTarget.disabled ? conversionTarget.disabledReason : conversionTarget.description}
-                className={`min-h-44 rounded-3xl border p-5 text-left transition ${
+                className={`flex min-h-48 flex-col rounded-3xl border p-5 text-center transition ${
                   selected ? "border-royal-500 bg-royal-50 shadow-glow" : "border-slate-200 bg-white shadow-sm hover:border-royal-200"
                 } ${conversionTarget.disabled ? "cursor-not-allowed opacity-50" : ""}`}
               >
-                <Icon className="h-8 w-8 text-royal-600" />
+                <button
+                  type="button"
+                  disabled={conversionTarget.disabled}
+                  onClick={() => setTarget(conversionTarget.id)}
+                  className="mx-auto flex h-12 w-12 items-center justify-center rounded-2xl bg-slate-50 text-royal-600 disabled:cursor-not-allowed"
+                  aria-label={`Select ${conversionTarget.title} conversion`}
+                >
+                  <Icon className="h-7 w-7" />
+                </button>
                 <p className="mt-5 text-lg font-black text-navy-950">{conversionTarget.title}</p>
-                <p className="mt-2 text-sm leading-6 text-slate-500">{conversionTarget.description}</p>
+                <p className="mt-2 flex-1 text-sm leading-6 text-slate-500">{conversionTarget.description}</p>
                 {conversionTarget.disabled ? <p className="mt-3 text-xs font-black text-amber-700">{conversionTarget.disabledReason}</p> : null}
-              </button>
+                <button
+                  type="button"
+                  disabled={!canConvert}
+                  onClick={() => {
+                    setTarget(conversionTarget.id);
+                    void startProcessing(undefined, conversionTarget.id);
+                  }}
+                  className={`mt-5 rounded-2xl px-4 py-2.5 text-sm font-black transition ${
+                    selected
+                      ? "bg-royal-600 text-white shadow-sm hover:bg-royal-700"
+                      : "bg-slate-100 text-royal-700 hover:bg-royal-50"
+                  } disabled:cursor-not-allowed disabled:bg-slate-100 disabled:text-slate-400`}
+                  title={
+                    conversionTarget.disabled
+                      ? conversionTarget.disabledReason
+                      : !readyToConvertItems.length
+                        ? "Upload files before converting"
+                        : "Convert uploaded files"
+                  }
+                >
+                  Convert
+                </button>
+              </article>
             );
           })}
         </div>
         <div className="mt-5 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-          <div className="text-sm font-bold text-slate-500">{activeItems.length} files in queue • {totalProgress}% overall</div>
-          <button
-            type="button"
-            onClick={() => void startProcessing()}
-            disabled={!target || !uploadedItems.length || conversionTargets.find((item) => item.id === target)?.disabled || isProcessing}
-            className="rounded-full bg-navy-950 px-6 py-3 text-sm font-black text-white shadow-sm hover:bg-royal-700 disabled:cursor-not-allowed disabled:opacity-45"
-            title={!uploadedItems.length ? "Upload files before converting" : !target ? "Choose a conversion format" : "Start conversion"}
-          >
-            Convert Now
-          </button>
+          <div className="text-sm font-bold text-slate-500">{activeItems.length} files in active queue • {totalProgress}% overall</div>
+          <div className="text-sm font-black text-slate-500">
+            {readyToConvertItems.length ? `${readyToConvertItems.length} ready to convert` : "Upload files to enable conversion"}
+          </div>
         </div>
       </section>
 
@@ -610,7 +695,7 @@ export function UploadCenter({ workflow }: { workflow?: string }) {
         <div className="mb-5 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
           <div>
             <h2 className="text-xl font-black text-navy-950">Upload Queue</h2>
-            <p className="mt-1 text-sm text-slate-500">Persistent queue with upload progress, conversion jobs and completed downloads.</p>
+            <p className="mt-1 text-sm text-slate-500">Active upload and conversion jobs for this workflow only.</p>
           </div>
           <div className="flex gap-2">
             <button type="button" onClick={() => void refreshWorkflow()} className="rounded-full bg-slate-100 px-4 py-2 text-sm font-black text-slate-600 hover:text-royal-700">
@@ -628,16 +713,16 @@ export function UploadCenter({ workflow }: { workflow?: string }) {
           </div>
         </div>
 
-        {!items.length ? (
+        {!activeItems.length ? (
           <div className="rounded-2xl border border-slate-200 bg-slate-50 p-8 text-center">
             <Archive className="mx-auto h-10 w-10 text-slate-400" />
-            <p className="mt-3 font-black text-navy-950">No files in the queue</p>
+            <p className="mt-3 font-black text-navy-950">No active files in the queue</p>
             <p className="mt-1 text-sm text-slate-500">Upload files to start a processing workflow.</p>
           </div>
         ) : null}
 
         <div className="space-y-3">
-          {items.map((item) => (
+          {activeItems.map((item) => (
             <article key={item.id} className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
               <div className="flex flex-col gap-4 xl:flex-row xl:items-center xl:justify-between">
                 <div className="flex min-w-0 items-start gap-4">
@@ -652,26 +737,28 @@ export function UploadCenter({ workflow }: { workflow?: string }) {
                     {item.error ? <p className="mt-1 text-sm font-bold text-rose-600">{item.error}</p> : null}
                   </div>
                 </div>
-                <div className="grid gap-2 sm:grid-cols-2 xl:min-w-[560px] xl:grid-cols-4">
-                  <div className={`rounded-full border px-3 py-2 text-center text-xs font-black capitalize ${statusTone(item.status)}`}>{item.status}</div>
-                  <div className="rounded-full bg-white px-3 py-2 text-center text-xs font-black text-slate-600">{item.stage}</div>
-                  <div className="rounded-full bg-white px-3 py-2 text-center text-xs font-black text-slate-600">
-                    {formatBytes(item.speedBps)}/s
+                <div className="grid gap-2 sm:grid-cols-2 xl:min-w-[420px] xl:grid-cols-2">
+                  <div className={`rounded-full border px-3 py-2 text-center text-xs font-black ${statusTone(item.uploadStatus === "uploaded" ? item.conversionStatus === "none" ? "ready" : item.conversionStatus : item.uploadStatus)}`}>
+                    {primaryStatus(item)}
                   </div>
-                  <div className="rounded-full bg-white px-3 py-2 text-center text-xs font-black text-slate-600">
-                    ETA {formatTime(item.etaSeconds)}
-                  </div>
+                  <div className="rounded-full bg-white px-3 py-2 text-center text-xs font-black text-slate-600">{secondaryStatus(item)}</div>
+                  {item.uploadStatus === "uploading" ? (
+                    <>
+                      <div className="rounded-full bg-white px-3 py-2 text-center text-xs font-black text-slate-600">{formatBytes(item.speedBps)}/s</div>
+                      <div className="rounded-full bg-white px-3 py-2 text-center text-xs font-black text-slate-600">ETA {formatTime(item.etaSeconds)}</div>
+                    </>
+                  ) : null}
                 </div>
               </div>
 
               <div className="mt-4 grid gap-3 lg:grid-cols-[1fr_auto] lg:items-center">
                 <div>
                   <div className="flex items-center justify-between text-xs font-black text-slate-500">
-                    <span>Elapsed {formatTime(item.elapsedSeconds)}</span>
-                    <span>{item.progress}%</span>
+                    <span>{item.uploadStatus === "uploading" ? `Elapsed ${formatTime(item.elapsedSeconds)}` : item.stage}</span>
+                    <span>{visibleProgress(item)}%</span>
                   </div>
                   <div className="mt-2 h-2 overflow-hidden rounded-full bg-white">
-                    <div className="h-full rounded-full bg-royal-600 transition-all" style={{ width: `${item.progress}%` }} />
+                    <div className="h-full rounded-full bg-royal-600 transition-all" style={{ width: `${visibleProgress(item)}%` }} />
                   </div>
                 </div>
 
@@ -679,7 +766,7 @@ export function UploadCenter({ workflow }: { workflow?: string }) {
                   <button
                     type="button"
                     onClick={() => pauseItem(item)}
-                    disabled={item.status !== "uploading"}
+                    disabled={item.uploadStatus !== "uploading"}
                     className="rounded-xl bg-white p-2 text-slate-500 shadow-sm hover:text-royal-700 disabled:cursor-not-allowed disabled:opacity-35"
                     title="Pause upload"
                     aria-label={`Pause ${item.name}`}
@@ -689,7 +776,7 @@ export function UploadCenter({ workflow }: { workflow?: string }) {
                   <button
                     type="button"
                     onClick={() => resumeItem(item)}
-                    disabled={item.status !== "paused"}
+                    disabled={item.uploadStatus !== "paused"}
                     className="rounded-xl bg-white p-2 text-slate-500 shadow-sm hover:text-royal-700 disabled:cursor-not-allowed disabled:opacity-35"
                     title="Resume upload from the beginning"
                     aria-label={`Resume ${item.name}`}
@@ -699,7 +786,7 @@ export function UploadCenter({ workflow }: { workflow?: string }) {
                   <button
                     type="button"
                     onClick={() => void retryItem(item)}
-                    disabled={item.status !== "failed"}
+                    disabled={item.uploadStatus !== "failed" && item.conversionStatus !== "failed"}
                     className="rounded-xl bg-white p-2 text-slate-500 shadow-sm hover:text-royal-700 disabled:cursor-not-allowed disabled:opacity-35"
                     title="Retry"
                     aria-label={`Retry ${item.name}`}
@@ -708,8 +795,8 @@ export function UploadCenter({ workflow }: { workflow?: string }) {
                   </button>
                   <button
                     type="button"
-                    onClick={() => cancelItem(item)}
-                    disabled={terminalStatuses.has(item.status)}
+                    onClick={() => void cancelItem(item)}
+                    disabled={item.conversionStatus === "completed"}
                     className="rounded-xl bg-white p-2 text-slate-500 shadow-sm hover:text-rose-600 disabled:cursor-not-allowed disabled:opacity-35"
                     title="Cancel"
                     aria-label={`Cancel ${item.name}`}
@@ -718,7 +805,7 @@ export function UploadCenter({ workflow }: { workflow?: string }) {
                   </button>
                   <button
                     type="button"
-                    onClick={() => removeItem(item)}
+                    onClick={() => void removeItem(item)}
                     className="rounded-xl bg-white p-2 text-slate-500 shadow-sm hover:text-rose-600"
                     title="Remove from queue"
                     aria-label={`Remove ${item.name}`}
@@ -729,20 +816,12 @@ export function UploadCenter({ workflow }: { workflow?: string }) {
                     <a href={item.downloadUrl} className="inline-flex items-center gap-2 rounded-xl bg-white px-3 py-2 text-xs font-black text-slate-600 shadow-sm hover:text-royal-700">
                       <Download className="h-4 w-4" /> Download
                     </a>
-                  ) : (
-                    <button type="button" disabled className="inline-flex items-center gap-2 rounded-xl bg-white px-3 py-2 text-xs font-black text-slate-400 shadow-sm" title="Download appears after conversion completes">
-                      <Download className="h-4 w-4" /> Download
-                    </button>
-                  )}
+                  ) : null}
                   {item.documentId ? (
                     <Link href={`/documents/${item.documentId}?tab=preview`} className="inline-flex items-center gap-2 rounded-xl bg-white px-3 py-2 text-xs font-black text-slate-600 shadow-sm hover:text-royal-700">
                       <Eye className="h-4 w-4" /> Preview
                     </Link>
-                  ) : (
-                    <button type="button" disabled className="inline-flex items-center gap-2 rounded-xl bg-white px-3 py-2 text-xs font-black text-slate-400 shadow-sm" title="Preview appears after upload">
-                      <Eye className="h-4 w-4" /> Preview
-                    </button>
-                  )}
+                  ) : null}
                   {item.documentId ? (
                     <Link href={`/documents/${item.documentId}`} className="inline-flex items-center gap-2 rounded-xl bg-white px-3 py-2 text-xs font-black text-slate-600 shadow-sm hover:text-royal-700">
                       <FileText className="h-4 w-4" /> Open Document
@@ -753,7 +832,7 @@ export function UploadCenter({ workflow }: { workflow?: string }) {
                       <Save className="h-4 w-4" /> Save to Library
                     </button>
                   ) : null}
-                  {item.status === "completed" ? <CheckCircle2 className="h-5 w-5 text-emerald-500" /> : item.status === "failed" ? <XCircle className="h-5 w-5 text-rose-500" /> : <Clock3 className="h-5 w-5 text-royal-500" />}
+                  {item.conversionStatus === "completed" ? <CheckCircle2 className="h-5 w-5 text-emerald-500" /> : item.uploadStatus === "failed" || item.conversionStatus === "failed" ? <XCircle className="h-5 w-5 text-rose-500" /> : <Clock3 className="h-5 w-5 text-royal-500" />}
                 </div>
               </div>
             </article>

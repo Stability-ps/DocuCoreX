@@ -17,7 +17,7 @@ export async function POST(request: Request) {
 
   const { data: conversions, error } = await context.supabase
     .from("conversions")
-    .select("id, to_format, download_path, documents!inner(workspace_id,name)")
+    .select("id, to_format, download_path, documents!inner(workspace_id,name,status,deleted_at)")
     .in("id", body.conversionIds)
     .eq("status", "completed");
 
@@ -29,7 +29,7 @@ export async function POST(request: Request) {
 
   for (const conversion of conversions ?? []) {
     const document = Array.isArray(conversion.documents) ? conversion.documents[0] : conversion.documents;
-    if (!document || document.workspace_id !== context.workspaceId || !conversion.download_path) {
+    if (!document || document.workspace_id !== context.workspaceId || document.deleted_at || document.status === "archived" || !conversion.download_path) {
       continue;
     }
 

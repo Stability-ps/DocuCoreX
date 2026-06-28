@@ -424,7 +424,7 @@ export async function registerUploads(files: UploadFileInput[]) {
     status: "uploaded" as const,
     detected_type: "unknown" as const,
     storage_path: file.storagePath ?? getStoragePath(context.workspaceId, file.name),
-    tags: [],
+    tags: ["Upload Queue"],
   }));
 
   const { data: insertedDocuments, error: documentError } = await context.supabase

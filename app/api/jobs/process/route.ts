@@ -40,6 +40,15 @@ export async function POST() {
       continue;
     }
 
+    if (document.deletedAt || document.status === "archived") {
+      await context.supabase
+        .from("processing_jobs")
+        .update({ status: "cancelled", progress: 100, message: "Document is no longer active", updated_at: new Date().toISOString() })
+        .eq("id", job.id);
+      results.push({ jobId: job.id, status: "cancelled", reason: "Document is no longer active" });
+      continue;
+    }
+
     try {
       await context.supabase
         .from("processing_jobs")
