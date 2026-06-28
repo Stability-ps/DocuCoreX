@@ -1,9 +1,9 @@
-import { NextResponse } from "next/server";
+import { NextRequest, NextResponse } from "next/server";
+import { createServerClient, type CookieOptions } from "@supabase/ssr";
 import { isSupabaseConfigured } from "@/lib/supabase";
-import { createSupabaseServerClient } from "@/lib/supabase-server";
 import { ensureUserWorkspace } from "@/lib/workspace-bootstrap";
 
-export async function GET(request: Request) {
+export async function GET(request: NextRequest) {
   const requestUrl = new URL(request.url);
   const origin = requestUrl.origin;
   const code = requestUrl.searchParams.get("code");
@@ -17,10 +17,28 @@ export async function GET(request: Request) {
       return NextResponse.redirect(new URL(next, origin));
     }
 
-    const supabase = await createSupabaseServerClient();
+    let redirectResponse = NextResponse.redirect(new URL(next, origin));
+    const pendingCookies: Array<{ name: string; value: string; options: CookieOptions }> = [];
 
-    const exchangeResult = await supabase?.auth.exchangeCodeForSession(code);
-    if (exchangeResult?.error) {
+    const supabase = createServerClient(
+      process.env.NEXT_PUBLIC_SUPABASE_URL as string,
+      process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY as string,
+      {
+        cookies: {
+          getAll() {
+            return request.cookies.getAll();
+          },
+          setAll(cookiesToSet) {
+            cookiesToSet.forEach(({ name, value, options }) => {
+              pendingCookies.push({ name, value, options });
+            });
+          },
+        },
+      },
+    );
+
+    const exchangeResult = await supabase.auth.exchangeCodeForSession(code);
+    if (exchangeResult.error) {
       if (process.env.NODE_ENV === "development") {
         console.error("[Auth Callback] Exchange error:", exchangeResult.error);
       }
@@ -29,7 +47,7 @@ export async function GET(request: Request) {
 
     const {
       data: { user },
-    } = (await supabase?.auth.getUser()) ?? { data: { user: null } };
+    } = await supabase.auth.getUser();
 
     if (!user) {
       if (process.env.NODE_ENV === "development") {
@@ -54,7 +72,18 @@ export async function GET(request: Request) {
     if (process.env.NODE_ENV === "development") {
       console.log("[Auth Callback] Redirecting to:", next);
     }
-    return NextResponse.redirect(new URL(next, origin));
+
+    redirectResponse = NextResponse.redirect(new URL(next, origin));
+    pendingCookies.forEach(({ name, value, options }) => {
+      redirectResponse.cookies.set(name, value, {
+        ...options,
+        secure: process.env.NODE_ENV === "production",
+        sameSite: "lax",
+        path: "/",
+      });
+    });
+
+    return redirectResponse;
   } catch (error) {
     if (process.env.NODE_ENV === "development") {
       console.error("[Auth Callback] Unexpected error:", error);

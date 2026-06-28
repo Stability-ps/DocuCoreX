@@ -20,10 +20,10 @@ function titleCase(value: string) {
     .replace(/\b\w/g, (letter) => letter.toUpperCase());
 }
 
-export function DocumentLibrary() {
+export function DocumentLibrary({ initialFilter = "Recent" }: { initialFilter?: string }) {
   const [documents, setDocuments] = useState<DocumentRecord[]>([]);
   const [query, setQuery] = useState("");
-  const [activeFilter, setActiveFilter] = useState("Recent");
+  const [activeFilter, setActiveFilter] = useState(initialFilter);
   const [status, setStatus] = useState("Loading library…");
 
   useEffect(() => {

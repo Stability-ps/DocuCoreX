@@ -3,10 +3,12 @@ import {
   Archive,
   BadgeCheck,
   Bell,
+  BookOpen,
   BookOpenText,
   Bot,
   CloudUpload,
   Code2,
+  Columns3,
   CreditCard,
   Download,
   Edit3,
@@ -20,6 +22,8 @@ import {
   FileSpreadsheet,
   FileText,
   Folder,
+  FolderArchive,
+  FolderPlus,
   Gauge,
   GitBranch,
   History,
@@ -29,6 +33,7 @@ import {
   LockKeyhole,
   MessageSquareText,
   Palette,
+  PencilLine,
   ReceiptText,
   RefreshCcw,
   ScanText,
@@ -39,9 +44,11 @@ import {
   Star,
   Tags,
   Trash2,
+  WandSparkles,
   Upload,
   UsersRound,
   Workflow,
+  Globe,
   type LucideIcon,
 } from "lucide-react";
 
@@ -51,16 +58,71 @@ export type NavItem = {
   icon: LucideIcon;
 };
 
-export const appNav: NavItem[] = [
+export type NavGroup = NavItem & {
+  children?: NavItem[];
+};
+
+export const appNav: NavGroup[] = [
   { title: "Dashboard", href: "/dashboard", icon: LayoutDashboard },
-  { title: "Intake", href: "/intake", icon: FileInput },
-  { title: "Upload Center", href: "/upload", icon: Upload },
-  { title: "Documents", href: "/documents", icon: Folder },
-  { title: "Convert", href: "/convert", icon: RefreshCcw },
-  { title: "Integrations", href: "/integrations", icon: PlugZap },
-  { title: "Automations", href: "/automations", icon: Workflow },
-  { title: "Team", href: "/team", icon: UsersRound },
-  { title: "Settings", href: "/settings", icon: Settings },
+  {
+    title: "Documents",
+    href: "/documents",
+    icon: Folder,
+    children: [
+      { title: "Intake", href: "/intake", icon: FileInput },
+      { title: "Upload Center", href: "/upload", icon: Upload },
+      { title: "All Documents", href: "/documents", icon: Folder },
+      { title: "Recent", href: "/documents/recent", icon: FileClock },
+      { title: "Shared", href: "/documents/shared", icon: Share2 },
+      { title: "Archive", href: "/documents/archive", icon: FolderArchive },
+      { title: "Trash", href: "/documents/trash", icon: Trash2 },
+    ],
+  },
+  {
+    title: "Convert Files",
+    href: "/convert",
+    icon: RefreshCcw,
+    children: [
+      { title: "OCR", href: "/convert/ocr", icon: ScanText },
+      { title: "Convert Files", href: "/convert", icon: RefreshCcw },
+      { title: "Extraction", href: "/convert/extraction", icon: FileSearch },
+      { title: "Summaries", href: "/convert/summaries", icon: WandSparkles },
+      { title: "Compare", href: "/convert/compare", icon: Columns3 },
+      { title: "Translate", href: "/convert/translate", icon: MessageSquareText },
+      { title: "Redact", href: "/convert/redact", icon: PencilLine },
+    ],
+  },
+  { title: "Billing & Subscription", href: "/billing", icon: CreditCard },
+  { title: "Team & Collaboration", href: "/team", icon: UsersRound },
+  { title: "Help & Support", href: "/help", icon: BookOpen },
+  {
+    title: "Settings",
+    href: "/settings",
+    icon: Settings,
+    children: [
+      { title: "General", href: "/settings", icon: Settings },
+      { title: "Workspace", href: "/settings/workspace", icon: Globe },
+      { title: "Appearance", href: "/settings/appearance", icon: Palette },
+      { title: "Notifications", href: "/settings/notifications", icon: Bell },
+      { title: "Security", href: "/settings/security", icon: ShieldCheck },
+      { title: "Storage", href: "/settings/storage", icon: CloudUpload },
+      { title: "API Keys", href: "/settings/api-keys", icon: KeyRound },
+      { title: "Integrations", href: "/settings/integrations", icon: PlugZap },
+      { title: "Automations", href: "/settings/automations", icon: Workflow },
+      { title: "Developer", href: "/settings/developer", icon: Code2 },
+      { title: "Advanced", href: "/settings/advanced", icon: Gauge },
+      { title: "Danger Zone", href: "/settings/danger-zone", icon: LockKeyhole },
+    ],
+  },
+];
+
+export const newActionItems: NavItem[] = [
+  { title: "Upload Document", href: "/upload", icon: CloudUpload },
+  { title: "Scan Document", href: "/upload?workflow=scan_document", icon: ScanText },
+  { title: "Create Folder", href: "/documents/folders", icon: FolderPlus },
+  { title: "Import Files", href: "/upload?workflow=import_files", icon: FileInput },
+  { title: "New Automation", href: "/settings/automations", icon: Workflow },
+  { title: "New API Key", href: "/settings/api-keys", icon: KeyRound },
 ];
 
 export const dashboardStats = [

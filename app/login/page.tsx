@@ -57,59 +57,48 @@ function LoginContent() {
 
     const redirectTo = `${window.location.origin}/auth/callback`;
 
-    // For signin and signup, use server endpoints that properly handle cookies
+    // Sign in directly with the browser Supabase client.
+    // createBrowserClient manages cookies automatically in the format
+    // that the server-side middleware and createServerClient can read.
     if (mode === "signin") {
-      try {
-        const response = await fetch("/api/auth/signin", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ email, password }),
-        });
-
-        if (!response.ok) {
-          const error = await response.json();
-          setStatus(error.error ?? "Sign in failed. Please check your email and password.");
-          setIsSubmitting(false);
-          return;
-        }
-
-        window.location.href = "/dashboard";
-        return;
-      } catch (error) {
-        setStatus(error instanceof Error ? error.message : "Sign in failed.");
+      if (!supabase) {
+        setStatus("Supabase is not configured. Check your environment variables.");
         setIsSubmitting(false);
         return;
       }
+      const { error } = await supabase.auth.signInWithPassword({ email, password });
+      if (error) {
+        setStatus(error.message);
+        setIsSubmitting(false);
+        return;
+      }
+      window.location.href = "/dashboard";
+      return;
     }
 
     if (mode === "signup") {
-      try {
-        const response = await fetch("/api/auth/signup", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ email, password }),
-        });
-
-        const data = await response.json();
-
-        if (!response.ok) {
-          setStatus(data.error ?? "Account creation failed.");
-          setIsSubmitting(false);
-          return;
-        }
-
-        if (data.requiresEmailVerification) {
-          setStatus("Account created. Check your inbox to verify your email address, or continue to the product workspace now.");
-        } else {
-          window.location.href = "/dashboard";
-        }
-        setIsSubmitting(false);
-        return;
-      } catch (error) {
-        setStatus(error instanceof Error ? error.message : "Account creation failed.");
+      if (!supabase) {
+        setStatus("Supabase is not configured. Check your environment variables.");
         setIsSubmitting(false);
         return;
       }
+      const { data, error } = await supabase.auth.signUp({
+        email,
+        password,
+        options: { emailRedirectTo: redirectTo, data: { product: "DocuCoreX" } },
+      });
+      if (error) {
+        setStatus(error.message);
+        setIsSubmitting(false);
+        return;
+      }
+      if (!data.session) {
+        setStatus("Account created. Check your inbox to verify your email address.");
+        setIsSubmitting(false);
+        return;
+      }
+      window.location.href = "/dashboard";
+      return;
     }
 
     // For forgot password, still use client-side Supabase

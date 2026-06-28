@@ -9,9 +9,11 @@ const protectedPrefixes = [
   "/upload",
   "/documents",
   "/convert",
+  "/billing",
   "/integrations",
   "/automations",
   "/team",
+  "/help",
   "/settings",
 ];
 
@@ -58,22 +60,25 @@ export async function middleware(request: NextRequest) {
     error,
   } = await supabase.auth.getUser();
 
-  // If getUser fails with a network/server error, try getSession as fallback
-  // (getSession reads the cookie locally without a network call)
+  // If getUser fails (e.g. Supabase network hiccup), fall back to reading
+  // the local session from the cookie without a network call.
   if (error && !user) {
     const { data: sessionData } = await supabase.auth.getSession();
     if (sessionData.session?.user) {
       return response;
     }
+    // No valid session at all — redirect to login without session_expired
+    // (it's just a missing session, not an actual expiry error)
+    const loginUrl = request.nextUrl.clone();
+    loginUrl.pathname = "/login";
+    loginUrl.searchParams.set("next", pathname);
+    return NextResponse.redirect(loginUrl);
   }
 
   if (!user) {
     const loginUrl = request.nextUrl.clone();
     loginUrl.pathname = "/login";
     loginUrl.searchParams.set("next", pathname);
-    if (error) {
-      loginUrl.searchParams.set("error", "session_expired");
-    }
     return NextResponse.redirect(loginUrl);
   }
 
@@ -87,9 +92,11 @@ export const config = {
     "/upload/:path*",
     "/documents/:path*",
     "/convert/:path*",
+    "/billing/:path*",
     "/integrations/:path*",
     "/automations/:path*",
     "/team/:path*",
+    "/help/:path*",
     "/settings/:path*",
     "/debug/:path*",
   ],

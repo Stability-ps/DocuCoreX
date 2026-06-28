@@ -3,9 +3,9 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useEffect, useState } from "react";
-import { Bell, Command, LogOut, Search, ShieldCheck } from "lucide-react";
+import { Bell, ChevronDown, Command, LogOut, Plus, Search, ShieldCheck } from "lucide-react";
 import { BrandLogo } from "@/components/brand";
-import { appNav } from "@/lib/product-data";
+import { appNav, newActionItems } from "@/lib/product-data";
 import type { NotificationRecord } from "@/lib/app-state";
 
 type ProfileState = { fullName?: string; company?: string; role?: string } | null;
@@ -19,6 +19,12 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const [notifications, setNotifications] = useState<NotificationRecord[]>([]);
   const [showNotifications, setShowNotifications] = useState(false);
   const [showProfile, setShowProfile] = useState(false);
+  const [showNewMenu, setShowNewMenu] = useState(false);
+  const [expandedGroups, setExpandedGroups] = useState<Record<string, boolean>>({
+    Documents: true,
+    "Convert Files": true,
+    Settings: true,
+  });
   const [shellError, setShellError] = useState("");
 
   useEffect(() => {
@@ -76,6 +82,8 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   }
 
   const unreadCount = notifications.filter((notification) => !notification.read).length;
+  const isActive = (href: string) => pathname === href || (href !== "/" && pathname.startsWith(`${href}/`));
+  const isExactActive = (href: string) => pathname === href;
 
   return (
     <div className="min-h-screen bg-slate-50 text-navy-950">
@@ -83,9 +91,73 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         <div className="flex h-20 items-center border-b border-slate-100 px-5">
           <BrandLogo compact />
         </div>
+        <div className="relative px-4 pt-4">
+          <button
+            type="button"
+            onClick={() => setShowNewMenu((value) => !value)}
+            className="flex w-full items-center justify-center gap-2 rounded-2xl bg-navy-950 px-4 py-3 text-sm font-black text-white shadow-sm transition hover:bg-royal-700"
+          >
+            <Plus className="h-4 w-4" />
+            New
+          </button>
+          {showNewMenu ? (
+            <div className="absolute left-4 right-4 top-16 z-50 overflow-hidden rounded-2xl border border-slate-200 bg-white p-2 shadow-soft">
+              {newActionItems.map((item) => (
+                <Link
+                  key={item.title}
+                  href={item.href}
+                  onClick={() => setShowNewMenu(false)}
+                  className="flex items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-bold text-slate-700 transition hover:bg-royal-50 hover:text-royal-700"
+                >
+                  <item.icon className="h-4 w-4 text-slate-400" />
+                  {item.title}
+                </Link>
+              ))}
+            </div>
+          ) : null}
+        </div>
         <nav className="space-y-1 px-4 py-5">
           {appNav.map((item) => {
-            const active = pathname === item.href || pathname.startsWith(`${item.href}/`);
+            const active = isActive(item.href) || Boolean(item.children?.some((child) => isActive(child.href)));
+            const expanded = expandedGroups[item.title] ?? active;
+
+            if (item.children?.length) {
+              return (
+                <div key={item.href} className="space-y-1">
+                  <button
+                    type="button"
+                    onClick={() => setExpandedGroups((current) => ({ ...current, [item.title]: !(current[item.title] ?? active) }))}
+                    className={`flex w-full items-center gap-3 rounded-2xl px-4 py-3 text-sm font-black transition ${
+                      active ? "bg-royal-50 text-royal-800" : "text-slate-600 hover:bg-slate-50 hover:text-navy-950"
+                    }`}
+                  >
+                    <item.icon className="h-5 w-5" />
+                    <span className="min-w-0 flex-1 text-left">{item.title}</span>
+                    <ChevronDown className={`h-4 w-4 transition ${expanded ? "rotate-180" : ""}`} />
+                  </button>
+                  {expanded ? (
+                    <div className="ml-5 space-y-1 border-l border-slate-100 pl-3">
+                      {item.children.map((child) => {
+                        const childActive = isExactActive(child.href);
+                        return (
+                          <Link
+                            key={child.href}
+                            href={child.href}
+                            className={`flex items-center gap-2.5 rounded-xl px-3 py-2 text-sm font-bold transition ${
+                              childActive ? "bg-royal-600 text-white shadow-sm" : "text-slate-500 hover:bg-royal-50 hover:text-royal-700"
+                            }`}
+                          >
+                            <child.icon className="h-4 w-4" />
+                            {child.title}
+                          </Link>
+                        );
+                      })}
+                    </div>
+                  ) : null}
+                </div>
+              );
+            }
+
             return (
               <Link
                 key={item.href}
@@ -204,7 +276,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           ) : null}
           <nav className="flex gap-2 overflow-x-auto border-t border-slate-100 px-4 py-3 lg:hidden">
             {appNav.map((item) => {
-              const active = pathname === item.href || pathname.startsWith(`${item.href}/`);
+              const active = isActive(item.href) || Boolean(item.children?.some((child) => isActive(child.href)));
               return (
                 <Link
                   key={item.href}

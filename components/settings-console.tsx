@@ -208,8 +208,8 @@ function ActionButton({
 
 // ─── Main ─────────────────────────────────────────────────────────────────────
 
-export function SettingsConsole() {
-  const [section, setSection] = useState<Section>("overview");
+export function SettingsConsole({ initialSection = "overview" }: { initialSection?: Section }) {
+  const [section, setSection] = useState<Section>(initialSection);
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [profile, setProfile] = useState<ProfileState>({ fullName: "", company: "", role: "" });
   const [apiKeys, setApiKeys] = useState<ApiKey[]>([]);
