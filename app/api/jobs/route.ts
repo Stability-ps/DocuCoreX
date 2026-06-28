@@ -1,13 +1,17 @@
 import { NextResponse } from "next/server";
 import { processingJobs } from "@/lib/mock-repository";
-import { isAuthRequired } from "@/lib/supabase";
+import { isDemoAllowed } from "@/lib/supabase";
 import { createSupabaseServerClient } from "@/lib/supabase-server";
 
 export async function GET() {
   const supabase = await createSupabaseServerClient();
 
-  if (!supabase) {
+  if (!supabase && isDemoAllowed) {
     return NextResponse.json({ jobs: processingJobs, mode: "demo" });
+  }
+
+  if (!supabase) {
+    return NextResponse.json({ error: "Supabase is not configured." }, { status: 503 });
   }
 
   const {
@@ -15,7 +19,7 @@ export async function GET() {
     error: userError,
   } = await supabase.auth.getUser();
 
-  if ((userError || !user) && !isAuthRequired) {
+  if ((userError || !user) && isDemoAllowed) {
     return NextResponse.json({ jobs: processingJobs, mode: "demo" });
   }
 
@@ -30,7 +34,7 @@ export async function GET() {
     .limit(50);
 
   if (error) {
-    if (!isAuthRequired) {
+    if (isDemoAllowed) {
       return NextResponse.json({ jobs: processingJobs, mode: "demo" });
     }
 

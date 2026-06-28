@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { isAuthRequired } from "@/lib/supabase";
+import { isAuthRequired, isDemoAllowed } from "@/lib/supabase";
 import { createSupabaseServerClient } from "@/lib/supabase-server";
 import { createDocumentVersionRecord, createWorkspaceBucketPath } from "@/lib/supabase-server-adapter";
 import { ensureUserWorkspace } from "@/lib/workspace-bootstrap";
@@ -178,7 +178,11 @@ export async function getWorkspaceContext(): Promise<WorkspaceContext | null> {
   const supabase = await createSupabaseServerClient();
 
   if (!supabase) {
-    return null;
+    if (isDemoAllowed) {
+      return null;
+    }
+
+    throw new Error("Supabase is not configured");
   }
 
   const {
@@ -187,7 +191,7 @@ export async function getWorkspaceContext(): Promise<WorkspaceContext | null> {
   } = await supabase.auth.getUser();
 
   if (userError || !user) {
-    if (isAuthRequired) {
+    if (isAuthRequired || !isDemoAllowed) {
       throw new Error("Unauthorized");
     }
 
@@ -210,7 +214,7 @@ export async function getWorkspaceContext(): Promise<WorkspaceContext | null> {
   }
 
   if (profileError || !profile?.workspace_id) {
-    if (!isAuthRequired) {
+    if (isDemoAllowed) {
       return null;
     }
 

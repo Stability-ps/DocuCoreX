@@ -5,7 +5,7 @@ import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 import { Suspense, useState, useEffect } from "react";
 import { ArrowRight, Check, Eye, EyeOff, KeyRound, LockKeyhole, Mail, ShieldCheck, AlertCircle } from "lucide-react";
-import { getSiteUrl, isSupabaseConfigured, supabase } from "@/lib/supabase";
+import { isDemoAllowed, isSupabaseConfigured, supabase } from "@/lib/supabase";
 import { profileChecklist } from "@/lib/product-data";
 
 function LoginContent() {
@@ -24,7 +24,8 @@ function LoginContent() {
       const errorMessages: Record<string, string> = {
         exchange_failed: "Session exchange failed. Please try signing in again.",
         no_user: "Authentication completed but user not found. Please try again.",
-        auth_failed: "Authentication failed. Please try again or continue to the dashboard.",
+        auth_failed: "Authentication failed. Please try signing in again.",
+        session_expired: "Your session expired. Please sign in again.",
       };
       setCallbackError(errorMessages[error] || `Authentication error: ${error}`);
       if (process.env.NODE_ENV === "development") {
@@ -34,6 +35,12 @@ function LoginContent() {
   }, [searchParams]);
 
   function enterDemoWorkspace() {
+    if (!isDemoAllowed) {
+      setStatus("Authentication is not configured correctly. Check Supabase environment variables.");
+      setIsSubmitting(false);
+      return;
+    }
+
     setStatus("Opening the DocuCoreX product workspace.");
     window.location.href = "/dashboard";
   }
@@ -48,7 +55,7 @@ function LoginContent() {
       return;
     }
 
-    const redirectTo = `${getSiteUrl()}/auth/callback`;
+    const redirectTo = `${window.location.origin}/auth/callback`;
 
     // For signin and signup, use server endpoints that properly handle cookies
     if (mode === "signin") {
@@ -61,7 +68,7 @@ function LoginContent() {
 
         if (!response.ok) {
           const error = await response.json();
-          setStatus(`${error.error}. You can continue to the product workspace while Supabase is being set up.`);
+          setStatus(error.error ?? "Sign in failed. Please check your email and password.");
           setIsSubmitting(false);
           return;
         }
@@ -69,9 +76,7 @@ function LoginContent() {
         window.location.href = "/dashboard";
         return;
       } catch (error) {
-        setStatus(
-          `${error instanceof Error ? error.message : "Unknown error"}. You can continue to the product workspace while Supabase is being set up.`
-        );
+        setStatus(error instanceof Error ? error.message : "Sign in failed.");
         setIsSubmitting(false);
         return;
       }
@@ -88,7 +93,7 @@ function LoginContent() {
         const data = await response.json();
 
         if (!response.ok) {
-          setStatus(`${data.error}. You can continue to the product workspace while Supabase is being set up.`);
+          setStatus(data.error ?? "Account creation failed.");
           setIsSubmitting(false);
           return;
         }
@@ -101,9 +106,7 @@ function LoginContent() {
         setIsSubmitting(false);
         return;
       } catch (error) {
-        setStatus(
-          `${error instanceof Error ? error.message : "Unknown error"}. You can continue to the product workspace while Supabase is being set up.`
-        );
+        setStatus(error instanceof Error ? error.message : "Account creation failed.");
         setIsSubmitting(false);
         return;
       }
@@ -114,7 +117,7 @@ function LoginContent() {
       const result = await supabase.auth.resetPasswordForEmail(email, { redirectTo });
 
       if (result.error) {
-        setStatus(`${result.error.message}. You can continue to the product workspace while Supabase is being set up.`);
+        setStatus(result.error.message);
         setIsSubmitting(false);
         return;
       }
@@ -127,15 +130,19 @@ function LoginContent() {
 
   async function handleOAuth(provider: "google" | "azure") {
     if (!supabase) {
-      setStatus("Opening the product workspace. Add OAuth providers in Supabase when you are ready for live Google and Microsoft sign-in.");
-      window.location.href = "/dashboard";
+      if (isDemoAllowed) {
+        setStatus("Opening the local demo workspace.");
+        window.location.href = "/dashboard";
+        return;
+      }
+      setStatus("Authentication is not configured correctly. Check Supabase environment variables.");
       return;
     }
 
     const { error } = await supabase.auth.signInWithOAuth({
       provider,
       options: {
-        redirectTo: `${getSiteUrl()}/auth/callback`,
+        redirectTo: `${window.location.origin}/auth/callback`,
         queryParams: provider === "google" ? { access_type: "offline", prompt: "consent" } : undefined,
       },
     });

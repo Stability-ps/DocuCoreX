@@ -1,10 +1,11 @@
 import { NextResponse } from "next/server";
-import { getSiteUrl, isSupabaseConfigured } from "@/lib/supabase";
+import { isSupabaseConfigured } from "@/lib/supabase";
 import { createSupabaseServerClient } from "@/lib/supabase-server";
 import { ensureUserWorkspace } from "@/lib/workspace-bootstrap";
 
 export async function GET(request: Request) {
   const requestUrl = new URL(request.url);
+  const origin = requestUrl.origin;
   const code = requestUrl.searchParams.get("code");
   const next = requestUrl.searchParams.get("next") || "/dashboard";
 
@@ -13,7 +14,7 @@ export async function GET(request: Request) {
       if (process.env.NODE_ENV === "development") {
         console.log("[Auth Callback] Missing config or code", { isSupabaseConfigured, code });
       }
-      return NextResponse.redirect(new URL(next, getSiteUrl()));
+      return NextResponse.redirect(new URL(next, origin));
     }
 
     const supabase = await createSupabaseServerClient();
@@ -23,7 +24,7 @@ export async function GET(request: Request) {
       if (process.env.NODE_ENV === "development") {
         console.error("[Auth Callback] Exchange error:", exchangeResult.error);
       }
-      return NextResponse.redirect(new URL("/login?error=exchange_failed", getSiteUrl()));
+      return NextResponse.redirect(new URL("/login?error=exchange_failed", origin));
     }
 
     const {
@@ -34,7 +35,7 @@ export async function GET(request: Request) {
       if (process.env.NODE_ENV === "development") {
         console.error("[Auth Callback] No user after exchange");
       }
-      return NextResponse.redirect(new URL("/login?error=no_user", getSiteUrl()));
+      return NextResponse.redirect(new URL("/login?error=no_user", origin));
     }
 
     if (process.env.NODE_ENV === "development") {
@@ -53,11 +54,12 @@ export async function GET(request: Request) {
     if (process.env.NODE_ENV === "development") {
       console.log("[Auth Callback] Redirecting to:", next);
     }
-    return NextResponse.redirect(new URL(next, getSiteUrl()));
+    return NextResponse.redirect(new URL(next, origin));
   } catch (error) {
     if (process.env.NODE_ENV === "development") {
       console.error("[Auth Callback] Unexpected error:", error);
     }
-    return NextResponse.redirect(new URL("/login?error=auth_failed", getSiteUrl()));
+    const fallbackOrigin = new URL(request.url).origin;
+    return NextResponse.redirect(new URL("/login?error=auth_failed", fallbackOrigin));
   }
 }

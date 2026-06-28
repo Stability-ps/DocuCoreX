@@ -3,7 +3,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { CheckCircle2, Copy, KeyRound, Plus, ShieldCheck, Smartphone } from "lucide-react";
 import { SectionPanel } from "@/components/ui";
-import { settingsGroups } from "@/lib/product-data";
 import type { UserSettingsRecord } from "@/lib/app-state";
 
 type ProfilePayload = {
@@ -160,22 +159,6 @@ export function SettingsConsole() {
 
   return (
     <div className="space-y-6">
-      <section className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
-        {settingsGroups.map((group) => (
-          <button
-            key={group.title}
-            onClick={() => setActiveSection(group.title)}
-            className={`rounded-3xl border p-4 text-left shadow-sm transition ${
-              activeSection === group.title ? "border-royal-300 bg-royal-50" : "border-slate-200 bg-white hover:border-royal-200"
-            }`}
-          >
-            <group.icon className="h-5 w-5 text-royal-600" />
-            <p className="mt-3 font-black text-navy-950">{group.title}</p>
-            <p className="mt-1 text-sm leading-5 text-slate-500">{group.detail}</p>
-          </button>
-        ))}
-      </section>
-
       <div className="grid gap-6 xl:grid-cols-[1fr_0.9fr]">
       <SectionPanel title="Preferences" description={`Active section: ${activeSection}. ${status}`}>
         <div className="grid gap-4 sm:grid-cols-2">

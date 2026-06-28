@@ -1,6 +1,8 @@
 import { createServerClient } from "@supabase/ssr";
 import { NextResponse, type NextRequest } from "next/server";
 
+const publicPrefixes = ["/", "/login", "/signup", "/auth/callback", "/auth/signout", "/debug/auth"];
+
 const protectedPrefixes = [
   "/dashboard",
   "/intake",
@@ -14,19 +16,22 @@ const protectedPrefixes = [
 ];
 
 export async function middleware(request: NextRequest) {
-  if (request.nextUrl.pathname.startsWith("/debug") && process.env.NODE_ENV === "production") {
-    return new NextResponse("Not found", { status: 404 });
+  const pathname = request.nextUrl.pathname;
+
+  if (pathname.startsWith("/_next") || pathname.startsWith("/api") || pathname.includes(".")) {
+    return NextResponse.next();
   }
 
-  const isProtected = protectedPrefixes.some((prefix) => request.nextUrl.pathname.startsWith(prefix));
+  const isExplicitPublic = publicPrefixes.some((prefix) => (prefix === "/" ? pathname === "/" : pathname.startsWith(prefix)));
+  const isProtected = protectedPrefixes.some((prefix) => pathname.startsWith(prefix));
 
-  if (!isProtected) {
+  if (isExplicitPublic || !isProtected) {
     return NextResponse.next();
   }
 
   const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
   const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
-  const authRequired = process.env.NEXT_PUBLIC_REQUIRE_AUTH === "true";
+  const authRequired = process.env.NODE_ENV === "production" ? process.env.NEXT_PUBLIC_REQUIRE_AUTH !== "false" : process.env.NEXT_PUBLIC_REQUIRE_AUTH === "true";
 
   if (!authRequired || !supabaseUrl || !supabaseAnonKey) {
     return NextResponse.next();
@@ -50,12 +55,16 @@ export async function middleware(request: NextRequest) {
 
   const {
     data: { user },
-  } = await (supabase.auth as unknown as { getUser: () => Promise<{ data: { user: unknown } }> }).getUser();
+    error,
+  } = await supabase.auth.getUser();
 
-  if (!user) {
+  if (error || !user) {
     const loginUrl = request.nextUrl.clone();
     loginUrl.pathname = "/login";
-    loginUrl.searchParams.set("next", request.nextUrl.pathname);
+    loginUrl.searchParams.set("next", pathname);
+    if (error) {
+      loginUrl.searchParams.set("error", "session_expired");
+    }
     return NextResponse.redirect(loginUrl);
   }
 

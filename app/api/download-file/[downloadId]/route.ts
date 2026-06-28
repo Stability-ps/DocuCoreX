@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { getDownload } from "@/lib/mock-repository";
-import { isAuthRequired } from "@/lib/supabase";
+import { isDemoAllowed } from "@/lib/supabase";
 import { createSupabaseServerClient } from "@/lib/supabase-server";
 
 const mimeByFormat = {
@@ -15,8 +15,12 @@ export async function GET(_request: Request, { params }: { params: Promise<{ dow
   const { downloadId } = await params;
   const supabase = await createSupabaseServerClient();
 
-  if (!supabase) {
+  if (!supabase && isDemoAllowed) {
     return createDemoDownload(downloadId);
+  }
+
+  if (!supabase) {
+    return NextResponse.json({ error: "Supabase is not configured." }, { status: 503 });
   }
 
   const { data, error } = await supabase
@@ -26,7 +30,7 @@ export async function GET(_request: Request, { params }: { params: Promise<{ dow
     .single();
 
   if (error || !data) {
-    if (!isAuthRequired) {
+    if (isDemoAllowed) {
       return createDemoDownload(downloadId);
     }
 

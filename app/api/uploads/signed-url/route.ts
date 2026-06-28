@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { NextResponse } from "next/server";
-import { isAuthRequired } from "@/lib/supabase";
+import { isDemoAllowed } from "@/lib/supabase";
 import { createSupabaseServerClient } from "@/lib/supabase-server";
 import { ensureUserWorkspace } from "@/lib/workspace-bootstrap";
 
@@ -17,7 +17,7 @@ export async function POST(request: Request) {
   const safeFileName = body.fileName.replace(/[^a-zA-Z0-9._-]/g, "_");
   const supabase = await createSupabaseServerClient();
 
-  if (!supabase) {
+  if (!supabase && isDemoAllowed) {
     const path = `workspace_demo/documents/${randomUUID()}-${safeFileName}`;
     return NextResponse.json({
       mode: "demo",
@@ -29,12 +29,16 @@ export async function POST(request: Request) {
     });
   }
 
+  if (!supabase) {
+    return NextResponse.json({ error: "Supabase is not configured." }, { status: 503 });
+  }
+
   const {
     data: { user },
     error: userError,
   } = await supabase.auth.getUser();
 
-  if ((userError || !user) && !isAuthRequired) {
+  if ((userError || !user) && isDemoAllowed) {
     const path = `workspace_demo/documents/${randomUUID()}-${safeFileName}`;
     return NextResponse.json({
       mode: "demo",
@@ -66,7 +70,7 @@ export async function POST(request: Request) {
   }
 
   if (profileError || !profile?.workspace_id) {
-    if (!isAuthRequired) {
+    if (isDemoAllowed) {
       const path = `workspace_demo/documents/${randomUUID()}-${safeFileName}`;
       return NextResponse.json({
         mode: "demo",

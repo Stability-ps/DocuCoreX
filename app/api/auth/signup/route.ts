@@ -1,5 +1,4 @@
 import { createSupabaseServerClient } from "@/lib/supabase-server";
-import { getSiteUrl } from "@/lib/supabase";
 import { ensureUserWorkspace } from "@/lib/workspace-bootstrap";
 import { NextRequest, NextResponse } from "next/server";
 
@@ -23,7 +22,7 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    const redirectUrl = `${getSiteUrl()}/auth/callback`;
+    const redirectUrl = `${new URL(request.url).origin}/auth/callback`;
 
     const { data, error } = await supabase.auth.signUp({
       email,

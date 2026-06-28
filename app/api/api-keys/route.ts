@@ -2,22 +2,30 @@ import { createHash, randomBytes } from "node:crypto";
 import { NextResponse } from "next/server";
 import { recordAuditLog } from "@/lib/audit";
 import { apiKeys } from "@/lib/mock-repository";
-import { isAuthRequired } from "@/lib/supabase";
+import { isDemoAllowed } from "@/lib/supabase";
 import { createSupabaseServerClient } from "@/lib/supabase-server";
 
 export async function GET() {
   const supabase = await createSupabaseServerClient();
 
-  if (!supabase) {
+  if (!supabase && isDemoAllowed) {
     return NextResponse.json({ apiKeys, mode: "demo" });
+  }
+
+  if (!supabase) {
+    return NextResponse.json({ error: "Supabase is not configured." }, { status: 503 });
   }
 
   const {
     data: { user },
   } = await supabase.auth.getUser();
 
-  if (!user && !isAuthRequired) {
+  if (!user && isDemoAllowed) {
     return NextResponse.json({ apiKeys, mode: "demo" });
+  }
+
+  if (!user) {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
   const { data, error } = await supabase
@@ -26,7 +34,7 @@ export async function GET() {
     .order("created_at", { ascending: false });
 
   if (error) {
-    if (!isAuthRequired) {
+    if (isDemoAllowed) {
       return NextResponse.json({ apiKeys, mode: "demo" });
     }
 
@@ -43,7 +51,7 @@ export async function POST(request: Request) {
   const lastFour = rawKey.slice(-4).toUpperCase();
   const supabase = await createSupabaseServerClient();
 
-  if (!supabase) {
+  if (!supabase && isDemoAllowed) {
     const apiKey = {
       id: `api_key_${Date.now()}`,
       name: body.name ?? "New API key",
@@ -61,12 +69,16 @@ export async function POST(request: Request) {
     });
   }
 
+  if (!supabase) {
+    return NextResponse.json({ error: "Supabase is not configured." }, { status: 503 });
+  }
+
   const {
     data: { user },
     error: userError,
   } = await supabase.auth.getUser();
 
-  if ((userError || !user) && !isAuthRequired) {
+  if ((userError || !user) && isDemoAllowed) {
     const apiKey = {
       id: `api_key_${Date.now()}`,
       name: body.name ?? "New API key",
@@ -95,7 +107,7 @@ export async function POST(request: Request) {
     .single();
 
   if (profileError || !profile?.workspace_id) {
-    if (!isAuthRequired) {
+    if (isDemoAllowed) {
       return NextResponse.json({
         mode: "demo",
         apiKey: {
@@ -124,7 +136,7 @@ export async function POST(request: Request) {
     .single();
 
   if (error) {
-    if (!isAuthRequired) {
+    if (isDemoAllowed) {
       return NextResponse.json({
         mode: "demo",
         apiKey: {
@@ -155,7 +167,7 @@ export async function PATCH(request: Request) {
   const supabase = await createSupabaseServerClient();
   const revokedAt = body.revoked === false ? null : new Date().toISOString();
 
-  if (!supabase) {
+  if (!supabase && isDemoAllowed) {
     const key = apiKeys.find((item) => item.id === body.id);
     if (!key) return NextResponse.json({ error: "API key not found" }, { status: 404 });
     Object.assign(key, { revokedAt, revoked_at: revokedAt });
@@ -163,12 +175,16 @@ export async function PATCH(request: Request) {
     return NextResponse.json({ apiKey: key, mode: "demo" });
   }
 
+  if (!supabase) {
+    return NextResponse.json({ error: "Supabase is not configured." }, { status: 503 });
+  }
+
   const {
     data: { user },
     error: userError,
   } = await supabase.auth.getUser();
 
-  if ((userError || !user) && !isAuthRequired) {
+  if ((userError || !user) && isDemoAllowed) {
     const key = apiKeys.find((item) => item.id === body.id);
     if (!key) return NextResponse.json({ error: "API key not found" }, { status: 404 });
     Object.assign(key, { revokedAt, revoked_at: revokedAt });

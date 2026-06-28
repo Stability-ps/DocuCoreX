@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { isAuthRequired, isSupabaseConfigured } from "@/lib/supabase";
+import { isDemoAllowed } from "@/lib/supabase";
 import { createSupabaseServerClient } from "@/lib/supabase-server";
 import { ensureUserWorkspace } from "@/lib/workspace-bootstrap";
 
@@ -11,9 +11,6 @@ const demoProfile = {
   role: "Owner",
   twoFactorEnabled: false,
 };
-
-// Demo mode is only allowed in local development when Supabase is not configured.
-const isDemoAllowed = process.env.NODE_ENV !== "production" && !isSupabaseConfigured && !isAuthRequired;
 
 export async function GET() {
   const supabase = await createSupabaseServerClient();
