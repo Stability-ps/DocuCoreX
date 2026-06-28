@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
-import { CheckCircle2, Copy, KeyRound, Plus, ShieldCheck, Smartphone } from "lucide-react";
+import { CheckCircle2, Copy, KeyRound, Plus, ShieldCheck, Smartphone, X, ArrowRight } from "lucide-react";
 import { SectionPanel } from "@/components/ui";
 import type { UserSettingsRecord } from "@/lib/app-state";
 import { settingsGroups } from "@/lib/product-data";
@@ -49,6 +49,7 @@ export function SettingsConsole() {
   const [newSecret, setNewSecret] = useState("");
   const [status, setStatus] = useState("Ready");
   const [activeSection, setActiveSection] = useState("Profile");
+  const [openModal, setOpenModal] = useState<string | null>(null);
   const [userSettings, setUserSettings] = useState<UserSettingsRecord>({
     theme: "system",
     notifications: true,
@@ -199,7 +200,7 @@ export function SettingsConsole() {
       </section>
 
       <SectionPanel title={`${activeSection} Controls`} description="Selected settings section action surface.">
-        <SettingsSection activeSection={activeSection} />
+        <SettingsSection activeSection={activeSection} onOpenModal={(modal) => setOpenModal(modal)} />
       </SectionPanel>
 
       <div className="grid gap-6 xl:grid-cols-[1fr_0.9fr]">
@@ -331,17 +332,37 @@ export function SettingsConsole() {
         </div>
       </SectionPanel>
       </div>
+
+      {/* Modal Overlay */}
+      {openModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
+          <div className="max-h-[90vh] w-full max-w-2xl overflow-y-auto rounded-3xl bg-white shadow-2xl">
+            <div className="sticky top-0 flex items-center justify-between border-b border-slate-200 bg-white px-6 py-4">
+              <h2 className="text-lg font-black text-navy-950">{getModalTitle(openModal)}</h2>
+              <button
+                onClick={() => setOpenModal(null)}
+                className="rounded-lg p-1 hover:bg-slate-100"
+              >
+                <X className="h-5 w-5 text-slate-500" />
+              </button>
+            </div>
+            <div className="p-6">
+              <ModalContent modalType={openModal} />
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
 
-function SettingsSection({ activeSection }: { activeSection: string }) {
+function SettingsSection({ activeSection, onOpenModal }: { activeSection: string; onOpenModal: (modal: string) => void }) {
   if (activeSection === "Connected Apps") {
-    return <ActionLink href="/integrations" label="Open integrations" detail="Manage accounting, storage and webhook connections." />;
+    return <ModalAction label="Open integrations" detail="Manage accounting, storage and webhook connections." onClick={() => onOpenModal("connected-apps")} />;
   }
 
   if (activeSection === "Access") {
-    return <ActionLink href="/team" label="Open team access" detail="Invite users and review roles." />;
+    return <ModalAction label="Open team access" detail="Invite users and review roles." onClick={() => onOpenModal("access")} />;
   }
 
   if (activeSection === "Billing") {
@@ -353,7 +374,7 @@ function SettingsSection({ activeSection }: { activeSection: string }) {
   }
 
   if (activeSection === "Security") {
-    return <ActionLink href="/debug/auth" label="Open auth diagnostics" detail="Review session, profile, workspace and cookie status." />;
+    return <ModalAction label="Open auth diagnostics" detail="Review session, profile, workspace and cookie status." onClick={() => onOpenModal("security")} />;
   }
 
   if (["Search", "Downloads", "Viewer"].includes(activeSection)) {
@@ -361,6 +382,20 @@ function SettingsSection({ activeSection }: { activeSection: string }) {
   }
 
   return <DisabledAction label={`${activeSection} settings are available below`} detail="Use the editable controls on this page to save changes." />;
+}
+
+function ModalAction({ label, detail, onClick }: { label: string; detail: string; onClick: () => void }) {
+  return (
+    <button
+      onClick={onClick}
+      className="inline-flex flex-col items-start rounded-2xl bg-royal-600 px-4 py-3 text-sm font-black text-white shadow-glow transition hover:bg-royal-700 active:scale-95"
+    >
+      <span className="flex items-center gap-2">
+        {label} <ArrowRight className="h-4 w-4" />
+      </span>
+      <span className="mt-1 text-xs font-bold text-blue-100">{detail}</span>
+    </button>
+  );
 }
 
 function ActionLink({ href, label, detail }: { href: string; label: string; detail: string }) {
@@ -385,4 +420,73 @@ function DisabledAction({ label, detail }: { label: string; detail: string }) {
       <span className="mt-1 block text-xs font-bold">{detail}</span>
     </button>
   );
+}
+
+function getModalTitle(modalType: string): string {
+  switch (modalType) {
+    case "connected-apps":
+      return "Connected Apps & Integrations";
+    case "access":
+      return "Team Access & Permissions";
+    case "security":
+      return "Auth Diagnostics & Security";
+    default:
+      return "Settings";
+  }
+}
+
+function ModalContent({ modalType }: { modalType: string }) {
+  if (modalType === "connected-apps") {
+    return (
+      <div className="space-y-4">
+        <p className="text-sm leading-6 text-slate-600">
+          Manage integrations with accounting platforms, storage providers, and webhook connections.
+        </p>
+        <Link href="/integrations" className="inline-flex items-center gap-2 rounded-2xl bg-royal-600 px-4 py-2.5 text-sm font-black text-white transition hover:bg-royal-700">
+          Go to Integrations
+          <ArrowRight className="h-4 w-4" />
+        </Link>
+      </div>
+    );
+  }
+
+  if (modalType === "access") {
+    return (
+      <div className="space-y-4">
+        <p className="text-sm leading-6 text-slate-600">
+          Invite team members and manage their roles and permissions within your workspace.
+        </p>
+        <Link href="/team" className="inline-flex items-center gap-2 rounded-2xl bg-royal-600 px-4 py-2.5 text-sm font-black text-white transition hover:bg-royal-700">
+          Go to Team Settings
+          <ArrowRight className="h-4 w-4" />
+        </Link>
+      </div>
+    );
+  }
+
+  if (modalType === "security") {
+    return (
+      <div className="space-y-4">
+        <p className="text-sm leading-6 text-slate-600">
+          Review your session status, authentication tokens, and security configuration.
+        </p>
+        <div className="rounded-2xl bg-slate-50 p-4 space-y-3">
+          <div>
+            <p className="text-xs font-black uppercase tracking-widest text-slate-600">Session Status</p>
+            <p className="mt-1 text-sm font-semibold text-emerald-700">✓ Active</p>
+          </div>
+          <div>
+            <p className="text-xs font-black uppercase tracking-widest text-slate-600">Authentication Method</p>
+            <p className="mt-1 text-sm font-semibold text-navy-950">Supabase JWT with Server-Side Sessions</p>
+          </div>
+        </div>
+        <Link href="/debug/auth" className="inline-flex items-center gap-2 rounded-2xl bg-royal-600 px-4 py-2.5 text-sm font-black text-white transition hover:bg-royal-700">
+          View Full Diagnostics
+          <ArrowRight className="h-4 w-4" />
+        </Link>
+      </div>
+    );
+  }
+
+  return null;
 }
