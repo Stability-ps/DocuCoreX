@@ -156,7 +156,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                 className="flex h-11 min-w-11 items-center justify-center rounded-2xl bg-navy-950 px-2 text-sm font-black text-white"
                 title="Account menu"
               >
-                {profile?.fullName?.charAt(0) ?? "P"}
+                {profile?.fullName?.charAt(0) ?? "?"}
               </button>
             </div>
           </div>
@@ -178,8 +178,8 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           ) : null}
           {showProfile ? (
             <div className="absolute right-6 top-20 z-50 w-64 rounded-3xl border border-slate-200 bg-white p-4 shadow-soft">
-              <p className="font-black text-navy-950">{profile?.fullName ?? "Patric"}</p>
-              <p className="text-sm text-slate-500">{profile?.company ?? "DocuCoreX Workspace"}</p>
+              <p className="font-black text-navy-950">{profile?.fullName ?? "Account"}</p>
+              <p className="text-sm text-slate-500">{profile?.company ?? ""}</p>
               <div className="mt-4 grid gap-2">
                 <Link href="/settings" className="rounded-2xl bg-slate-50 px-3 py-2 text-sm font-black text-slate-700 hover:text-royal-700">Account settings</Link>
                 <Link href="/team" className="rounded-2xl bg-slate-50 px-3 py-2 text-sm font-black text-slate-700 hover:text-royal-700">Team access</Link>

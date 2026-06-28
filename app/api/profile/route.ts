@@ -1,22 +1,29 @@
 import { NextResponse } from "next/server";
-import { isAuthRequired } from "@/lib/supabase";
+import { isAuthRequired, isSupabaseConfigured } from "@/lib/supabase";
 import { createSupabaseServerClient } from "@/lib/supabase-server";
 import { ensureUserWorkspace } from "@/lib/workspace-bootstrap";
 
 const demoProfile = {
   id: "user_demo",
   workspaceId: "workspace_demo",
-  fullName: "Patric",
+  fullName: "Demo User",
   company: "DocuCoreX Workspace",
   role: "Owner",
   twoFactorEnabled: false,
 };
 
+// Demo mode is only allowed in local development when Supabase is not configured.
+const isDemoAllowed = process.env.NODE_ENV !== "production" && !isSupabaseConfigured && !isAuthRequired;
+
 export async function GET() {
   const supabase = await createSupabaseServerClient();
 
+  // Only allow demo mode if Supabase is not configured AND we're in local development.
   if (!supabase) {
-    return NextResponse.json({ profile: demoProfile, mode: "demo" });
+    if (isDemoAllowed) {
+      return NextResponse.json({ profile: demoProfile, mode: "demo" });
+    }
+    return NextResponse.json({ error: "Supabase is not configured. Check your environment variables." }, { status: 503 });
   }
 
   const {
@@ -24,10 +31,7 @@ export async function GET() {
     error: userError,
   } = await supabase.auth.getUser();
 
-  if ((userError || !user) && !isAuthRequired) {
-    return NextResponse.json({ profile: demoProfile, mode: "demo" });
-  }
-
+  // Supabase is configured — never fall back to demo. Require a real session.
   if (userError || !user) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
@@ -44,14 +48,10 @@ export async function GET() {
   }
 
   if (error) {
-    if (!isAuthRequired) {
-      return NextResponse.json({ profile: demoProfile, mode: "demo" });
-    }
-
     return NextResponse.json({ error: "Your workspace is not ready yet. Please refresh or contact support if this continues." }, { status: 500 });
   }
 
-  return NextResponse.json({ profile: data });
+  return NextResponse.json({ profile: data, mode: "live" });
 }
 
 export async function PATCH(request: Request) {
@@ -65,7 +65,10 @@ export async function PATCH(request: Request) {
   const supabase = await createSupabaseServerClient();
 
   if (!supabase) {
-    return NextResponse.json({ profile: { ...demoProfile, ...body }, mode: "demo" });
+    if (isDemoAllowed) {
+      return NextResponse.json({ profile: { ...demoProfile, ...body }, mode: "demo" });
+    }
+    return NextResponse.json({ error: "Supabase is not configured." }, { status: 503 });
   }
 
   const {
@@ -73,10 +76,7 @@ export async function PATCH(request: Request) {
     error: userError,
   } = await supabase.auth.getUser();
 
-  if ((userError || !user) && !isAuthRequired) {
-    return NextResponse.json({ profile: { ...demoProfile, ...body }, mode: "demo" });
-  }
-
+  // Supabase is configured — require a real session.
   if (userError || !user) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
@@ -95,12 +95,8 @@ export async function PATCH(request: Request) {
     .single();
 
   if (error) {
-    if (!isAuthRequired) {
-      return NextResponse.json({ profile: { ...demoProfile, ...body }, mode: "demo" });
-    }
-
     return NextResponse.json({ error: error.message }, { status: 500 });
   }
 
-  return NextResponse.json({ profile: data });
+  return NextResponse.json({ profile: data, mode: "live" });
 }

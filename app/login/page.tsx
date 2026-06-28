@@ -12,8 +12,8 @@ function LoginContent() {
   const searchParams = useSearchParams();
   const [mode, setMode] = useState<"signin" | "signup" | "forgot">("signin");
   const [showPassword, setShowPassword] = useState(false);
-  const [email, setEmail] = useState("demo@docucorex.com");
-  const [password, setPassword] = useState("DocuCoreX-demo-2026");
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
   const [status, setStatus] = useState("");
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [callbackError, setCallbackError] = useState("");
@@ -289,13 +289,15 @@ function LoginContent() {
                 <ArrowRight className="h-5 w-5" />
               </button>
 
-              <button
-                type="button"
-                onClick={enterDemoWorkspace}
-                className="flex w-full items-center justify-center gap-2 rounded-2xl border border-slate-200 bg-white px-5 py-3.5 text-sm font-black text-navy-950 shadow-sm transition hover:border-royal-200 hover:text-royal-700"
-              >
-                Continue to Dashboard
-              </button>
+              {process.env.NODE_ENV !== "production" && (
+                <button
+                  type="button"
+                  onClick={enterDemoWorkspace}
+                  className="flex w-full items-center justify-center gap-2 rounded-2xl border border-slate-200 bg-white px-5 py-3.5 text-sm font-black text-navy-950 shadow-sm transition hover:border-royal-200 hover:text-royal-700"
+                >
+                  Continue to Dashboard (Dev Only)
+                </button>
+              )}
             </form>
 
             <div className="mt-6 rounded-2xl border border-slate-200 bg-slate-50 p-4">
