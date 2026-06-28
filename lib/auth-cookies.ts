@@ -21,7 +21,7 @@ export function dedupeCookies<T extends CookieLike>(cookies: T[]) {
 export function setSupabaseAuthCookie(
   cookieStore: CookieSetter,
   cookie: { name: string; value: string; options: CookieOptions },
-  httpOnly = true,
+  httpOnly = false,
 ) {
   clearLegacySupabaseCookie(cookieStore, cookie.name);
   cookieStore.set(cookie.name, cookie.value, {
