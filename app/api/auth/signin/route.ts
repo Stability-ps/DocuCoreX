@@ -1,5 +1,6 @@
-import { createSupabaseServerClient } from "@/lib/supabase-server";
+import { createServerClient } from "@supabase/ssr";
 import { ensureUserWorkspace } from "@/lib/workspace-bootstrap";
+import { cookies } from "next/headers";
 import { NextRequest, NextResponse } from "next/server";
 
 export async function POST(request: NextRequest) {
@@ -13,14 +14,24 @@ export async function POST(request: NextRequest) {
   }
 
   try {
-    const supabase = await createSupabaseServerClient();
-
-    if (!supabase) {
-      return NextResponse.json(
-        { error: "Authentication service not configured" },
-        { status: 500 }
-      );
-    }
+    const cookieStore = await cookies();
+    
+    const supabase = createServerClient(
+      process.env.NEXT_PUBLIC_SUPABASE_URL as string,
+      process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY as string,
+      {
+        cookies: {
+          getAll() {
+            return cookieStore.getAll();
+          },
+          setAll(cookiesToSet) {
+            cookiesToSet.forEach(({ name, value, options }) => {
+              cookieStore.set(name, value, options);
+            });
+          },
+        },
+      }
+    );
 
     const { data, error } = await supabase.auth.signInWithPassword({
       email,
@@ -46,13 +57,26 @@ export async function POST(request: NextRequest) {
       await ensureUserWorkspace(data.user);
     } catch (e) {
       console.error("[Auth API] Workspace bootstrap failed:", e);
-      // Don't fail the auth just because workspace setup failed
     }
 
-    return NextResponse.json(
+    const response = NextResponse.json(
       { success: true, user: data.user },
       { status: 200 }
     );
+
+    // Copy cookies from the server to the response
+    cookieStore.getAll().forEach(({ name, value }) => {
+      if (name.includes("sb-") || name.includes("auth")) {
+        response.cookies.set(name, value, { 
+          httpOnly: true,
+          secure: process.env.NODE_ENV === "production",
+          sameSite: "lax",
+          maxAge: 60 * 60 * 24 * 365, // 1 year
+        });
+      }
+    });
+
+    return response;
   } catch (error) {
     console.error("[Auth API] Unexpected error:", error);
     return NextResponse.json(
