@@ -1,6 +1,7 @@
 import { createServerClient } from "@supabase/ssr";
 import { ensureUserWorkspace } from "@/lib/workspace-bootstrap";
 import { NextRequest, NextResponse } from "next/server";
+import type { CookieOptions } from "@supabase/ssr";
 
 export async function POST(request: NextRequest) {
   const { email, password } = await request.json();
@@ -13,8 +14,8 @@ export async function POST(request: NextRequest) {
   }
 
   try {
-    // Use a mutable response so Supabase can set cookies directly on it
-    const supabaseResponse = NextResponse.next({ request });
+    // Accumulate cookies Supabase wants to set
+    const pendingCookies: Array<{ name: string; value: string; options: CookieOptions }> = [];
 
     const supabase = createServerClient(
       process.env.NEXT_PUBLIC_SUPABASE_URL as string,
@@ -26,7 +27,7 @@ export async function POST(request: NextRequest) {
           },
           setAll(cookiesToSet) {
             cookiesToSet.forEach(({ name, value, options }) => {
-              supabaseResponse.cookies.set(name, value, options);
+              pendingCookies.push({ name, value, options });
             });
           },
         },
@@ -59,19 +60,19 @@ export async function POST(request: NextRequest) {
       console.error("[Auth API] Workspace bootstrap failed:", e);
     }
 
-    // Build final response and copy the auth cookies Supabase set on supabaseResponse
+    // Build response and apply auth cookies from Supabase
     const response = NextResponse.json(
       { success: true, user: data.user },
       { status: 200 }
     );
 
-    supabaseResponse.cookies.getAll().forEach(({ name, value }) => {
+    pendingCookies.forEach(({ name, value, options }) => {
       response.cookies.set(name, value, {
+        ...options,
         httpOnly: true,
         secure: process.env.NODE_ENV === "production",
         sameSite: "lax",
         path: "/",
-        maxAge: 60 * 60 * 24 * 365,
       });
     });
 

@@ -58,7 +58,16 @@ export async function middleware(request: NextRequest) {
     error,
   } = await supabase.auth.getUser();
 
-  if (error || !user) {
+  // If getUser fails with a network/server error, try getSession as fallback
+  // (getSession reads the cookie locally without a network call)
+  if (error && !user) {
+    const { data: sessionData } = await supabase.auth.getSession();
+    if (sessionData.session?.user) {
+      return response;
+    }
+  }
+
+  if (!user) {
     const loginUrl = request.nextUrl.clone();
     loginUrl.pathname = "/login";
     loginUrl.searchParams.set("next", pathname);

@@ -1,6 +1,7 @@
 import { createServerClient } from "@supabase/ssr";
 import { ensureUserWorkspace } from "@/lib/workspace-bootstrap";
 import { NextRequest, NextResponse } from "next/server";
+import type { CookieOptions } from "@supabase/ssr";
 
 export async function POST(request: NextRequest) {
   const { email, password } = await request.json();
@@ -14,7 +15,7 @@ export async function POST(request: NextRequest) {
 
   try {
     const redirectUrl = `${new URL(request.url).origin}/auth/callback`;
-    const supabaseResponse = NextResponse.next({ request });
+    const pendingCookies: Array<{ name: string; value: string; options: CookieOptions }> = [];
 
     const supabase = createServerClient(
       process.env.NEXT_PUBLIC_SUPABASE_URL as string,
@@ -26,7 +27,7 @@ export async function POST(request: NextRequest) {
           },
           setAll(cookiesToSet) {
             cookiesToSet.forEach(({ name, value, options }) => {
-              supabaseResponse.cookies.set(name, value, options);
+              pendingCookies.push({ name, value, options });
             });
           },
         },
@@ -77,13 +78,13 @@ export async function POST(request: NextRequest) {
 
     // Copy auth cookies set by Supabase onto the final response
     if (data.session) {
-      supabaseResponse.cookies.getAll().forEach(({ name, value }) => {
+      pendingCookies.forEach(({ name, value, options }) => {
         response.cookies.set(name, value, {
+          ...options,
           httpOnly: true,
           secure: process.env.NODE_ENV === "production",
           sameSite: "lax",
           path: "/",
-          maxAge: 60 * 60 * 24 * 365,
         });
       });
     }
