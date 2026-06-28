@@ -2,18 +2,36 @@
 
 import Image from "next/image";
 import Link from "next/link";
-import { useState } from "react";
-import { ArrowRight, Check, Eye, EyeOff, KeyRound, LockKeyhole, Mail, ShieldCheck } from "lucide-react";
+import { useSearchParams } from "next/navigation";
+import { Suspense, useState, useEffect } from "react";
+import { ArrowRight, Check, Eye, EyeOff, KeyRound, LockKeyhole, Mail, ShieldCheck, AlertCircle } from "lucide-react";
 import { getSiteUrl, isSupabaseConfigured, supabase } from "@/lib/supabase";
 import { profileChecklist } from "@/lib/product-data";
 
-export default function LoginPage() {
+function LoginContent() {
+  const searchParams = useSearchParams();
   const [mode, setMode] = useState<"signin" | "signup" | "forgot">("signin");
   const [showPassword, setShowPassword] = useState(false);
   const [email, setEmail] = useState("demo@docucorex.com");
   const [password, setPassword] = useState("DocuCoreX-demo-2026");
   const [status, setStatus] = useState("");
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [callbackError, setCallbackError] = useState("");
+
+  useEffect(() => {
+    const error = searchParams.get("error");
+    if (error) {
+      const errorMessages: Record<string, string> = {
+        exchange_failed: "Session exchange failed. Please try signing in again.",
+        no_user: "Authentication completed but user not found. Please try again.",
+        auth_failed: "Authentication failed. Please try again or continue to the dashboard.",
+      };
+      setCallbackError(errorMessages[error] || `Authentication error: ${error}`);
+      if (process.env.NODE_ENV === "development") {
+        console.error("[Login] Callback error:", error);
+      }
+    }
+  }, [searchParams]);
 
   function enterDemoWorkspace() {
     setStatus("Opening the DocuCoreX product workspace.");
@@ -249,6 +267,13 @@ export default function LoginPage() {
                 </div>
               ) : null}
 
+              {callbackError ? (
+                <div className="flex gap-3 rounded-2xl border border-red-200 bg-red-50 p-3 text-sm font-bold leading-6 text-red-800">
+                  <AlertCircle className="mt-0.5 h-5 w-5 flex-shrink-0" />
+                  <div>{callbackError}</div>
+                </div>
+              ) : null}
+
               {status ? (
                 <div className="rounded-2xl border border-royal-100 bg-royal-50 p-3 text-sm font-bold leading-6 text-royal-800">
                   {status}
@@ -285,5 +310,13 @@ export default function LoginPage() {
         </section>
       </div>
     </main>
+  );
+}
+
+export default function LoginPage() {
+  return (
+    <Suspense fallback={<div className="min-h-screen bg-slate-50 flex items-center justify-center">Loading...</div>}>
+      <LoginContent />
+    </Suspense>
   );
 }
