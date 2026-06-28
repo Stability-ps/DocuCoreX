@@ -81,6 +81,10 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     }
   }
 
+  function signOut() {
+    window.location.assign("/auth/signout");
+  }
+
   const unreadCount = notifications.filter((notification) => !notification.read).length;
   const isActive = (href: string) => pathname === href || (href !== "/" && pathname.startsWith(`${href}/`));
   const isExactActive = (href: string) => pathname === href;
@@ -235,9 +239,15 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                 <Bell className="h-5 w-5" />
                 {unreadCount ? <span className="absolute -right-1 -top-1 rounded-full bg-rose-500 px-1.5 text-[10px] font-black text-white">{unreadCount}</span> : null}
               </button>
-              <Link href="/auth/signout" className="rounded-2xl border border-slate-200 bg-white p-3 text-slate-600 shadow-sm transition hover:text-royal-700" title="Sign out">
+              <button
+                type="button"
+                onClick={signOut}
+                className="rounded-2xl border border-slate-200 bg-white p-3 text-slate-600 shadow-sm transition hover:text-royal-700"
+                title="Sign out"
+                aria-label="Sign out"
+              >
                 <LogOut className="h-5 w-5" />
-              </Link>
+              </button>
               <button
                 onClick={() => setShowProfile((value) => !value)}
                 className="flex h-11 min-w-11 items-center justify-center rounded-2xl bg-navy-950 px-2 text-sm font-black text-white"
@@ -270,7 +280,13 @@ export function AppShell({ children }: { children: React.ReactNode }) {
               <div className="mt-4 grid gap-2">
                 <Link href="/settings" className="rounded-2xl bg-slate-50 px-3 py-2 text-sm font-black text-slate-700 hover:text-royal-700">Account settings</Link>
                 <Link href="/team" className="rounded-2xl bg-slate-50 px-3 py-2 text-sm font-black text-slate-700 hover:text-royal-700">Team access</Link>
-                <Link href="/auth/signout" className="rounded-2xl bg-rose-50 px-3 py-2 text-sm font-black text-rose-700">Sign out</Link>
+                <button
+                  type="button"
+                  onClick={signOut}
+                  className="rounded-2xl bg-rose-50 px-3 py-2 text-left text-sm font-black text-rose-700"
+                >
+                  Sign out
+                </button>
               </div>
             </div>
           ) : null}
