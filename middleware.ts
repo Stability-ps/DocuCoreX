@@ -46,7 +46,7 @@ export async function middleware(request: NextRequest) {
 
   const {
     data: { user },
-  } = await supabase.auth.getUser();
+  } = await (supabase.auth as unknown as { getUser: () => Promise<{ data: { user: unknown } }> }).getUser();
 
   if (!user) {
     const loginUrl = request.nextUrl.clone();
