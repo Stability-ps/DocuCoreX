@@ -1167,24 +1167,35 @@ def professional_transaction_row(transaction: ParsedTransaction, source_file: st
         "source_file": source_file,
         "rule_confidence": transaction.confidence,
         "ai_used": False,
-        "review_required": should_review(transaction),
+        "review_required": False,
         "review_reason": "",
-        "invoice_required": bool(money_out > 0 and vat_claim_status in {"Review", "Input/Review", "Output/Review"}),
+        "invoice_required": bool(
+            money_out > 0
+            and vat_claim_status in {"Review", "Input/Review", "Output/Review"}
+            and group not in {"Bank Charges", "Transfers", "Payroll/Personal", "Insurance"}
+        ),
     }
     row["review_reason"] = professional_review_reason(row) or ""
-    row["review_required"] = row["review_required"] or bool(row["review_reason"])
+    row["review_required"] = bool(row["review_reason"])
     return row
 
 
 def professional_review_reason(row: dict[str, Any]) -> str | None:
     reasons: list[str] = []
     description = str(row["description"]).lower()
-    if row["vat_claim_status"] in {"Review", "Input/Review", "Output/Review"}:
-        reasons.append("VAT/invoice review")
-    if row["account"] in {"Unclassified Expense", "Meals / Groceries - Non Deductible Review"}:
-        reasons.append("Likely personal/non-deductible unless business proof")
-    if any(token in description for token in ("uber eats", "spa", "puppy", "photography", "sloppy kisses")):
+    confidence = float(row.get("rule_confidence") or row.get("ai_confidence") or 0)
+    if confidence and confidence < 75:
+        reasons.append("Low confidence classification")
+    if row["account"] in {"Unclassified Expense", "Other Income / Review", "Meals / Groceries - Non Deductible Review"}:
+        reasons.append("Unknown or unclear supplier")
+    if row["vat_claim_status"] in {"Review", "Output/Review"}:
+        reasons.append("VAT treatment uncertain")
+    if row.get("invoice_required"):
+        reasons.append("Invoice support required")
+    if any(token in description for token in ("uber eats", "meal", "restaurant", "spa", "puppy", "photography", "sloppy kisses", "senses spa", "adore")):
         reasons.append("Personal-looking or entertainment expense")
+    if "transfer" in description and row["group"] not in {"Transfers"}:
+        reasons.append("Unusual transfer classification")
     return "; ".join(dict.fromkeys(reasons)) if reasons else None
 
 
@@ -1225,11 +1236,32 @@ def row_needs_ai(row: dict[str, Any]) -> bool:
     description = str(row.get("description") or "").lower()
     return (
         float(row.get("rule_confidence") or 0) < 80
-        or row.get("vat_claim_status") in {"Review", "Input/Review", "Output/Review"}
+        or row.get("vat_claim_status") in {"Review", "Output/Review"}
         or row.get("account") in {"Unclassified Expense", "Review Required", "Meals / Groceries - Non Deductible Review", "Other Income / Review"}
         or row.get("group") == "Review"
         or any(token in description for token in ("uber eats", "spa", "puppy", "photography", "sloppy kisses", "senses spa", "adore"))
     )
+
+
+def mark_possible_duplicates(rows: list[dict[str, Any]]) -> None:
+    seen: dict[tuple[str, Decimal, Decimal], int] = {}
+    for row in rows:
+        key = (
+            normalize_ai_cache_key(str(row.get("description") or "")),
+            decimal_amount(row.get("money_in")),
+            decimal_amount(row.get("money_out")),
+        )
+        seen[key] = seen.get(key, 0) + 1
+    for row in rows:
+        key = (
+            normalize_ai_cache_key(str(row.get("description") or "")),
+            decimal_amount(row.get("money_in")),
+            decimal_amount(row.get("money_out")),
+        )
+        if seen.get(key, 0) > 1 and (decimal_amount(row.get("money_in")) > 0 or decimal_amount(row.get("money_out")) > 0):
+            reason = row.get("review_reason") or ""
+            row["review_reason"] = "; ".join(part for part in [reason, "Possible duplicate"] if part)
+            row["review_required"] = True
 
 
 def ai_safe_item(row: dict[str, Any], transaction_id: str) -> dict[str, Any]:
@@ -1287,6 +1319,22 @@ def validate_ai_item(item: Any, valid_ids: set[str]) -> dict[str, Any] | None:
     }
 
 
+def parse_ai_json_content(content: str) -> dict[str, Any]:
+    cleaned = content.strip()
+    if cleaned.startswith("```"):
+        cleaned = re.sub(r"^```(?:json)?\s*", "", cleaned, flags=re.IGNORECASE).strip()
+        cleaned = re.sub(r"\s*```$", "", cleaned).strip()
+    try:
+        parsed = json.loads(cleaned)
+    except json.JSONDecodeError:
+        start = cleaned.find("{")
+        end = cleaned.rfind("}")
+        if start < 0 or end <= start:
+            raise
+        parsed = json.loads(cleaned[start : end + 1])
+    return parsed if isinstance(parsed, dict) else {}
+
+
 def request_ai_classifications(items: list[dict[str, Any]], diagnostics: dict[str, Any]) -> list[dict[str, Any]]:
     api_key = os.getenv("OPENAI_API_KEY")
     if not api_key or not items:
@@ -1324,20 +1372,35 @@ def request_ai_classifications(items: list[dict[str, Any]], diagnostics: dict[st
             {"role": "user", "content": json.dumps(prompt, default=str)},
         ],
     }
-    request = urllib.request.Request(
-        "https://api.openai.com/v1/chat/completions",
-        data=json.dumps(body).encode("utf-8"),
-        headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
-        method="POST",
-    )
+
+    def send_openai_request(request_body: dict[str, Any]) -> dict[str, Any]:
+        request = urllib.request.Request(
+            "https://api.openai.com/v1/chat/completions",
+            data=json.dumps(request_body).encode("utf-8"),
+            headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(request, timeout=30) as response:
+            return json.loads(response.read().decode("utf-8"))
 
     try:
-        with urllib.request.urlopen(request, timeout=30) as response:
-            payload = json.loads(response.read().decode("utf-8"))
+        try:
+            payload = send_openai_request(body)
+        except urllib.error.HTTPError as exc:
+            body_text = exc.read().decode("utf-8", errors="replace")
+            if exc.code != 400:
+                raise
+            log_warning("worker.ai_classification_retrying_without_response_format", status=exc.code, body=body_text[:1200])
+            fallback_body = {key: value for key, value in body.items() if key != "response_format"}
+            payload = send_openai_request(fallback_body)
         content = payload.get("choices", [{}])[0].get("message", {}).get("content", "{}")
-        parsed = json.loads(content)
+        parsed = parse_ai_json_content(content)
         valid_ids = {str(item["transaction_id"]) for item in items}
-        return [validated for raw in parsed.get("items", []) if (validated := validate_ai_item(raw, valid_ids))]
+        validated_items = [validated for raw in parsed.get("items", []) if (validated := validate_ai_item(raw, valid_ids))]
+        if not validated_items and items:
+            diagnostics["ai_failures"] += 1
+            log_warning("worker.ai_classification_empty", returned_keys=list(parsed.keys()) if isinstance(parsed, dict) else [], item_count=len(items))
+        return validated_items
     except urllib.error.HTTPError as exc:
         diagnostics["ai_failures"] += 1
         body_text = exc.read().decode("utf-8", errors="replace")
@@ -1433,6 +1496,7 @@ def build_workbook(metadata: dict[str, Any], transactions: list[ParsedTransactio
     source_file = metadata.get("source_file") or "28 Feb 2026 - (Free)"
     rows = [professional_transaction_row(transaction, source_file) for transaction in transactions]
     ai_stats = apply_ai_classifications(rows)
+    mark_possible_duplicates(rows)
     metadata["_ai_diagnostics"] = ai_stats
     months = month_summary(rows)
     bank_charge_total = sum((row["bank_charge"] for row in rows), Decimal("0.00")).quantize(CENT)
@@ -1443,7 +1507,7 @@ def build_workbook(metadata: dict[str, Any], transactions: list[ParsedTransactio
     dashboard = workbook.active
     dashboard.title = "Dashboard"
     dashboard.merge_cells("A1:K1")
-    dashboard["A1"] = f"{company_name} - Bank Statement Analysis, VAT Schedule, Trial Balance and General Ledger"
+    dashboard["A1"] = f"{company_name} - Bank Statement Accounting Pack"
     dashboard["A1"].font = Font(bold=True, size=14, color="FFFFFF")
     dashboard["A1"].fill = HEADER_FILL
     dashboard["A1"].alignment = Alignment(horizontal="center")
@@ -1459,9 +1523,12 @@ def build_workbook(metadata: dict[str, Any], transactions: list[ParsedTransactio
         ("Potential input VAT (review)", total_input_vat),
         ("Potential VAT payable/(refund)", (total_output_vat - total_input_vat).quantize(CENT)),
         ("Transactions extracted", len(transactions)),
+        ("Reconciliation status", "Reconciled" if status == "PASSED" else "Review required"),
     ]
     for index, row in enumerate(dashboard_rows, start=3):
         write_row(dashboard, list(row), index)
+    dashboard["B14"].fill = PASS_FILL if status == "PASSED" else FAIL_FILL
+    dashboard["B14"].font = Font(bold=True, color="166534" if status == "PASSED" else "991B1B")
     write_row_at(dashboard, ["Month", "Receipts", "Payments", "Likely Sales", "COS/Subcontractors", "Output VAT", "Input VAT", "VAT Payable/(Refund)"], 3, 4, header=True)
     for row_index, month_row in enumerate(months, start=4):
         write_row_at(
@@ -1478,7 +1545,7 @@ def build_workbook(metadata: dict[str, Any], transactions: list[ParsedTransactio
     tx = workbook.create_sheet("Transactions")
     transaction_headers = [
         "Date", "Month", "Description", "Money In", "Money Out", "Amount", "Type", "Balance", "Bank Charge",
-        "Account", "Group", "VAT Treatment", "VAT Claim Status", "Potential Output VAT", "Potential Input VAT", "Source File",
+        "Account", "Group", "VAT Treatment", "VAT Claim Status", "Potential Output VAT", "Potential Input VAT",
     ]
     write_row(tx, transaction_headers, 1, header=True)
     for row_index, row in enumerate(rows, start=2):
@@ -1487,7 +1554,7 @@ def build_workbook(metadata: dict[str, Any], transactions: list[ParsedTransactio
             [
                 row["date"], row["month"], row["description"], row["money_in"], row["money_out"], row["amount"], row["type"], row["balance"],
                 row["bank_charge"], row["account"], row["group"], row["vat_treatment"], row["vat_claim_status"], row["potential_output_vat"],
-                row["potential_input_vat"], row["source_file"],
+                row["potential_input_vat"],
             ],
             row_index,
         )
@@ -1510,22 +1577,22 @@ def build_workbook(metadata: dict[str, Any], transactions: list[ParsedTransactio
     apply_number_formats(vat, [3, 4, 8, 9, 10])
 
     ledger = workbook.create_sheet("General Ledger")
-    write_row(ledger, ["Date", "Description", "Account", "Debit", "Credit", "Source"], 1, header=True)
+    write_row(ledger, ["Date", "Description", "Account", "Debit", "Credit"], 1, header=True)
     gl_row = 2
-    write_row(ledger, [workbook_date(metadata.get("statement_period_start")), "Opening balance per bank statement", "Bank", opening, Decimal("0.00"), "Opening"], gl_row)
+    write_row(ledger, [workbook_date(metadata.get("statement_period_start")), "Opening balance per bank statement", "Bank", opening, Decimal("0.00")], gl_row)
     gl_row += 1
-    write_row(ledger, [workbook_date(metadata.get("statement_period_start")), "Opening balance per bank statement", "Opening Equity / Prior Periods", Decimal("0.00"), opening, "Opening"], gl_row)
+    write_row(ledger, [workbook_date(metadata.get("statement_period_start")), "Opening balance per bank statement", "Opening Equity / Prior Periods", Decimal("0.00"), opening], gl_row)
     gl_row += 1
     for row in rows:
         if row["money_out"] > 0:
-            write_row(ledger, [row["date"], row["description"], row["account"], row["money_out"], Decimal("0.00"), row["source_file"]], gl_row)
+            write_row(ledger, [row["date"], row["description"], row["account"], row["money_out"], Decimal("0.00")], gl_row)
             gl_row += 1
-            write_row(ledger, [row["date"], row["description"], "Bank", Decimal("0.00"), row["money_out"], row["source_file"]], gl_row)
+            write_row(ledger, [row["date"], row["description"], "Bank", Decimal("0.00"), row["money_out"]], gl_row)
             gl_row += 1
         elif row["money_in"] > 0:
-            write_row(ledger, [row["date"], row["description"], "Bank", row["money_in"], Decimal("0.00"), row["source_file"]], gl_row)
+            write_row(ledger, [row["date"], row["description"], "Bank", row["money_in"], Decimal("0.00")], gl_row)
             gl_row += 1
-            write_row(ledger, [row["date"], row["description"], row["account"], Decimal("0.00"), row["money_in"], row["source_file"]], gl_row)
+            write_row(ledger, [row["date"], row["description"], row["account"], Decimal("0.00"), row["money_in"]], gl_row)
             gl_row += 1
     apply_number_formats(ledger, [4, 5])
 
@@ -1537,32 +1604,48 @@ def build_workbook(metadata: dict[str, Any], transactions: list[ParsedTransactio
         credits = sum(decimal_amount(ledger.cell(row=row, column=5).value) for row in range(2, ledger.max_row + 1) if ledger.cell(row=row, column=3).value == account)
         net = (debits - credits).quantize(CENT)
         write_row(trial, [account, debits, credits, net if net > 0 else Decimal("0.00"), abs(net) if net < 0 else Decimal("0.00")], row_index)
+    total_row = len(ledger_accounts) + 2
+    write_row(
+        trial,
+        [
+            "Totals",
+            f"=SUM(B2:B{total_row - 1})",
+            f"=SUM(C2:C{total_row - 1})",
+            f"=SUM(D2:D{total_row - 1})",
+            f"=SUM(E2:E{total_row - 1})",
+        ],
+        total_row,
+    )
+    write_row(
+        trial,
+        ["Balance Check", "", "", f"=D{total_row}-E{total_row}", "Balanced when zero"],
+        total_row + 1,
+    )
+    for cell in trial[total_row]:
+        cell.font = Font(bold=True)
     apply_number_formats(trial, [2, 3, 4, 5])
 
     rec = workbook.create_sheet("Bank Rec")
-    write_row(rec, ["File", "Statement Date", "Opening Balance", "Closing Balance", "Statement Credit Total", "Extracted Credit Total", "Difference", "Statement Debit Total", "Extracted Debit Total", "Difference", "Service Fees", "Bank VAT"], 1, header=True)
-    write_row(
-        rec,
-        [
-            source_file,
-            workbook_date(metadata.get("statement_period_end")),
-            opening,
-            closing,
-            totals["total_credits"],
-            f"=SUM(Transactions!D2:D{len(rows) + 1})",
-            f"=E2-F2",
-            totals["total_debits"],
-            f"=SUM(Transactions!E2:E{len(rows) + 1})",
-            f"=H2-I2",
-            bank_charge_total,
-            bank_vat,
-        ],
-        2,
-    )
-    apply_number_formats(rec, [3, 4, 5, 6, 7, 8, 9, 10, 11, 12])
+    write_row(rec, ["Bank Reconciliation", "Amount"], 1, header=True)
+    rec_rows = [
+        ("Opening Balance", opening),
+        ("+ Receipts", totals["total_credits"]),
+        ("- Payments", totals["total_debits"]),
+        ("= Expected Closing Balance", f"=B2+B3-B4"),
+        ("Statement Closing Balance", closing),
+        ("Difference", f"=B5-B6"),
+        ("Status", "Reconciled" if status == "PASSED" else "Review required"),
+        ("Service Fees", bank_charge_total),
+        ("Bank VAT", bank_vat),
+    ]
+    for row_index, row in enumerate(rec_rows, start=2):
+        write_row(rec, list(row), row_index)
+    rec["B8"].fill = PASS_FILL if status == "PASSED" else FAIL_FILL
+    rec["B8"].font = Font(bold=True, color="166534" if status == "PASSED" else "991B1B")
+    apply_number_formats(rec, [2])
 
     review = workbook.create_sheet("Review Items")
-    write_row(review, ["Date", "Description", "Money In", "Money Out", "Account", "Group", "VAT Claim Status", "Reason", "Invoice Required", "AI Assisted"], 1, header=True)
+    write_row(review, ["Date", "Description", "Money In", "Money Out", "Account", "Group", "VAT Claim Status", "Reason", "Invoice Required"], 1, header=True)
     review_row = 2
     for row in rows:
         reason = row.get("review_reason") or professional_review_reason(row)
@@ -1579,7 +1662,6 @@ def build_workbook(metadata: dict[str, Any], transactions: list[ParsedTransactio
                     row["vat_claim_status"],
                     reason or "Review recommended",
                     "Yes" if row.get("invoice_required") else "No",
-                    "Yes" if row.get("ai_used") else "No",
                 ],
                 review_row,
             )
@@ -1595,16 +1677,9 @@ def build_workbook(metadata: dict[str, Any], transactions: list[ParsedTransactio
         ("Personal / non-deductible items", "Meals, groceries, spa, pets, gifts, entertainment and similar items are flagged for review and generally should not be claimed without strong business evidence."),
         ("Transfers", "Savings, investment, credit card and home loan transfers are treated as inter-account transfers/loan movements, not VAT transactions."),
         ("Bank fees", "FNB bank VAT per statement has been included in the reconciliation sheet. Individual bank charge VAT is flagged as review where applicable."),
-        ("Source files", f"FNB statement for {company_name} Platinum Business Account {account_number}."),
-        ("AI enabled", str(ai_stats["ai_enabled"])),
-        ("AI model", ai_stats["ai_model"]),
-        ("AI transactions sent", ai_stats["ai_transactions_sent"]),
-        ("AI transactions classified", ai_stats["ai_transactions_classified"]),
-        ("AI cache hits", ai_stats["ai_cache_hits"]),
-        ("AI failures", ai_stats["ai_failures"]),
-        ("AI safety", "AI receives only date, description, money in/out and existing rule classification. It does not receive account number, balances, addresses or the PDF."),
+        ("Bank account", f"FNB Platinum Business Account ending {account_number[-4:]}."),
+        ("AI-assisted classification", "Where enabled, ambiguous descriptions may be classified by AI after the deterministic parser and reconciliation checks pass. Rule-based classifications remain the fallback."),
         ("Next step", "Match each VAT line to the relevant tax invoice, then update claim status before VAT201 submission."),
-        ("Parser", f"{WORKER_PARSER_VERSION} / {worker_version().get('commit')}"),
     ]
     for row_index, row in enumerate(assumptions_rows, start=1):
         write_row(assumptions, list(row), row_index, header=row_index == 1)
