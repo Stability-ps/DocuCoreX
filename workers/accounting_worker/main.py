@@ -1087,6 +1087,30 @@ def validate_statement(metadata: dict[str, Any], transactions: list[ParsedTransa
     return result
 
 
+def review_validation_issue(exc: HTTPException) -> dict[str, Any] | None:
+    detail = exc.detail
+    if not isinstance(detail, dict) or detail.get("message") != "FNB parser validation failed.":
+        return None
+    errors = detail.get("errors") if isinstance(detail.get("errors"), list) else []
+    summary = detail.get("summary") if isinstance(detail.get("summary"), dict) else {}
+    balance_gaps = detail.get("balance_gaps") if isinstance(detail.get("balance_gaps"), list) else []
+    return {
+        "message": "Parser validation failed. The statement layout needs review.",
+        "errors": [str(error) for error in errors],
+        "summary": summary,
+        "balance_gaps": balance_gaps,
+    }
+
+
+def review_error_message(issue: dict[str, Any] | None) -> str | None:
+    if not issue:
+        return None
+    errors = issue.get("errors") if isinstance(issue.get("errors"), list) else []
+    if errors:
+        return f"{issue['message']} {' '.join(str(error) for error in errors[:2])}"
+    return str(issue["message"])
+
+
 def extraction_diagnostics(pages: list[dict[str, Any]], full_text: str) -> dict[str, Any]:
     sample_lines = []
     for line in full_text.splitlines():
@@ -1930,12 +1954,30 @@ def process_fnb_statement(payload: ProcessRequest, authorization: str | None = H
                 },
             )
 
-        validation = validate_statement(metadata, transactions)
-        log_event(
-            "worker.statement_validated",
-            run_id=payload.run_id,
-            validation={key: str(value) for key, value in validation.items()},
-        )
+        validation: dict[str, Any] | None = None
+        review_issue: dict[str, Any] | None = None
+        try:
+            validation = validate_statement(metadata, transactions)
+            log_event(
+                "worker.statement_validated",
+                run_id=payload.run_id,
+                validation={key: str(value) for key, value in validation.items()},
+            )
+        except HTTPException as exc:
+            review_issue = review_validation_issue(exc)
+            if not review_issue:
+                raise
+            log_warning(
+                "worker.statement_needs_review",
+                run_id=payload.run_id,
+                errors=review_issue["errors"],
+                summary=review_issue["summary"],
+                balance_gaps=review_issue["balance_gaps"][:10],
+                parser_version=WORKER_PARSER_VERSION,
+            )
+            for transaction in transactions:
+                if transaction.review_status == "ready":
+                    transaction.review_status = "needs_review"
 
         supabase.table("accounting_transactions").delete().eq("run_id", payload.run_id).execute()
         rows = [
@@ -1965,7 +2007,8 @@ def process_fnb_statement(payload: ProcessRequest, authorization: str | None = H
 
         bank_charges_total = sum(transaction.debit_amount or 0 for transaction in transactions if transaction.bank_charge)
         avg_confidence = sum(transaction.confidence for transaction in transactions) / len(transactions)
-        status = "review" if any(transaction.review_status == "needs_review" for transaction in transactions) else "completed"
+        status = "review" if review_issue or any(transaction.review_status == "needs_review" for transaction in transactions) else "completed"
+        run_error = review_error_message(review_issue)
 
         supabase.table("accounting_statement_runs").update(
             {
@@ -1975,7 +2018,7 @@ def process_fnb_statement(payload: ProcessRequest, authorization: str | None = H
                 "bank_charges_total": bank_charges_total,
                 "workbook_storage_path": workbook_path,
                 "confidence": round(avg_confidence, 2),
-                "error": None,
+                "error": run_error,
                 "updated_at": datetime.utcnow().isoformat(),
             }
         ).eq("id", payload.run_id).eq("workspace_id", payload.workspace_id).execute()
@@ -1985,8 +2028,8 @@ def process_fnb_statement(payload: ProcessRequest, authorization: str | None = H
                 {
                     "status": "completed",
                     "progress": 100,
-                    "message": "Accounting workbook ready",
-                    "error": None,
+                    "message": "Accounting workbook ready for review" if review_issue else "Accounting workbook ready",
+                    "error": run_error,
                     "updated_at": datetime.utcnow().isoformat(),
                 }
             ).eq("id", payload.processing_job_id).execute()
@@ -1998,6 +2041,8 @@ def process_fnb_statement(payload: ProcessRequest, authorization: str | None = H
             transactions=len(transactions),
             workbook_storage_path=workbook_path,
             confidence=round(avg_confidence, 2),
+            validation={key: str(value) for key, value in validation.items()} if validation else None,
+            review_issue=review_issue,
             ai_diagnostics=ai_stats,
         )
 
@@ -2006,6 +2051,8 @@ def process_fnb_statement(payload: ProcessRequest, authorization: str | None = H
             "transactions": len(transactions),
             "workbook_storage_path": workbook_path,
             "confidence": round(avg_confidence, 2),
+            "validation": {key: str(value) for key, value in validation.items()} if validation else None,
+            "review_issue": review_issue,
             "ai_diagnostics": ai_stats,
             "worker": worker_version(),
         }

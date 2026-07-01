@@ -150,12 +150,22 @@ export function AccountingIntelligence() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ runId }),
       });
-      const data = (await response.json().catch(() => ({}))) as { error?: string; workerDetail?: unknown; workerRawBody?: string; workerStatus?: number };
+      const data = (await response.json().catch(() => ({}))) as {
+        error?: string;
+        result?: { status?: AccountingStatementRun["status"]; review_issue?: { message?: string; errors?: string[] } };
+        workerDetail?: unknown;
+        workerRawBody?: string;
+        workerStatus?: number;
+      };
       if (!response.ok) {
         setDiagnostics(formatDiagnostics(data));
         throw new Error(formatApiError(data, "Processing failed."));
       }
-      setMessage("FNB statement processed. Review the extracted transactions.");
+      if (data.result?.status === "review") {
+        setMessage(data.result.review_issue?.message ?? "FNB statement processed as a draft. Review the balance gap and extracted transactions.");
+      } else {
+        setMessage("FNB statement processed. Review the extracted transactions.");
+      }
       await loadRuns(runId);
     } catch (processError) {
       setError(processError instanceof Error ? processError.message : "Processing failed.");
@@ -354,6 +364,15 @@ export function AccountingIntelligence() {
                   </div>
                 ))}
               </div>
+
+              {detail.run.status === "review" && detail.run.error ? (
+                <div className="rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm font-bold text-amber-900">
+                  <p>{detail.run.error}</p>
+                  <p className="mt-1 text-xs font-semibold text-amber-800">
+                    A draft workbook and extracted transactions are available. Review or correct the highlighted rows before using the final accounting pack.
+                  </p>
+                </div>
+              ) : null}
 
               {detail.transactions.length ? (
                 <div className="overflow-x-auto rounded-2xl border border-slate-200">
