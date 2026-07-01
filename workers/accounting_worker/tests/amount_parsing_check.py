@@ -262,15 +262,13 @@ def run():
         {"statement_period_end": "2026-02-28", "opening_balance": 2896.55},
     )
     inferred_fees = [row for row in [*first_inferred, *second_inferred] if row.description.startswith("#")]
-    assert_equal(len(inferred_fees), 4, "inferred fee count")
+    assert_equal(len(inferred_fees), 2, "inferred fee count")
     assert_equal([row.description for row in inferred_fees], [
-        "#Service Fees Intl Pmt Fee-Google Xiao",
-        "#Monthly Account Fee",
-        "#Service Fees",
-        "#Service Fees Intl Pmt Fee-Google Chat",
+        "#Monthly Account Fee / Service Fees - inferred from balance movement",
+        "#Monthly Account Fee / Service Fees - inferred from balance movement",
     ], "inferred fee descriptions")
     assert_equal(sum(Decimal(str(row.debit_amount or 0)) for row in inferred_fees), Decimal("695.00"), "inferred fee total")
-    assert_equal([row.running_balance for row in inferred_fees], [58342.32, 2317.55, 2212.55, 2202.99], "inferred fee balances")
+    assert_equal([row.running_balance for row in inferred_fees], [58342.32, 2202.99], "inferred fee balances")
 
     march_header_line = (
         "27 Mar POS Purchase Mytheresa.Com Int91 400568*7629 26 Mar 48,276.30 3,490,330.08Cr "
@@ -315,10 +313,33 @@ def run():
         {"statement_period_end": "2026-03-31", "opening_balance": 1667347.51},
     )
     march_inferred_fees = [row for row in march_inferred if row.description.startswith("#")]
-    assert_equal(len(march_inferred_fees), 3, "march inferred fee count")
-    assert_equal([row.description for row in march_inferred_fees], ["#Monthly Account Fee", "#Service Fees", "#Service Fees Intl Pmt Fee"], "march inferred fee descriptions")
+    assert_equal(len(march_inferred_fees), 1, "march inferred fee count")
+    assert_equal([row.description for row in march_inferred_fees], ["#Monthly Account Fee / Service Fees - inferred from balance movement"], "march inferred fee descriptions")
     assert_equal(sum(Decimal(str(row.debit_amount or 0)) for row in march_inferred_fees), Decimal("689.56"), "march inferred fee total")
+    assert_equal(march_inferred_fees[0].notes, "inferred_service_fee: true; reason: running balance gap; gap_amount: 689.56", "march inferred diagnostics")
     assert_equal(balance_gap_diagnostics({"opening_balance": 1667347.51}, march_inferred), [], "march inferred rows close balance gap")
+
+    april_gap_transactions = parse_fnb_section_transactions(
+        """
+        Transactions in RAND (ZAR)
+        24 Apr FNB App Payment To Modco Interiors Invoice 1688 566,633.46 1,450,870.67Cr
+        25 Apr Byc Debit 63012593504 8.51 1,450,166.60Cr
+        Closing Balance 1,501,366.80Cr
+        """,
+        {"statement_period_end": "2026-04-30", "opening_balance": 2017504.13},
+    )
+    april_inferred = insert_inferred_fnb_service_fees(
+        april_gap_transactions,
+        {"statement_period_end": "2026-04-30", "opening_balance": 2017504.13},
+    )
+    april_inferred_fees = [row for row in april_inferred if row.description.startswith("#")]
+    assert_equal(len(april_inferred_fees), 1, "april inferred fee count")
+    assert_equal(april_inferred_fees[0].description, "#Monthly Account Fee / Service Fees - inferred from balance movement", "april inferred fee description")
+    assert_equal(april_inferred_fees[0].debit_amount, 695.56, "april inferred fee amount")
+    assert_equal(april_inferred_fees[0].transaction_date, "2026-04-25", "april inferred fee date")
+    assert_equal(april_inferred_fees[0].account_category, "Bank Charges", "april inferred fee category")
+    assert_equal(april_inferred_fees[0].notes, "inferred_service_fee: true; reason: running balance gap; gap_amount: 695.56", "april inferred diagnostics")
+    assert_equal(balance_gap_diagnostics({"opening_balance": 2017504.13}, april_inferred), [], "april inferred rows close balance gap")
 
 
 if __name__ == "__main__":

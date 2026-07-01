@@ -26,7 +26,7 @@ from supabase import Client, create_client
 app = FastAPI(title="DocuCoreX Accounting Worker")
 logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"))
 logger = logging.getLogger("docucorex.accounting_worker")
-WORKER_PARSER_VERSION = "fnb-page-clean-balance-fees-v5"
+WORKER_PARSER_VERSION = "fnb-generic-balance-fees-v6"
 WORKER_BUILD_FALLBACK = "local-dev"
 DEFAULT_AI_MODEL = "gpt-4o-mini"
 AI_CLASSIFICATION_CACHE: dict[str, dict[str, Any]] = {}
@@ -799,23 +799,26 @@ def shift_iso_date(value: str | None, days: int) -> str | None:
         return value
 
 
-def fnb_missing_fee_split(missing_debit: Decimal, current_date: str | None) -> list[tuple[str | None, str, Decimal]]:
-    missing_debit = missing_debit.quantize(CENT)
-    if missing_debit == Decimal("1.44"):
-        return [(current_date, "#Service Fees Intl Pmt Fee-Google Xiao", Decimal("1.44"))]
-    if missing_debit == Decimal("689.56"):
-        return [
-            (shift_iso_date(current_date, -2), "#Monthly Account Fee", Decimal("579.00")),
-            (shift_iso_date(current_date, -2), "#Service Fees", Decimal("105.00")),
-            (shift_iso_date(current_date, -1), "#Service Fees Intl Pmt Fee", Decimal("5.56")),
-        ]
-    if missing_debit == Decimal("693.56"):
-        return [
-            (shift_iso_date(current_date, -2), "#Monthly Account Fee", Decimal("579.00")),
-            (shift_iso_date(current_date, -2), "#Service Fees", Decimal("105.00")),
-            (shift_iso_date(current_date, -1), "#Service Fees Intl Pmt Fee-Google Chat", Decimal("9.56")),
-        ]
-    return []
+def is_month_end_fee_gap(transaction_date: str | None, missing_debit: Decimal) -> bool:
+    if missing_debit < Decimal("500.00") or missing_debit > Decimal("800.00"):
+        return False
+    if not transaction_date:
+        return False
+    try:
+        return date.fromisoformat(transaction_date).day >= 24
+    except Exception:
+        return False
+
+
+def is_inferable_fnb_bank_charge_gap(transaction: ParsedTransaction, missing_debit: Decimal) -> bool:
+    if missing_debit <= 0 or missing_debit > Decimal("2000.00"):
+        return False
+    if missing_debit <= Decimal("20.00"):
+        return True
+    text = f"{transaction.description} {transaction.raw_text or ''}".lower()
+    if any(token in text for token in ("byc debit", "#service fee", "#monthly account fee", "bank charges", "service fees")):
+        return True
+    return is_month_end_fee_gap(transaction.transaction_date, missing_debit)
 
 
 def insert_inferred_fnb_service_fees(
@@ -840,31 +843,32 @@ def insert_inferred_fnb_service_fees(
         current_balance = decimal_amount(transaction.running_balance)
         expected_balance = (previous_balance + credit - debit).quantize(CENT)
         missing_debit = (expected_balance - current_balance).quantize(CENT)
-        fee_rows = fnb_missing_fee_split(missing_debit, transaction.transaction_date)
 
-        if missing_debit > 0 and fee_rows:
+        if is_inferable_fnb_bank_charge_gap(transaction, missing_debit):
             fee_balance = previous_balance
-            for fee_date, description, amount in fee_rows:
-                fee_balance = (fee_balance - amount).quantize(CENT)
-                inferred = build_transaction(
-                    fee_date or transaction.transaction_date or "",
-                    description,
-                    decimal_to_float(amount),
-                    None,
-                    decimal_to_float(fee_balance),
-                    metadata,
-                    transaction.source_page,
-                    f"Inferred from FNB running-balance gap before: {transaction.raw_text}",
-                    93,
-                )
-                if inferred:
-                    inferred.bank_charge = True
-                    inferred.account_category = "Bank Charges"
-                    inferred.vat_treatment = "out_of_scope"
-                    inferred.review_status = "ready"
-                    inferred.notes = "Inferred from FNB running-balance reconciliation; source PDF text omitted this bank fee row."
-                    enhanced.append(inferred)
-                    inferred_count += 1
+            fee_balance = (fee_balance - missing_debit).quantize(CENT)
+            inferred = build_transaction(
+                transaction.transaction_date or "",
+                "#Monthly Account Fee / Service Fees - inferred from balance movement",
+                decimal_to_float(missing_debit),
+                None,
+                decimal_to_float(fee_balance),
+                metadata,
+                transaction.source_page,
+                (
+                    "Inferred FNB service fee from running-balance gap. "
+                    f"inferred_service_fee=true reason=running balance gap gap_amount={missing_debit} before: {transaction.raw_text}"
+                ),
+                91,
+            )
+            if inferred:
+                inferred.bank_charge = True
+                inferred.account_category = "Bank Charges"
+                inferred.vat_treatment = "out_of_scope"
+                inferred.review_status = "ready"
+                inferred.notes = f"inferred_service_fee: true; reason: running balance gap; gap_amount: {missing_debit}"
+                enhanced.append(inferred)
+                inferred_count += 1
         elif missing_debit != 0:
             missing_gaps.append(
                 {
