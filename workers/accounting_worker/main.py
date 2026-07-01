@@ -361,10 +361,30 @@ def transaction_section_lines(full_text: str) -> list[str]:
     return section
 
 
+def transaction_candidate_lines(full_text: str) -> list[str]:
+    candidates: list[str] = []
+    current = ""
+
+    for line in transaction_section_lines(full_text):
+        if LOOSE_DATE.match(line):
+            if current:
+                candidates.append(current.strip())
+            current = line
+            continue
+
+        if current:
+            current = f"{current} {line}".strip()
+
+    if current:
+        candidates.append(current.strip())
+
+    return candidates
+
+
 def parse_fnb_section_transactions(full_text: str, metadata: dict[str, Any]) -> list[ParsedTransaction]:
     transactions: list[ParsedTransaction] = []
 
-    for line in transaction_section_lines(full_text):
+    for line in transaction_candidate_lines(full_text):
         date_match = LOOSE_DATE.match(line)
         if not date_match:
             continue

@@ -89,7 +89,7 @@ if importlib.util.find_spec("supabase") is None:
     supabase.create_client = create_client
     sys.modules["supabase"] = supabase
 
-from main import parse_fnb_section_transactions, parse_money_cell, parse_transaction_amount_cell
+from main import parse_fnb_section_transactions, parse_money_cell, parse_transaction_amount_cell, transaction_candidate_lines
 
 
 def assert_equal(actual, expected, label):
@@ -119,12 +119,16 @@ def run():
     09 Feb FNB OB Pmt Rmsp 10129 25,000.00Cr 58,343.76Cr
     23 Feb FNB OB Pmt Rmsp Inv 10130 129,375.00Cr 213,225.02Cr
     28 Feb FNB App Transfer From Credit 10,000.00Cr 11,202.99Cr
+    11 Feb #Service Fees Intl Pmt Fee-Google Xiao 1.44 58,342.32Cr
+    26 Feb #Monthly Account Fee 579.00 2,317.55Cr
+    26 Feb #Service Fees 105.00 2,212.55Cr
+    27 Feb #Service Fees Intl Pmt Fee-Google Chat 9.56 2,202.99Cr
     Closing Balance 11,196.46Cr
     Interest/legal footer 999,999.99
     """
     metadata = {"statement_period_end": "2026-02-28"}
     transactions = parse_fnb_section_transactions(text, metadata)
-    assert_equal(len(transactions), 4, "section transaction count")
+    assert_equal(len(transactions), 8, "section transaction count")
     assert_equal(transactions[0].transaction_date, "2026-02-09", "debit date")
     assert_equal(transactions[0].description, "FNB App Rtc Pmt To Themba Kerusha", "debit description")
     assert_equal(transactions[0].debit_amount, 6400.0, "debit amount")
@@ -137,6 +141,33 @@ def run():
     assert_equal(transactions[1].running_balance, 58343.76, "credit balance")
     assert_equal(transactions[2].credit_amount, 129375.0, "large credit amount")
     assert_equal(transactions[3].credit_amount, 10000.0, "transfer from credit amount")
+    assert_equal(transactions[4].description, "#Service Fees Intl Pmt Fee-Google Xiao", "intl fee description")
+    assert_equal(transactions[4].debit_amount, 1.44, "intl fee debit")
+    assert_equal(transactions[4].credit_amount, None, "intl fee credit")
+    assert_equal(transactions[4].running_balance, 58342.32, "intl fee balance")
+    assert_equal(transactions[5].description, "#Monthly Account Fee", "monthly fee description")
+    assert_equal(transactions[5].debit_amount, 579.0, "monthly fee debit")
+    assert_equal(transactions[6].description, "#Service Fees", "service fees description")
+    assert_equal(transactions[6].debit_amount, 105.0, "service fees debit")
+    assert_equal(transactions[7].description, "#Service Fees Intl Pmt Fee-Google Chat", "chat fee description")
+    assert_equal(transactions[7].debit_amount, 9.56, "chat fee debit")
+
+    wrapped_text = """
+    Transactions in RAND (ZAR)
+    11 Feb #Service Fees Intl Pmt Fee-Google Xiao
+    1.44 58,342.32Cr
+    26 Feb #Monthly Account Fee
+    579.00 2,317.55Cr
+    Closing Balance 11,196.46Cr
+    Footer 123.45
+    """
+    candidates = transaction_candidate_lines(wrapped_text)
+    assert_equal(candidates[0], "11 Feb #Service Fees Intl Pmt Fee-Google Xiao 1.44 58,342.32Cr", "wrapped fee row")
+    assert_equal(candidates[1], "26 Feb #Monthly Account Fee 579.00 2,317.55Cr", "wrapped monthly row")
+    wrapped_transactions = parse_fnb_section_transactions(wrapped_text, metadata)
+    assert_equal(len(wrapped_transactions), 2, "wrapped transaction count")
+    assert_equal(wrapped_transactions[0].debit_amount, 1.44, "wrapped intl fee debit")
+    assert_equal(wrapped_transactions[1].debit_amount, 579.0, "wrapped monthly fee debit")
 
 
 if __name__ == "__main__":
