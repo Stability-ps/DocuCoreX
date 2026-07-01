@@ -15,7 +15,7 @@ from fastapi import FastAPI, Header, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from openpyxl import Workbook
-from openpyxl.styles import Font, PatternFill
+from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from pydantic import BaseModel
 from supabase import Client, create_client
 
@@ -286,15 +286,21 @@ def normalize_transaction_date(raw_date: str, metadata: dict[str, Any]) -> str |
 
 def classify_transaction(description: str, debit: float | None, credit: float | None) -> tuple[str, str, bool, float]:
     text = description.lower()
-    rules = [
-        (("bank charges", "service fee", "monthly fee", "cash deposit fee"), "Bank Charges", "out_of_scope", True, 96),
+    rules: list[tuple[tuple[str, ...], str, str, bool, float]] = [
+        (("service fee", "#service fees", "monthly account fee", "byc debit", "bank charges", "cash deposit fee"), "Bank Charges", "standard", True, 98),
+        (("fnb app transfer to savings", "fnb app transfer from credit", "inter-account", "internal transfer"), "Inter-account Transfer", "out_of_scope", False, 98),
+        (("salary", "payroll", "wages", "nanny", "care giver", "waterfall salary"), "Salaries & Wages", "out_of_scope", False, 95),
+        (("discovery account", "allianz", "insurance"), "Insurance", "exempt", False, 93),
+        (("emporers ridge levy", "levy"), "Levies", "review", False, 90),
+        (("google chatgpt", "chatgpt", "openai"), "Software Subscriptions", "standard", False, 92),
+        (("google xiaomi home", "xiaomi home"), "Software / IT", "review", False, 86),
+        (("dhl", "paygate*dhl", "courier"), "Courier / Delivery", "review", False, 88),
+        (("uber eats",), "Staff Welfare / Meals / Entertainment", "review", False, 82),
+        (("fuel", "petrol", "garage", "engen", "shell", "bp "), "Motor Vehicle Expenses", "review", False, 84),
         (("vat", "value added tax"), "VAT Control", "standard", False, 92),
-        (("salary", "payroll", "wages"), "Payroll", "out_of_scope", False, 88),
-        (("rent", "lease"), "Rent", "standard", False, 84),
-        (("fuel", "petrol", "garage", "engen", "shell", "bp "), "Motor Vehicle Expenses", "standard", False, 82),
         (("loan", "interest"), "Finance Costs", "exempt", False, 80),
-        (("transfer", "trf", "internal"), "Transfers", "out_of_scope", False, 78),
-        (("subscription", "saas", "microsoft", "google", "adobe"), "Software Subscriptions", "standard", False, 80),
+        (("subscription", "saas", "microsoft", "adobe"), "Software Subscriptions", "review", False, 82),
+        (("senses spa", "adore photography", "sloppy kisses", "puppy classes"), "Review Required", "review", False, 68),
     ]
     for needles, category, vat, bank_charge, confidence in rules:
         if any(needle in text for needle in needles):
@@ -302,8 +308,8 @@ def classify_transaction(description: str, debit: float | None, credit: float | 
     if credit and credit > 0:
         return "Income", "review", False, 72
     if debit and debit > 0:
-        return "Operating Expenses", "review", False, 68
-    return "Uncategorised", "review", False, 55
+        return "Uncategorised Expense", "review", False, 58
+    return "Uncategorised", "review", False, 50
 
 
 def is_noise_transaction(description: str) -> bool:
@@ -355,8 +361,8 @@ def build_transaction(
         return None
 
     category, vat, bank_charge, rule_confidence = classify_transaction(normalized_description, debit, credit)
-    confidence = min(99, max(base_confidence, rule_confidence))
-    review_status = "ready" if confidence >= 85 else "needs_review"
+    confidence = min(99, rule_confidence)
+    review_status = "ready" if confidence >= 80 and vat != "review" and category != "Review Required" else "needs_review"
 
     return ParsedTransaction(
         transaction_date=transaction_date,
@@ -977,33 +983,126 @@ def extraction_diagnostics(pages: list[dict[str, Any]], full_text: str) -> dict[
     }
 
 
+HEADER_FILL = PatternFill("solid", fgColor="0F2A5F")
+SUBTLE_FILL = PatternFill("solid", fgColor="EAF3FF")
+PASS_FILL = PatternFill("solid", fgColor="DCFCE7")
+FAIL_FILL = PatternFill("solid", fgColor="FEE2E2")
+THIN_BORDER = Border(bottom=Side(style="thin", color="D8E1F0"))
+CURRENCY_FORMAT = '"R"#,##0.00;[Red]-"R"#,##0.00'
+
+
 def write_row(sheet, values: list[Any], row_index: int, header: bool = False) -> None:
     for column_index, value in enumerate(values, start=1):
         cell = sheet.cell(row=row_index, column=column_index, value=value)
+        cell.alignment = Alignment(vertical="top", wrap_text=True)
+        cell.border = THIN_BORDER
         if header:
             cell.font = Font(bold=True, color="FFFFFF")
-            cell.fill = PatternFill("solid", fgColor="0F2A5F")
+            cell.fill = HEADER_FILL
+
+
+def money_total(values: list[float | None]) -> Decimal:
+    return sum((decimal_amount(value) for value in values), Decimal("0.00")).quantize(CENT)
+
+
+def mask_account(value: str | None) -> str:
+    if not value:
+        return "-"
+    cleaned = re.sub(r"\D", "", value)
+    if len(cleaned) <= 4:
+        return value
+    return f"{'*' * max(len(cleaned) - 4, 0)}{cleaned[-4:]}"
+
+
+def validation_status(metadata: dict[str, Any], transactions: list[ParsedTransaction]) -> tuple[str, Decimal]:
+    summary = validation_summary(transactions)
+    opening = decimal_amount(metadata.get("opening_balance"))
+    closing = decimal_amount(metadata.get("closing_balance"))
+    calculated = (opening + summary["total_credits"] - summary["total_debits"]).quantize(CENT)
+    return ("PASSED" if calculated == closing else "FAILED", calculated)
+
+
+def review_reason(transaction: ParsedTransaction) -> str:
+    reasons: list[str] = []
+    text = transaction.description.lower()
+    if transaction.confidence < 80:
+        reasons.append("Low confidence")
+    if transaction.account_category in {"Review Required", "Uncategorised", "Uncategorised Expense"}:
+        reasons.append("Unknown or ambiguous supplier")
+    if transaction.vat_treatment == "review":
+        reasons.append("VAT treatment requires review")
+    if any(token in text for token in ("uber eats", "meal", "restaurant", "spa", "puppy", "photography")):
+        reasons.append("Personal-looking or entertainment expense")
+    if transaction.debit_amount and transaction.account_category not in {"Bank Charges", "Salaries & Wages", "Inter-account Transfer"}:
+        reasons.append("Invoice support required")
+    return "; ".join(dict.fromkeys(reasons)) or transaction.notes or "Review recommended"
+
+
+def should_review(transaction: ParsedTransaction) -> bool:
+    return (
+        transaction.review_status == "needs_review"
+        or transaction.confidence < 80
+        or transaction.vat_treatment == "review"
+        or transaction.account_category in {"Review Required", "Uncategorised", "Uncategorised Expense", "Staff Welfare / Meals / Entertainment"}
+    )
+
+
+def apply_number_formats(sheet, currency_columns: list[int], percent_columns: list[int] | None = None) -> None:
+    percent_columns = percent_columns or []
+    for row in sheet.iter_rows(min_row=2):
+        for index in currency_columns:
+            if index <= len(row):
+                row[index - 1].number_format = CURRENCY_FORMAT
+        for index in percent_columns:
+            if index <= len(row):
+                row[index - 1].number_format = '0"%"'
+
+
+def finish_sheet(sheet) -> None:
+    sheet.freeze_panes = "A2"
+    if sheet.max_row >= 1 and sheet.max_column >= 1:
+        sheet.auto_filter.ref = sheet.dimensions
+    for column_cells in sheet.columns:
+        max_length = max(len(str(cell.value or "")) for cell in column_cells)
+        sheet.column_dimensions[column_cells[0].column_letter].width = min(max(max_length + 2, 12), 48)
 
 
 def build_workbook(metadata: dict[str, Any], transactions: list[ParsedTransaction]) -> bytes:
     workbook = Workbook()
+    totals = validation_summary(transactions)
+    status, calculated_closing = validation_status(metadata, transactions)
+    opening = decimal_amount(metadata.get("opening_balance"))
+    closing = decimal_amount(metadata.get("closing_balance"))
+
     summary = workbook.active
     summary.title = "Summary"
     summary_rows = [
-        ("Company name", metadata.get("company_name")),
-        ("Account number", metadata.get("account_number")),
-        ("Statement period start", metadata.get("statement_period_start")),
-        ("Statement period end", metadata.get("statement_period_end")),
-        ("Opening balance", metadata.get("opening_balance")),
-        ("Closing balance", metadata.get("closing_balance")),
-        ("Transactions", len(transactions)),
-        ("Bank charges total", sum(t.debit_amount or 0 for t in transactions if t.bank_charge)),
+        ("Field", "Value"),
+        ("Account holder", metadata.get("company_name") or "Unknown"),
+        ("Account number", mask_account(metadata.get("account_number"))),
+        ("Statement period", f"{metadata.get('statement_period_start') or '-'} to {metadata.get('statement_period_end') or '-'}"),
+        ("Opening balance", opening),
+        ("Closing balance", closing),
+        ("Total debits", totals["total_debits"]),
+        ("Total credits", totals["total_credits"]),
+        ("Debit count", totals["debit_count"]),
+        ("Credit count", totals["credit_count"]),
+        ("Transaction count", len(transactions)),
+        ("Service fees", money_total([t.debit_amount for t in transactions if t.bank_charge])),
+        ("Validation status", status),
+        ("Calculated closing", calculated_closing),
+        ("Parser version", WORKER_PARSER_VERSION),
+        ("Worker commit", worker_version().get("commit")),
     ]
     for index, row in enumerate(summary_rows, start=1):
         write_row(summary, list(row), index, header=index == 1)
+    summary["B13"].fill = PASS_FILL if status == "PASSED" else FAIL_FILL
+    summary["B13"].font = Font(bold=True, color="166534" if status == "PASSED" else "991B1B")
+    for row_index in (5, 6, 7, 8, 12, 14):
+        summary.cell(row=row_index, column=2).number_format = CURRENCY_FORMAT
 
     cashbook = workbook.create_sheet("Cashbook")
-    headers = ["Date", "Description", "Debit", "Credit", "Running Balance", "Category", "VAT", "Confidence", "Review Status"]
+    headers = ["Date", "Description", "Debit", "Credit", "Running Balance", "Category", "VAT", "Confidence", "Review Status", "Invoice Support", "Notes"]
     write_row(cashbook, headers, 1, header=True)
     for index, transaction in enumerate(transactions, start=2):
         write_row(
@@ -1018,15 +1117,24 @@ def build_workbook(metadata: dict[str, Any], transactions: list[ParsedTransactio
                 transaction.vat_treatment,
                 transaction.confidence,
                 transaction.review_status,
+                "Required" if transaction.debit_amount and transaction.account_category not in {"Bank Charges", "Salaries & Wages", "Inter-account Transfer"} else "Not required",
+                transaction.notes,
             ],
             index,
         )
+    total_row = len(transactions) + 2
+    write_row(cashbook, ["Totals", "", f"=SUM(C2:C{total_row - 1})", f"=SUM(D2:D{total_row - 1})", "", "", "", "", "", "", ""], total_row)
+    cashbook.cell(total_row, 1).font = Font(bold=True)
+    cashbook.cell(total_row, 3).font = Font(bold=True)
+    cashbook.cell(total_row, 4).font = Font(bold=True)
+    apply_number_formats(cashbook, [3, 4, 5])
 
     vat = workbook.create_sheet("VAT Schedule")
     write_row(vat, ["VAT Treatment", "Debit Total", "Credit Total", "Transaction Count"], 1, header=True)
     for row_index, treatment in enumerate(["standard", "zero_rated", "exempt", "out_of_scope", "review"], start=2):
         matching = [item for item in transactions if item.vat_treatment == treatment]
         write_row(vat, [treatment, sum(item.debit_amount or 0 for item in matching), sum(item.credit_amount or 0 for item in matching), len(matching)], row_index)
+    apply_number_formats(vat, [2, 3])
 
     ledger = workbook.create_sheet("General Ledger")
     write_row(ledger, ["Account Category", "Debit", "Credit", "Net"], 1, header=True)
@@ -1036,6 +1144,7 @@ def build_workbook(metadata: dict[str, Any], transactions: list[ParsedTransactio
         debit = sum(item.debit_amount or 0 for item in matching)
         credit = sum(item.credit_amount or 0 for item in matching)
         write_row(ledger, [category, debit, credit, credit - debit], row_index)
+    apply_number_formats(ledger, [2, 3, 4])
 
     trial = workbook.create_sheet("Trial Balance")
     write_row(trial, ["Account", "Debit Balance", "Credit Balance"], 1, header=True)
@@ -1043,19 +1152,25 @@ def build_workbook(metadata: dict[str, Any], transactions: list[ParsedTransactio
         matching = [item for item in transactions if item.account_category == category]
         net = sum(item.credit_amount or 0 for item in matching) - sum(item.debit_amount or 0 for item in matching)
         write_row(trial, [category, abs(net) if net < 0 else 0, net if net > 0 else 0], row_index)
+    apply_number_formats(trial, [2, 3])
 
     rec = workbook.create_sheet("Bank Reconciliation")
-    write_row(rec, ["Line", "Amount"], 1, header=True)
+    write_row(rec, ["Line", "Amount", "Formula / Check"], 1, header=True)
     write_row(rec, ["Opening balance", metadata.get("opening_balance")], 2)
-    write_row(rec, ["Total debits", sum(item.debit_amount or 0 for item in transactions)], 3)
-    write_row(rec, ["Total credits", sum(item.credit_amount or 0 for item in transactions)], 4)
-    write_row(rec, ["Closing balance", metadata.get("closing_balance")], 5)
+    write_row(rec, ["Total credits", totals["total_credits"], "Add credits"], 3)
+    write_row(rec, ["Total debits", totals["total_debits"], "Subtract debits"], 4)
+    write_row(rec, ["Calculated closing", "=B2+B3-B4", "Opening + credits - debits"], 5)
+    write_row(rec, ["Statement closing", metadata.get("closing_balance")], 6)
+    write_row(rec, ["Validation status", status, "PASSED when calculated closing equals statement closing"], 7)
+    rec["B7"].fill = PASS_FILL if status == "PASSED" else FAIL_FILL
+    rec["B7"].font = Font(bold=True, color="166534" if status == "PASSED" else "991B1B")
+    apply_number_formats(rec, [2])
 
     review = workbook.create_sheet("Review Items")
-    write_row(review, headers + ["Notes"], 1, header=True)
+    write_row(review, headers + ["Review Reason"], 1, header=True)
     row_index = 2
     for transaction in transactions:
-        if transaction.review_status == "needs_review" or transaction.confidence < 80:
+        if should_review(transaction):
             write_row(
                 review,
                 [
@@ -1068,11 +1183,14 @@ def build_workbook(metadata: dict[str, Any], transactions: list[ParsedTransactio
                     transaction.vat_treatment,
                     transaction.confidence,
                     transaction.review_status,
+                    "Required" if transaction.debit_amount and transaction.account_category not in {"Bank Charges", "Salaries & Wages", "Inter-account Transfer"} else "Not required",
                     transaction.notes,
+                    review_reason(transaction),
                 ],
                 row_index,
             )
             row_index += 1
+    apply_number_formats(review, [3, 4, 5])
 
     notes = workbook.create_sheet("Assumptions and Notes")
     write_row(notes, ["Assumption", "Detail"], 1, header=True)
@@ -1080,11 +1198,10 @@ def build_workbook(metadata: dict[str, Any], transactions: list[ParsedTransactio
     write_row(notes, ["Extraction", "Deterministic pdfplumber extraction with PyMuPDF fallback."], 3)
     write_row(notes, ["AI use", "AI is reserved for unclear descriptions when configured; no AI is required for deterministic matches."], 4)
     write_row(notes, ["Review", "Every transaction includes confidence and review status."], 5)
+    write_row(notes, ["Inferred bank fees", "If the PDF text omits FNB service fee rows, DocuCoreX inserts them only when running balances prove the omitted debit."], 6)
 
     for sheet in workbook.worksheets:
-        for column_cells in sheet.columns:
-            max_length = max(len(str(cell.value or "")) for cell in column_cells)
-            sheet.column_dimensions[column_cells[0].column_letter].width = min(max(max_length + 2, 12), 42)
+        finish_sheet(sheet)
 
     output = io.BytesIO()
     workbook.save(output)

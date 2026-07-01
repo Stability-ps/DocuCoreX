@@ -12,15 +12,21 @@ import type {
 
 const categories = [
   "Income",
-  "Operating Expenses",
+  "Uncategorised Expense",
+  "Review Required",
   "Bank Charges",
-  "Motor Vehicle Expenses",
-  "Payroll",
-  "Rent",
+  "Staff Welfare / Meals / Entertainment",
   "Software Subscriptions",
-  "Finance Costs",
-  "Transfers",
+  "Software / IT",
+  "Insurance",
+  "Levies",
+  "Salaries & Wages",
+  "Inter-account Transfer",
+  "Courier / Delivery",
+  "Motor Vehicle Expenses",
   "VAT Control",
+  "Finance Costs",
+  "Rent",
   "Uncategorised",
 ];
 
@@ -50,36 +56,32 @@ function statusLabel(status: AccountingStatementRun["status"]) {
 }
 
 function formatApiError(data: { error?: string; workerDetail?: unknown; workerRawBody?: string; workerStatus?: number }, fallback: string) {
-  const parts = [data.error || fallback];
+  const detail =
+    data.workerDetail && typeof data.workerDetail === "object" && "message" in data.workerDetail
+      ? String((data.workerDetail as { message?: unknown }).message)
+      : data.error;
+
+  if (detail?.toLowerCase().includes("parser validation failed")) {
+    return "Parser validation failed. See diagnostics.";
+  }
 
   if (data.workerStatus) {
-    parts.push(`Worker HTTP ${data.workerStatus}`);
+    return `${detail || fallback} Worker HTTP ${data.workerStatus}.`;
   }
 
-  if (typeof data.workerDetail === "string" && data.workerDetail && data.workerDetail !== data.error) {
-    parts.push(data.workerDetail);
-  } else if (Array.isArray(data.workerDetail)) {
-    parts.push(
-      data.workerDetail
-        .map((item) => {
-          if (item && typeof item === "object") {
-            const record = item as { loc?: unknown; msg?: unknown; type?: unknown };
-            const loc = Array.isArray(record.loc) ? record.loc.join(".") : "field";
-            return `${loc}: ${String(record.msg ?? record.type ?? "Invalid value")}`;
-          }
-          return String(item);
-        })
-        .join("; "),
-    );
-  } else if (data.workerDetail && typeof data.workerDetail === "object") {
-    parts.push(JSON.stringify(data.workerDetail));
-  }
+  return detail || fallback;
+}
 
-  if (data.workerRawBody && !parts.some((part) => part.includes(data.workerRawBody || ""))) {
-    parts.push(data.workerRawBody);
-  }
-
-  return parts.filter(Boolean).join(" · ");
+function formatDiagnostics(data: { workerDetail?: unknown; workerRawBody?: string; workerStatus?: number }) {
+  return JSON.stringify(
+    {
+      workerStatus: data.workerStatus,
+      workerDetail: data.workerDetail,
+      workerRawBody: data.workerRawBody,
+    },
+    null,
+    2,
+  );
 }
 
 export function AccountingIntelligence() {
@@ -90,6 +92,7 @@ export function AccountingIntelligence() {
   const [busy, setBusy] = useState("");
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
+  const [diagnostics, setDiagnostics] = useState("");
   const selectedRun = useMemo(() => runs.find((run) => run.id === selectedRunId) ?? null, [runs, selectedRunId]);
 
   async function loadRuns(preferredRunId?: string) {
@@ -117,6 +120,7 @@ export function AccountingIntelligence() {
   async function uploadFile(file: File) {
     setBusy("upload");
     setError("");
+    setDiagnostics("");
     setMessage("");
     const formData = new FormData();
     formData.append("file", file);
@@ -137,6 +141,7 @@ export function AccountingIntelligence() {
   async function processRun(runId: string) {
     setBusy(`process:${runId}`);
     setError("");
+    setDiagnostics("");
     setMessage("");
 
     try {
@@ -146,7 +151,10 @@ export function AccountingIntelligence() {
         body: JSON.stringify({ runId }),
       });
       const data = (await response.json().catch(() => ({}))) as { error?: string; workerDetail?: unknown; workerRawBody?: string; workerStatus?: number };
-      if (!response.ok) throw new Error(formatApiError(data, "Processing failed."));
+      if (!response.ok) {
+        setDiagnostics(formatDiagnostics(data));
+        throw new Error(formatApiError(data, "Processing failed."));
+      }
       setMessage("FNB statement processed. Review the extracted transactions.");
       await loadRuns(runId);
     } catch (processError) {
@@ -159,6 +167,7 @@ export function AccountingIntelligence() {
 
   async function patchTransaction(transaction: AccountingTransaction, patch: AccountingTransactionPatch) {
     setError("");
+    setDiagnostics("");
     const previous = detail;
     if (previous) {
       setDetail({
@@ -242,7 +251,17 @@ export function AccountingIntelligence() {
       </section>
 
       {message ? <div className="rounded-2xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm font-bold text-emerald-800">{message}</div> : null}
-      {error ? <div className="rounded-2xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm font-bold text-rose-800">{error}</div> : null}
+      {error ? (
+        <div className="rounded-2xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm font-bold text-rose-800">
+          <p>{error}</p>
+          {diagnostics ? (
+            <details className="mt-3 rounded-xl border border-rose-200 bg-white/70 p-3 text-xs font-semibold text-rose-900">
+              <summary className="cursor-pointer">Diagnostics</summary>
+              <pre className="mt-2 max-h-72 overflow-auto whitespace-pre-wrap break-words font-mono text-[11px] leading-5">{diagnostics}</pre>
+            </details>
+          ) : null}
+        </div>
+      ) : null}
 
       <div className="grid gap-6 xl:grid-cols-[360px_1fr]">
         <section className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm">

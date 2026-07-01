@@ -57,8 +57,16 @@ if importlib.util.find_spec("openpyxl") is None:
     sys.modules["openpyxl"] = openpyxl
 
     openpyxl_styles = types.ModuleType("openpyxl.styles")
-    openpyxl_styles.Font = object
-    openpyxl_styles.PatternFill = object
+
+    class StyleStub:
+        def __init__(self, *args, **kwargs):
+            pass
+
+    openpyxl_styles.Alignment = StyleStub
+    openpyxl_styles.Border = StyleStub
+    openpyxl_styles.Font = StyleStub
+    openpyxl_styles.PatternFill = StyleStub
+    openpyxl_styles.Side = StyleStub
     sys.modules["openpyxl.styles"] = openpyxl_styles
 
 if importlib.util.find_spec("pydantic") is None:
