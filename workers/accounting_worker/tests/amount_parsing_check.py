@@ -90,6 +90,7 @@ if importlib.util.find_spec("supabase") is None:
     sys.modules["supabase"] = supabase
 
 from main import (
+    insert_inferred_fnb_service_fees,
     parse_fnb_section_transactions,
     parse_fnb_service_fee_transactions,
     parse_money_cell,
@@ -199,6 +200,41 @@ def run():
     merged_transactions = parse_transactions([], metadata, outside_section_text)
     assert_equal(len(merged_transactions), 5, "merged section plus fee transaction count")
     assert_equal(sum(Decimal(str(row.debit_amount or 0)) for row in merged_transactions), Decimal("695.00"), "merged fee total")
+
+    first_gap_transactions = parse_fnb_section_transactions(
+        """
+        Transactions in RAND (ZAR)
+        11 Feb POS Purchase New Uber Eats 400568*7629 10 Feb 454.00 57,888.32Cr
+        Closing Balance 57,888.32Cr
+        """,
+        {"statement_period_end": "2026-02-28", "opening_balance": 58343.76},
+    )
+    second_gap_transactions = parse_fnb_section_transactions(
+        """
+        Transactions in RAND (ZAR)
+        28 Feb Payshap Account Off-Us Isabel 1,000.00 1,202.99Cr
+        Closing Balance 1,202.99Cr
+        """,
+        {"statement_period_end": "2026-02-28", "opening_balance": 2896.55},
+    )
+    first_inferred = insert_inferred_fnb_service_fees(
+        first_gap_transactions,
+        {"statement_period_end": "2026-02-28", "opening_balance": 58343.76},
+    )
+    second_inferred = insert_inferred_fnb_service_fees(
+        second_gap_transactions,
+        {"statement_period_end": "2026-02-28", "opening_balance": 2896.55},
+    )
+    inferred_fees = [row for row in [*first_inferred, *second_inferred] if row.description.startswith("#")]
+    assert_equal(len(inferred_fees), 4, "inferred fee count")
+    assert_equal([row.description for row in inferred_fees], [
+        "#Service Fees Intl Pmt Fee-Google Xiao",
+        "#Monthly Account Fee",
+        "#Service Fees",
+        "#Service Fees Intl Pmt Fee-Google Chat",
+    ], "inferred fee descriptions")
+    assert_equal(sum(Decimal(str(row.debit_amount or 0)) for row in inferred_fees), Decimal("695.00"), "inferred fee total")
+    assert_equal([row.running_balance for row in inferred_fees], [58342.32, 2317.55, 2212.55, 2202.99], "inferred fee balances")
 
 
 if __name__ == "__main__":
