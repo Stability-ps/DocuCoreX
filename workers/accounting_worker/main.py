@@ -92,6 +92,23 @@ def parse_money(value: str | None) -> float | None:
         return None
 
 
+def looks_like_money(value: str | None) -> bool:
+    if not value:
+        return False
+    return re.search(r"(?:R\s*)?-?\(?\d[\d,\s]*\.\d{2}\)?-?", value) is not None
+
+
+def money_sign_hint(value: str | None) -> str | None:
+    if not value:
+        return None
+    lowered = value.lower()
+    if "cr" in lowered or "credit" in lowered or "+" in lowered:
+        return "credit"
+    if "dr" in lowered or "debit" in lowered or value.strip().startswith("-") or value.strip().endswith("-"):
+        return "debit"
+    return None
+
+
 def parse_date(value: str | None) -> str | None:
     if not value:
         return None
@@ -109,7 +126,8 @@ def extract_text_with_pdfplumber(pdf_bytes: bytes) -> list[dict[str, Any]]:
     with pdfplumber.open(io.BytesIO(pdf_bytes)) as pdf:
         for index, page in enumerate(pdf.pages, start=1):
             text = page.extract_text(x_tolerance=1, y_tolerance=3) or ""
-            pages.append({"page": index, "text": text})
+            tables = page.extract_tables() or []
+            pages.append({"page": index, "text": text, "tables": tables})
     return pages
 
 
@@ -117,7 +135,7 @@ def extract_text_with_pymupdf(pdf_bytes: bytes) -> list[dict[str, Any]]:
     pages: list[dict[str, Any]] = []
     document = fitz.open(stream=pdf_bytes, filetype="pdf")
     for index, page in enumerate(document, start=1):
-        pages.append({"page": index, "text": page.get_text("text")})
+        pages.append({"page": index, "text": page.get_text("text"), "tables": []})
     document.close()
     return pages
 
@@ -183,6 +201,9 @@ TRANSACTION_LINE = re.compile(
     flags=re.IGNORECASE,
 )
 
+LOOSE_DATE = re.compile(r"(?P<date>\d{1,2}[/-]\d{1,2}(?:[/-]\d{2,4})?)")
+LOOSE_MONEY = re.compile(r"(?:R\s*)?-?\(?\d[\d,\s]*\.\d{2}\)?-?")
+
 
 def normalize_transaction_date(raw_date: str, metadata: dict[str, Any]) -> str | None:
     parsed = parse_date(raw_date)
@@ -217,7 +238,172 @@ def classify_transaction(description: str, debit: float | None, credit: float | 
     return "Uncategorised", "review", False, 55
 
 
-def parse_transactions(pages: list[dict[str, Any]], metadata: dict[str, Any]) -> list[ParsedTransaction]:
+def is_noise_transaction(description: str) -> bool:
+    lowered = description.lower()
+    noise = (
+        "opening balance",
+        "closing balance",
+        "balance brought forward",
+        "balance carried forward",
+        "date description",
+        "transaction date",
+        "statement",
+        "page ",
+    )
+    return any(item in lowered for item in noise)
+
+
+def build_transaction(
+    raw_date: str,
+    description: str,
+    debit: float | None,
+    credit: float | None,
+    balance: float | None,
+    metadata: dict[str, Any],
+    page_number: int | None,
+    raw_text: str,
+    base_confidence: float,
+) -> ParsedTransaction | None:
+    normalized_description = re.sub(r"\s+", " ", description).strip(" -|")
+    if not normalized_description or is_noise_transaction(normalized_description):
+        return None
+
+    transaction_date = normalize_transaction_date(raw_date, metadata)
+    if not transaction_date:
+        return None
+
+    if debit is None and credit is None:
+        return None
+
+    category, vat, bank_charge, rule_confidence = classify_transaction(normalized_description, debit, credit)
+    confidence = min(99, max(base_confidence, rule_confidence))
+    review_status = "ready" if confidence >= 85 else "needs_review"
+
+    return ParsedTransaction(
+        transaction_date=transaction_date,
+        description=normalized_description,
+        debit_amount=debit,
+        credit_amount=credit,
+        running_balance=balance,
+        bank_charge=bank_charge,
+        account_category=category,
+        vat_treatment=vat,
+        supported_by_invoice=False,
+        confidence=confidence,
+        review_status=review_status,
+        source_page=page_number,
+        raw_text=raw_text,
+    )
+
+
+def normalize_cell(value: Any) -> str:
+    return re.sub(r"\s+", " ", str(value or "")).strip()
+
+
+def header_kind(value: str) -> str | None:
+    lowered = value.lower()
+    if "date" in lowered:
+        return "date"
+    if any(token in lowered for token in ("description", "details", "transaction", "reference", "narrative")):
+        return "description"
+    if any(token in lowered for token in ("debit", "withdrawal", "payment", "money out", "fee", "charge")):
+        return "debit"
+    if any(token in lowered for token in ("credit", "deposit", "receipt", "money in")):
+        return "credit"
+    if "balance" in lowered:
+        return "balance"
+    return None
+
+
+def parse_table_transactions(pages: list[dict[str, Any]], metadata: dict[str, Any]) -> list[ParsedTransaction]:
+    transactions: list[ParsedTransaction] = []
+
+    for page in pages:
+        page_number = page.get("page")
+        for table in page.get("tables", []) or []:
+            active_headers: dict[int, str] = {}
+
+            for row in table or []:
+                cells = [normalize_cell(cell) for cell in row or []]
+                if not any(cells):
+                    continue
+
+                inferred = {index: header_kind(cell) for index, cell in enumerate(cells)}
+                header_hits = [kind for kind in inferred.values() if kind]
+                if len(header_hits) >= 2 and "date" in header_hits:
+                    active_headers = {index: kind for index, kind in inferred.items() if kind}
+                    continue
+
+                date_index = next((index for index, cell in enumerate(cells) if LOOSE_DATE.search(cell)), None)
+                if date_index is None:
+                    continue
+
+                raw_date_match = LOOSE_DATE.search(cells[date_index])
+                if not raw_date_match:
+                    continue
+                raw_date = raw_date_match.group("date")
+
+                amounts: list[tuple[int, float, str]] = []
+                for index, cell in enumerate(cells):
+                    if looks_like_money(cell):
+                        amount = parse_money(cell)
+                        if amount is not None:
+                            amounts.append((index, amount, cell))
+
+                if not amounts:
+                    continue
+
+                debit: float | None = None
+                credit: float | None = None
+                balance: float | None = None
+
+                for index, amount, cell in amounts:
+                    kind = active_headers.get(index)
+                    if kind == "debit":
+                        debit = abs(amount)
+                    elif kind == "credit":
+                        credit = abs(amount)
+                    elif kind == "balance":
+                        balance = amount
+                    elif money_sign_hint(cell) == "debit":
+                        debit = abs(amount)
+                    elif money_sign_hint(cell) == "credit":
+                        credit = abs(amount)
+
+                if debit is None and credit is None:
+                    non_balance_amounts = [(index, amount, cell) for index, amount, cell in amounts if active_headers.get(index) != "balance"]
+                    if len(non_balance_amounts) >= 2 and len(amounts) >= 3:
+                        debit = abs(non_balance_amounts[0][1]) if non_balance_amounts[0][1] else None
+                        credit = abs(non_balance_amounts[1][1]) if non_balance_amounts[1][1] else None
+                    elif non_balance_amounts:
+                        index, amount, cell = non_balance_amounts[0]
+                        hint = money_sign_hint(cell)
+                        if hint == "credit" or amount < 0:
+                            credit = abs(amount)
+                        else:
+                            debit = abs(amount)
+
+                if balance is None and len(amounts) >= 2:
+                    balance = amounts[-1][1]
+
+                description_cells = []
+                for index, cell in enumerate(cells):
+                    kind = active_headers.get(index)
+                    if index == date_index or kind in {"debit", "credit", "balance"} or looks_like_money(cell):
+                        continue
+                    cleaned = LOOSE_DATE.sub("", cell).strip()
+                    if cleaned:
+                        description_cells.append(cleaned)
+                description = " ".join(description_cells)
+
+                transaction = build_transaction(raw_date, description, debit, credit, balance, metadata, page_number, " | ".join(cells), 78)
+                if transaction:
+                    transactions.append(transaction)
+
+    return transactions
+
+
+def parse_text_transactions(pages: list[dict[str, Any]], metadata: dict[str, Any]) -> list[ParsedTransaction]:
     transactions: list[ParsedTransaction] = []
     for page in pages:
         for raw_line in page["text"].splitlines():
@@ -241,27 +427,61 @@ def parse_transactions(pages: list[dict[str, Any]], metadata: dict[str, Any]) ->
                 else:
                     debit = amount1
 
-            category, vat, bank_charge, confidence = classify_transaction(match.group("description"), debit, credit)
-            review_status = "ready" if confidence >= 85 else "needs_review"
+            transaction = build_transaction(match.group("date"), match.group("description"), debit, credit, balance, metadata, page["page"], line, 74)
+            if transaction:
+                transactions.append(transaction)
+                continue
 
-            transactions.append(
-                ParsedTransaction(
-                    transaction_date=normalize_transaction_date(match.group("date"), metadata),
-                    description=match.group("description").strip(),
-                    debit_amount=debit,
-                    credit_amount=credit,
-                    running_balance=balance,
-                    bank_charge=bank_charge,
-                    account_category=category,
-                    vat_treatment=vat,
-                    supported_by_invoice=False,
-                    confidence=confidence,
-                    review_status=review_status,
-                    source_page=page["page"],
-                    raw_text=line,
-                )
-            )
+            date_match = LOOSE_DATE.search(line)
+            money_matches = list(LOOSE_MONEY.finditer(line))
+            if not date_match or not money_matches:
+                continue
+
+            amounts = [(match.group(0), parse_money(match.group(0))) for match in money_matches]
+            parsed_amounts = [(raw, amount) for raw, amount in amounts if amount is not None]
+            if not parsed_amounts:
+                continue
+
+            balance = parsed_amounts[-1][1] if len(parsed_amounts) >= 2 else None
+            transaction_amount_raw, transaction_amount = parsed_amounts[-2] if len(parsed_amounts) >= 2 else parsed_amounts[-1]
+            debit = None
+            credit = None
+            hint = money_sign_hint(transaction_amount_raw)
+            if hint == "credit" or (transaction_amount is not None and transaction_amount < 0):
+                credit = abs(transaction_amount or 0)
+            else:
+                debit = abs(transaction_amount or 0) if transaction_amount is not None else None
+
+            description_start = date_match.end()
+            description_end = money_matches[0].start()
+            description = line[description_start:description_end]
+            transaction = build_transaction(date_match.group("date"), description, debit, credit, balance, metadata, page["page"], line, 64)
+            if transaction:
+                transactions.append(transaction)
+
     return transactions
+
+
+def dedupe_transactions(transactions: list[ParsedTransaction]) -> list[ParsedTransaction]:
+    seen: set[tuple[str | None, str, float | None, float | None, float | None]] = set()
+    deduped: list[ParsedTransaction] = []
+    for transaction in transactions:
+        key = (
+            transaction.transaction_date,
+            transaction.description.lower(),
+            transaction.debit_amount,
+            transaction.credit_amount,
+            transaction.running_balance,
+        )
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(transaction)
+    return deduped
+
+
+def parse_transactions(pages: list[dict[str, Any]], metadata: dict[str, Any]) -> list[ParsedTransaction]:
+    return dedupe_transactions(parse_table_transactions(pages, metadata) + parse_text_transactions(pages, metadata))
 
 
 def write_row(sheet, values: list[Any], row_index: int, header: bool = False) -> None:
