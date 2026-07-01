@@ -11,8 +11,17 @@ type WorkerResponseBody = {
   detail?: unknown;
   error?: string;
   status?: string;
+  worker?: unknown;
   [key: string]: unknown;
 };
+
+function getWorkerOrigin(workerUrl: string) {
+  try {
+    return new URL(workerUrl).origin;
+  } catch {
+    return "invalid-worker-url";
+  }
+}
 
 function getWorkerError(result: WorkerResponseBody, responseText: string, status: number) {
   if (typeof result.error === "string" && result.error) {
@@ -102,6 +111,7 @@ export async function POST(request: Request) {
       processingJobId: detail.run.processingJobId,
       storagePath: detail.run.sourceStoragePath,
       workerUrlConfigured: Boolean(workerUrl),
+      workerOrigin: getWorkerOrigin(workerUrl),
     });
 
     const response = await fetch(`${workerUrl.replace(/\/$/, "")}/process-fnb-statement`, {
@@ -148,6 +158,8 @@ export async function POST(request: Request) {
           error,
           workerStatus: response.status,
           workerDetail: result.detail ?? result,
+          worker: result.worker ?? (result.detail && typeof result.detail === "object" ? (result.detail as { worker?: unknown }).worker : undefined),
+          workerOrigin: getWorkerOrigin(workerUrl),
           workerRawBody: responseText.slice(0, 2000),
           workerPayload: {
             runId,

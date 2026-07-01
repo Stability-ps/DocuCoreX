@@ -3,6 +3,7 @@ import json
 import logging
 import os
 import re
+import subprocess
 import tempfile
 from datetime import date, datetime
 from decimal import Decimal, ROUND_HALF_UP
@@ -22,6 +23,8 @@ from supabase import Client, create_client
 app = FastAPI(title="DocuCoreX Accounting Worker")
 logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"))
 logger = logging.getLogger("docucorex.accounting_worker")
+WORKER_PARSER_VERSION = "fnb-section-row-assembly-v2"
+WORKER_BUILD_FALLBACK = "local-dev"
 MONEY_TOKEN = re.compile(
     r"(?<!\d)(?P<negative>-)?(?:R\s*)?(?P<bracket>\()?(?P<amount>(?:\d{1,3}(?:,\d{3})+|\d+)\.\d{2})(?:\))?\s*(?P<suffix>Cr|CR|Dr|DR)?(?!\d)",
     re.IGNORECASE,
@@ -40,6 +43,35 @@ def log_warning(event: str, **fields: Any) -> None:
 
 def log_exception(event: str, **fields: Any) -> None:
     logger.exception(json.dumps({"event": event, **fields}, default=str))
+
+
+def git_commit_fallback() -> str:
+    try:
+        return subprocess.check_output(["git", "rev-parse", "HEAD"], text=True, stderr=subprocess.DEVNULL).strip()
+    except Exception:
+        return WORKER_BUILD_FALLBACK
+
+
+def worker_version() -> dict[str, str]:
+    commit = (
+        os.getenv("RENDER_GIT_COMMIT")
+        or os.getenv("GIT_COMMIT")
+        or os.getenv("COMMIT_SHA")
+        or os.getenv("VERCEL_GIT_COMMIT_SHA")
+        or git_commit_fallback()
+    )
+    return {
+        "status": "ok",
+        "service": "docucorex-accounting-worker",
+        "parser_version": WORKER_PARSER_VERSION,
+        "commit": commit,
+        "render_service_id": os.getenv("RENDER_SERVICE_ID", ""),
+        "render_service_name": os.getenv("RENDER_SERVICE_NAME", ""),
+    }
+
+
+def with_worker_version(payload: dict[str, Any]) -> dict[str, Any]:
+    return {**payload, "worker": worker_version()}
 
 
 class ProcessRequest(BaseModel):
@@ -772,12 +804,12 @@ def validate_statement(metadata: dict[str, Any], transactions: list[ParsedTransa
         ]
         raise HTTPException(
             status_code=422,
-            detail={
+            detail=with_worker_version({
                 "message": "FNB parser validation failed.",
                 "errors": errors,
                 "summary": {key: str(value) for key, value in result.items()},
                 "sample_transactions": sample_transactions,
-            },
+            }),
         )
     return result
 
@@ -929,7 +961,12 @@ def build_workbook(metadata: dict[str, Any], transactions: list[ParsedTransactio
 
 @app.get("/health")
 def health() -> dict[str, str]:
-    return {"status": "ok"}
+    return worker_version()
+
+
+@app.get("/version")
+def version() -> dict[str, str]:
+    return worker_version()
 
 
 @app.exception_handler(RequestValidationError)
@@ -953,6 +990,7 @@ async def validation_exception_handler(request: Request, exc: RequestValidationE
             "detail": exc.errors(),
             "missing_fields": missing_fields,
             "message": "Worker request validation failed.",
+            "worker": worker_version(),
         },
     )
 
@@ -965,6 +1003,7 @@ def process_fnb_statement(payload: ProcessRequest, authorization: str | None = H
 
     log_event(
         "worker.process_request",
+        worker=worker_version(),
         run_id=payload.run_id,
         workspace_id=payload.workspace_id,
         document_id=payload.document_id,
@@ -985,12 +1024,24 @@ def process_fnb_statement(payload: ProcessRequest, authorization: str | None = H
             characters=len(full_text),
         )
         metadata = parse_metadata(full_text)
+        candidates = transaction_candidate_lines(full_text)
+        log_event(
+            "worker.transaction_candidates_built",
+            worker=worker_version(),
+            run_id=payload.run_id,
+            candidates=len(candidates),
+            service_fee_candidates=sum(1 for line in candidates if "#service fees" in line.lower() or "#monthly account fee" in line.lower()),
+            parser_version=WORKER_PARSER_VERSION,
+        )
         transactions = parse_transactions(pages, metadata, full_text)
         log_event(
             "worker.statement_parsed",
+            worker=worker_version(),
             run_id=payload.run_id,
             metadata_fields=sorted([key for key, value in metadata.items() if value is not None]),
             transactions=len(transactions),
+            parser_version=WORKER_PARSER_VERSION,
+            service_fee_rows=sum(1 for transaction in transactions if transaction.description.startswith("#")),
         )
 
         if not transactions:
@@ -1001,6 +1052,7 @@ def process_fnb_statement(payload: ProcessRequest, authorization: str | None = H
                 detail={
                     "message": "No FNB transactions could be parsed from this PDF.",
                     "diagnostics": diagnostics,
+                    "worker": worker_version(),
                 },
             )
 
@@ -1078,6 +1130,7 @@ def process_fnb_statement(payload: ProcessRequest, authorization: str | None = H
             "transactions": len(transactions),
             "workbook_storage_path": workbook_path,
             "confidence": round(avg_confidence, 2),
+            "worker": worker_version(),
         }
     except HTTPException as exc:
         message = json.dumps(exc.detail, default=str) if isinstance(exc.detail, (dict, list)) else str(exc.detail)
@@ -1116,4 +1169,4 @@ def process_fnb_statement(payload: ProcessRequest, authorization: str | None = H
             supabase.table("processing_jobs").update(
                 {"status": "failed", "progress": 100, "message": message, "error": message, "updated_at": datetime.utcnow().isoformat()}
             ).eq("id", payload.processing_job_id).execute()
-        raise HTTPException(status_code=422, detail=message) from exc
+        raise HTTPException(status_code=422, detail=with_worker_version({"message": message})) from exc
