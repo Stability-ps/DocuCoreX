@@ -547,10 +547,55 @@ def dedupe_transactions(transactions: list[ParsedTransaction]) -> list[ParsedTra
     return deduped
 
 
+def normalize_transactions_from_balances(
+    transactions: list[ParsedTransaction],
+    opening_balance: float | int | str | None,
+) -> list[ParsedTransaction]:
+    if opening_balance is None:
+        return transactions
+
+    previous_balance = decimal_amount(opening_balance)
+    normalized: list[ParsedTransaction] = []
+
+    for transaction in transactions:
+        if transaction.running_balance is None:
+            normalized.append(transaction)
+            continue
+
+        current_balance = decimal_amount(transaction.running_balance)
+        delta = (current_balance - previous_balance).quantize(CENT)
+        previous_balance = current_balance
+
+        if delta == 0:
+            normalized.append(transaction)
+            continue
+
+        if delta > 0:
+            transaction.credit_amount = decimal_to_float(delta)
+            transaction.debit_amount = None
+        else:
+            transaction.debit_amount = decimal_to_float(delta.copy_abs())
+            transaction.credit_amount = None
+
+        category, vat, bank_charge, rule_confidence = classify_transaction(
+            transaction.description,
+            transaction.debit_amount,
+            transaction.credit_amount,
+        )
+        transaction.account_category = category
+        transaction.vat_treatment = vat
+        transaction.bank_charge = transaction.bank_charge or bank_charge
+        transaction.confidence = min(99, max(transaction.confidence, rule_confidence, 92))
+        transaction.review_status = "ready" if transaction.confidence >= 85 else "needs_review"
+        normalized.append(transaction)
+
+    return normalized
+
+
 def parse_transactions(pages: list[dict[str, Any]], metadata: dict[str, Any]) -> list[ParsedTransaction]:
     table_transactions = parse_table_transactions(pages, metadata)
     if table_transactions:
-        return dedupe_transactions(table_transactions)
+        return normalize_transactions_from_balances(dedupe_transactions(table_transactions), metadata.get("opening_balance"))
     return dedupe_transactions(parse_text_transactions(pages, metadata))
 
 
@@ -611,12 +656,24 @@ def validate_statement(metadata: dict[str, Any], transactions: list[ParsedTransa
         "transaction_count": len(transactions),
     }
     if errors:
+        sample_transactions = [
+            {
+                "date": transaction.transaction_date,
+                "description": transaction.description,
+                "debit": transaction.debit_amount,
+                "credit": transaction.credit_amount,
+                "balance": transaction.running_balance,
+                "raw": transaction.raw_text,
+            }
+            for transaction in transactions[:80]
+        ]
         raise HTTPException(
             status_code=422,
             detail={
                 "message": "FNB parser validation failed.",
                 "errors": errors,
                 "summary": {key: str(value) for key, value in result.items()},
+                "sample_transactions": sample_transactions,
             },
         )
     return result
