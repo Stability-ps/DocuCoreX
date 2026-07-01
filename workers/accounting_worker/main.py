@@ -1047,6 +1047,18 @@ def validation_status(metadata: dict[str, Any], transactions: list[ParsedTransac
     return ("PASSED" if calculated == closing else "FAILED", calculated)
 
 
+def statement_run_metadata(metadata: dict[str, Any]) -> dict[str, Any]:
+    allowed = {
+        "company_name",
+        "account_number",
+        "statement_period_start",
+        "statement_period_end",
+        "opening_balance",
+        "closing_balance",
+    }
+    return {key: metadata.get(key) for key in allowed if key in metadata}
+
+
 def review_reason(transaction: ParsedTransaction) -> str:
     reasons: list[str] = []
     text = transaction.description.lower()
@@ -1744,7 +1756,7 @@ def process_fnb_statement(payload: ProcessRequest, authorization: str | None = H
 
         supabase.table("accounting_statement_runs").update(
             {
-                **metadata,
+                **statement_run_metadata(metadata),
                 "status": status,
                 "transaction_count": len(transactions),
                 "bank_charges_total": bank_charges_total,
