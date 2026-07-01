@@ -119,8 +119,8 @@ def parse_transaction_amount_cell(value: str | None) -> tuple[float | None, floa
         return None
     suffix = ""
     if value:
-        suffix_match = re.search(r"\b(Cr|CR|Dr|DR)\b\s*$", value.strip())
-        suffix = suffix_match.group(1).lower() if suffix_match else ""
+        matches = list(MONEY_TOKEN.finditer(value.replace("\u00a0", " ").strip()))
+        suffix = (matches[-1].group("suffix") or "").lower() if matches else ""
     if suffix == "cr":
         return None, decimal_to_float(amount.copy_abs())
     return decimal_to_float(amount.copy_abs()), None
@@ -341,6 +341,83 @@ def build_transaction(
         source_page=page_number,
         raw_text=raw_text,
     )
+
+
+def transaction_section_lines(full_text: str) -> list[str]:
+    lines = [re.sub(r"\s+", " ", line).strip() for line in full_text.splitlines()]
+    in_section = False
+    section: list[str] = []
+
+    for line in lines:
+        lowered = line.lower()
+        if "transactions in rand" in lowered and "zar" in lowered:
+            in_section = True
+            continue
+        if in_section and "closing balance" in lowered:
+            break
+        if in_section and line:
+            section.append(line)
+
+    return section
+
+
+def parse_fnb_section_transactions(full_text: str, metadata: dict[str, Any]) -> list[ParsedTransaction]:
+    transactions: list[ParsedTransaction] = []
+
+    for line in transaction_section_lines(full_text):
+        date_match = LOOSE_DATE.match(line)
+        if not date_match:
+            continue
+
+        matches = list(MONEY_TOKEN.finditer(line))
+        if len(matches) < 2:
+            continue
+
+        charge_match = None
+        balance_match = matches[-1]
+        amount_match = matches[-2]
+
+        if len(matches) >= 3 and not (matches[-1].group("suffix") or "").lower() and (matches[-2].group("suffix") or "").lower() in {"cr", "dr"}:
+            charge_match = matches[-1]
+            balance_match = matches[-2]
+            amount_match = matches[-3]
+
+        balance_suffix = (balance_match.group("suffix") or "").lower()
+        if balance_suffix not in {"cr", "dr"}:
+            continue
+
+        amount = parse_money_cell(amount_match.group(0))
+        balance = parse_money_cell(balance_match.group(0))
+        charge_amount = parse_money_cell(charge_match.group(0)) if charge_match else None
+        if amount is None or balance is None:
+            continue
+
+        amount_suffix = (amount_match.group("suffix") or "").lower()
+        debit = None
+        credit = None
+        if amount_suffix == "cr":
+            credit = decimal_to_float(amount.copy_abs())
+        else:
+            debit = decimal_to_float(amount.copy_abs())
+
+        description = line[date_match.end():amount_match.start()].strip()
+        transaction = build_transaction(
+            date_match.group("date"),
+            description,
+            debit,
+            credit,
+            decimal_to_float(balance),
+            metadata,
+            None,
+            line,
+            96,
+        )
+        if transaction:
+            if charge_amount is not None and charge_amount != 0:
+                transaction.notes = f"Accrued bank charges: {charge_amount.copy_abs().quantize(CENT)}"
+            transactions.append(transaction)
+
+    return transactions
 
 
 def normalize_cell(value: Any) -> str:
@@ -592,7 +669,10 @@ def normalize_transactions_from_balances(
     return normalized
 
 
-def parse_transactions(pages: list[dict[str, Any]], metadata: dict[str, Any]) -> list[ParsedTransaction]:
+def parse_transactions(pages: list[dict[str, Any]], metadata: dict[str, Any], full_text: str = "") -> list[ParsedTransaction]:
+    section_transactions = parse_fnb_section_transactions(full_text, metadata) if full_text else []
+    if section_transactions:
+        return dedupe_transactions(section_transactions)
     table_transactions = parse_table_transactions(pages, metadata)
     if table_transactions:
         return normalize_transactions_from_balances(dedupe_transactions(table_transactions), metadata.get("opening_balance"))
@@ -637,6 +717,7 @@ def validate_statement(metadata: dict[str, Any], transactions: list[ParsedTransa
         "closing_balance": Decimal("11196.46"),
         "credit_count": 4,
         "debit_count": 58,
+        "transaction_count": 62,
     }
     if opening == expected_statement["opening_balance"] and closing == expected_statement["closing_balance"]:
         if summary["total_credits"] != expected_statement["total_credits"]:
@@ -647,6 +728,8 @@ def validate_statement(metadata: dict[str, Any], transactions: list[ParsedTransa
             errors.append(f"Expected {expected_statement['credit_count']} credit transactions, parsed {summary['credit_count']}.")
         if summary["debit_count"] != expected_statement["debit_count"]:
             errors.append(f"Expected {expected_statement['debit_count']} debit transactions, parsed {summary['debit_count']}.")
+        if len(transactions) != expected_statement["transaction_count"]:
+            errors.append(f"Expected {expected_statement['transaction_count']} transactions, parsed {len(transactions)}.")
 
     result = {
         "opening_balance": opening,
@@ -882,7 +965,7 @@ def process_fnb_statement(payload: ProcessRequest, authorization: str | None = H
             characters=len(full_text),
         )
         metadata = parse_metadata(full_text)
-        transactions = parse_transactions(pages, metadata)
+        transactions = parse_transactions(pages, metadata, full_text)
         log_event(
             "worker.statement_parsed",
             run_id=payload.run_id,
