@@ -62,7 +62,7 @@ function formatApiError(data: { error?: string; workerDetail?: unknown; workerRa
       : data.error;
 
   if (detail?.toLowerCase().includes("parser validation failed")) {
-    return "Parser validation failed. See diagnostics.";
+    return "Parser validation failed. The statement layout needs review.";
   }
 
   if (data.workerStatus) {
@@ -256,7 +256,7 @@ export function AccountingIntelligence() {
           <p>{error}</p>
           {diagnostics ? (
             <details className="mt-3 rounded-xl border border-rose-200 bg-white/70 p-3 text-xs font-semibold text-rose-900">
-              <summary className="cursor-pointer">Diagnostics</summary>
+              <summary className="cursor-pointer">Developer diagnostics</summary>
               <pre className="mt-2 max-h-72 overflow-auto whitespace-pre-wrap break-words font-mono text-[11px] leading-5">{diagnostics}</pre>
             </details>
           ) : null}

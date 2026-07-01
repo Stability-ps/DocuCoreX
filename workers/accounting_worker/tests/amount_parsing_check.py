@@ -112,6 +112,7 @@ else:
         supabase.create_client = create_client
 
 from main import (
+    balance_gap_diagnostics,
     insert_inferred_fnb_service_fees,
     parse_metadata,
     parse_fnb_section_transactions,
@@ -120,6 +121,7 @@ from main import (
     parse_transaction_amount_cell,
     parse_transactions,
     service_fee_candidate_lines,
+    strip_fnb_page_artifacts,
     transaction_candidate_lines,
 )
 
@@ -269,6 +271,54 @@ def run():
     ], "inferred fee descriptions")
     assert_equal(sum(Decimal(str(row.debit_amount or 0)) for row in inferred_fees), Decimal("695.00"), "inferred fee total")
     assert_equal([row.running_balance for row in inferred_fees], [58342.32, 2317.55, 2212.55, 2202.99], "inferred fee balances")
+
+    march_header_line = (
+        "27 Mar POS Purchase Mytheresa.Com Int91 400568*7629 26 Mar 48,276.30 3,490,330.08Cr "
+        "Page 2 of 3 Delivery Method F1 R02 Branch Number Account Number Date DDA BE/48/BT/KY/KY/BF/B9/C6/CK/N "
+        "FN NS/EM/WV/DDA BE 921 921 63012589818 2026/03/31 PLATINUM BUSINESS ACCOUNT 653971 "
+        "Accrued Date Description Amount Balance Bank Charges"
+    )
+    assert_equal(
+        strip_fnb_page_artifacts(march_header_line),
+        "27 Mar POS Purchase Mytheresa.Com Int91 400568*7629 26 Mar 48,276.30 3,490,330.08Cr",
+        "march page header stripped from transaction row",
+    )
+    march_text = f"""
+    Transactions in RAND (ZAR)
+    26 Mar Magtape Credit 047-Gp Hea-000045705 1,980,988.88Cr 3,539,295.94Cr
+    {march_header_line}
+    27 Mar POS Purchase New Uber Eats 400568*7629 26 Mar 1,234.00 3,489,096.08Cr
+    Closing Balance 1,666,557.95Cr
+    """
+    march_candidates = transaction_candidate_lines(march_text)
+    assert_equal(len(march_candidates), 3, "march page header does not create or join transaction")
+    assert_equal(
+        march_candidates[1],
+        "27 Mar POS Purchase Mytheresa.Com Int91 400568*7629 26 Mar 48,276.30 3,490,330.08Cr",
+        "march header candidate cleaned",
+    )
+    march_transactions = parse_fnb_section_transactions(march_text, {"statement_period_end": "2026-03-31"})
+    assert_equal(march_transactions[1].description, "POS Purchase Mytheresa.Com Int91 400568*7629 26 Mar", "march transaction description cleaned")
+    assert_equal(march_transactions[1].debit_amount, 48276.3, "march transaction debit")
+    assert_equal(march_transactions[1].running_balance, 3490330.08, "march transaction balance")
+
+    march_gap_transactions = parse_fnb_section_transactions(
+        """
+        Transactions in RAND (ZAR)
+        31 Mar POS Purchase New Uber Eats 400568*7629 30 Mar 100.00 1,666,557.95Cr
+        Closing Balance 1,666,557.95Cr
+        """,
+        {"statement_period_end": "2026-03-31", "opening_balance": 1667347.51},
+    )
+    march_inferred = insert_inferred_fnb_service_fees(
+        march_gap_transactions,
+        {"statement_period_end": "2026-03-31", "opening_balance": 1667347.51},
+    )
+    march_inferred_fees = [row for row in march_inferred if row.description.startswith("#")]
+    assert_equal(len(march_inferred_fees), 3, "march inferred fee count")
+    assert_equal([row.description for row in march_inferred_fees], ["#Monthly Account Fee", "#Service Fees", "#Service Fees Intl Pmt Fee"], "march inferred fee descriptions")
+    assert_equal(sum(Decimal(str(row.debit_amount or 0)) for row in march_inferred_fees), Decimal("689.56"), "march inferred fee total")
+    assert_equal(balance_gap_diagnostics({"opening_balance": 1667347.51}, march_inferred), [], "march inferred rows close balance gap")
 
 
 if __name__ == "__main__":
