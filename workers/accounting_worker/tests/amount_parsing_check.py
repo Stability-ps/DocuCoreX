@@ -89,7 +89,15 @@ if importlib.util.find_spec("supabase") is None:
     supabase.create_client = create_client
     sys.modules["supabase"] = supabase
 
-from main import parse_fnb_section_transactions, parse_money_cell, parse_transaction_amount_cell, transaction_candidate_lines
+from main import (
+    parse_fnb_section_transactions,
+    parse_fnb_service_fee_transactions,
+    parse_money_cell,
+    parse_transaction_amount_cell,
+    parse_transactions,
+    service_fee_candidate_lines,
+    transaction_candidate_lines,
+)
 
 
 def assert_equal(actual, expected, label):
@@ -168,6 +176,29 @@ def run():
     assert_equal(len(wrapped_transactions), 2, "wrapped transaction count")
     assert_equal(wrapped_transactions[0].debit_amount, 1.44, "wrapped intl fee debit")
     assert_equal(wrapped_transactions[1].debit_amount, 579.0, "wrapped monthly fee debit")
+
+    outside_section_text = """
+    Header
+    Transactions in RAND (ZAR)
+    09 Feb FNB OB Pmt Rmsp 10129 25,000.00Cr 58,343.76Cr
+    Closing Balance 11,196.46Cr
+    Accrued Bank Charges
+    11 Feb #Service Fees Intl Pmt Fee-Google Xiao 1.44 58,342.32Cr
+    26 Feb #Monthly Account Fee
+    579.00 2,317.55Cr
+    26 Feb #Service Fees 105.00 2,212.55Cr
+    27 Feb #Service Fees Intl Pmt Fee-Google Chat
+    9.56 2,202.99Cr
+    Legal footer 999,999.99
+    """
+    fee_candidates = service_fee_candidate_lines(outside_section_text)
+    assert_equal(len(fee_candidates), 4, "outside-section fee candidate count")
+    outside_fees = parse_fnb_service_fee_transactions(outside_section_text, metadata)
+    assert_equal(len(outside_fees), 4, "outside-section fee transaction count")
+    assert_equal(sum(Decimal(str(row.debit_amount or 0)) for row in outside_fees), Decimal("695.00"), "outside-section fee total")
+    merged_transactions = parse_transactions([], metadata, outside_section_text)
+    assert_equal(len(merged_transactions), 5, "merged section plus fee transaction count")
+    assert_equal(sum(Decimal(str(row.debit_amount or 0)) for row in merged_transactions), Decimal("695.00"), "merged fee total")
 
 
 if __name__ == "__main__":
