@@ -1095,13 +1095,23 @@ def apply_number_formats(sheet, currency_columns: list[int], percent_columns: li
                 row[index - 1].number_format = '0"%"'
 
 
-def finish_sheet(sheet) -> None:
-    sheet.freeze_panes = "A2"
-    if sheet.max_row >= 1 and sheet.max_column >= 1:
-        sheet.auto_filter.ref = sheet.dimensions
+def finish_sheet(sheet, freeze_pane: str = "A2", filter_ref: str | None = None) -> None:
+    sheet.freeze_panes = freeze_pane
+    if filter_ref:
+        sheet.auto_filter.ref = filter_ref
     for column_index, column_cells in enumerate(sheet.columns, start=1):
         max_length = max(len(str(cell.value or "")) for cell in column_cells)
         sheet.column_dimensions[get_column_letter(column_index)].width = min(max(max_length + 2, 12), 48)
+
+
+def validate_workbook_for_export(workbook: Workbook) -> None:
+    forbidden_errors = {"#NAME?", "#VALUE!", "#REF!", "#DIV/0!", "#N/A"}
+    for sheet in workbook.worksheets:
+        for row in sheet.iter_rows():
+            for cell in row:
+                value = cell.value
+                if isinstance(value, str) and value.strip() in forbidden_errors:
+                    raise ValueError(f"Workbook export contains {value} in {sheet.title}!{cell.coordinate}")
 
 
 def workbook_date(value: str | None) -> date | str | None:
@@ -1537,10 +1547,11 @@ def build_workbook(metadata: dict[str, Any], transactions: list[ParsedTransactio
             row_index,
             4,
         )
-    for row_index in range(4, max(13, 3 + len(months)) + 1):
+    for row_index in range(4, 13):
         dashboard.cell(row=row_index, column=2).number_format = CURRENCY_FORMAT
         for column_index in range(5, 12):
             dashboard.cell(row=row_index, column=column_index).number_format = CURRENCY_FORMAT
+    dashboard["B13"].number_format = "0"
 
     tx = workbook.create_sheet("Transactions")
     transaction_headers = [
@@ -1631,10 +1642,10 @@ def build_workbook(metadata: dict[str, Any], transactions: list[ParsedTransactio
         ("Opening Balance", opening),
         ("+ Receipts", totals["total_credits"]),
         ("- Payments", totals["total_debits"]),
-        ("= Expected Closing Balance", f"=B2+B3-B4"),
+        ("Expected Closing Balance", "=B2+B3-B4"),
         ("Statement Closing Balance", closing),
         ("Difference", f"=B5-B6"),
-        ("Status", "Reconciled" if status == "PASSED" else "Review required"),
+        ("Status", '=IF(B7=0,"Reconciled","Review required")'),
         ("Service Fees", bank_charge_total),
         ("Bank VAT", bank_vat),
     ]
@@ -1684,10 +1695,17 @@ def build_workbook(metadata: dict[str, Any], transactions: list[ParsedTransactio
     for row_index, row in enumerate(assumptions_rows, start=1):
         write_row(assumptions, list(row), row_index, header=row_index == 1)
 
-    for sheet in workbook.worksheets:
-        finish_sheet(sheet)
+    finish_sheet(dashboard, freeze_pane="D4")
+    finish_sheet(tx, filter_ref=f"A1:O{max(tx.max_row, 1)}")
+    finish_sheet(vat, filter_ref=f"A1:K{max(vat.max_row, 1)}")
+    finish_sheet(ledger, filter_ref=f"A1:E{max(ledger.max_row, 1)}")
+    finish_sheet(trial, filter_ref=f"A1:E{max(len(ledger_accounts) + 1, 1)}")
+    finish_sheet(rec)
+    finish_sheet(review, filter_ref=f"A1:I{max(review.max_row, 1)}")
+    finish_sheet(assumptions)
 
     output = io.BytesIO()
+    validate_workbook_for_export(workbook)
     workbook.save(output)
     return output.getvalue()
 
