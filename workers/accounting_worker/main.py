@@ -5,7 +5,7 @@ import os
 import re
 import tempfile
 from datetime import date, datetime
-from decimal import Decimal
+from decimal import Decimal, ROUND_HALF_UP
 from typing import Any
 
 import fitz
@@ -23,7 +23,9 @@ app = FastAPI(title="DocuCoreX Accounting Worker")
 logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"))
 logger = logging.getLogger("docucorex.accounting_worker")
 MONEY_TOKEN = re.compile(r"(?:R\s*)?-?\(?\d[\d,\s]*\.\d{2}\)?-?")
+MONEY_CELL = re.compile(r"^\s*(?P<negative>-)?(?:R\s*)?(?P<bracket>\()?(?P<amount>\d[\d,\s]*\.\d{2})(?:\))?\s*(?P<suffix>Cr|CR|Dr|DR)?\s*$")
 MAX_DATABASE_AMOUNT = Decimal("999999999999.99")
+CENT = Decimal("0.01")
 
 
 def log_event(event: str, **fields: Any) -> None:
@@ -100,6 +102,44 @@ def parse_money(value: str | None) -> float | None:
         return float(signed)
     except Exception:
         return None
+
+
+def decimal_to_float(value: Decimal | None) -> float | None:
+    if value is None:
+        return None
+    return float(value.quantize(CENT, rounding=ROUND_HALF_UP))
+
+
+def parse_money_cell(value: str | None) -> Decimal | None:
+    if not value:
+        return None
+    match = MONEY_CELL.match(value.replace("\u00a0", " ").strip())
+    if not match:
+        return None
+    normalized = match.group("amount").replace(",", "").replace(" ", "")
+    try:
+        amount = Decimal(normalized)
+    except Exception:
+        return None
+    if match.group("negative") or match.group("bracket") or (match.group("suffix") or "").lower() == "dr":
+        amount = -amount
+    if amount.copy_abs() > MAX_DATABASE_AMOUNT:
+        log_warning("worker.amount_cell_out_of_bounds", raw=value, amount=str(amount))
+        return None
+    return amount
+
+
+def parse_transaction_amount_cell(value: str | None) -> tuple[float | None, float | None] | None:
+    amount = parse_money_cell(value)
+    if amount is None:
+        return None
+    suffix = ""
+    if value:
+        suffix_match = re.search(r"\b(Cr|CR|Dr|DR)\b\s*$", value.strip())
+        suffix = suffix_match.group(1).lower() if suffix_match else ""
+    if suffix == "cr":
+        return None, decimal_to_float(amount.copy_abs())
+    return decimal_to_float(amount.copy_abs()), None
 
 
 def looks_like_money(value: str | None) -> bool:
@@ -329,13 +369,31 @@ def header_kind(value: str) -> str | None:
         return "date"
     if any(token in lowered for token in ("description", "details", "transaction", "reference", "narrative")):
         return "description"
-    if any(token in lowered for token in ("debit", "withdrawal", "payment", "money out", "fee", "charge")):
+    if "amount" in lowered:
+        return "amount"
+    if "accrued" in lowered and ("charge" in lowered or "bank" in lowered):
+        return "accrued_charges"
+    if any(token in lowered for token in ("debit", "withdrawal", "payment", "money out")):
         return "debit"
     if any(token in lowered for token in ("credit", "deposit", "receipt", "money in")):
         return "credit"
     if "balance" in lowered:
         return "balance"
     return None
+
+
+def find_header_index(headers: dict[int, str], *kinds: str) -> int | None:
+    for kind in kinds:
+        for index, header in headers.items():
+            if header == kind:
+                return index
+    return None
+
+
+def row_value(cells: list[str], index: int | None) -> str:
+    if index is None or index < 0 or index >= len(cells):
+        return ""
+    return cells[index]
 
 
 def parse_table_transactions(pages: list[dict[str, Any]], metadata: dict[str, Any]) -> list[ParsedTransaction]:
@@ -357,7 +415,9 @@ def parse_table_transactions(pages: list[dict[str, Any]], metadata: dict[str, An
                     active_headers = {index: kind for index, kind in inferred.items() if kind}
                     continue
 
-                date_index = next((index for index, cell in enumerate(cells) if LOOSE_DATE.search(cell)), None)
+                date_index = find_header_index(active_headers, "date")
+                if date_index is None:
+                    date_index = next((index for index, cell in enumerate(cells) if LOOSE_DATE.search(cell)), None)
                 if date_index is None:
                     continue
 
@@ -366,61 +426,63 @@ def parse_table_transactions(pages: list[dict[str, Any]], metadata: dict[str, An
                     continue
                 raw_date = raw_date_match.group("date")
 
-                amounts: list[tuple[int, float, str]] = []
-                for index, cell in enumerate(cells):
-                    if looks_like_money(cell):
-                        amount = parse_money(cell)
-                        if amount is not None:
-                            amounts.append((index, amount, cell))
+                description_index = find_header_index(active_headers, "description")
+                amount_index = find_header_index(active_headers, "amount", "debit", "credit")
+                balance_index = find_header_index(active_headers, "balance")
+                charges_index = find_header_index(active_headers, "accrued_charges")
 
-                if not amounts:
-                    continue
+                if not active_headers and len(cells) >= 4:
+                    description_index = 1 if len(cells) > 1 else None
+                    money_cell_indexes = [index for index, cell in enumerate(cells) if index != date_index and MONEY_CELL.match(cell)]
+                    if len(money_cell_indexes) >= 2:
+                        amount_index = money_cell_indexes[0]
+                        balance_index = money_cell_indexes[1]
+                        charges_index = money_cell_indexes[2] if len(money_cell_indexes) >= 3 else None
+                    elif len(cells) >= 5:
+                        amount_index = 2
+                        balance_index = 3
+                        charges_index = 4
+                    else:
+                        amount_index = 2
+                        balance_index = 3
 
                 debit: float | None = None
                 credit: float | None = None
-                balance: float | None = None
+                balance = decimal_to_float(parse_money_cell(row_value(cells, balance_index)))
 
-                for index, amount, cell in amounts:
-                    kind = active_headers.get(index)
-                    if kind == "debit":
-                        debit = abs(amount)
-                    elif kind == "credit":
-                        credit = abs(amount)
-                    elif kind == "balance":
-                        balance = amount
-                    elif money_sign_hint(cell) == "debit":
-                        debit = abs(amount)
-                    elif money_sign_hint(cell) == "credit":
-                        credit = abs(amount)
+                if amount_index is not None:
+                    parsed_amount = parse_transaction_amount_cell(row_value(cells, amount_index))
+                    if parsed_amount:
+                        debit, credit = parsed_amount
+                elif find_header_index(active_headers, "debit") is not None or find_header_index(active_headers, "credit") is not None:
+                    debit_amount = parse_money_cell(row_value(cells, find_header_index(active_headers, "debit")))
+                    credit_amount = parse_money_cell(row_value(cells, find_header_index(active_headers, "credit")))
+                    debit = decimal_to_float(debit_amount.copy_abs()) if debit_amount is not None else None
+                    credit = decimal_to_float(credit_amount.copy_abs()) if credit_amount is not None else None
 
                 if debit is None and credit is None:
-                    non_balance_amounts = [(index, amount, cell) for index, amount, cell in amounts if active_headers.get(index) != "balance"]
-                    if len(non_balance_amounts) >= 2 and len(amounts) >= 3:
-                        debit = abs(non_balance_amounts[0][1]) if non_balance_amounts[0][1] else None
-                        credit = abs(non_balance_amounts[1][1]) if non_balance_amounts[1][1] else None
-                    elif non_balance_amounts:
-                        index, amount, cell = non_balance_amounts[0]
-                        hint = money_sign_hint(cell)
-                        if hint == "credit" or amount < 0:
-                            credit = abs(amount)
-                        else:
-                            debit = abs(amount)
+                    continue
 
-                if balance is None and len(amounts) >= 2:
-                    balance = amounts[-1][1]
+                if description_index is not None:
+                    description = row_value(cells, description_index)
+                else:
+                    description_cells = []
+                    for index, cell in enumerate(cells):
+                        if index in {date_index, amount_index, balance_index, charges_index}:
+                            continue
+                        cleaned = LOOSE_DATE.sub("", cell).strip()
+                        if cleaned and not MONEY_CELL.match(cleaned):
+                            description_cells.append(cleaned)
+                    description = " ".join(description_cells)
 
-                description_cells = []
-                for index, cell in enumerate(cells):
-                    kind = active_headers.get(index)
-                    if index == date_index or kind in {"debit", "credit", "balance"} or looks_like_money(cell):
-                        continue
-                    cleaned = LOOSE_DATE.sub("", cell).strip()
-                    if cleaned:
-                        description_cells.append(cleaned)
-                description = " ".join(description_cells)
-
-                transaction = build_transaction(raw_date, description, debit, credit, balance, metadata, page_number, " | ".join(cells), 78)
+                raw_text = " | ".join(cells)
+                charge_amount = parse_money_cell(row_value(cells, charges_index))
+                transaction = build_transaction(raw_date, description, debit, credit, balance, metadata, page_number, raw_text, 90)
                 if transaction:
+                    if charge_amount is not None and charge_amount != 0:
+                        transaction.bank_charge = True
+                        transaction.account_category = "Bank Charges"
+                        transaction.vat_treatment = "out_of_scope"
                     transactions.append(transaction)
 
     return transactions
@@ -502,7 +564,78 @@ def dedupe_transactions(transactions: list[ParsedTransaction]) -> list[ParsedTra
 
 
 def parse_transactions(pages: list[dict[str, Any]], metadata: dict[str, Any]) -> list[ParsedTransaction]:
-    return dedupe_transactions(parse_table_transactions(pages, metadata) + parse_text_transactions(pages, metadata))
+    table_transactions = parse_table_transactions(pages, metadata)
+    if table_transactions:
+        return dedupe_transactions(table_transactions)
+    return dedupe_transactions(parse_text_transactions(pages, metadata))
+
+
+def decimal_amount(value: float | int | str | None) -> Decimal:
+    if value is None:
+        return Decimal("0.00")
+    return Decimal(str(value)).quantize(CENT, rounding=ROUND_HALF_UP)
+
+
+def validation_summary(transactions: list[ParsedTransaction]) -> dict[str, Any]:
+    total_debits = sum((decimal_amount(transaction.debit_amount) for transaction in transactions), Decimal("0.00"))
+    total_credits = sum((decimal_amount(transaction.credit_amount) for transaction in transactions), Decimal("0.00"))
+    debit_count = sum(1 for transaction in transactions if decimal_amount(transaction.debit_amount) > 0)
+    credit_count = sum(1 for transaction in transactions if decimal_amount(transaction.credit_amount) > 0)
+    return {
+        "total_debits": total_debits.quantize(CENT),
+        "total_credits": total_credits.quantize(CENT),
+        "debit_count": debit_count,
+        "credit_count": credit_count,
+    }
+
+
+def validate_statement(metadata: dict[str, Any], transactions: list[ParsedTransaction]) -> dict[str, Any]:
+    summary = validation_summary(transactions)
+    opening = decimal_amount(metadata.get("opening_balance"))
+    closing = decimal_amount(metadata.get("closing_balance"))
+    calculated_closing = (opening + summary["total_credits"] - summary["total_debits"]).quantize(CENT)
+    errors: list[str] = []
+
+    if metadata.get("opening_balance") is not None and metadata.get("closing_balance") is not None and calculated_closing != closing:
+        errors.append(
+            f"Bank reconciliation failed: opening {opening} + credits {summary['total_credits']} - debits {summary['total_debits']} = {calculated_closing}, expected closing {closing}."
+        )
+
+    expected_statement = {
+        "opening_balance": Decimal("111600.56"),
+        "total_credits": Decimal("209375.00"),
+        "total_debits": Decimal("309779.10"),
+        "closing_balance": Decimal("11196.46"),
+        "credit_count": 4,
+        "debit_count": 58,
+    }
+    if opening == expected_statement["opening_balance"] and closing == expected_statement["closing_balance"]:
+        if summary["total_credits"] != expected_statement["total_credits"]:
+            errors.append(f"Expected total credits {expected_statement['total_credits']}, parsed {summary['total_credits']}.")
+        if summary["total_debits"] != expected_statement["total_debits"]:
+            errors.append(f"Expected total debits {expected_statement['total_debits']}, parsed {summary['total_debits']}.")
+        if summary["credit_count"] != expected_statement["credit_count"]:
+            errors.append(f"Expected {expected_statement['credit_count']} credit transactions, parsed {summary['credit_count']}.")
+        if summary["debit_count"] != expected_statement["debit_count"]:
+            errors.append(f"Expected {expected_statement['debit_count']} debit transactions, parsed {summary['debit_count']}.")
+
+    result = {
+        "opening_balance": opening,
+        "closing_balance": closing,
+        "calculated_closing": calculated_closing,
+        **summary,
+        "transaction_count": len(transactions),
+    }
+    if errors:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "message": "FNB parser validation failed.",
+                "errors": errors,
+                "summary": {key: str(value) for key, value in result.items()},
+            },
+        )
+    return result
 
 
 def extraction_diagnostics(pages: list[dict[str, Any]], full_text: str) -> dict[str, Any]:
@@ -726,6 +859,13 @@ def process_fnb_statement(payload: ProcessRequest, authorization: str | None = H
                     "diagnostics": diagnostics,
                 },
             )
+
+        validation = validate_statement(metadata, transactions)
+        log_event(
+            "worker.statement_validated",
+            run_id=payload.run_id,
+            validation={key: str(value) for key, value in validation.items()},
+        )
 
         supabase.table("accounting_transactions").delete().eq("run_id", payload.run_id).execute()
         rows = [
