@@ -20,6 +20,8 @@ Optional provider variables:
 - `AZURE_FORM_RECOGNIZER_ENDPOINT`
 - `AZURE_FORM_RECOGNIZER_KEY`
 
+For Accounting Intelligence, also set `OPENAI_API_KEY` on the Render `docucorex-accounting-worker` service. Vercel environment variables are not automatically available to the FastAPI worker.
+
 ## Supabase
 
 Run migrations in order:

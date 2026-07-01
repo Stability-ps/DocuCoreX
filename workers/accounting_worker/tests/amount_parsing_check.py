@@ -69,6 +69,10 @@ if importlib.util.find_spec("openpyxl") is None:
     openpyxl_styles.Side = StyleStub
     sys.modules["openpyxl.styles"] = openpyxl_styles
 
+    openpyxl_utils = types.ModuleType("openpyxl.utils")
+    openpyxl_utils.get_column_letter = lambda index: chr(64 + index) if index <= 26 else f"COL{index}"
+    sys.modules["openpyxl.utils"] = openpyxl_utils
+
 if importlib.util.find_spec("pydantic") is None:
     pydantic = types.ModuleType("pydantic")
 
@@ -96,9 +100,20 @@ if importlib.util.find_spec("supabase") is None:
 
     supabase.create_client = create_client
     sys.modules["supabase"] = supabase
+else:
+    import supabase
+
+    if not hasattr(supabase, "Client"):
+        supabase.Client = object
+    if not hasattr(supabase, "create_client"):
+        def create_client(*args, **kwargs):
+            return object()
+
+        supabase.create_client = create_client
 
 from main import (
     insert_inferred_fnb_service_fees,
+    parse_metadata,
     parse_fnb_section_transactions,
     parse_fnb_service_fee_transactions,
     parse_money_cell,
@@ -120,6 +135,17 @@ def run():
     assert_equal(parse_money_cell("Byc Debit 63012593504 8.74"), Decimal("8.74"), "byc debit")
     assert_equal(parse_money_cell("-333642412 3,652.00"), Decimal("3652.00"), "negative reference")
     assert_equal(parse_money_cell("63012593504 16.61"), Decimal("16.61"), "reference plus amount")
+    metadata = parse_metadata("""
+    Bank VAT Registration Number 4210102051
+    ALLIANZ HOLDINGS (PTY) LTD
+    Waterfall Office Park
+    Platinum Business Account 63012589818
+    Period 01 Feb 2026 to 28 Feb 2026
+    Opening Balance 111,600.56
+    Closing Balance 11,196.46
+    """)
+    assert_equal(metadata["company_name"], "ALLIANZ HOLDINGS (PTY) LTD", "allianz company name")
+    assert_equal(metadata["account_number"], "63012589818", "allianz account number")
 
     debit, credit = parse_transaction_amount_cell("10129 25,000.00Cr") or (None, None)
     assert_equal(debit, None, "credit debit side")

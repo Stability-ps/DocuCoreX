@@ -9,8 +9,9 @@ It currently supports FNB South Africa business bank statement PDFs. The worker 
 3. Fall back to PyMuPDF when text is sparse.
 4. Parse statement metadata and transactions with deterministic rules.
 5. Apply accounting classification rules.
-6. Save transactions to Supabase.
-7. Generate and upload the Excel workbook.
+6. Optionally improve ambiguous classifications with OpenAI after parser validation passes.
+7. Save transactions to Supabase.
+8. Generate and upload the Excel workbook.
 
 ## Environment
 
@@ -23,7 +24,10 @@ Required:
 Optional:
 
 - `ACCOUNTING_WORKER_TOKEN` for bearer-token protection between Next.js and the worker.
-- `OPENAI_API_KEY` for future ambiguous-description classification. Phase 1 does not require AI.
+- `OPENAI_API_KEY` enables AI classification for ambiguous descriptions after deterministic parsing and reconciliation pass.
+- `OPENAI_ACCOUNTING_MODEL` optionally overrides the default `gpt-4o-mini`.
+
+Set `OPENAI_API_KEY` on the Render worker service environment. Adding it only to the Next.js/Vercel app is not enough because the Python worker makes the OpenAI request.
 
 ## Render Runtime
 
