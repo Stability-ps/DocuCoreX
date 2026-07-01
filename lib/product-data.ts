@@ -92,6 +92,7 @@ export const appNav: NavGroup[] = [
       { title: "Redact", href: "/convert/redact", icon: PencilLine },
     ],
   },
+  { title: "Accounting Intelligence", href: "/accounting", icon: ReceiptText },
   { title: "Billing & Subscription", href: "/billing", icon: CreditCard },
   { title: "Team & Collaboration", href: "/team", icon: UsersRound },
   { title: "Help & Support", href: "/help", icon: BookOpen },
@@ -104,6 +105,7 @@ export const appNav: NavGroup[] = [
 
 export const newActionItems: NavItem[] = [
   { title: "Upload Document", href: "/upload", icon: CloudUpload },
+  { title: "FNB Statement", href: "/accounting", icon: ReceiptText },
   { title: "Scan Document", href: "/upload?workflow=scan_document", icon: ScanText },
   { title: "Create Folder", href: "/documents/folders", icon: FolderPlus },
   { title: "Import Files", href: "/upload?workflow=import_files", icon: FileInput },
