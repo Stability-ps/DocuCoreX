@@ -1,4 +1,5 @@
 import io
+import json
 import logging
 import os
 import re
@@ -21,6 +22,18 @@ from supabase import Client, create_client
 app = FastAPI(title="DocuCoreX Accounting Worker")
 logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"))
 logger = logging.getLogger("docucorex.accounting_worker")
+
+
+def log_event(event: str, **fields: Any) -> None:
+    logger.info(json.dumps({"event": event, **fields}, default=str))
+
+
+def log_warning(event: str, **fields: Any) -> None:
+    logger.warning(json.dumps({"event": event, **fields}, default=str))
+
+
+def log_exception(event: str, **fields: Any) -> None:
+    logger.exception(json.dumps({"event": event, **fields}, default=str))
 
 
 class ProcessRequest(BaseModel):
@@ -378,14 +391,12 @@ async def validation_exception_handler(request: Request, exc: RequestValidationE
         for error in exc.errors()
         if error.get("type") == "missing"
     ]
-    logger.warning(
+    log_warning(
         "worker.validation_error",
-        extra={
-            "path": str(request.url.path),
-            "missing_fields": missing_fields,
-            "errors": exc.errors(),
-            "body": body.decode("utf-8", errors="replace"),
-        },
+        path=str(request.url.path),
+        missing_fields=missing_fields,
+        errors=exc.errors(),
+        body=body.decode("utf-8", errors="replace"),
     )
     return JSONResponse(
         status_code=422,
@@ -403,36 +414,34 @@ def process_fnb_statement(payload: ProcessRequest, authorization: str | None = H
     supabase = get_supabase()
     bucket = os.getenv("SUPABASE_BUCKET", "documents")
 
-    logger.info(
+    log_event(
         "worker.process_request",
-        extra={
-            "run_id": payload.run_id,
-            "workspace_id": payload.workspace_id,
-            "document_id": payload.document_id,
-            "processing_job_id": payload.processing_job_id,
-            "storage_path": payload.storage_path,
-            "bucket": bucket,
-        },
+        run_id=payload.run_id,
+        workspace_id=payload.workspace_id,
+        document_id=payload.document_id,
+        processing_job_id=payload.processing_job_id,
+        storage_path=payload.storage_path,
+        bucket=bucket,
     )
 
     try:
         pdf_bytes = supabase.storage.from_(bucket).download(payload.storage_path)
-        logger.info("worker.storage_downloaded", extra={"run_id": payload.run_id, "bytes": len(pdf_bytes)})
+        log_event("worker.storage_downloaded", run_id=payload.run_id, bytes=len(pdf_bytes))
         pages = extract_statement_text(pdf_bytes)
         full_text = "\n".join(page["text"] for page in pages)
-        logger.info(
+        log_event(
             "worker.text_extracted",
-            extra={"run_id": payload.run_id, "pages": len(pages), "characters": len(full_text)},
+            run_id=payload.run_id,
+            pages=len(pages),
+            characters=len(full_text),
         )
         metadata = parse_metadata(full_text)
         transactions = parse_transactions(pages, metadata)
-        logger.info(
+        log_event(
             "worker.statement_parsed",
-            extra={
-                "run_id": payload.run_id,
-                "metadata_fields": sorted([key for key, value in metadata.items() if value is not None]),
-                "transactions": len(transactions),
-            },
+            run_id=payload.run_id,
+            metadata_fields=sorted([key for key, value in metadata.items() if value is not None]),
+            transactions=len(transactions),
         )
 
         if not transactions:
@@ -491,15 +500,13 @@ def process_fnb_statement(payload: ProcessRequest, authorization: str | None = H
                 }
             ).eq("id", payload.processing_job_id).execute()
 
-        logger.info(
+        log_event(
             "worker.process_completed",
-            extra={
-                "run_id": payload.run_id,
-                "status": status,
-                "transactions": len(transactions),
-                "workbook_storage_path": workbook_path,
-                "confidence": round(avg_confidence, 2),
-            },
+            run_id=payload.run_id,
+            status=status,
+            transactions=len(transactions),
+            workbook_storage_path=workbook_path,
+            confidence=round(avg_confidence, 2),
         )
 
         return {
@@ -510,16 +517,14 @@ def process_fnb_statement(payload: ProcessRequest, authorization: str | None = H
         }
     except Exception as exc:
         message = str(exc)
-        logger.exception(
+        log_exception(
             "worker.process_failed",
-            extra={
-                "run_id": payload.run_id,
-                "workspace_id": payload.workspace_id,
-                "document_id": payload.document_id,
-                "processing_job_id": payload.processing_job_id,
-                "storage_path": payload.storage_path,
-                "error": message,
-            },
+            run_id=payload.run_id,
+            workspace_id=payload.workspace_id,
+            document_id=payload.document_id,
+            processing_job_id=payload.processing_job_id,
+            storage_path=payload.storage_path,
+            error=message,
         )
         supabase.table("accounting_statement_runs").update(
             {"status": "failed", "error": message, "updated_at": datetime.utcnow().isoformat()}

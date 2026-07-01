@@ -14,7 +14,7 @@ type WorkerResponseBody = {
   [key: string]: unknown;
 };
 
-function getWorkerError(result: WorkerResponseBody) {
+function getWorkerError(result: WorkerResponseBody, responseText: string, status: number) {
   if (typeof result.error === "string" && result.error) {
     return result.error;
   }
@@ -40,7 +40,11 @@ function getWorkerError(result: WorkerResponseBody) {
     return JSON.stringify(result.detail);
   }
 
-  return "Accounting worker failed to process the statement.";
+  if (responseText.trim()) {
+    return `Accounting worker returned HTTP ${status}: ${responseText.slice(0, 800)}`;
+  }
+
+  return `Accounting worker returned HTTP ${status} without an error body. Check Render worker logs for this run.`;
 }
 
 export async function POST(request: Request) {
@@ -125,7 +129,7 @@ export async function POST(request: Request) {
     });
 
     if (!response.ok) {
-      const error = getWorkerError(result);
+      const error = getWorkerError(result, responseText, response.status);
       await context.supabase
         .from("accounting_statement_runs")
         .update({ status: "failed", error, updated_at: new Date().toISOString() })
@@ -139,7 +143,22 @@ export async function POST(request: Request) {
           .eq("id", detail.run.processingJobId);
       }
 
-      return NextResponse.json({ error, workerStatus: response.status, workerDetail: result.detail ?? result }, { status: response.status });
+      return NextResponse.json(
+        {
+          error,
+          workerStatus: response.status,
+          workerDetail: result.detail ?? result,
+          workerRawBody: responseText.slice(0, 2000),
+          workerPayload: {
+            runId,
+            workspaceId: context.workspaceId,
+            documentId: detail.run.documentId,
+            processingJobId: detail.run.processingJobId,
+            storagePath: detail.run.sourceStoragePath,
+          },
+        },
+        { status: response.status },
+      );
     }
 
     await recordAuditLog({

@@ -49,6 +49,39 @@ function statusLabel(status: AccountingStatementRun["status"]) {
   return labels[status];
 }
 
+function formatApiError(data: { error?: string; workerDetail?: unknown; workerRawBody?: string; workerStatus?: number }, fallback: string) {
+  const parts = [data.error || fallback];
+
+  if (data.workerStatus) {
+    parts.push(`Worker HTTP ${data.workerStatus}`);
+  }
+
+  if (typeof data.workerDetail === "string" && data.workerDetail && data.workerDetail !== data.error) {
+    parts.push(data.workerDetail);
+  } else if (Array.isArray(data.workerDetail)) {
+    parts.push(
+      data.workerDetail
+        .map((item) => {
+          if (item && typeof item === "object") {
+            const record = item as { loc?: unknown; msg?: unknown; type?: unknown };
+            const loc = Array.isArray(record.loc) ? record.loc.join(".") : "field";
+            return `${loc}: ${String(record.msg ?? record.type ?? "Invalid value")}`;
+          }
+          return String(item);
+        })
+        .join("; "),
+    );
+  } else if (data.workerDetail && typeof data.workerDetail === "object") {
+    parts.push(JSON.stringify(data.workerDetail));
+  }
+
+  if (data.workerRawBody && !parts.some((part) => part.includes(data.workerRawBody || ""))) {
+    parts.push(data.workerRawBody);
+  }
+
+  return parts.filter(Boolean).join(" · ");
+}
+
 export function AccountingIntelligence() {
   const inputRef = useRef<HTMLInputElement>(null);
   const [runs, setRuns] = useState<AccountingStatementRun[]>([]);
@@ -112,8 +145,8 @@ export function AccountingIntelligence() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ runId }),
       });
-      const data = (await response.json().catch(() => ({}))) as { error?: string };
-      if (!response.ok) throw new Error(data.error ?? "Processing failed.");
+      const data = (await response.json().catch(() => ({}))) as { error?: string; workerDetail?: unknown; workerRawBody?: string; workerStatus?: number };
+      if (!response.ok) throw new Error(formatApiError(data, "Processing failed."));
       setMessage("FNB statement processed. Review the extracted transactions.");
       await loadRuns(runId);
     } catch (processError) {
