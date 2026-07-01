@@ -7,6 +7,42 @@ type ProcessBody = {
   runId?: string;
 };
 
+type WorkerResponseBody = {
+  detail?: unknown;
+  error?: string;
+  status?: string;
+  [key: string]: unknown;
+};
+
+function getWorkerError(result: WorkerResponseBody) {
+  if (typeof result.error === "string" && result.error) {
+    return result.error;
+  }
+
+  if (typeof result.detail === "string" && result.detail) {
+    return result.detail;
+  }
+
+  if (Array.isArray(result.detail)) {
+    return result.detail
+      .map((item) => {
+        if (item && typeof item === "object") {
+          const record = item as { loc?: unknown; msg?: unknown; type?: unknown };
+          const loc = Array.isArray(record.loc) ? record.loc.join(".") : "field";
+          return `${loc}: ${String(record.msg ?? record.type ?? "Invalid value")}`;
+        }
+        return String(item);
+      })
+      .join("; ");
+  }
+
+  if (result.detail && typeof result.detail === "object") {
+    return JSON.stringify(result.detail);
+  }
+
+  return "Accounting worker failed to process the statement.";
+}
+
 export async function POST(request: Request) {
   const body = (await request.json().catch(() => ({}))) as ProcessBody;
   const runId = body.runId;
@@ -47,25 +83,49 @@ export async function POST(request: Request) {
         .eq("id", detail.run.processingJobId);
     }
 
+    const workerPayload = {
+      run_id: runId,
+      workspace_id: context.workspaceId,
+      document_id: detail.run.documentId,
+      processing_job_id: detail.run.processingJobId,
+      storage_path: detail.run.sourceStoragePath,
+    };
+
+    console.info("[accounting/process] sending worker payload", {
+      runId,
+      workspaceId: context.workspaceId,
+      documentId: detail.run.documentId,
+      processingJobId: detail.run.processingJobId,
+      storagePath: detail.run.sourceStoragePath,
+      workerUrlConfigured: Boolean(workerUrl),
+    });
+
     const response = await fetch(`${workerUrl.replace(/\/$/, "")}/process-fnb-statement`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
         ...(process.env.ACCOUNTING_WORKER_TOKEN ? { Authorization: `Bearer ${process.env.ACCOUNTING_WORKER_TOKEN}` } : {}),
       },
-      body: JSON.stringify({
-        run_id: runId,
-        workspace_id: context.workspaceId,
-        document_id: detail.run.documentId,
-        processing_job_id: detail.run.processingJobId,
-        storage_path: detail.run.sourceStoragePath,
-      }),
+      body: JSON.stringify(workerPayload),
     });
 
-    const result = (await response.json().catch(() => ({}))) as { error?: string; status?: string };
+    const responseText = await response.text();
+    let result: WorkerResponseBody = {};
+    try {
+      result = responseText ? (JSON.parse(responseText) as WorkerResponseBody) : {};
+    } catch {
+      result = { detail: responseText };
+    }
+
+    console.info("[accounting/process] worker response", {
+      runId,
+      status: response.status,
+      ok: response.ok,
+      body: result,
+    });
 
     if (!response.ok) {
-      const error = result.error ?? "Accounting worker failed to process the statement.";
+      const error = getWorkerError(result);
       await context.supabase
         .from("accounting_statement_runs")
         .update({ status: "failed", error, updated_at: new Date().toISOString() })
@@ -79,7 +139,7 @@ export async function POST(request: Request) {
           .eq("id", detail.run.processingJobId);
       }
 
-      return NextResponse.json({ error }, { status: response.status });
+      return NextResponse.json({ error, workerStatus: response.status, workerDetail: result.detail ?? result }, { status: response.status });
     }
 
     await recordAuditLog({
