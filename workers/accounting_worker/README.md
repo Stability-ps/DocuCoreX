@@ -25,6 +25,26 @@ Optional:
 - `ACCOUNTING_WORKER_TOKEN` for bearer-token protection between Next.js and the worker.
 - `OPENAI_API_KEY` for future ambiguous-description classification. Phase 1 does not require AI.
 
+## Render Runtime
+
+This worker pins Python with `.python-version`:
+
+```txt
+3.12.8
+```
+
+Keep the Render root directory set to:
+
+```txt
+workers/accounting_worker
+```
+
+If Render still attempts Python 3.14, set this environment variable on the Render service:
+
+```txt
+PYTHON_VERSION=3.12.8
+```
+
 ## Run Locally
 
 ```bash
