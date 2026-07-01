@@ -22,6 +22,8 @@ from supabase import Client, create_client
 app = FastAPI(title="DocuCoreX Accounting Worker")
 logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"))
 logger = logging.getLogger("docucorex.accounting_worker")
+MONEY_TOKEN = re.compile(r"(?:R\s*)?-?\(?\d[\d,\s]*\.\d{2}\)?-?")
+MAX_DATABASE_AMOUNT = Decimal("999999999999.99")
 
 
 def log_event(event: str, **fields: Any) -> None:
@@ -80,14 +82,22 @@ def verify_worker_token(authorization: str | None) -> None:
 def parse_money(value: str | None) -> float | None:
     if not value:
         return None
-    normalized = value.replace("R", "").replace(",", "").replace(" ", "").strip()
+    match = MONEY_TOKEN.search(value)
+    if not match:
+        return None
+    token = match.group(0)
+    normalized = token.replace("R", "").replace(",", "").replace(" ", "").strip()
     if normalized in {"", "-", "--"}:
         return None
     negative = normalized.endswith("-") or normalized.startswith("(")
     normalized = normalized.strip("()-")
     try:
-        amount = float(Decimal(normalized))
-        return -amount if negative else amount
+        amount = Decimal(normalized)
+        if amount.copy_abs() > MAX_DATABASE_AMOUNT:
+            log_warning("worker.amount_out_of_bounds", raw=value, token=token, amount=str(amount))
+            return None
+        signed = -amount if negative else amount
+        return float(signed)
     except Exception:
         return None
 
@@ -95,7 +105,7 @@ def parse_money(value: str | None) -> float | None:
 def looks_like_money(value: str | None) -> bool:
     if not value:
         return False
-    return re.search(r"(?:R\s*)?-?\(?\d[\d,\s]*\.\d{2}\)?-?", value) is not None
+    return MONEY_TOKEN.search(value) is not None
 
 
 def money_sign_hint(value: str | None) -> str | None:
@@ -269,6 +279,17 @@ def build_transaction(
     normalized_description = re.sub(r"\s+", " ", description).strip(" -|")
     if not normalized_description or is_noise_transaction(normalized_description):
         return None
+
+    for label, amount in (("debit", debit), ("credit", credit), ("balance", balance)):
+        if amount is not None and Decimal(str(amount)).copy_abs() > MAX_DATABASE_AMOUNT:
+            log_warning(
+                "worker.transaction_amount_rejected",
+                field=label,
+                amount=amount,
+                raw_text=raw_text,
+                description=normalized_description,
+            )
+            return None
 
     transaction_date = normalize_transaction_date(raw_date, metadata)
     if not transaction_date:
