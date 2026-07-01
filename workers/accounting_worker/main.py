@@ -22,8 +22,10 @@ from supabase import Client, create_client
 app = FastAPI(title="DocuCoreX Accounting Worker")
 logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"))
 logger = logging.getLogger("docucorex.accounting_worker")
-MONEY_TOKEN = re.compile(r"(?:R\s*)?-?\(?\d[\d,\s]*\.\d{2}\)?-?")
-MONEY_CELL = re.compile(r"^\s*(?P<negative>-)?(?:R\s*)?(?P<bracket>\()?(?P<amount>\d[\d,\s]*\.\d{2})(?:\))?\s*(?P<suffix>Cr|CR|Dr|DR)?\s*$")
+MONEY_TOKEN = re.compile(
+    r"(?<!\d)(?P<negative>-)?(?:R\s*)?(?P<bracket>\()?(?P<amount>(?:\d{1,3}(?:,\d{3})+|\d+)\.\d{2})(?:\))?\s*(?P<suffix>Cr|CR|Dr|DR)?(?!\d)",
+    re.IGNORECASE,
+)
 MAX_DATABASE_AMOUNT = Decimal("999999999999.99")
 CENT = Decimal("0.01")
 
@@ -82,26 +84,7 @@ def verify_worker_token(authorization: str | None) -> None:
 
 
 def parse_money(value: str | None) -> float | None:
-    if not value:
-        return None
-    match = MONEY_TOKEN.search(value)
-    if not match:
-        return None
-    token = match.group(0)
-    normalized = token.replace("R", "").replace(",", "").replace(" ", "").strip()
-    if normalized in {"", "-", "--"}:
-        return None
-    negative = normalized.endswith("-") or normalized.startswith("(")
-    normalized = normalized.strip("()-")
-    try:
-        amount = Decimal(normalized)
-        if amount.copy_abs() > MAX_DATABASE_AMOUNT:
-            log_warning("worker.amount_out_of_bounds", raw=value, token=token, amount=str(amount))
-            return None
-        signed = -amount if negative else amount
-        return float(signed)
-    except Exception:
-        return None
+    return decimal_to_float(parse_money_cell(value))
 
 
 def decimal_to_float(value: Decimal | None) -> float | None:
@@ -113,9 +96,10 @@ def decimal_to_float(value: Decimal | None) -> float | None:
 def parse_money_cell(value: str | None) -> Decimal | None:
     if not value:
         return None
-    match = MONEY_CELL.match(value.replace("\u00a0", " ").strip())
-    if not match:
+    matches = list(MONEY_TOKEN.finditer(value.replace("\u00a0", " ").strip()))
+    if not matches:
         return None
+    match = matches[-1]
     normalized = match.group("amount").replace(",", "").replace(" ", "")
     try:
         amount = Decimal(normalized)
@@ -124,7 +108,7 @@ def parse_money_cell(value: str | None) -> Decimal | None:
     if match.group("negative") or match.group("bracket") or (match.group("suffix") or "").lower() == "dr":
         amount = -amount
     if amount.copy_abs() > MAX_DATABASE_AMOUNT:
-        log_warning("worker.amount_cell_out_of_bounds", raw=value, amount=str(amount))
+        log_warning("worker.amount_cell_out_of_bounds", raw=value, token=match.group(0), amount=str(amount))
         return None
     return amount
 
@@ -433,7 +417,7 @@ def parse_table_transactions(pages: list[dict[str, Any]], metadata: dict[str, An
 
                 if not active_headers and len(cells) >= 4:
                     description_index = 1 if len(cells) > 1 else None
-                    money_cell_indexes = [index for index, cell in enumerate(cells) if index != date_index and MONEY_CELL.match(cell)]
+                    money_cell_indexes = [index for index, cell in enumerate(cells) if index != date_index and looks_like_money(cell)]
                     if len(money_cell_indexes) >= 2:
                         amount_index = money_cell_indexes[0]
                         balance_index = money_cell_indexes[1]
@@ -471,7 +455,7 @@ def parse_table_transactions(pages: list[dict[str, Any]], metadata: dict[str, An
                         if index in {date_index, amount_index, balance_index, charges_index}:
                             continue
                         cleaned = LOOSE_DATE.sub("", cell).strip()
-                        if cleaned and not MONEY_CELL.match(cleaned):
+                        if cleaned and not looks_like_money(cleaned):
                             description_cells.append(cleaned)
                     description = " ".join(description_cells)
 
