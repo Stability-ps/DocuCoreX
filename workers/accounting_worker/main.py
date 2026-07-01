@@ -201,7 +201,7 @@ TRANSACTION_LINE = re.compile(
     flags=re.IGNORECASE,
 )
 
-LOOSE_DATE = re.compile(r"(?P<date>\d{1,2}[/-]\d{1,2}(?:[/-]\d{2,4})?)")
+LOOSE_DATE = re.compile(r"(?P<date>\d{1,2}[/-]\d{1,2}(?:[/-]\d{2,4})?|\d{1,2}\s+[A-Za-z]{3,9}(?:\s+\d{2,4})?)")
 LOOSE_MONEY = re.compile(r"(?:R\s*)?-?\(?\d[\d,\s]*\.\d{2}\)?-?")
 
 
@@ -213,6 +213,8 @@ def normalize_transaction_date(raw_date: str, metadata: dict[str, Any]) -> str |
     year = date.today().year
     if end:
         year = datetime.fromisoformat(end).year
+    if re.search(r"[A-Za-z]", raw_date):
+        return parse_date(f"{raw_date} {year}")
     return parse_date(f"{raw_date}/{year}")
 
 
@@ -409,28 +411,26 @@ def parse_text_transactions(pages: list[dict[str, Any]], metadata: dict[str, Any
         for raw_line in page["text"].splitlines():
             line = re.sub(r"\s+", " ", raw_line).strip()
             match = TRANSACTION_LINE.match(line)
-            if not match:
-                continue
+            if match:
+                amount1 = parse_money(match.group("amount1"))
+                amount2 = parse_money(match.group("amount2"))
+                balance = parse_money(match.group("balance"))
+                debit = None
+                credit = None
 
-            amount1 = parse_money(match.group("amount1"))
-            amount2 = parse_money(match.group("amount2"))
-            balance = parse_money(match.group("balance"))
-            debit = None
-            credit = None
+                if amount2 is not None:
+                    debit = amount1 if amount1 and amount1 > 0 else None
+                    credit = amount2 if amount2 and amount2 > 0 else None
+                elif amount1 is not None:
+                    if amount1 < 0:
+                        debit = abs(amount1)
+                    else:
+                        debit = amount1
 
-            if amount2 is not None:
-                debit = amount1 if amount1 and amount1 > 0 else None
-                credit = amount2 if amount2 and amount2 > 0 else None
-            elif amount1 is not None:
-                if amount1 < 0:
-                    debit = abs(amount1)
-                else:
-                    debit = amount1
-
-            transaction = build_transaction(match.group("date"), match.group("description"), debit, credit, balance, metadata, page["page"], line, 74)
-            if transaction:
-                transactions.append(transaction)
-                continue
+                transaction = build_transaction(match.group("date"), match.group("description"), debit, credit, balance, metadata, page["page"], line, 74)
+                if transaction:
+                    transactions.append(transaction)
+                    continue
 
             date_match = LOOSE_DATE.search(line)
             money_matches = list(LOOSE_MONEY.finditer(line))
@@ -482,6 +482,37 @@ def dedupe_transactions(transactions: list[ParsedTransaction]) -> list[ParsedTra
 
 def parse_transactions(pages: list[dict[str, Any]], metadata: dict[str, Any]) -> list[ParsedTransaction]:
     return dedupe_transactions(parse_table_transactions(pages, metadata) + parse_text_transactions(pages, metadata))
+
+
+def extraction_diagnostics(pages: list[dict[str, Any]], full_text: str) -> dict[str, Any]:
+    sample_lines = []
+    for line in full_text.splitlines():
+        cleaned = re.sub(r"\s+", " ", line).strip()
+        if cleaned and len(cleaned) > 3:
+            sample_lines.append(cleaned)
+        if len(sample_lines) >= 30:
+            break
+
+    sample_tables = []
+    for page in pages:
+        for table in page.get("tables", []) or []:
+            preview_rows = []
+            for row in (table or [])[:5]:
+                preview_rows.append([normalize_cell(cell) for cell in row or []])
+            if preview_rows:
+                sample_tables.append({"page": page.get("page"), "rows": preview_rows})
+            if len(sample_tables) >= 3:
+                break
+        if len(sample_tables) >= 3:
+            break
+
+    return {
+        "pages": len(pages),
+        "characters": len(full_text),
+        "table_count": sum(len(page.get("tables", []) or []) for page in pages),
+        "sample_lines": sample_lines,
+        "sample_tables": sample_tables,
+    }
 
 
 def write_row(sheet, values: list[Any], row_index: int, header: bool = False) -> None:
@@ -665,7 +696,15 @@ def process_fnb_statement(payload: ProcessRequest, authorization: str | None = H
         )
 
         if not transactions:
-            raise RuntimeError("No FNB transactions could be parsed from this PDF.")
+            diagnostics = extraction_diagnostics(pages, full_text)
+            log_warning("worker.no_transactions_parsed", run_id=payload.run_id, diagnostics=diagnostics)
+            raise HTTPException(
+                status_code=422,
+                detail={
+                    "message": "No FNB transactions could be parsed from this PDF.",
+                    "diagnostics": diagnostics,
+                },
+            )
 
         supabase.table("accounting_transactions").delete().eq("run_id", payload.run_id).execute()
         rows = [
@@ -735,6 +774,25 @@ def process_fnb_statement(payload: ProcessRequest, authorization: str | None = H
             "workbook_storage_path": workbook_path,
             "confidence": round(avg_confidence, 2),
         }
+    except HTTPException as exc:
+        message = json.dumps(exc.detail, default=str) if isinstance(exc.detail, (dict, list)) else str(exc.detail)
+        log_exception(
+            "worker.process_failed",
+            run_id=payload.run_id,
+            workspace_id=payload.workspace_id,
+            document_id=payload.document_id,
+            processing_job_id=payload.processing_job_id,
+            storage_path=payload.storage_path,
+            error=message,
+        )
+        supabase.table("accounting_statement_runs").update(
+            {"status": "failed", "error": message, "updated_at": datetime.utcnow().isoformat()}
+        ).eq("id", payload.run_id).eq("workspace_id", payload.workspace_id).execute()
+        if payload.processing_job_id:
+            supabase.table("processing_jobs").update(
+                {"status": "failed", "progress": 100, "message": message, "error": message, "updated_at": datetime.utcnow().isoformat()}
+            ).eq("id", payload.processing_job_id).execute()
+        raise exc
     except Exception as exc:
         message = str(exc)
         log_exception(
