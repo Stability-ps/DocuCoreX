@@ -58,7 +58,7 @@ export function InvoiceDetail({ invoiceId }: { invoiceId: string }) {
       `Hi ${invoice.clientName || ""},`,
       "",
       `Please find your invoice ${invoice.invoiceNumber} summarized below:`,
-      `Total due: ${formatCurrency(invoice.totalAmount)}`,
+      `Total due: ${formatCurrency(invoice.totalAmount, invoice.currency)}`,
       invoice.dueDate ? `Due date: ${invoice.dueDate}` : "",
       "",
       "A printable copy is attached — use \"Print / Save as PDF\" on the invoice page and attach the PDF before sending.",
@@ -90,21 +90,23 @@ export function InvoiceDetail({ invoiceId }: { invoiceId: string }) {
     serviceItem: item.serviceItem,
     quantity: String(item.quantity),
     unitPrice: String(item.unitPrice),
+    vatType: item.vatType,
+    vatRate: String(item.vatRate),
   }));
 
   return (
-    <div className="space-y-6 p-4 sm:p-6 lg:p-8">
+    <div className="space-y-5 p-4 sm:p-6 lg:p-8">
       <div className="flex flex-wrap items-center justify-between gap-3 print:hidden">
         <Link href="/invoices" className="inline-flex items-center gap-2 text-sm font-semibold text-slate-600 hover:text-royal-700">
           <ArrowLeft className="h-4 w-4" />
           Back to invoices
         </Link>
-        <div className="flex flex-wrap items-center gap-3">
+        <div className="flex flex-wrap items-center gap-2.5">
           <select
             value={invoice.status}
             disabled={isUpdating}
             onChange={(event) => void updateStatus(event.target.value as InvoiceStatus)}
-            className="min-h-11 rounded-lg border border-slate-200 bg-white px-3 text-sm font-semibold text-slate-700 outline-none focus:border-royal-300"
+            className="min-h-9 rounded-lg border border-slate-200 bg-white px-3 text-xs font-semibold text-slate-700 outline-none focus:border-royal-300"
           >
             {statusOptions.map((option) => (
               <option key={option} value={option}>
@@ -116,17 +118,17 @@ export function InvoiceDetail({ invoiceId }: { invoiceId: string }) {
             type="button"
             onClick={emailInvoice}
             title="Opens your mail app with the invoice details prefilled — attach the printed PDF before sending."
-            className="inline-flex min-h-11 items-center gap-2 rounded-lg border border-slate-200 bg-white px-4 py-2 text-sm font-semibold text-slate-700 transition hover:border-royal-300"
+            className="inline-flex min-h-9 items-center gap-2 rounded-lg border border-slate-200 bg-white px-3.5 py-1.5 text-xs font-semibold text-slate-700 transition hover:border-royal-300"
           >
-            <Mail className="h-4 w-4" />
+            <Mail className="h-3.5 w-3.5" />
             Email invoice
           </button>
           <button
             type="button"
             onClick={() => window.print()}
-            className="inline-flex min-h-11 items-center gap-2 rounded-lg bg-royal-600 px-4 py-2 text-sm font-semibold text-white transition hover:bg-royal-700"
+            className="inline-flex min-h-9 items-center gap-2 rounded-lg bg-royal-600 px-3.5 py-1.5 text-xs font-semibold text-white transition hover:bg-royal-700"
           >
-            <Printer className="h-4 w-4" />
+            <Printer className="h-3.5 w-3.5" />
             Print / Save as PDF
           </button>
         </div>
@@ -139,22 +141,46 @@ export function InvoiceDetail({ invoiceId }: { invoiceId: string }) {
             title: invoice.title,
             description: invoice.description,
             status: invoice.status,
+            currency: invoice.currency,
+            invoiceDate: invoice.invoiceDate,
+            dueDate: invoice.dueDate,
+            paymentTerms: invoice.paymentTerms,
+            referenceNumber: invoice.referenceNumber,
+            purchaseOrderNumber: invoice.purchaseOrderNumber,
             clientName: invoice.clientName,
+            clientCompanyName: invoice.clientCompanyName,
+            clientContactPerson: invoice.clientContactPerson,
             clientEmail: invoice.clientEmail,
             clientPhone: invoice.clientPhone,
             clientAddress: invoice.clientAddress,
+            clientPostalAddress: invoice.clientPostalAddress,
+            clientVatNumber: invoice.clientVatNumber,
+            clientRegistrationNumber: invoice.clientRegistrationNumber,
+            attentionTo: invoice.attentionTo,
+            clientReference: invoice.clientReference,
             issuerName: invoice.issuerName,
+            issuerTradingName: invoice.issuerTradingName,
             issuerEmail: invoice.issuerEmail,
             issuerPhone: invoice.issuerPhone,
+            issuerWebsite: invoice.issuerWebsite,
             issuerAddress: invoice.issuerAddress,
+            issuerVatNumber: invoice.issuerVatNumber,
+            issuerRegistrationNumber: invoice.issuerRegistrationNumber,
             logoDataUrl: invoice.logoDataUrl,
-            bankDetails: invoice.bankDetails,
+            bankName: invoice.bankName,
+            bankAccountHolder: invoice.bankAccountHolder,
+            bankAccountNumber: invoice.bankAccountNumber,
+            bankBranchCode: invoice.bankBranchCode,
+            bankSwift: invoice.bankSwift,
+            paymentReference: invoice.paymentReference,
+            paymentInstructions: invoice.paymentInstructions,
             notesToClient: invoice.notesToClient,
             termsAndConditions: invoice.termsAndConditions,
-            dueDate: invoice.dueDate,
             lineItems: lineItemDrafts,
-            taxRate: String(invoice.taxRate),
             discountAmount: String(invoice.discountAmount),
+            shippingAmount: String(invoice.shippingAmount),
+            additionalCharges: String(invoice.additionalCharges),
+            amountPaid: invoice.amountPaid,
           }}
         />
       </div>

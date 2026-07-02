@@ -338,6 +338,35 @@ create table public.invoices (
   issuer_phone text,
   issuer_address text,
   logo_data_url text,
+  issuer_trading_name text,
+  issuer_vat_number text,
+  issuer_registration_number text,
+  issuer_website text,
+  issuer_postal_address text,
+  bank_name text,
+  bank_account_holder text,
+  bank_account_number text,
+  bank_branch_code text,
+  bank_swift text,
+  payment_reference text,
+  payment_instructions text,
+  client_company_name text,
+  client_contact_person text,
+  client_vat_number text,
+  client_registration_number text,
+  client_postal_address text,
+  attention_to text,
+  purchase_order_number text,
+  client_reference text,
+  payment_terms text not null default 'due_on_receipt'
+    check (payment_terms in ('due_on_receipt', '7_days', '14_days', '30_days', '60_days', '90_days')),
+  currency text not null default 'ZAR',
+  reference_number text,
+  internal_notes text,
+  invoice_date date not null default current_date,
+  shipping_amount numeric(12,2) not null default 0,
+  additional_charges numeric(12,2) not null default 0,
+  sequence_number integer,
   sent_at timestamptz,
   paid_at timestamptz,
   overdue_at timestamptz,
@@ -354,9 +383,41 @@ create table public.invoice_items (
   quantity numeric(12,2) not null default 1,
   unit_price numeric(12,2) not null default 0,
   line_total numeric(14,2) generated always as (quantity * unit_price) stored,
+  vat_type text not null default 'standard' check (vat_type in ('exempt', 'zero_rated', 'standard', 'custom')),
+  vat_rate numeric(5,2) not null default 15,
   position int not null default 0,
   created_at timestamptz not null default now()
 );
+
+-- Per-workspace invoice sequence: guarantees INV-000001, INV-000002, ... that never
+-- reuses a number and is independent per workspace (see migration 008 for details).
+create table public.invoice_sequences (
+  workspace_id uuid primary key references public.workspaces(id) on delete cascade,
+  next_number integer not null default 1,
+  updated_at timestamptz not null default now()
+);
+
+create or replace function public.next_invoice_sequence(p_workspace_id uuid)
+returns integer
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  assigned integer;
+begin
+  insert into public.invoice_sequences (workspace_id, next_number)
+  values (p_workspace_id, 2)
+  on conflict (workspace_id) do update
+    set next_number = invoice_sequences.next_number + 1,
+        updated_at = now()
+  returning next_number - 1 into assigned;
+
+  return assigned;
+end;
+$$;
+
+grant execute on function public.next_invoice_sequence(uuid) to authenticated;
 
 alter table public.workspaces enable row level security;
 alter table public.profiles enable row level security;
@@ -383,6 +444,7 @@ alter table public.support_requests enable row level security;
 alter table public.user_settings enable row level security;
 alter table public.invoices enable row level security;
 alter table public.invoice_items enable row level security;
+alter table public.invoice_sequences enable row level security;
 
 create policy "Users can read own profile" on public.profiles
   for select using (auth.uid() = id);
@@ -558,6 +620,11 @@ create policy "Users can access invoice items" on public.invoice_items
       select id from public.invoices
       where workspace_id in (select workspace_id from public.profiles where id = auth.uid())
     )
+  );
+
+create policy "Users can view their workspace invoice sequence" on public.invoice_sequences
+  for select using (
+    workspace_id in (select workspace_id from public.profiles where id = auth.uid())
   );
 
 insert into storage.buckets (id, name, public)

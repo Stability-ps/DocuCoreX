@@ -111,11 +111,17 @@ export type AiInsight = {
 
 export type InvoiceStatus = "draft" | "issued" | "paid" | "overdue" | "cancelled";
 
+export type InvoiceVatType = "exempt" | "zero_rated" | "standard" | "custom";
+
+export type InvoicePaymentTerms = "due_on_receipt" | "7_days" | "14_days" | "30_days" | "60_days" | "90_days";
+
 export type InvoiceLineItemDraft = {
   id?: string;
   serviceItem: string;
   quantity: string;
   unitPrice: string;
+  vatType: InvoiceVatType;
+  vatRate: string;
 };
 
 export type InvoiceItemRecord = {
@@ -125,6 +131,8 @@ export type InvoiceItemRecord = {
   quantity: number;
   unitPrice: number;
   lineTotal: number;
+  vatType: InvoiceVatType;
+  vatRate: number;
   position: number;
   createdAt: string;
 };
@@ -133,28 +141,62 @@ export type InvoiceRecord = {
   id: string;
   workspaceId: string;
   invoiceNumber: string;
+  sequenceNumber: number | null;
   title: string | null;
   description: string | null;
   status: InvoiceStatus;
+  currency: string;
+  invoiceDate: string;
+  dueDate: string | null;
+  paymentTerms: InvoicePaymentTerms;
+  referenceNumber: string | null;
+  internalNotes: string | null;
+  // Issuer ("your business") details
+  issuerName: string | null;
+  issuerTradingName: string | null;
+  issuerEmail: string | null;
+  issuerPhone: string | null;
+  issuerWebsite: string | null;
+  issuerAddress: string | null;
+  issuerPostalAddress: string | null;
+  issuerVatNumber: string | null;
+  issuerRegistrationNumber: string | null;
+  logoDataUrl: string | null;
+  // Payment / banking details
+  bankName: string | null;
+  bankAccountHolder: string | null;
+  bankAccountNumber: string | null;
+  bankBranchCode: string | null;
+  bankSwift: string | null;
+  paymentReference: string | null;
+  paymentInstructions: string | null;
+  /** @deprecated legacy free-text bank details field, superseded by the structured bank* fields above */
+  bankDetails: string | null;
+  // Client details
   clientName: string;
+  clientCompanyName: string | null;
+  clientContactPerson: string | null;
   clientEmail: string | null;
   clientPhone: string | null;
   clientAddress: string | null;
-  issuerName: string | null;
-  issuerEmail: string | null;
-  issuerPhone: string | null;
-  issuerAddress: string | null;
-  logoDataUrl: string | null;
-  bankDetails: string | null;
+  clientPostalAddress: string | null;
+  clientVatNumber: string | null;
+  clientRegistrationNumber: string | null;
+  attentionTo: string | null;
+  purchaseOrderNumber: string | null;
+  clientReference: string | null;
+  // Notes
   notesToClient: string | null;
   termsAndConditions: string | null;
+  // Totals
   subtotal: number;
   discountAmount: number;
+  shippingAmount: number;
+  additionalCharges: number;
   taxRate: number;
   taxAmount: number;
   totalAmount: number;
   amountPaid: number;
-  dueDate: string | null;
   createdBy: string | null;
   sentAt: string | null;
   paidAt: string | null;

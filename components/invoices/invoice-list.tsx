@@ -73,7 +73,7 @@ export function InvoiceList() {
                 </div>
                 <p className="text-sm font-semibold text-slate-700">{invoice.clientName}</p>
                 <p className="text-sm text-slate-600">{invoice.dueDate ?? "—"}</p>
-                <p className="text-sm font-semibold text-navy-950">{formatCurrency(invoice.totalAmount)}</p>
+                <p className="text-sm font-semibold text-navy-950">{formatCurrency(invoice.totalAmount, invoice.currency)}</p>
                 <span className={`inline-flex w-fit items-center rounded-full border px-2.5 py-0.5 text-xs font-semibold capitalize ${statusStyles[invoice.status]}`}>
                   {invoice.status}
                 </span>
