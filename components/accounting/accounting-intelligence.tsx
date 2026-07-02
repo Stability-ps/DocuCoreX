@@ -166,6 +166,7 @@ export function AccountingIntelligence() {
   const [diagnostics, setDiagnostics] = useState("");
   const [activeTab, setActiveTab] = useState<AccountingTab>("transactions");
   const [query, setQuery] = useState("");
+  const [exportOpen, setExportOpen] = useState(false);
   const selectedRun = useMemo(() => runs.find((run) => run.id === selectedRunId) ?? null, [runs, selectedRunId]);
 
   async function loadRuns(preferredRunId?: string) {
@@ -484,16 +485,7 @@ export function AccountingIntelligence() {
                     <Trash2 className="h-4 w-4" />
                     Delete
                   </button>
-                  <a
-                    href={`/api/accounting/fnb/export/${detail.run.id}`}
-                    className={`inline-flex h-11 items-center gap-2 rounded-2xl px-4 text-sm font-black ${
-                      detail.run.workbookStoragePath ? "bg-royal-600 text-white hover:bg-royal-700" : "pointer-events-none bg-slate-100 text-slate-400"
-                    }`}
-                  >
-                    <ArrowDownToLine className="h-4 w-4" />
-                    Export workpaper
-                    <ChevronDown className="h-4 w-4" />
-                  </a>
+                  <ExportDropdown run={detail.run} reviewCount={totals.review} open={exportOpen} onOpenChange={setExportOpen} />
                 </div>
               </div>
 
@@ -574,6 +566,68 @@ export function AccountingIntelligence() {
           )}
         </section>
       </div>
+    </div>
+  );
+}
+
+function ExportDropdown({
+  run,
+  reviewCount,
+  open,
+  onOpenChange,
+}: {
+  run: AccountingStatementRun;
+  reviewCount: number;
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+}) {
+  const options = [
+    { label: "Export Transactions", section: "transactions", detail: "CSV transaction listing" },
+    { label: `Export Review Items (${reviewCount})`, section: "review-items", detail: "Rows requiring accountant review" },
+    { label: "Export Summary", section: "summary", detail: "Statement summary metrics" },
+    { label: "Export Bank Reconciliation", section: "bank-reconciliation", detail: "Opening, receipts, payments and closing check" },
+    { label: "Export VAT", section: "vat", detail: "VAT treatment schedule" },
+    { label: "Export General Ledger", section: "general-ledger", detail: "Account movement summary" },
+    { label: "Export Trial Balance", section: "trial-balance", detail: "Debit and credit balances" },
+    { label: "Export All in a single file", section: "all", detail: "All sections in one Excel file", requiresWorkbook: true },
+  ];
+
+  return (
+    <div className="relative">
+      <button
+        type="button"
+        disabled={!run.workbookStoragePath}
+        onClick={() => onOpenChange(!open)}
+        className="inline-flex h-11 items-center gap-2 rounded-2xl bg-royal-600 px-4 text-sm font-black text-white hover:bg-royal-700 disabled:cursor-not-allowed disabled:bg-slate-100 disabled:text-slate-400"
+        aria-expanded={open}
+        aria-haspopup="menu"
+      >
+        <ArrowDownToLine className="h-4 w-4" />
+        Export
+        <ChevronDown className="h-4 w-4" />
+      </button>
+      {open ? (
+        <div className="absolute right-0 z-20 mt-2 w-80 overflow-hidden rounded-2xl border border-slate-200 bg-white p-2 shadow-xl" role="menu">
+          <p className="px-3 py-2 text-[11px] font-black uppercase tracking-[0.14em] text-slate-400">Export options</p>
+          {options.map((option, index) => (
+            <a
+              key={option.section}
+              href={`/api/accounting/fnb/export/${run.id}${option.section === "all" ? "" : `?section=${option.section}`}`}
+              onClick={() => onOpenChange(false)}
+              className={`flex items-start gap-3 rounded-xl px-3 py-3 text-sm font-black text-navy-950 hover:bg-royal-50 ${
+                index === options.length - 1 ? "mt-2 border-t border-slate-100 pt-4" : ""
+              }`}
+              role="menuitem"
+            >
+              <FileText className="mt-0.5 h-4 w-4 shrink-0 text-slate-500" />
+              <span>
+                {option.label}
+                <span className="mt-0.5 block text-xs font-semibold text-slate-500">{option.detail}</span>
+              </span>
+            </a>
+          ))}
+        </div>
+      ) : null}
     </div>
   );
 }

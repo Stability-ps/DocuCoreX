@@ -112,6 +112,41 @@ def get_supabase() -> Client:
     return create_client(url, key)
 
 
+def fetch_classification_rules(supabase: Client, workspace_id: str) -> list[dict[str, Any]]:
+    try:
+        response = (
+            supabase.table("accounting_classification_rules")
+            .select("merchant_key,account_category,vat_treatment,review_status,confidence,reason")
+            .eq("workspace_id", workspace_id)
+            .execute()
+        )
+        rules = response.data if isinstance(response.data, list) else []
+        log_event("worker.classification_rules_loaded", workspace_id=workspace_id, count=len(rules))
+        return rules
+    except Exception as exc:
+        log_warning("worker.classification_rules_unavailable", workspace_id=workspace_id, error=str(exc))
+        return []
+
+
+def apply_learned_classification_rules(transactions: list[ParsedTransaction], rules: list[dict[str, Any]]) -> int:
+    if not rules:
+        return 0
+    applied = 0
+    for transaction in transactions:
+        key = normalize_merchant_key(transaction.description)
+        if not key:
+            continue
+        matched_rule = next((rule for rule in rules if str(rule.get("merchant_key") or "") and str(rule.get("merchant_key")) in key), None)
+        if not matched_rule:
+            continue
+        transaction.account_category = str(matched_rule.get("account_category") or transaction.account_category)
+        transaction.vat_treatment = str(matched_rule.get("vat_treatment") or transaction.vat_treatment)
+        transaction.review_status = str(matched_rule.get("review_status") or transaction.review_status)
+        transaction.confidence = max(float(transaction.confidence or 0), float(matched_rule.get("confidence") or 94))
+        applied += 1
+    return applied
+
+
 def verify_worker_token(authorization: str | None) -> None:
     expected = os.getenv("ACCOUNTING_WORKER_TOKEN")
     if not expected:
@@ -336,7 +371,7 @@ def classify_transaction(description: str, debit: float | None, credit: float | 
         (("service fee", "#service fees", "monthly account fee", "byc debit", "bank charges", "cash deposit fee"), "Bank Charges", "standard", True, 98),
         (("fnb app transfer to savings", "fnb app transfer from credit", "inter-account", "internal transfer"), "Inter-account Transfer", "out_of_scope", False, 98),
         (("salary", "payroll", "wages", "nanny", "care giver", "waterfall salary"), "Salaries & Wages", "out_of_scope", False, 95),
-        (("discovery account", "allianz", "insurance"), "Insurance", "exempt", False, 93),
+        (("discovery account", "discovery insure", "insurance premium"), "Insurance", "exempt", False, 93),
         (("emporers ridge levy", "levy"), "Levies", "review", False, 90),
         (("google chatgpt", "chatgpt", "openai"), "Software Subscriptions", "standard", False, 92),
         (("google xiaomi home", "xiaomi home"), "Software / IT", "review", False, 86),
@@ -356,6 +391,29 @@ def classify_transaction(description: str, debit: float | None, credit: float | 
     if debit and debit > 0:
         return "Uncategorised Expense", "review", False, 58
     return "Uncategorised", "review", False, 50
+
+
+def normalize_merchant_key(description: str) -> str:
+    lowered = description.lower()
+    lowered = re.sub(r"\b\d{1,2}\s+[a-z]{3,9}\b", " ", lowered)
+    lowered = re.sub(r"\b(?:inv|invoice|ref|rmsp|m)\s*[\w-]+\b", " ", lowered)
+    lowered = re.sub(r"\b\d{3,}\b", " ", lowered)
+    lowered = re.sub(r"\d+[.,]\d{2}\s*(cr|dr)?", " ", lowered)
+    lowered = re.sub(r"\b(allianz holdings|pty|ltd|business account)\b", " ", lowered)
+    lowered = re.sub(r"[^a-z#* ]+", " ", lowered)
+    return re.sub(r"\s+", " ", lowered).strip()[:160]
+
+
+def classification_reason(category: str, description: str, confidence: float) -> tuple[str, str]:
+    merchant = normalize_merchant_key(description) or description[:80]
+    if confidence >= 95:
+        reason = f"Known merchant pattern matched: {merchant}."
+    elif confidence >= 80:
+        reason = f"Recurring merchant pattern matched with review-safe confidence: {merchant}."
+    else:
+        reason = f"Unclear merchant or VAT treatment for: {merchant}."
+    explanation = f"Classified as {category} using merchant pattern, transaction direction, amount context and VAT rules. Company names are not used as supplier evidence."
+    return reason, explanation
 
 
 def is_noise_transaction(description: str) -> bool:
@@ -1273,6 +1331,26 @@ def transaction_month(transaction: ParsedTransaction) -> str:
 
 
 def professional_account(transaction: ParsedTransaction) -> tuple[str, str, str, str]:
+    learned_or_rule_category = (transaction.account_category or "").strip()
+    learned_map = {
+        "Income": ("Other Income / Review", "Income", "Output VAT if taxable supply", "Output/Review"),
+        "Bank Charges": ("Bank Charges", "Bank Charges", "Input VAT if valid bank tax invoice", "Input/Review"),
+        "Staff Welfare / Meals / Entertainment": ("Meals / Groceries - Non Deductible Review", "Meals/Groceries", "Restricted/Review", "Review"),
+        "Software Subscriptions": ("Software / IT", "Software/IT", "Input VAT if valid invoice", "Input/Review"),
+        "Software / IT": ("Software / IT", "Software/IT", "Input VAT if valid invoice", "Input/Review"),
+        "Insurance": ("Insurance", "Insurance", "Exempt/No VAT", "No"),
+        "Levies": ("Levies", "Property/Levies", "Review", "Review"),
+        "Salaries & Wages": ("Salaries / Drawings / Personal", "Payroll/Personal", "No VAT", "No"),
+        "Inter-account Transfer": ("Inter-account Transfer", "Transfers", "No VAT", "No"),
+        "Courier / Delivery": ("Courier / Freight", "Freight", "Input VAT if valid invoice", "Input/Review"),
+        "Motor Vehicle Expenses": ("Motor Vehicle Expenses", "Motor Vehicle", "Input VAT if valid invoice", "Input/Review"),
+        "VAT Control": ("VAT Control", "VAT", "VAT control", "No"),
+        "Finance Costs": ("Finance Costs", "Finance Costs", "Exempt/No VAT", "No"),
+        "Rent": ("Rent", "Premises", "Input VAT if valid invoice", "Input/Review"),
+    }
+    if learned_or_rule_category in learned_map and learned_or_rule_category != "Review Required":
+        return learned_map[learned_or_rule_category]
+
     text = transaction.description.lower()
     if transaction.bank_charge or "service fee" in text or "monthly account fee" in text or "byc debit" in text:
         return "Bank Charges", "Bank Charges", "Input VAT if valid bank tax invoice", "Input/Review"
@@ -1280,7 +1358,7 @@ def professional_account(transaction: ParsedTransaction) -> tuple[str, str, str,
         return "Meals / Groceries - Non Deductible Review", "Meals/Groceries", "Restricted/Review", "Review"
     if "dhl" in text:
         return "Courier / Freight", "Freight", "Input VAT if valid invoice", "Input/Review"
-    if any(token in text for token in ("discovery", "allianz", "insurance", "magtape debit")):
+    if any(token in text for token in ("discovery account", "discovery insure", "insurance premium")):
         return "Insurance", "Insurance", "Exempt/No VAT", "No"
     if "transfer to savings" in text:
         return "Inter-account Transfer Out / Loan", "Transfers", "No VAT", "No"
@@ -1300,6 +1378,7 @@ def professional_transaction_row(transaction: ParsedTransaction, source_file: st
     money_out = decimal_amount(transaction.debit_amount)
     amount = money_in if money_in > 0 else money_out
     account, group, vat_treatment, vat_claim_status = professional_account(transaction)
+    reason, explanation = classification_reason(account, transaction.description, transaction.confidence)
     output_vat = (money_in * Decimal("15") / Decimal("115")).quantize(CENT) if vat_claim_status.startswith("Output") else Decimal("0.00")
     input_vat = (money_out * Decimal("15") / Decimal("115")).quantize(CENT) if vat_claim_status.startswith("Input") else Decimal("0.00")
     row = {
@@ -1320,6 +1399,8 @@ def professional_transaction_row(transaction: ParsedTransaction, source_file: st
         "potential_input_vat": input_vat,
         "source_file": source_file,
         "rule_confidence": transaction.confidence,
+        "classification_reason": reason,
+        "classification_explanation": explanation,
         "ai_used": False,
         "review_required": False,
         "review_reason": "",
@@ -1332,6 +1413,18 @@ def professional_transaction_row(transaction: ParsedTransaction, source_file: st
     row["review_reason"] = professional_review_reason(row) or ""
     row["review_required"] = bool(row["review_reason"])
     return row
+
+
+def reporting_account(row: dict[str, Any]) -> str:
+    if row.get("review_required") or row.get("vat_claim_status") in {"Review", "Output/Review"}:
+        return "Review Required Suspense"
+    return str(row.get("account") or "Review Required Suspense")
+
+
+def reporting_vat_status(row: dict[str, Any]) -> str:
+    if reporting_account(row) == "Review Required Suspense":
+        return "Review"
+    return str(row.get("vat_claim_status") or "Review")
 
 
 def professional_review_reason(row: dict[str, Any]) -> str | None:
@@ -1430,6 +1523,7 @@ def ai_safe_item(row: dict[str, Any], transaction_id: str) -> dict[str, Any]:
         "rule_vat_treatment": str(row.get("vat_treatment") or ""),
         "rule_vat_claim_status": str(row.get("vat_claim_status") or ""),
         "rule_confidence": float(row.get("rule_confidence") or 0),
+        "rule_reason": str(row.get("classification_reason") or ""),
     }
 
 
@@ -1470,6 +1564,8 @@ def validate_ai_item(item: Any, valid_ids: set[str]) -> dict[str, Any] | None:
         "review_reason": str(item.get("review_reason") or "").strip()[:220],
         "invoice_required": parse_ai_bool(item.get("invoice_required")),
         "confidence": confidence,
+        "reason": str(item.get("reason") or "").strip()[:220],
+        "explanation": str(item.get("explanation") or "").strip()[:320],
     }
 
 
@@ -1498,8 +1594,17 @@ def request_ai_classifications(items: list[dict[str, Any]], diagnostics: dict[st
         "instructions": (
             "Classify South African business bank statement transactions for accounting review. "
             "Return strict JSON only. Do not infer amounts, balances, dates, or reconciliation. "
-            "Use conservative VAT treatment. Mark ambiguous, personal-looking, entertainment, or supplier-unknown items for review."
+            "Use conservative VAT treatment. Mark ambiguous, personal-looking, entertainment, or supplier-unknown items for review. "
+            "Do not classify purely because a generic keyword appears in the description. Use merchant semantics, recurring pattern, amount direction, known supplier context, and the existing rule result. "
+            "ALLIANZ HOLDINGS is the account holder/company context, not an insurance merchant. Never classify a row as Insurance merely because Allianz appears."
         ),
+        "known_supplier_guidance": [
+            {"merchant": "Discovery", "account": "Insurance", "reason": "Previously approved insurance supplier pattern."},
+            {"merchant": "FNB service fees or BYC debit", "account": "Bank Charges", "reason": "Bank fee pattern from FNB statement."},
+            {"merchant": "Google ChatGPT/OpenAI", "account": "Software Subscriptions", "reason": "Software subscription merchant pattern."},
+            {"merchant": "DHL/Paygate DHL", "account": "Courier / Freight", "reason": "Courier merchant pattern."},
+            {"merchant": "Payroll, nanny, caregiver, salary", "account": "Salaries / Drawings / Personal", "reason": "Payroll/personnel payment pattern."},
+        ],
         "schema": {
             "items": [
                 {
@@ -1512,6 +1617,8 @@ def request_ai_classifications(items: list[dict[str, Any]], diagnostics: dict[st
                     "review_reason": "string",
                     "invoice_required": True,
                     "confidence": 0.72,
+                    "reason": "string",
+                    "explanation": "string",
                 }
             ]
         },
@@ -1574,6 +1681,8 @@ def apply_ai_result_to_row(row: dict[str, Any], result: dict[str, Any]) -> None:
     row["review_reason"] = result["review_reason"] or row.get("review_reason") or ""
     row["invoice_required"] = result["invoice_required"]
     row["ai_confidence"] = result["confidence"]
+    row["classification_reason"] = result.get("reason") or row.get("classification_reason") or "AI classification applied to ambiguous transaction."
+    row["classification_explanation"] = result.get("explanation") or row.get("classification_explanation") or ""
     row["ai_used"] = True
     recompute_professional_vat(row)
 
@@ -1623,9 +1732,9 @@ def month_summary(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
         receipts = sum((row["money_in"] for row in matching), Decimal("0.00")).quantize(CENT)
         payments = sum((row["money_out"] for row in matching), Decimal("0.00")).quantize(CENT)
         likely_sales = sum((row["money_in"] for row in matching if row["vat_claim_status"].startswith("Output")), Decimal("0.00")).quantize(CENT)
-        cos = sum((row["money_out"] for row in matching if row["group"] in {"Freight", "Software/IT"}), Decimal("0.00")).quantize(CENT)
-        output_vat = sum((row["potential_output_vat"] for row in matching), Decimal("0.00")).quantize(CENT)
-        input_vat = sum((row["potential_input_vat"] for row in matching), Decimal("0.00")).quantize(CENT)
+        cos = sum((row["money_out"] for row in matching if reporting_account(row) != "Review Required Suspense" and row["group"] in {"Freight", "Software/IT"}), Decimal("0.00")).quantize(CENT)
+        output_vat = sum((row["potential_output_vat"] for row in matching if reporting_account(row) != "Review Required Suspense"), Decimal("0.00")).quantize(CENT)
+        input_vat = sum((row["potential_input_vat"] for row in matching if reporting_account(row) != "Review Required Suspense"), Decimal("0.00")).quantize(CENT)
         summary.append({
             "month": month,
             "receipts": receipts,
@@ -1655,8 +1764,9 @@ def build_workbook(metadata: dict[str, Any], transactions: list[ParsedTransactio
     months = month_summary(rows)
     bank_charge_total = sum((row["bank_charge"] for row in rows), Decimal("0.00")).quantize(CENT)
     bank_vat = (bank_charge_total * Decimal("15") / Decimal("115")).quantize(CENT)
-    total_output_vat = sum((row["potential_output_vat"] for row in rows), Decimal("0.00")).quantize(CENT)
-    total_input_vat = sum((row["potential_input_vat"] for row in rows), Decimal("0.00")).quantize(CENT)
+    reportable_rows = [row for row in rows if reporting_account(row) != "Review Required Suspense"]
+    total_output_vat = sum((row["potential_output_vat"] for row in reportable_rows), Decimal("0.00")).quantize(CENT)
+    total_input_vat = sum((row["potential_input_vat"] for row in reportable_rows), Decimal("0.00")).quantize(CENT)
 
     dashboard = workbook.active
     dashboard.title = "Dashboard"
@@ -1672,7 +1782,7 @@ def build_workbook(metadata: dict[str, Any], transactions: list[ParsedTransactio
         ("Total payments", totals["total_debits"]),
         ("Closing bank balance", closing),
         ("Bank movement check", (opening + totals["total_credits"] - totals["total_debits"] - closing).quantize(CENT)),
-        ("Likely taxable revenue receipts", sum((row["money_in"] for row in rows if row["vat_claim_status"].startswith("Output")), Decimal("0.00")).quantize(CENT)),
+        ("Likely taxable revenue receipts", sum((row["money_in"] for row in reportable_rows if row["vat_claim_status"].startswith("Output")), Decimal("0.00")).quantize(CENT)),
         ("Potential output VAT", total_output_vat),
         ("Potential input VAT (review)", total_input_vat),
         ("Potential VAT payable/(refund)", (total_output_vat - total_input_vat).quantize(CENT)),
@@ -1701,6 +1811,7 @@ def build_workbook(metadata: dict[str, Any], transactions: list[ParsedTransactio
     transaction_headers = [
         "Date", "Month", "Description", "Money In", "Money Out", "Amount", "Type", "Balance", "Bank Charge",
         "Account", "Group", "VAT Treatment", "VAT Claim Status", "Potential Output VAT", "Potential Input VAT",
+        "Confidence", "Classification Reason", "Classification Explanation",
     ]
     write_row(tx, transaction_headers, 1, header=True)
     for row_index, row in enumerate(rows, start=2):
@@ -1709,7 +1820,7 @@ def build_workbook(metadata: dict[str, Any], transactions: list[ParsedTransactio
             [
                 row["date"], row["month"], row["description"], row["money_in"], row["money_out"], row["amount"], row["type"], row["balance"],
                 row["bank_charge"], row["account"], row["group"], row["vat_treatment"], row["vat_claim_status"], row["potential_output_vat"],
-                row["potential_input_vat"],
+                row["potential_input_vat"], row["rule_confidence"], row["classification_reason"], row["classification_explanation"],
             ],
             row_index,
         )
@@ -1722,9 +1833,10 @@ def build_workbook(metadata: dict[str, Any], transactions: list[ParsedTransactio
         write_row(
             vat,
             [
-                row["date"], row["description"], row["money_in"], row["money_out"], row["account"], row["vat_treatment"],
-                row["vat_claim_status"], row["potential_output_vat"], row["potential_input_vat"],
-                (row["potential_output_vat"] - row["potential_input_vat"]).quantize(CENT),
+                row["date"], row["description"], row["money_in"], row["money_out"], reporting_account(row), row["vat_treatment"],
+                reporting_vat_status(row), row["potential_output_vat"] if reporting_account(row) != "Review Required Suspense" else Decimal("0.00"),
+                row["potential_input_vat"] if reporting_account(row) != "Review Required Suspense" else Decimal("0.00"),
+                ((row["potential_output_vat"] - row["potential_input_vat"]) if reporting_account(row) != "Review Required Suspense" else Decimal("0.00")).quantize(CENT),
                 "Tax invoice to be matched by user",
             ],
             row_index,
@@ -1740,14 +1852,14 @@ def build_workbook(metadata: dict[str, Any], transactions: list[ParsedTransactio
     gl_row += 1
     for row in rows:
         if row["money_out"] > 0:
-            write_row(ledger, [row["date"], row["description"], row["account"], row["money_out"], Decimal("0.00")], gl_row)
+            write_row(ledger, [row["date"], row["description"], reporting_account(row), row["money_out"], Decimal("0.00")], gl_row)
             gl_row += 1
             write_row(ledger, [row["date"], row["description"], "Bank", Decimal("0.00"), row["money_out"]], gl_row)
             gl_row += 1
         elif row["money_in"] > 0:
             write_row(ledger, [row["date"], row["description"], "Bank", row["money_in"], Decimal("0.00")], gl_row)
             gl_row += 1
-            write_row(ledger, [row["date"], row["description"], row["account"], Decimal("0.00"), row["money_in"]], gl_row)
+            write_row(ledger, [row["date"], row["description"], reporting_account(row), Decimal("0.00"), row["money_in"]], gl_row)
             gl_row += 1
     apply_number_formats(ledger, [4, 5])
 
@@ -1840,7 +1952,7 @@ def build_workbook(metadata: dict[str, Any], transactions: list[ParsedTransactio
         write_row(assumptions, list(row), row_index, header=row_index == 1)
 
     finish_sheet(dashboard, freeze_pane="D4")
-    finish_sheet(tx, filter_ref=f"A1:O{max(tx.max_row, 1)}")
+    finish_sheet(tx, filter_ref=f"A1:R{max(tx.max_row, 1)}")
     finish_sheet(vat, filter_ref=f"A1:K{max(vat.max_row, 1)}")
     finish_sheet(ledger, filter_ref=f"A1:E{max(ledger.max_row, 1)}")
     finish_sheet(trial, filter_ref=f"A1:E{max(len(ledger_accounts) + 1, 1)}")
@@ -1932,6 +2044,8 @@ def process_fnb_statement(payload: ProcessRequest, authorization: str | None = H
             parser_version=WORKER_PARSER_VERSION,
         )
         transactions = parse_transactions(pages, metadata, full_text)
+        classification_rules = fetch_classification_rules(supabase, payload.workspace_id)
+        learned_rules_applied = apply_learned_classification_rules(transactions, classification_rules)
         log_event(
             "worker.statement_parsed",
             worker=worker_version(),
@@ -1940,6 +2054,7 @@ def process_fnb_statement(payload: ProcessRequest, authorization: str | None = H
             transactions=len(transactions),
             parser_version=WORKER_PARSER_VERSION,
             service_fee_rows=sum(1 for transaction in transactions if transaction.description.startswith("#")),
+            learned_rules_applied=learned_rules_applied,
         )
 
         if not transactions:

@@ -64,6 +64,20 @@ function toNumber(value: number | string | null): number | null {
   return Number.isFinite(next) ? next : null;
 }
 
+function normalizeMerchantKey(description: string) {
+  return description
+    .toLowerCase()
+    .replace(/\b\d{1,2}\s+[a-z]{3,9}\b/g, " ")
+    .replace(/\b(?:inv|invoice|ref|rmsp|m)\s*[\w-]+\b/g, " ")
+    .replace(/\b\d{3,}\b/g, " ")
+    .replace(/\d+[.,]\d{2}\s*(cr|dr)?/g, " ")
+    .replace(/\b(allianz holdings|pty|ltd|business account)\b/g, " ")
+    .replace(/[^a-z#* ]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 160);
+}
+
 function mapRun(row: AccountingRunRow): AccountingStatementRun {
   return {
     id: row.id,
@@ -307,6 +321,38 @@ export async function updateAccountingTransaction(transactionId: string, patch: 
     throw new Error(error?.message ?? "Unable to update transaction.");
   }
 
+  const transaction = mapTransaction(data as AccountingTransactionRow);
+  const shouldLearn =
+    patch.accountCategory !== undefined ||
+    patch.vatTreatment !== undefined ||
+    patch.reviewStatus === "approved" ||
+    patch.supportedByInvoice !== undefined;
+  const merchantKey = normalizeMerchantKey(transaction.description);
+
+  if (shouldLearn && merchantKey && transaction.accountCategory !== "Review Required" && transaction.accountCategory !== "Uncategorised Expense") {
+    const { error: learningError } = await context.supabase
+      .from("accounting_classification_rules")
+      .upsert(
+        {
+          workspace_id: context.workspaceId,
+          merchant_key: merchantKey,
+          account_category: transaction.accountCategory,
+          vat_treatment: transaction.vatTreatment,
+          review_status: transaction.reviewStatus,
+          confidence: transaction.reviewStatus === "approved" ? 98 : 92,
+          reason: `Learned from accountant correction: ${transaction.accountCategory}.`,
+          sample_description: transaction.description,
+          created_by: context.userId,
+          updated_at: new Date().toISOString(),
+          last_used_at: new Date().toISOString(),
+        },
+        { onConflict: "workspace_id,merchant_key" },
+      );
+    if (learningError && learningError.code !== "42P01" && learningError.code !== "PGRST204") {
+      console.warn("[accounting] could not save classification learning rule", learningError.message);
+    }
+  }
+
   await recordAuditLog({
     action: "accounting_transaction_reviewed",
     entityType: "accounting_transaction",
@@ -314,5 +360,5 @@ export async function updateAccountingTransaction(transactionId: string, patch: 
     metadata: update,
   });
 
-  return mapTransaction(data as AccountingTransactionRow);
+  return transaction;
 }
