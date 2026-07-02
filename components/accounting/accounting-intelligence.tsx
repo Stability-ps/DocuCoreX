@@ -359,7 +359,7 @@ export function AccountingIntelligence() {
           const file = event.dataTransfer.files.item(0);
           if (file) void uploadFile(file);
         }}
-        className="rounded-[1.75rem] border border-slate-200 bg-white p-6 shadow-sm"
+        className="rounded-xl border border-slate-200 bg-white p-6 shadow-sm"
       >
         <div className="grid gap-6 xl:grid-cols-[1fr_460px] xl:items-center">
           <div>
@@ -453,7 +453,7 @@ export function AccountingIntelligence() {
           }}
         />
 
-        <section className="min-w-0 rounded-[1.75rem] border border-slate-200 bg-white shadow-sm">
+        <section className="min-w-0 rounded-xl border border-slate-200 bg-white shadow-sm">
           {selectedRun && detail ? (
             <div className="space-y-4 p-4 sm:p-5">
               <div className="flex flex-col gap-4 xl:flex-row xl:items-start xl:justify-between">
@@ -680,7 +680,7 @@ function StatementRuns({
   onSelect: (runId: string) => void;
 }) {
   return (
-    <section className="rounded-[1.75rem] border border-slate-200 bg-white p-4 shadow-sm">
+    <section className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
       <div className="mb-4 flex items-center justify-between gap-3">
         <div>
           <h2 className="text-xl font-semibold text-navy-950">Statement runs</h2>

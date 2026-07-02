@@ -57,15 +57,15 @@ export function TeamConsole() {
           ["Admins", admins],
           ["Pending invites", members.filter((member) => member.status === "Invited").length],
         ].map(([label, value]) => (
-          <div key={label} className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm">
+          <div key={label} className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
             <UsersRound className="h-6 w-6 text-royal-600" />
-            <p className="mt-4 text-3xl font-black text-navy-950">{value}</p>
-            <p className="text-sm font-black text-slate-600">{label}</p>
+            <p className="mt-4 text-3xl font-semibold text-navy-950">{value}</p>
+            <p className="text-sm font-semibold text-slate-600">{label}</p>
           </div>
         ))}
       </section>
 
-      <section className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm">
+      <section className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
         <div className="flex flex-col gap-3 sm:flex-row">
           <input
             className="min-h-12 flex-1 rounded-2xl border border-slate-200 bg-slate-50 px-4 text-sm font-semibold outline-none focus:border-royal-300 focus:bg-white"
@@ -75,7 +75,7 @@ export function TeamConsole() {
             value={email}
           />
           <select
-            className="min-h-12 rounded-2xl border border-slate-200 bg-slate-50 px-4 text-sm font-black text-navy-950 outline-none"
+            className="min-h-12 rounded-2xl border border-slate-200 bg-slate-50 px-4 text-sm font-semibold text-navy-950 outline-none"
             onChange={(event) => setRole(event.target.value as TeamMemberRecord["role"])}
             value={role}
           >
@@ -88,17 +88,17 @@ export function TeamConsole() {
             onClick={invite}
             disabled={isInviting}
             aria-label="Invite team member"
-            className="inline-flex items-center justify-center gap-2 rounded-2xl bg-royal-600 px-4 py-3 text-sm font-black text-white shadow-glow disabled:cursor-wait disabled:bg-slate-300"
+            className="inline-flex items-center justify-center gap-2 rounded-2xl bg-royal-600 px-4 py-3 text-sm font-semibold text-white shadow-sm disabled:cursor-wait disabled:bg-slate-300"
           >
             <MailPlus className="h-4 w-4" />
             {isInviting ? "Sending" : "Add User"}
           </button>
         </div>
-        {status ? <p className="mt-3 text-sm font-black text-royal-700">{status}</p> : null}
+        {status ? <p className="mt-3 text-sm font-semibold text-royal-700">{status}</p> : null}
       </section>
 
-      <section className="overflow-hidden rounded-3xl border border-slate-200 bg-white shadow-sm">
-        <div className="grid grid-cols-[1.2fr_0.7fr_0.7fr_0.6fr] gap-4 border-b border-slate-100 px-5 py-4 text-xs font-black uppercase tracking-[0.14em] text-slate-400 max-lg:hidden">
+      <section className="overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">
+        <div className="grid grid-cols-[1.2fr_0.7fr_0.7fr_0.6fr] gap-4 border-b border-slate-100 px-5 py-4 text-xs font-semibold uppercase tracking-[0.14em] text-slate-400 max-lg:hidden">
           <span>User</span>
           <span>Role</span>
           <span>Status</span>
@@ -108,12 +108,12 @@ export function TeamConsole() {
           {members.map((member) => (
             <div key={member.id} className="grid gap-4 px-5 py-4 lg:grid-cols-[1.2fr_0.7fr_0.7fr_0.6fr]">
               <div>
-                <p className="font-black text-navy-950">{member.name}</p>
+                <p className="font-semibold text-navy-950">{member.name}</p>
                 <p className="text-sm text-slate-500">{member.email}</p>
               </div>
-              <p className="text-sm font-black text-slate-600">{member.role}</p>
-              <p className="text-sm font-black text-royal-700">{member.status}</p>
-              <div className="flex items-center gap-2 text-sm font-black text-emerald-700">
+              <p className="text-sm font-semibold text-slate-600">{member.role}</p>
+              <p className="text-sm font-semibold text-royal-700">{member.status}</p>
+              <div className="flex items-center gap-2 text-sm font-semibold text-emerald-700">
                 <ShieldCheck className="h-4 w-4" />
                 Role-based
               </div>

@@ -39,13 +39,13 @@ export function PdfViewer() {
   }
 
   return (
-    <div className="overflow-hidden rounded-3xl border border-slate-200 bg-white shadow-sm">
+    <div className="overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">
       <div className="flex flex-col gap-3 border-b border-slate-200 bg-white p-3 xl:flex-row xl:items-center xl:justify-between">
         <div className="flex flex-wrap items-center gap-2">
           <button onClick={() => setZoom((value) => Math.max(50, value - 10))} className="rounded-xl border border-slate-200 p-2 text-slate-600 hover:text-royal-700" title="Zoom out">
             <ZoomOut className="h-4 w-4" />
           </button>
-          <span className="rounded-xl bg-slate-100 px-3 py-2 text-sm font-black text-slate-600">{zoom}%</span>
+          <span className="rounded-xl bg-slate-100 px-3 py-2 text-sm font-semibold text-slate-600">{zoom}%</span>
           <button onClick={() => setZoom((value) => Math.min(200, value + 10))} className="rounded-xl border border-slate-200 p-2 text-slate-600 hover:text-royal-700" title="Zoom in">
             <ZoomIn className="h-4 w-4" />
           </button>
@@ -60,7 +60,7 @@ export function PdfViewer() {
             <input
               value={page}
               onChange={(event) => setBoundedPage(Number(event.target.value))}
-              className="w-9 bg-transparent text-center text-sm font-black outline-none"
+              className="w-9 bg-transparent text-center text-sm font-semibold outline-none"
             />
             <span className="text-xs font-bold text-slate-500">/ {pageCount}</span>
           </div>
@@ -108,7 +108,7 @@ export function PdfViewer() {
                     <div className="mt-2 h-8 rounded-lg bg-royal-100" />
                   </div>
                 </div>
-                <p className="mt-2 text-center text-xs font-black text-slate-500">{thumb}</p>
+                <p className="mt-2 text-center text-xs font-semibold text-slate-500">{thumb}</p>
               </button>
             ))}
           </div>
@@ -120,25 +120,25 @@ export function PdfViewer() {
           >
             <div className="mb-8 flex items-start justify-between border-b border-slate-200 pb-6">
               <div>
-                <p className="text-xs font-black uppercase tracking-[0.18em] text-slate-400">Business Statement</p>
-                <h3 className="mt-2 text-2xl font-black text-navy-950">Account Activity Summary</h3>
+                <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-400">Business Statement</p>
+                <h3 className="mt-2 text-2xl font-semibold text-navy-950">Account Activity Summary</h3>
               </div>
               <div className="rounded-2xl bg-royal-50 px-4 py-3 text-right">
-                <p className="text-xs font-black text-royal-700">Page {page}</p>
-                <p className="text-sm font-black text-navy-950">R 468,781.29</p>
+                <p className="text-xs font-semibold text-royal-700">Page {page}</p>
+                <p className="text-sm font-semibold text-navy-950">R 468,781.29</p>
               </div>
             </div>
             <div className="grid gap-3">
               {searchHits.map((transaction) => (
                 <div key={`${transaction.date}-${transaction.description}`} className="grid grid-cols-[0.7fr_1.6fr_0.8fr_0.8fr] gap-3 border-b border-slate-100 pb-3 text-sm">
                   <span className="font-bold text-slate-500">{transaction.date}</span>
-                  <span className={search ? "font-black text-royal-700" : "font-semibold text-navy-950"}>{transaction.description}</span>
+                  <span className={search ? "font-semibold text-royal-700" : "font-semibold text-navy-950"}>{transaction.description}</span>
                   <span className="text-right font-bold text-rose-600">{transaction.debit}</span>
-                  <span className="text-right font-black text-navy-950">{transaction.balance}</span>
+                  <span className="text-right font-semibold text-navy-950">{transaction.balance}</span>
                 </div>
               ))}
               {searchHits.length === 0 ? (
-                <div className="rounded-2xl bg-slate-50 p-5 text-center text-sm font-black text-slate-500">No matches on this page</div>
+                <div className="rounded-2xl bg-slate-50 p-5 text-center text-sm font-semibold text-slate-500">No matches on this page</div>
               ) : null}
             </div>
           </div>

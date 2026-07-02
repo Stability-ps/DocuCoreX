@@ -13,7 +13,7 @@ export function BrandLogo({ compact = false }: { compact?: boolean }) {
       />
       {compact ? (
         <div className="min-w-0">
-          <p className="truncate text-sm font-black text-navy-950">DocuCoreX</p>
+          <p className="truncate text-sm font-semibold text-navy-950">DocuCoreX</p>
           <p className="text-xs font-bold text-royal-600">Secure workspace</p>
         </div>
       ) : null}

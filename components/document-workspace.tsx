@@ -209,8 +209,8 @@ export function DocumentWorkspace({ documentId }: { documentId: string }) {
   if (loadState === "loading") {
     return (
       <div className="p-4 sm:p-6 lg:p-8">
-        <div className="rounded-3xl border border-slate-200 bg-white p-8 text-center shadow-sm">
-          <p className="font-black text-navy-950">Loading document workspace</p>
+        <div className="rounded-xl border border-slate-200 bg-white p-8 text-center shadow-sm">
+          <p className="font-semibold text-navy-950">Loading document workspace</p>
           <p className="mt-2 text-sm text-slate-500">Retrieving metadata, jobs, OCR and extraction panels.</p>
         </div>
       </div>
@@ -220,8 +220,8 @@ export function DocumentWorkspace({ documentId }: { documentId: string }) {
   if (loadState === "not_found" || loadState === "error") {
     return (
       <div className="p-4 sm:p-6 lg:p-8">
-        <div className="rounded-3xl border border-slate-200 bg-white p-8 text-center shadow-sm">
-          <p className="font-black text-navy-950">{loadState === "not_found" ? "Document not found" : "Unable to load document"}</p>
+        <div className="rounded-xl border border-slate-200 bg-white p-8 text-center shadow-sm">
+          <p className="font-semibold text-navy-950">{loadState === "not_found" ? "Document not found" : "Unable to load document"}</p>
           <p className="mt-2 text-sm text-slate-500">The file may have been deleted, moved to another workspace, or your role may not have access.</p>
         </div>
       </div>
@@ -238,39 +238,39 @@ export function DocumentWorkspace({ documentId }: { documentId: string }) {
               <StatusPill>{displayType}</StatusPill>
               <StatusPill>{displayPages} pages</StatusPill>
             </div>
-            <h1 className="text-3xl font-black text-navy-950">{displayName}</h1>
+            <h1 className="text-3xl font-semibold text-navy-950">{displayName}</h1>
             <p className="mt-2 text-sm text-slate-500">
               Owned by {doc?.ownerId ?? fallbackDoc.owner} • Updated {doc ? new Date(doc.updatedAt).toLocaleString() : fallbackDoc.updated} • {displaySize}
             </p>
           </div>
           <div className="flex flex-wrap gap-2">
-            <Link href="/documents" className="rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm font-black text-slate-600 shadow-sm">
+            <Link href="/documents" className="rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm font-semibold text-slate-600 shadow-sm">
               Back
             </Link>
-            <button onClick={shareDocument} className="inline-flex items-center gap-2 rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm font-black text-slate-600 shadow-sm">
+            <button onClick={shareDocument} className="inline-flex items-center gap-2 rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm font-semibold text-slate-600 shadow-sm">
               <Share2 className="h-4 w-4" />
               {doc?.shared ? "Unshare" : "Share"}
             </button>
             <button
               type="button"
               onClick={() => setTab("Downloads")}
-              className="rounded-2xl bg-royal-600 px-4 py-3 text-sm font-black text-white shadow-glow hover:bg-royal-700 transition"
+              className="rounded-2xl bg-royal-600 px-4 py-3 text-sm font-semibold text-white shadow-sm hover:bg-royal-700 transition"
             >
               Downloads
             </button>
-            <button onClick={deleteDocument} className="rounded-2xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm font-black text-rose-700 shadow-sm hover:bg-rose-100 transition">
+            <button onClick={deleteDocument} className="rounded-2xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm font-semibold text-rose-700 shadow-sm hover:bg-rose-100 transition">
               <Trash2 className="h-4 w-4 inline mr-2" />
               Move to Trash
             </button>
           </div>
         </div>
-        {workflowStatus ? <p className="mt-4 rounded-2xl bg-slate-50 px-4 py-3 text-sm font-black text-slate-600">{workflowStatus}</p> : null}
+        {workflowStatus ? <p className="mt-4 rounded-2xl bg-slate-50 px-4 py-3 text-sm font-semibold text-slate-600">{workflowStatus}</p> : null}
         <div className="mt-6 flex gap-2 overflow-x-auto border-b border-slate-100 pb-2">
           {workspaceTabs.map((item) => (
             <button
               key={item}
               onClick={() => setTab(item)}
-              className={`shrink-0 rounded-full px-4 py-2 text-sm font-black transition ${
+              className={`shrink-0 rounded-full px-4 py-2 text-sm font-semibold transition ${
                 tab === item ? "bg-royal-600 text-white" : "bg-slate-100 text-slate-600 hover:bg-royal-50 hover:text-royal-700"
               }`}
             >
@@ -307,8 +307,8 @@ function OverviewTab({ data }: { data: WorkspaceData }) {
             ["Language Detected", language.toUpperCase()],
           ].map(([label, value]) => (
             <div key={label} className="rounded-2xl bg-slate-50 p-4">
-              <p className="text-xs font-black uppercase tracking-[0.14em] text-slate-400">{label}</p>
-              <p className="mt-2 text-xl font-black text-navy-950">{value}</p>
+              <p className="text-xs font-semibold uppercase tracking-[0.14em] text-slate-400">{label}</p>
+              <p className="mt-2 text-xl font-semibold text-navy-950">{value}</p>
             </div>
           ))}
         </div>
@@ -321,7 +321,7 @@ function OverviewTab({ data }: { data: WorkspaceData }) {
           {(data.jobs.length ? data.jobs : []).map((job) => (
             <div key={job.id} className="flex items-center gap-3 rounded-2xl bg-slate-50 p-4">
               <CheckCircle2 className={`h-5 w-5 ${job.status === "completed" ? "text-emerald-500" : "text-amber-500"}`} />
-              <span className="font-black capitalize text-navy-950">{job.type.replace("_", " ")}</span>
+              <span className="font-semibold capitalize text-navy-950">{job.type.replace("_", " ")}</span>
               <span className="ml-auto text-sm font-bold capitalize text-slate-500">{job.status}</span>
             </div>
           ))}
@@ -343,7 +343,7 @@ function OcrTab({ ocr, onRun }: { ocr?: OcrResult; onRun: () => Promise<void> })
     <div className="grid gap-6 xl:grid-cols-[0.9fr_1.1fr]">
       <SectionPanel title="OCR Processing" description="The architecture tracks extraction stages, confidence, language and layout analysis.">
         <div className="space-y-4">
-          <button onClick={onRun} className="inline-flex items-center justify-center gap-2 rounded-2xl bg-royal-600 px-4 py-3 text-sm font-black text-white shadow-glow">
+          <button onClick={onRun} className="inline-flex items-center justify-center gap-2 rounded-2xl bg-royal-600 px-4 py-3 text-sm font-semibold text-white shadow-sm">
             <ScanText className="h-4 w-4" />
             Run OCR
           </button>
@@ -353,7 +353,7 @@ function OcrTab({ ocr, onRun }: { ocr?: OcrResult; onRun: () => Promise<void> })
             ["Analysing layout…", 86],
           ].map(([label, progress]) => (
             <div key={label} className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
-              <div className="flex items-center justify-between text-sm font-black">
+              <div className="flex items-center justify-between text-sm font-semibold">
                 <span className="text-navy-950">{label}</span>
                 <span className="text-royal-700">{progress}%</span>
               </div>
@@ -364,12 +364,12 @@ function OcrTab({ ocr, onRun }: { ocr?: OcrResult; onRun: () => Promise<void> })
           ))}
           <div className="grid gap-3 sm:grid-cols-2">
             <div className="rounded-2xl bg-emerald-50 p-4">
-              <p className="text-sm font-black text-emerald-700">Confidence score</p>
-              <p className="mt-1 text-3xl font-black text-emerald-800">{confidence}%</p>
+              <p className="text-sm font-semibold text-emerald-700">Confidence score</p>
+              <p className="mt-1 text-3xl font-semibold text-emerald-800">{confidence}%</p>
             </div>
             <div className="rounded-2xl bg-royal-50 p-4">
-              <p className="text-sm font-black text-royal-700">Language detected</p>
-              <p className="mt-1 text-3xl font-black text-royal-800">{language.toUpperCase()}</p>
+              <p className="text-sm font-semibold text-royal-700">Language detected</p>
+              <p className="mt-1 text-3xl font-semibold text-royal-800">{language.toUpperCase()}</p>
             </div>
           </div>
         </div>
@@ -390,7 +390,7 @@ function OcrTab({ ocr, onRun }: { ocr?: OcrResult; onRun: () => Promise<void> })
 function ExtractionTab({ extraction, onRun }: { extraction?: ExtractionResult; onRun: () => Promise<void> }) {
   return (
     <SectionPanel title="Automatic Extraction Modules" description="DocuCoreX detects document types automatically and routes each file to the right extraction model.">
-      <button onClick={onRun} className="mb-5 inline-flex items-center justify-center gap-2 rounded-2xl bg-royal-600 px-4 py-3 text-sm font-black text-white shadow-glow">
+      <button onClick={onRun} className="mb-5 inline-flex items-center justify-center gap-2 rounded-2xl bg-royal-600 px-4 py-3 text-sm font-semibold text-white shadow-sm">
         <FileSpreadsheet className="h-4 w-4" />
         Run Extraction
       </button>
@@ -398,15 +398,15 @@ function ExtractionTab({ extraction, onRun }: { extraction?: ExtractionResult; o
         <div className="mb-5 rounded-2xl border border-royal-100 bg-royal-50 p-5">
           <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
             <div>
-              <p className="text-xs font-black uppercase tracking-[0.14em] text-royal-700">Detected result</p>
-              <h3 className="mt-2 text-2xl font-black text-navy-950">{titleCase(extraction.detectedType)}</h3>
+              <p className="text-xs font-semibold uppercase tracking-[0.14em] text-royal-700">Detected result</p>
+              <h3 className="mt-2 text-2xl font-semibold text-navy-950">{titleCase(extraction.detectedType)}</h3>
               <p className="mt-1 text-sm font-bold text-slate-600">{extraction.confidence}% confidence</p>
             </div>
             <div className="grid gap-2 sm:grid-cols-2">
               {Object.entries(extraction.fields).slice(0, 6).map(([key, value]) => (
                 <div key={key} className="rounded-xl bg-white px-3 py-2">
-                  <p className="text-[11px] font-black uppercase tracking-[0.12em] text-slate-400">{titleCase(key)}</p>
-                  <p className="text-sm font-black text-navy-950">{String(value)}</p>
+                  <p className="text-[11px] font-semibold uppercase tracking-[0.12em] text-slate-400">{titleCase(key)}</p>
+                  <p className="text-sm font-semibold text-navy-950">{String(value)}</p>
                 </div>
               ))}
             </div>
@@ -417,12 +417,12 @@ function ExtractionTab({ extraction, onRun }: { extraction?: ExtractionResult; o
         {extractionModules.map((module) => (
           <article key={module.title} className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
             <module.icon className="h-6 w-6 text-royal-600" />
-            <h3 className="mt-4 font-black text-navy-950">{module.title}</h3>
+            <h3 className="mt-4 font-semibold text-navy-950">{module.title}</h3>
             <p className="mt-2 text-sm leading-6 text-slate-500">{module.fields}</p>
             <div className="mt-4 h-2 rounded-full bg-white">
               <div className="h-full rounded-full bg-royal-600" style={{ width: `${module.confidence}%` }} />
             </div>
-            <p className="mt-2 text-xs font-black text-royal-700">{module.confidence}% model confidence</p>
+            <p className="mt-2 text-xs font-semibold text-royal-700">{module.confidence}% model confidence</p>
           </article>
         ))}
       </div>
@@ -469,7 +469,7 @@ function AiTab({
             <button
               key={prompt}
               onClick={() => ask(prompt)}
-              className="flex w-full items-center gap-3 rounded-2xl border border-slate-200 bg-slate-50 p-4 text-left text-sm font-black text-navy-950 hover:border-royal-200 hover:bg-white"
+              className="flex w-full items-center gap-3 rounded-2xl border border-slate-200 bg-slate-50 p-4 text-left text-sm font-semibold text-navy-950 hover:border-royal-200 hover:bg-white"
             >
               <Bot className="h-5 w-5 text-royal-600" />
               {prompt}
@@ -479,7 +479,7 @@ function AiTab({
       </SectionPanel>
       <SectionPanel title="AI Analysis" description="Summaries, risk flags and unusual transaction explanations appear here.">
         <div className="rounded-2xl bg-navy-950 p-5 text-white navy-grid">
-          <p className="text-sm font-black text-sky-300">Insight generated</p>
+          <p className="text-sm font-semibold text-sky-300">Insight generated</p>
           <p className="mt-3 text-lg font-bold leading-8">
             {isAsking ? "Analysing document…" : primaryInsight}
           </p>
@@ -487,7 +487,7 @@ function AiTab({
         <div className="mt-4 space-y-3">
           {(insights ?? []).map((insight) => (
             <div key={insight.id} className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
-              <p className="font-black text-navy-950">{insight.prompt}</p>
+              <p className="font-semibold text-navy-950">{insight.prompt}</p>
               <p className="mt-1 text-sm leading-6 text-slate-600">{insight.answer}</p>
             </div>
           ))}
@@ -503,9 +503,9 @@ function HistoryTab({ versions }: { versions?: DocumentVersion[] }) {
       <div className="space-y-3">
         {(versions ?? []).map((version) => (
           <div key={version.id} className="flex items-center gap-4 rounded-2xl bg-slate-50 p-4">
-            <div className="flex h-8 w-8 items-center justify-center rounded-full bg-royal-600 text-sm font-black text-white">{version.versionNumber}</div>
+            <div className="flex h-8 w-8 items-center justify-center rounded-full bg-royal-600 text-sm font-semibold text-white">{version.versionNumber}</div>
             <div>
-              <p className="font-black text-navy-950">{version.changeNote}</p>
+              <p className="font-semibold text-navy-950">{version.changeNote}</p>
               <p className="text-sm text-slate-500">{version.storagePath}</p>
             </div>
             <p className="ml-auto text-sm text-slate-500">{new Date(version.createdAt).toLocaleDateString()}</p>
@@ -514,8 +514,8 @@ function HistoryTab({ versions }: { versions?: DocumentVersion[] }) {
         {!versions?.length
           ? historyEvents.map((event, index) => (
               <div key={event} className="flex items-center gap-4 rounded-2xl bg-slate-50 p-4">
-                <div className="flex h-8 w-8 items-center justify-center rounded-full bg-royal-600 text-sm font-black text-white">{index + 1}</div>
-                <p className="font-black text-navy-950">{event}</p>
+                <div className="flex h-8 w-8 items-center justify-center rounded-full bg-royal-600 text-sm font-semibold text-white">{index + 1}</div>
+                <p className="font-semibold text-navy-950">{event}</p>
                 <p className="ml-auto text-sm text-slate-500">Today</p>
               </div>
             ))
@@ -569,7 +569,7 @@ function CommentsTab({
             placeholder="Add a comment for the team"
             value={body}
           />
-          <button onClick={submitComment} className="inline-flex items-center justify-center gap-2 rounded-xl bg-royal-600 px-4 py-3 text-sm font-black text-white">
+          <button onClick={submitComment} className="inline-flex items-center justify-center gap-2 rounded-xl bg-royal-600 px-4 py-3 text-sm font-semibold text-white">
             <Send className="h-4 w-4" />
             Comment
           </button>
@@ -577,8 +577,8 @@ function CommentsTab({
         {visibleComments.map((comment) => (
           <div key={comment.id} className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
             <div className="flex items-center gap-3">
-              <div className="flex h-9 w-9 items-center justify-center rounded-2xl bg-royal-600 text-sm font-black text-white">{comment.authorName[0]}</div>
-              <p className="font-black text-navy-950">{comment.authorName}</p>
+              <div className="flex h-9 w-9 items-center justify-center rounded-2xl bg-royal-600 text-sm font-semibold text-white">{comment.authorName[0]}</div>
+              <p className="font-semibold text-navy-950">{comment.authorName}</p>
               <p className="ml-auto text-sm text-slate-500">{new Date(comment.createdAt).toLocaleTimeString()}</p>
             </div>
             <p className="mt-3 text-sm leading-6 text-slate-600">{comment.body}</p>
@@ -620,7 +620,7 @@ function DownloadsTab({ downloads }: { downloads?: DocumentDownload[] }) {
             }`}
           >
             <Icon className="h-6 w-6 text-royal-600" />
-            <p className="mt-4 font-black text-navy-950">{download.label}</p>
+            <p className="mt-4 font-semibold text-navy-950">{download.label}</p>
             <p className="mt-1 text-sm capitalize text-slate-500">{download.status} • {download.format}</p>
             <Download className="mt-4 h-5 w-5 text-slate-400" />
           </a>

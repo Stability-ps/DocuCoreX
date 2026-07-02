@@ -85,12 +85,12 @@ export function AutomationsConsole() {
 
   return (
     <div className="space-y-6">
-      <section className="grid gap-4 rounded-3xl border border-slate-200 bg-white p-5 shadow-sm md:grid-cols-3">
+      <section className="grid gap-4 rounded-xl border border-slate-200 bg-white p-5 shadow-sm md:grid-cols-3">
         {automationSteps.map((step, index) => (
           <div key={step.title} className="rounded-2xl bg-slate-50 p-4">
             <div className="flex items-center gap-3">
               <step.icon className="h-5 w-5 text-royal-600" />
-              <p className="font-black text-navy-950">{index + 1}. {step.title}</p>
+              <p className="font-semibold text-navy-950">{index + 1}. {step.title}</p>
             </div>
             <p className="mt-2 text-sm leading-6 text-slate-500">{step.detail}</p>
           </div>
@@ -98,8 +98,8 @@ export function AutomationsConsole() {
       </section>
 
       <section className="grid gap-6 xl:grid-cols-2">
-        <section className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm">
-          <h2 className="text-xl font-black text-navy-950">Create pipeline</h2>
+        <section className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
+          <h2 className="text-xl font-semibold text-navy-950">Create pipeline</h2>
           <div className="mt-5 grid gap-3">
             <input className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm font-semibold outline-none" onChange={(event) => setInput(event.target.value)} value={input} />
             <input className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm font-semibold outline-none" onChange={(event) => setOutput(event.target.value)} value={output} />
@@ -107,19 +107,19 @@ export function AutomationsConsole() {
               type="button"
               onClick={createPipeline}
               disabled={isSavingPipeline || !input.trim() || !output.trim()}
-              className="inline-flex items-center justify-center gap-2 rounded-2xl bg-royal-600 px-4 py-3 text-sm font-black text-white disabled:cursor-not-allowed disabled:bg-slate-300"
+              className="inline-flex items-center justify-center gap-2 rounded-2xl bg-royal-600 px-4 py-3 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:bg-slate-300"
             >
               <Plus className="h-4 w-4" />
               {isSavingPipeline ? "Adding" : "Add automation"}
             </button>
-            {status ? <p className="text-sm font-black text-royal-700">{status}</p> : null}
+            {status ? <p className="text-sm font-semibold text-royal-700">{status}</p> : null}
           </div>
         </section>
         <AutomationList pipelines={pipelines} onToggle={togglePipeline} />
       </section>
 
-      <section className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm">
-        <h2 className="text-xl font-black text-navy-950">Request automation support</h2>
+      <section className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
+        <h2 className="text-xl font-semibold text-navy-950">Request automation support</h2>
         <p className="mt-1 text-sm leading-6 text-slate-500">Capture missing inputs, outputs, mapping rules or workflow requirements for the roadmap.</p>
         <div className="mt-5 flex flex-col gap-3 sm:flex-row">
           <input
@@ -132,7 +132,7 @@ export function AutomationsConsole() {
             type="button"
             onClick={sendRequest}
             disabled={isSendingRequest || !requests.trim()}
-            className="inline-flex items-center justify-center gap-2 rounded-2xl bg-royal-600 px-4 py-3 text-sm font-black text-white shadow-glow disabled:cursor-not-allowed disabled:bg-slate-300"
+            className="inline-flex items-center justify-center gap-2 rounded-2xl bg-royal-600 px-4 py-3 text-sm font-semibold text-white shadow-sm disabled:cursor-not-allowed disabled:bg-slate-300"
           >
             <Send className="h-4 w-4" />
             {isSendingRequest ? "Sending" : "Send request"}
@@ -145,9 +145,9 @@ export function AutomationsConsole() {
 
 function AutomationList({ pipelines, onToggle }: { pipelines: AutomationPipelineRecord[]; onToggle: (id: string) => void }) {
   return (
-    <section className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm">
+    <section className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
       <div className="flex items-center justify-between gap-3">
-        <h2 className="text-xl font-black text-navy-950">Pipelines</h2>
+        <h2 className="text-xl font-semibold text-navy-950">Pipelines</h2>
       </div>
       <div className="mt-5 space-y-3">
         {pipelines.map((pipeline) => (
@@ -160,12 +160,12 @@ function AutomationList({ pipelines, onToggle }: { pipelines: AutomationPipeline
           >
             <RefreshCcw className="h-5 w-5 text-royal-600" />
             <div>
-              <p className="font-black text-navy-950">{pipeline.name}</p>
+              <p className="font-semibold text-navy-950">{pipeline.name}</p>
               <p className="text-sm text-slate-500">
                 {pipeline.input} {"->"} {pipeline.output}
               </p>
             </div>
-            <span className={`ml-auto rounded-full px-2.5 py-1 text-xs font-black ${pipeline.active ? "bg-emerald-50 text-emerald-700" : "bg-slate-200 text-slate-600"}`}>
+            <span className={`ml-auto rounded-full px-2.5 py-1 text-xs font-semibold ${pipeline.active ? "bg-emerald-50 text-emerald-700" : "bg-slate-200 text-slate-600"}`}>
               {pipeline.active ? "Active" : "Inactive"}
             </span>
           </button>

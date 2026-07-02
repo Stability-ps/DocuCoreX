@@ -39,7 +39,7 @@ export default async function DashboardPage() {
                       <action.icon className="h-5 w-5" />
                     </div>
                     <div>
-                      <p className="font-black text-navy-950">{action.label}</p>
+                      <p className="font-semibold text-navy-950">{action.label}</p>
                       <p className="text-sm text-slate-500">{action.description}</p>
                     </div>
                   </div>
@@ -57,10 +57,10 @@ export default async function DashboardPage() {
                     <item.icon className="h-5 w-5" />
                   </div>
                   <div className="min-w-0 flex-1">
-                    <p className="font-black text-navy-950">{item.title}</p>
+                    <p className="font-semibold text-navy-950">{item.title}</p>
                     <p className="text-sm text-slate-500">{item.meta}</p>
                   </div>
-                  <div className="flex items-center gap-1 text-xs font-black text-slate-400">
+                  <div className="flex items-center gap-1 text-xs font-semibold text-slate-400">
                     <Clock className="h-3.5 w-3.5" />
                     {item.time}
                   </div>

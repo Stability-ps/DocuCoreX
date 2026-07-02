@@ -80,8 +80,8 @@ export function DashboardLive() {
           {jobs.map((job) => (
             <div key={job.id} className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
               <div className="flex items-center justify-between gap-3">
-                <p className="font-black capitalize text-navy-950">{job.type.replace("_", " ")}</p>
-                <span className="rounded-full bg-white px-2.5 py-1 text-xs font-black text-royal-700">{job.status}</span>
+                <p className="font-semibold capitalize text-navy-950">{job.type.replace("_", " ")}</p>
+                <span className="rounded-full bg-white px-2.5 py-1 text-xs font-semibold text-royal-700">{job.status}</span>
               </div>
               <p className="mt-2 text-sm text-slate-500">{job.message}</p>
               <div className="mt-4 h-2 rounded-full bg-white">

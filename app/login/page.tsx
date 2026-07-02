@@ -162,8 +162,8 @@ function LoginContent() {
             />
           </Link>
           <div className="my-16 max-w-xl">
-            <p className="text-sm font-black uppercase tracking-[0.2em] text-sky-300">Secure document intelligence</p>
-            <h1 className="mt-5 text-4xl font-black tracking-normal sm:text-5xl">Sign in to your document command center.</h1>
+            <p className="text-sm font-semibold uppercase tracking-[0.2em] text-sky-300">Secure document intelligence</p>
+            <h1 className="mt-5 text-4xl font-semibold tracking-normal sm:text-5xl">Sign in to your document command center.</h1>
             <p className="mt-5 text-lg leading-8 text-blue-100">
               Manage uploads, OCR, extraction, conversions, exports and secure document storage from one enterprise-grade workspace.
             </p>
@@ -176,11 +176,11 @@ function LoginContent() {
               ))}
             </div>
           </div>
-          <div className="rounded-3xl border border-white/10 bg-white/[0.08] p-5">
+          <div className="rounded-xl border border-white/10 bg-white/[0.08] p-5">
             <div className="flex items-center gap-3">
               <ShieldCheck className="h-6 w-6 text-sky-300" />
               <div>
-                <p className="font-black">Supabase authentication ready</p>
+                <p className="font-semibold">Supabase authentication ready</p>
                 <p className="text-sm text-blue-100">
                   {isSupabaseConfigured ? "Environment keys detected." : "Add Supabase keys to enable live auth."}
                 </p>
@@ -200,7 +200,7 @@ function LoginContent() {
                 <button
                   key={key}
                   onClick={() => setMode(key as typeof mode)}
-                  className={`flex-1 rounded-xl px-3 py-2.5 text-sm font-black transition ${
+                  className={`flex-1 rounded-xl px-3 py-2.5 text-sm font-semibold transition ${
                     mode === key ? "bg-white text-royal-700 shadow-sm" : "text-slate-500"
                   }`}
                 >
@@ -210,10 +210,10 @@ function LoginContent() {
             </div>
 
             <div>
-              <p className="text-sm font-black uppercase tracking-[0.18em] text-royal-600">
+              <p className="text-sm font-semibold uppercase tracking-[0.18em] text-royal-600">
                 {mode === "forgot" ? "Account recovery" : "Authentication"}
               </p>
-              <h2 className="mt-2 text-3xl font-black text-navy-950">
+              <h2 className="mt-2 text-3xl font-semibold text-navy-950">
                 {mode === "signin" ? "Welcome back." : mode === "signup" ? "Create your workspace." : "Reset your password."}
               </h2>
               <p className="mt-2 text-sm leading-6 text-slate-500">
@@ -227,15 +227,15 @@ function LoginContent() {
               <button
                 type="button"
                 onClick={() => handleOAuth("google")}
-                className="flex items-center justify-center gap-3 rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm font-black text-navy-950 shadow-sm transition hover:border-royal-200 hover:text-royal-700"
+                className="flex items-center justify-center gap-3 rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm font-semibold text-navy-950 shadow-sm transition hover:border-royal-200 hover:text-royal-700"
               >
-                <span className="flex h-6 w-6 items-center justify-center rounded-full bg-white text-lg font-black text-royal-600">G</span>
+                <span className="flex h-6 w-6 items-center justify-center rounded-full bg-white text-lg font-semibold text-royal-600">G</span>
                 Google Sign-In
               </button>
               <button
                 type="button"
                 onClick={() => handleOAuth("azure")}
-                className="flex items-center justify-center gap-3 rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm font-black text-navy-950 shadow-sm transition hover:border-royal-200 hover:text-royal-700"
+                className="flex items-center justify-center gap-3 rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm font-semibold text-navy-950 shadow-sm transition hover:border-royal-200 hover:text-royal-700"
               >
                 <span className="grid h-5 w-5 grid-cols-2 gap-0.5">
                   <span className="bg-[#f35325]" />
@@ -249,13 +249,13 @@ function LoginContent() {
 
             <div className="my-6 flex items-center gap-4">
               <div className="h-px flex-1 bg-slate-200" />
-              <span className="text-xs font-black uppercase tracking-[0.18em] text-slate-400">or</span>
+              <span className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-400">or</span>
               <div className="h-px flex-1 bg-slate-200" />
             </div>
 
             <form onSubmit={handleEmailAuth} className="space-y-4">
               <label className="block">
-                <span className="mb-2 block text-sm font-black text-slate-700">Email address</span>
+                <span className="mb-2 block text-sm font-semibold text-slate-700">Email address</span>
                 <span className="flex items-center gap-3 rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 focus-within:border-royal-300 focus-within:bg-white">
                   <Mail className="h-5 w-5 text-slate-400" />
                   <input
@@ -271,7 +271,7 @@ function LoginContent() {
 
               {mode !== "forgot" ? (
                 <label className="block">
-                  <span className="mb-2 block text-sm font-black text-slate-700">Password</span>
+                  <span className="mb-2 block text-sm font-semibold text-slate-700">Password</span>
                   <span className="flex items-center gap-3 rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 focus-within:border-royal-300 focus-within:bg-white">
                     <KeyRound className="h-5 w-5 text-slate-400" />
                     <input
@@ -296,7 +296,7 @@ function LoginContent() {
                     <input type="checkbox" className="h-4 w-4 rounded border-slate-300 accent-royal-600" />
                     Remember this device
                   </label>
-                  <button type="button" onClick={() => setMode("forgot")} className="font-black text-royal-700">
+                  <button type="button" onClick={() => setMode("forgot")} className="font-semibold text-royal-700">
                     Forgot password?
                   </button>
                 </div>
@@ -318,7 +318,7 @@ function LoginContent() {
               <button
                 disabled={isSubmitting}
                 type="submit"
-                className="flex w-full items-center justify-center gap-2 rounded-2xl bg-royal-600 px-5 py-3.5 text-sm font-black text-white shadow-glow transition hover:-translate-y-0.5 hover:bg-royal-700 disabled:cursor-wait disabled:bg-slate-300"
+                className="flex w-full items-center justify-center gap-2 rounded-2xl bg-royal-600 px-5 py-3.5 text-sm font-semibold text-white shadow-sm transition hover:-translate-y-0.5 hover:bg-royal-700 disabled:cursor-wait disabled:bg-slate-300"
               >
                 {isSubmitting ? "Working…" : mode === "forgot" ? "Send Recovery Link" : mode === "signup" ? "Create Account" : "Login"}
                 <ArrowRight className="h-5 w-5" />
@@ -328,7 +328,7 @@ function LoginContent() {
                 <button
                   type="button"
                   onClick={enterDemoWorkspace}
-                  className="flex w-full items-center justify-center gap-2 rounded-2xl border border-slate-200 bg-white px-5 py-3.5 text-sm font-black text-navy-950 shadow-sm transition hover:border-royal-200 hover:text-royal-700"
+                  className="flex w-full items-center justify-center gap-2 rounded-2xl border border-slate-200 bg-white px-5 py-3.5 text-sm font-semibold text-navy-950 shadow-sm transition hover:border-royal-200 hover:text-royal-700"
                 >
                   Continue to Dashboard (Dev Only)
                 </button>

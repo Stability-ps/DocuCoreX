@@ -575,14 +575,14 @@ export function UploadCenter({ workflow }: { workflow?: string }) {
         onDrop={handleDrop}
       >
         <div className="mx-auto max-w-3xl text-center">
-          <div className="mx-auto flex h-16 w-16 items-center justify-center rounded-3xl bg-royal-50 text-royal-600">
+          <div className="mx-auto flex h-16 w-16 items-center justify-center rounded-xl bg-royal-50 text-royal-600">
             <UploadCloud className="h-8 w-8" />
           </div>
-          <h2 className="mt-5 text-2xl font-black text-navy-950">Drag and drop files here</h2>
+          <h2 className="mt-5 text-2xl font-semibold text-navy-950">Drag and drop files here</h2>
           <p className="mt-2 text-sm leading-6 text-slate-500">
             Upload PDFs, Office files, text files, images and ZIP archives up to 200 MB per file. Originals are saved to Documents automatically.
           </p>
-          {workflow ? <p className="mt-2 text-sm font-black text-royal-700">Selected workflow: {workflow.replace(/_/g, " ")}</p> : null}
+          {workflow ? <p className="mt-2 text-sm font-semibold text-royal-700">Selected workflow: {workflow.replace(/_/g, " ")}</p> : null}
           <input
             ref={fileInputRef}
             accept={supportedExtensions.join(",")}
@@ -608,14 +608,14 @@ export function UploadCenter({ workflow }: { workflow?: string }) {
             <button
               type="button"
               onClick={() => fileInputRef.current?.click()}
-              className="rounded-full bg-royal-600 px-6 py-3 text-sm font-black text-white shadow-glow transition hover:-translate-y-0.5 hover:bg-royal-700"
+              className="rounded-full bg-royal-600 px-6 py-3 text-sm font-semibold text-white shadow-sm transition hover:-translate-y-0.5 hover:bg-royal-700"
             >
               Choose Files
             </button>
             <button
               type="button"
               onClick={() => folderInputRef.current?.click()}
-              className="inline-flex items-center justify-center gap-2 rounded-full border border-slate-200 bg-white px-6 py-3 text-sm font-black text-slate-700 shadow-sm hover:text-royal-700"
+              className="inline-flex items-center justify-center gap-2 rounded-full border border-slate-200 bg-white px-6 py-3 text-sm font-semibold text-slate-700 shadow-sm hover:text-royal-700"
             >
               <FolderUp className="h-4 w-4" />
               Choose Folder
@@ -624,13 +624,13 @@ export function UploadCenter({ workflow }: { workflow?: string }) {
         </div>
       </section>
 
-      <section className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm sm:p-6">
+      <section className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm sm:p-6">
         <div className="flex flex-col gap-2 sm:flex-row sm:items-end sm:justify-between">
           <div>
-            <h2 className="text-xl font-black text-navy-950">After upload, convert to</h2>
+            <h2 className="text-xl font-semibold text-navy-950">After upload, convert to</h2>
             <p className="mt-1 text-sm text-slate-500">Choose one conversion target for the uploaded queue.</p>
           </div>
-          <div className="rounded-full bg-slate-100 px-4 py-2 text-sm font-black text-slate-600">{message}</div>
+          <div className="rounded-full bg-slate-100 px-4 py-2 text-sm font-semibold text-slate-600">{message}</div>
         </div>
         <div className="mt-5 grid gap-4 lg:grid-cols-5">
           {conversionTargets.map((conversionTarget) => {
@@ -641,8 +641,8 @@ export function UploadCenter({ workflow }: { workflow?: string }) {
               <article
                 key={conversionTarget.id}
                 title={conversionTarget.disabled ? conversionTarget.disabledReason : conversionTarget.description}
-                className={`flex min-h-48 flex-col rounded-3xl border p-5 text-center transition ${
-                  selected ? "border-royal-500 bg-royal-50 shadow-glow" : "border-slate-200 bg-white shadow-sm hover:border-royal-200"
+                className={`flex min-h-48 flex-col rounded-xl border p-5 text-center transition ${
+                  selected ? "border-royal-500 bg-royal-50 shadow-sm" : "border-slate-200 bg-white shadow-sm hover:border-royal-200"
                 } ${conversionTarget.disabled ? "cursor-not-allowed opacity-50" : ""}`}
               >
                 <button
@@ -654,9 +654,9 @@ export function UploadCenter({ workflow }: { workflow?: string }) {
                 >
                   <Icon className="h-7 w-7" />
                 </button>
-                <p className="mt-5 text-lg font-black text-navy-950">{conversionTarget.title}</p>
+                <p className="mt-5 text-lg font-semibold text-navy-950">{conversionTarget.title}</p>
                 <p className="mt-2 flex-1 text-sm leading-6 text-slate-500">{conversionTarget.description}</p>
-                {conversionTarget.disabled ? <p className="mt-3 text-xs font-black text-amber-700">{conversionTarget.disabledReason}</p> : null}
+                {conversionTarget.disabled ? <p className="mt-3 text-xs font-semibold text-amber-700">{conversionTarget.disabledReason}</p> : null}
                 <button
                   type="button"
                   disabled={!canConvert}
@@ -664,7 +664,7 @@ export function UploadCenter({ workflow }: { workflow?: string }) {
                     setTarget(conversionTarget.id);
                     void startProcessing(undefined, conversionTarget.id);
                   }}
-                  className={`mt-5 rounded-2xl px-4 py-2.5 text-sm font-black transition ${
+                  className={`mt-5 rounded-2xl px-4 py-2.5 text-sm font-semibold transition ${
                     selected
                       ? "bg-royal-600 text-white shadow-sm hover:bg-royal-700"
                       : "bg-slate-100 text-royal-700 hover:bg-royal-50"
@@ -685,27 +685,27 @@ export function UploadCenter({ workflow }: { workflow?: string }) {
         </div>
         <div className="mt-5 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
           <div className="text-sm font-bold text-slate-500">{activeItems.length} files in active queue • {totalProgress}% overall</div>
-          <div className="text-sm font-black text-slate-500">
+          <div className="text-sm font-semibold text-slate-500">
             {readyToConvertItems.length ? `${readyToConvertItems.length} ready to convert` : "Upload files to enable conversion"}
           </div>
         </div>
       </section>
 
-      <section className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm sm:p-6">
+      <section className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm sm:p-6">
         <div className="mb-5 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
           <div>
-            <h2 className="text-xl font-black text-navy-950">Upload Queue</h2>
+            <h2 className="text-xl font-semibold text-navy-950">Upload Queue</h2>
             <p className="mt-1 text-sm text-slate-500">Active upload and conversion jobs for this workflow only.</p>
           </div>
           <div className="flex gap-2">
-            <button type="button" onClick={() => void refreshWorkflow()} className="rounded-full bg-slate-100 px-4 py-2 text-sm font-black text-slate-600 hover:text-royal-700">
+            <button type="button" onClick={() => void refreshWorkflow()} className="rounded-full bg-slate-100 px-4 py-2 text-sm font-semibold text-slate-600 hover:text-royal-700">
               Refresh
             </button>
             <button
               type="button"
               onClick={() => void downloadAll()}
               disabled={completedConversions.length < 2}
-              className="rounded-full bg-royal-600 px-4 py-2 text-sm font-black text-white hover:bg-royal-700 disabled:cursor-not-allowed disabled:opacity-45"
+              className="rounded-full bg-royal-600 px-4 py-2 text-sm font-semibold text-white hover:bg-royal-700 disabled:cursor-not-allowed disabled:opacity-45"
               title={completedConversions.length < 2 ? "Process multiple files before downloading all" : "Download all completed conversions as ZIP"}
             >
               Download All
@@ -716,7 +716,7 @@ export function UploadCenter({ workflow }: { workflow?: string }) {
         {!activeItems.length ? (
           <div className="rounded-2xl border border-slate-200 bg-slate-50 p-8 text-center">
             <Archive className="mx-auto h-10 w-10 text-slate-400" />
-            <p className="mt-3 font-black text-navy-950">No active files in the queue</p>
+            <p className="mt-3 font-semibold text-navy-950">No active files in the queue</p>
             <p className="mt-1 text-sm text-slate-500">Upload files to start a processing workflow.</p>
           </div>
         ) : null}
@@ -730,7 +730,7 @@ export function UploadCenter({ workflow }: { workflow?: string }) {
                     <File className="h-5 w-5" />
                   </div>
                   <div className="min-w-0">
-                    <p className="truncate font-black text-navy-950">{item.name}</p>
+                    <p className="truncate font-semibold text-navy-950">{item.name}</p>
                     <p className="mt-1 text-sm text-slate-500">
                       {formatBytes(item.size)} • {item.mimeType || "application/octet-stream"}
                     </p>
@@ -738,14 +738,14 @@ export function UploadCenter({ workflow }: { workflow?: string }) {
                   </div>
                 </div>
                 <div className="grid gap-2 sm:grid-cols-2 xl:min-w-[420px] xl:grid-cols-2">
-                  <div className={`rounded-full border px-3 py-2 text-center text-xs font-black ${statusTone(item.uploadStatus === "uploaded" ? item.conversionStatus === "none" ? "ready" : item.conversionStatus : item.uploadStatus)}`}>
+                  <div className={`rounded-full border px-3 py-2 text-center text-xs font-semibold ${statusTone(item.uploadStatus === "uploaded" ? item.conversionStatus === "none" ? "ready" : item.conversionStatus : item.uploadStatus)}`}>
                     {primaryStatus(item)}
                   </div>
-                  <div className="rounded-full bg-white px-3 py-2 text-center text-xs font-black text-slate-600">{secondaryStatus(item)}</div>
+                  <div className="rounded-full bg-white px-3 py-2 text-center text-xs font-semibold text-slate-600">{secondaryStatus(item)}</div>
                   {item.uploadStatus === "uploading" ? (
                     <>
-                      <div className="rounded-full bg-white px-3 py-2 text-center text-xs font-black text-slate-600">{formatBytes(item.speedBps)}/s</div>
-                      <div className="rounded-full bg-white px-3 py-2 text-center text-xs font-black text-slate-600">ETA {formatTime(item.etaSeconds)}</div>
+                      <div className="rounded-full bg-white px-3 py-2 text-center text-xs font-semibold text-slate-600">{formatBytes(item.speedBps)}/s</div>
+                      <div className="rounded-full bg-white px-3 py-2 text-center text-xs font-semibold text-slate-600">ETA {formatTime(item.etaSeconds)}</div>
                     </>
                   ) : null}
                 </div>
@@ -753,7 +753,7 @@ export function UploadCenter({ workflow }: { workflow?: string }) {
 
               <div className="mt-4 grid gap-3 lg:grid-cols-[1fr_auto] lg:items-center">
                 <div>
-                  <div className="flex items-center justify-between text-xs font-black text-slate-500">
+                  <div className="flex items-center justify-between text-xs font-semibold text-slate-500">
                     <span>{item.uploadStatus === "uploading" ? `Elapsed ${formatTime(item.elapsedSeconds)}` : item.stage}</span>
                     <span>{visibleProgress(item)}%</span>
                   </div>
@@ -813,22 +813,22 @@ export function UploadCenter({ workflow }: { workflow?: string }) {
                     <Trash2 className="h-4 w-4" />
                   </button>
                   {item.downloadUrl ? (
-                    <a href={item.downloadUrl} className="inline-flex items-center gap-2 rounded-xl bg-white px-3 py-2 text-xs font-black text-slate-600 shadow-sm hover:text-royal-700">
+                    <a href={item.downloadUrl} className="inline-flex items-center gap-2 rounded-xl bg-white px-3 py-2 text-xs font-semibold text-slate-600 shadow-sm hover:text-royal-700">
                       <Download className="h-4 w-4" /> Download
                     </a>
                   ) : null}
                   {item.documentId ? (
-                    <Link href={`/documents/${item.documentId}?tab=preview`} className="inline-flex items-center gap-2 rounded-xl bg-white px-3 py-2 text-xs font-black text-slate-600 shadow-sm hover:text-royal-700">
+                    <Link href={`/documents/${item.documentId}?tab=preview`} className="inline-flex items-center gap-2 rounded-xl bg-white px-3 py-2 text-xs font-semibold text-slate-600 shadow-sm hover:text-royal-700">
                       <Eye className="h-4 w-4" /> Preview
                     </Link>
                   ) : null}
                   {item.documentId ? (
-                    <Link href={`/documents/${item.documentId}`} className="inline-flex items-center gap-2 rounded-xl bg-white px-3 py-2 text-xs font-black text-slate-600 shadow-sm hover:text-royal-700">
+                    <Link href={`/documents/${item.documentId}`} className="inline-flex items-center gap-2 rounded-xl bg-white px-3 py-2 text-xs font-semibold text-slate-600 shadow-sm hover:text-royal-700">
                       <FileText className="h-4 w-4" /> Open Document
                     </Link>
                   ) : null}
                   {item.documentId ? (
-                    <button type="button" onClick={() => void saveToLibrary(item)} className="inline-flex items-center gap-2 rounded-xl bg-white px-3 py-2 text-xs font-black text-slate-600 shadow-sm hover:text-royal-700">
+                    <button type="button" onClick={() => void saveToLibrary(item)} className="inline-flex items-center gap-2 rounded-xl bg-white px-3 py-2 text-xs font-semibold text-slate-600 shadow-sm hover:text-royal-700">
                       <Save className="h-4 w-4" /> Save to Library
                     </button>
                   ) : null}

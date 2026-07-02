@@ -126,13 +126,13 @@ export function ConversionWorkflow() {
 
   return (
     <div className="grid gap-6 xl:grid-cols-[0.9fr_1.1fr]">
-      <section className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm sm:p-6">
-        <h2 className="text-xl font-black text-navy-950">Choose Conversion</h2>
+      <section className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm sm:p-6">
+        <h2 className="text-xl font-semibold text-navy-950">Choose Conversion</h2>
         <p className="mt-1 text-sm leading-6 text-slate-500">Convert common business formats with progress tracking and secure downloads.</p>
         <label className="mt-5 block">
-          <span className="mb-2 block text-sm font-black text-slate-700">Source document</span>
+          <span className="mb-2 block text-sm font-semibold text-slate-700">Source document</span>
           <select
-            className="w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm font-black text-navy-950 outline-none focus:border-royal-300 focus:bg-white"
+            className="w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm font-semibold text-navy-950 outline-none focus:border-royal-300 focus:bg-white"
             onChange={(event) => setSelectedDocumentId(event.target.value)}
             value={selectedDocumentId}
             disabled={!documents.length}
@@ -150,7 +150,7 @@ export function ConversionWorkflow() {
             <button
               key={option}
               onClick={() => setSelected(option)}
-              className={`flex items-center justify-between rounded-2xl border p-4 text-left font-black transition ${
+              className={`flex items-center justify-between rounded-2xl border p-4 text-left font-semibold transition ${
                 selected === option ? "border-royal-300 bg-royal-50 text-royal-800" : "border-slate-200 bg-slate-50 text-navy-950 hover:bg-white"
               }`}
             >
@@ -164,17 +164,17 @@ export function ConversionWorkflow() {
         </div>
       </section>
 
-      <section className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm sm:p-6">
+      <section className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm sm:p-6">
         <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
           <div>
-            <h2 className="text-xl font-black text-navy-950">Conversion Job</h2>
+            <h2 className="text-xl font-semibold text-navy-950">Conversion Job</h2>
           <p className="mt-1 text-sm text-slate-500">Selected workflow: {selected} • {jobLabel}</p>
-            {error ? <p className="mt-2 text-sm font-black text-rose-600">{error}</p> : null}
+            {error ? <p className="mt-2 text-sm font-semibold text-rose-600">{error}</p> : null}
           </div>
           <button
             onClick={startConversion}
             disabled={isConverting || !selectedDocumentId || !documents.length}
-            className="inline-flex items-center justify-center gap-2 rounded-full bg-royal-600 px-5 py-3 text-sm font-black text-white shadow-glow disabled:cursor-wait disabled:bg-slate-300"
+            className="inline-flex items-center justify-center gap-2 rounded-full bg-royal-600 px-5 py-3 text-sm font-semibold text-white shadow-sm disabled:cursor-wait disabled:bg-slate-300"
           >
             <Play className="h-4 w-4" />
             {isConverting ? "Converting" : !documents.length ? "Upload a document first" : "Start Conversion"}
@@ -187,12 +187,12 @@ export function ConversionWorkflow() {
               <FileOutput className="h-6 w-6 text-sky-300" />
             </div>
             <div>
-              <p className="font-black">{selectedDocument?.name ?? "Business Statement Q2.pdf"}</p>
+              <p className="font-semibold">{selectedDocument?.name ?? "Business Statement Q2.pdf"}</p>
               <p className="text-sm text-blue-100">Preserving layout, tables and extracted data</p>
             </div>
           </div>
           <div className="mt-6">
-            <div className="mb-2 flex items-center justify-between text-sm font-black">
+            <div className="mb-2 flex items-center justify-between text-sm font-semibold">
               <span>{complete ? "Conversion complete" : "Converting file…"}</span>
               <span>{progress}%</span>
             </div>
@@ -205,8 +205,8 @@ export function ConversionWorkflow() {
         <div className="mt-5 grid gap-3 sm:grid-cols-3">
           {["Queued", "Processing", complete ? "Download ready" : "Preparing"].map((step, index) => (
             <div key={step} className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
-              <p className="text-xs font-black uppercase tracking-[0.14em] text-slate-400">Step {index + 1}</p>
-              <p className="mt-2 font-black text-navy-950">{step}</p>
+              <p className="text-xs font-semibold uppercase tracking-[0.14em] text-slate-400">Step {index + 1}</p>
+              <p className="mt-2 font-semibold text-navy-950">{step}</p>
             </div>
           ))}
         </div>
@@ -214,7 +214,7 @@ export function ConversionWorkflow() {
         <a
           href={complete ? downloadHref : undefined}
           aria-disabled={!complete}
-          className={`mt-5 inline-flex w-full items-center justify-center gap-2 rounded-2xl px-5 py-3.5 text-sm font-black text-white ${
+          className={`mt-5 inline-flex w-full items-center justify-center gap-2 rounded-2xl px-5 py-3.5 text-sm font-semibold text-white ${
             complete ? "bg-navy-950" : "pointer-events-none bg-slate-300"
           }`}
         >

@@ -72,19 +72,19 @@ export default async function AuthDiagnosticsPage() {
       <div className="mx-auto max-w-4xl">
         <div className="mb-8 flex items-center justify-between gap-4">
           <div>
-            <p className="text-sm font-black uppercase tracking-[0.2em] text-royal-700">DocuCoreX diagnostics</p>
-            <h1 className="mt-2 text-3xl font-black text-navy-950">Auth session status</h1>
+            <p className="text-sm font-semibold uppercase tracking-[0.2em] text-royal-700">DocuCoreX diagnostics</p>
+            <h1 className="mt-2 text-3xl font-semibold text-navy-950">Auth session status</h1>
             <p className="mt-2 text-sm text-slate-600">No secret values are shown. Cookie values are never printed.</p>
           </div>
-          <Link href="/dashboard" className="rounded-2xl bg-navy-950 px-4 py-2 text-sm font-black text-white">
+          <Link href="/dashboard" className="rounded-2xl bg-navy-950 px-4 py-2 text-sm font-semibold text-white">
             Dashboard
           </Link>
         </div>
 
-        <div className="overflow-hidden rounded-3xl border border-slate-200 bg-white shadow-soft">
+        <div className="overflow-hidden rounded-xl border border-slate-200 bg-white shadow-soft">
           {rows.map(([label, value]) => (
             <div key={label} className="grid gap-2 border-b border-slate-100 px-5 py-4 last:border-b-0 sm:grid-cols-[240px_1fr]">
-              <p className="text-sm font-black text-slate-600">{label}</p>
+              <p className="text-sm font-semibold text-slate-600">{label}</p>
               <p className="break-words font-mono text-sm text-navy-950">{value}</p>
             </div>
           ))}

@@ -209,7 +209,7 @@ export default function Home() {
           </div>
           <a
             href="/login"
-            className="inline-flex items-center justify-center rounded-full bg-royal-600 px-4 py-2 text-sm font-black text-white shadow-sm sm:hidden"
+            className="inline-flex items-center justify-center rounded-full bg-royal-600 px-4 py-2 text-sm font-semibold text-white shadow-sm sm:hidden"
           >
             Start
           </a>
@@ -223,7 +223,7 @@ export default function Home() {
               <Sparkles className="h-4 w-4" />
               Extract, reconcile and export with enterprise accuracy
             </div>
-            <h1 className="text-balance text-4xl font-black leading-[1.04] tracking-normal text-navy-950 sm:text-5xl lg:text-6xl">
+            <h1 className="text-balance text-4xl font-semibold leading-[1.04] tracking-normal text-navy-950 sm:text-5xl lg:text-6xl">
               Turn Documents Into Structured Data.
             </h1>
             <p className="mt-6 max-w-2xl text-lg leading-8 text-slate-600 sm:text-xl">
@@ -232,7 +232,7 @@ export default function Home() {
             <div className="mt-8 flex flex-col gap-3 sm:flex-row">
               <a
                 href="/login"
-                className="inline-flex items-center justify-center gap-2 rounded-full bg-royal-600 px-6 py-3.5 text-base font-bold text-white shadow-glow transition hover:-translate-y-0.5 hover:bg-royal-700"
+                className="inline-flex items-center justify-center gap-2 rounded-full bg-royal-600 px-6 py-3.5 text-base font-bold text-white shadow-sm transition hover:-translate-y-0.5 hover:bg-royal-700"
               >
                 Start Free Trial
                 <ArrowRight className="h-5 w-5" />
@@ -255,7 +255,7 @@ export default function Home() {
             </div>
           </div>
 
-          <div id="demo" className="glass relative rounded-[2rem] p-3 shadow-glow">
+          <div id="demo" className="glass relative rounded-[2rem] p-3 shadow-sm">
             <div className="rounded-[1.55rem] bg-navy-950 p-4 text-white navy-grid sm:p-5">
               <div className="mb-4 flex items-center justify-between gap-3">
                 <div className="flex items-center gap-3">
@@ -271,7 +271,7 @@ export default function Home() {
               </div>
 
               <div className="grid gap-4 lg:grid-cols-[1.03fr_0.97fr]">
-                <div className="rounded-3xl border border-white/10 bg-white/[0.08] p-4">
+                <div className="rounded-xl border border-white/10 bg-white/[0.08] p-4">
                   <div className="mb-4 flex items-center justify-between">
                     <p className="text-sm font-bold">Recent uploads</p>
                     <Upload className="h-4 w-4 text-sky-300" />
@@ -284,7 +284,7 @@ export default function Home() {
                             <p className="truncate text-sm font-bold text-white">{upload.name}</p>
                             <p className="text-xs text-blue-100">{upload.type}</p>
                           </div>
-                          <span className="rounded-full bg-white px-2.5 py-1 text-[11px] font-black text-royal-700">
+                          <span className="rounded-full bg-white px-2.5 py-1 text-[11px] font-semibold text-royal-700">
                             {upload.status}
                           </span>
                         </div>
@@ -297,14 +297,14 @@ export default function Home() {
                 </div>
 
                 <div className="grid gap-4">
-                  <div className="rounded-3xl bg-white p-4 text-navy-950 shadow-soft">
+                  <div className="rounded-xl bg-white p-4 text-navy-950 shadow-soft">
                     <div className="mb-3 flex items-center justify-between">
-                      <p className="text-sm font-black">Transactions extracted</p>
+                      <p className="text-sm font-semibold">Transactions extracted</p>
                       <ReceiptText className="h-4 w-4 text-royal-600" />
                     </div>
                     <div className="flex items-end justify-between">
                       <div>
-                        <p className="text-4xl font-black">2,418</p>
+                        <p className="text-4xl font-semibold">2,418</p>
                         <p className="text-xs font-bold text-emerald-600">98.7% field confidence</p>
                       </div>
                       <div className="flex h-16 items-end gap-1.5">
@@ -316,21 +316,21 @@ export default function Home() {
                   </div>
 
                   <div className="grid grid-cols-2 gap-4">
-                    <div className="rounded-3xl border border-white/10 bg-white/[0.09] p-4">
+                    <div className="rounded-xl border border-white/10 bg-white/[0.09] p-4">
                       <FileSpreadsheet className="mb-3 h-5 w-5 text-emerald-300" />
                       <p className="text-xs font-bold text-blue-100">Excel export</p>
-                      <p className="mt-1 text-2xl font-black">Ready</p>
+                      <p className="mt-1 text-2xl font-semibold">Ready</p>
                     </div>
-                    <div className="rounded-3xl border border-white/10 bg-white/[0.09] p-4">
+                    <div className="rounded-xl border border-white/10 bg-white/[0.09] p-4">
                       <WandSparkles className="mb-3 h-5 w-5 text-amber-200" />
                       <p className="text-xs font-bold text-blue-100">AI insights</p>
-                      <p className="mt-1 text-2xl font-black">14</p>
+                      <p className="mt-1 text-2xl font-semibold">14</p>
                     </div>
                   </div>
                 </div>
               </div>
 
-              <div className="mt-4 rounded-3xl border border-white/10 bg-white/[0.08] p-4">
+              <div className="mt-4 rounded-xl border border-white/10 bg-white/[0.08] p-4">
                 <div className="mb-4 flex items-center justify-between">
                   <p className="text-sm font-bold">PDF editing preview</p>
                   <div className="flex gap-2">
@@ -343,8 +343,8 @@ export default function Home() {
                 </div>
                 <div className="rounded-2xl bg-white p-4 text-navy-950">
                   <div className="mb-3 flex items-center justify-between border-b border-slate-100 pb-3">
-                    <p className="text-xs font-black uppercase tracking-[0.18em] text-slate-400">Invoice Preview</p>
-                    <p className="rounded-full bg-emerald-50 px-2 py-1 text-xs font-black text-emerald-700">Layout preserved</p>
+                    <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-400">Invoice Preview</p>
+                    <p className="rounded-full bg-emerald-50 px-2 py-1 text-xs font-semibold text-emerald-700">Layout preserved</p>
                   </div>
                   <div className="grid gap-3 sm:grid-cols-[1fr_0.7fr]">
                     <div className="space-y-2">
@@ -361,7 +361,7 @@ export default function Home() {
                     </div>
                     <div className="rounded-2xl border border-slate-100 p-3">
                       <p className="text-xs font-bold text-slate-500">Selected field</p>
-                      <p className="mt-1 text-lg font-black text-royal-700">R 42,780.00</p>
+                      <p className="mt-1 text-lg font-semibold text-royal-700">R 42,780.00</p>
                       <div className="mt-3 h-2 rounded-full bg-amber-300" />
                     </div>
                   </div>
@@ -375,9 +375,9 @@ export default function Home() {
       <section id="features" className="border-y border-royal-100 bg-white/72 py-14">
         <div className="mx-auto grid max-w-7xl gap-4 px-4 sm:grid-cols-2 sm:px-6 lg:grid-cols-4 lg:px-8">
           {products.map((product) => (
-            <article key={product.title} className="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm transition hover:-translate-y-1 hover:shadow-soft">
+            <article key={product.title} className="rounded-xl border border-slate-200 bg-white p-6 shadow-sm transition hover:-translate-y-1 hover:shadow-soft">
               <product.icon className="mb-5 h-7 w-7 text-royal-600" />
-              <h2 className="text-xl font-black text-navy-950">{product.title}</h2>
+              <h2 className="text-xl font-semibold text-navy-950">{product.title}</h2>
               <p className="mt-3 text-sm leading-6 text-slate-600">{product.body}</p>
               <div className="mt-5 flex flex-wrap gap-2">
                 {product.chips.map((chip) => (
@@ -393,8 +393,8 @@ export default function Home() {
         <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8">
           <div className="grid gap-10 lg:grid-cols-[0.95fr_1.05fr] lg:items-center">
             <div>
-              <p className="text-sm font-black uppercase tracking-[0.18em] text-royal-600">Financial document intelligence</p>
-              <h2 className="mt-4 text-4xl font-black tracking-normal text-navy-950 sm:text-5xl">
+              <p className="text-sm font-semibold uppercase tracking-[0.18em] text-royal-600">Financial document intelligence</p>
+              <h2 className="mt-4 text-4xl font-semibold tracking-normal text-navy-950 sm:text-5xl">
                 Built for accountants, auditors and finance teams.
               </h2>
               <p className="mt-5 text-lg leading-8 text-slate-600">
@@ -408,9 +408,9 @@ export default function Home() {
             </div>
             <div className="grid gap-4 sm:grid-cols-2">
               {features.map((feature) => (
-                <article key={feature.title} className="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
+                <article key={feature.title} className="rounded-xl border border-slate-200 bg-white p-6 shadow-sm">
                   <feature.icon className="mb-4 h-6 w-6 text-royal-600" />
-                  <h3 className="text-lg font-black text-navy-950">{feature.title}</h3>
+                  <h3 className="text-lg font-semibold text-navy-950">{feature.title}</h3>
                   <p className="mt-2 text-sm leading-6 text-slate-600">{feature.body}</p>
                 </article>
               ))}
@@ -423,8 +423,8 @@ export default function Home() {
         <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8">
           <div className="grid gap-10 lg:grid-cols-[0.8fr_1.2fr] lg:items-start">
             <div>
-              <p className="text-sm font-black uppercase tracking-[0.18em] text-sky-300">Flagship PDF editor</p>
-              <h2 className="mt-4 text-4xl font-black tracking-normal sm:text-5xl">Preserve every font, table, margin and logo.</h2>
+              <p className="text-sm font-semibold uppercase tracking-[0.18em] text-sky-300">Flagship PDF editor</p>
+              <h2 className="mt-4 text-4xl font-semibold tracking-normal sm:text-5xl">Preserve every font, table, margin and logo.</h2>
               <p className="mt-5 text-lg leading-8 text-blue-100">
                 Edit PDFs with the fidelity teams expect from Acrobat: original layout, spacing, headers, footers, images, forms, annotations and export quality stay intact.
               </p>
@@ -448,11 +448,11 @@ export default function Home() {
         <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8">
           <div className="grid gap-6 md:grid-cols-4">
             {platformStats.map((stat) => (
-              <article key={stat.label} className="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
+              <article key={stat.label} className="rounded-xl border border-slate-200 bg-white p-6 shadow-sm">
                 <stat.icon className="h-6 w-6 text-royal-600" />
-                <p className="mt-5 text-3xl font-black text-navy-950">{stat.value}</p>
+                <p className="mt-5 text-3xl font-semibold text-navy-950">{stat.value}</p>
                 <p className="mt-1 text-sm font-semibold text-slate-500">{stat.label}</p>
-                <p className="mt-4 inline-flex rounded-full bg-emerald-50 px-3 py-1 text-xs font-black text-emerald-700">{stat.delta}</p>
+                <p className="mt-4 inline-flex rounded-full bg-emerald-50 px-3 py-1 text-xs font-semibold text-emerald-700">{stat.delta}</p>
               </article>
             ))}
           </div>
@@ -461,7 +461,7 @@ export default function Home() {
             <div className="rounded-[2rem] border border-slate-200 bg-white p-6 shadow-soft">
               <div className="mb-6 flex items-center justify-between">
                 <div>
-                  <h2 className="text-2xl font-black text-navy-950">Processing dashboard</h2>
+                  <h2 className="text-2xl font-semibold text-navy-950">Processing dashboard</h2>
                   <p className="mt-1 text-sm text-slate-500">Usage analytics, queues, activity and subscription controls.</p>
                 </div>
                 <Gauge className="h-7 w-7 text-royal-600" />
@@ -469,7 +469,7 @@ export default function Home() {
               <div className="grid gap-4 sm:grid-cols-3">
                 {queues.map((queue) => (
                   <div key={queue.label} className="rounded-2xl border border-slate-100 bg-slate-50 p-4">
-                    <p className="text-sm font-black text-navy-950">{queue.label}</p>
+                    <p className="text-sm font-semibold text-navy-950">{queue.label}</p>
                     <p className="mt-1 text-xs font-semibold text-slate-500">{queue.value}</p>
                     <div className="mt-4 h-2 rounded-full bg-white">
                       <div className="h-full rounded-full bg-royal-500" style={{ width: queue.pct }} />
@@ -488,7 +488,7 @@ export default function Home() {
             <div className="rounded-[2rem] bg-navy-950 p-6 text-white shadow-soft">
               <div className="flex items-center justify-between">
                 <div>
-                  <h2 className="text-2xl font-black">Developer ready</h2>
+                  <h2 className="text-2xl font-semibold">Developer ready</h2>
                   <p className="mt-1 text-sm text-blue-100">Next.js 15, TypeScript, Supabase, Stripe, server actions and edge-ready workflows.</p>
                 </div>
                 <Code2 className="h-7 w-7 text-sky-300" />
@@ -499,7 +499,7 @@ export default function Home() {
                 <p><span className="text-amber-200">export</span>: excel, csv, json</p>
                 <p><span className="text-pink-200">confidence</span>: 98.7%</p>
               </div>
-              <div className="mt-5 grid grid-cols-3 gap-3 text-center text-xs font-black text-blue-100">
+              <div className="mt-5 grid grid-cols-3 gap-3 text-center text-xs font-semibold text-blue-100">
                 <div className="rounded-2xl bg-white/10 p-3"><Braces className="mx-auto mb-2 h-4 w-4" />API</div>
                 <div className="rounded-2xl bg-white/10 p-3"><Fingerprint className="mx-auto mb-2 h-4 w-4" />RBAC</div>
                 <div className="rounded-2xl bg-white/10 p-3"><Tags className="mx-auto mb-2 h-4 w-4" />Tags</div>
@@ -512,8 +512,8 @@ export default function Home() {
       <section id="pricing" className="border-t border-royal-100 bg-white/76 py-20 sm:py-24">
         <div className="mx-auto grid max-w-7xl gap-10 px-4 sm:px-6 lg:grid-cols-[0.85fr_1.15fr] lg:px-8">
           <div>
-            <p className="text-sm font-black uppercase tracking-[0.18em] text-royal-600">Bank statement engine</p>
-            <h2 className="mt-4 text-4xl font-black tracking-normal text-navy-950 sm:text-5xl">
+            <p className="text-sm font-semibold uppercase tracking-[0.18em] text-royal-600">Bank statement engine</p>
+            <h2 className="mt-4 text-4xl font-semibold tracking-normal text-navy-950 sm:text-5xl">
               Optimised for South African banks from day one.
             </h2>
             <p className="mt-5 text-lg leading-8 text-slate-600">
@@ -522,7 +522,7 @@ export default function Home() {
           </div>
           <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5">
             {banks.map((bank) => (
-              <div key={bank} className="flex min-h-24 items-center justify-center rounded-3xl border border-slate-200 bg-white p-4 text-center text-sm font-black text-navy-950 shadow-sm">
+              <div key={bank} className="flex min-h-24 items-center justify-center rounded-xl border border-slate-200 bg-white p-4 text-center text-sm font-semibold text-navy-950 shadow-sm">
                 {bank}
               </div>
             ))}
@@ -535,7 +535,7 @@ export default function Home() {
           <div className="flex items-center gap-3">
             <Image src="/docucorex-mark.png" alt="DocuCoreX" width={52} height={52} className="h-12 w-12 rounded-2xl bg-white object-contain p-1" />
             <div>
-              <p className="font-black">DocuCoreX</p>
+              <p className="font-semibold">DocuCoreX</p>
               <p className="text-sm text-blue-100">Extract. Reconcile. Export.</p>
             </div>
           </div>
