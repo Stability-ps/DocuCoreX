@@ -15,7 +15,7 @@ import fitz
 import pdfplumber
 from fastapi import FastAPI, Header, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 from openpyxl import Workbook
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
@@ -85,6 +85,12 @@ class ProcessRequest(BaseModel):
     document_id: str | None = None
     processing_job_id: str | None = None
     storage_path: str
+
+
+class CombineRequest(BaseModel):
+    workspace_id: str
+    run_ids: list[str]
+    combine_different_accounts: bool = False
 
 
 class ParsedTransaction(BaseModel):
@@ -1966,6 +1972,265 @@ def build_workbook(metadata: dict[str, Any], transactions: list[ParsedTransactio
     return output.getvalue()
 
 
+def parsed_transaction_from_row(row: dict[str, Any]) -> ParsedTransaction:
+    return ParsedTransaction(
+        transaction_date=row.get("transaction_date"),
+        description=str(row.get("description") or ""),
+        debit_amount=float(row["debit_amount"]) if row.get("debit_amount") is not None else None,
+        credit_amount=float(row["credit_amount"]) if row.get("credit_amount") is not None else None,
+        running_balance=float(row["running_balance"]) if row.get("running_balance") is not None else None,
+        bank_charge=bool(row.get("bank_charge")),
+        account_category=str(row.get("account_category") or "Uncategorised"),
+        vat_treatment=str(row.get("vat_treatment") or "review"),
+        supported_by_invoice=bool(row.get("supported_by_invoice")),
+        notes=str(row.get("notes") or ""),
+        confidence=float(row.get("confidence") or 0),
+        review_status=str(row.get("review_status") or "needs_review"),
+        source_page=row.get("source_page"),
+        raw_text=row.get("raw_text"),
+    )
+
+
+def run_period_label(run: dict[str, Any]) -> str:
+    start = str(run.get("statement_period_start") or "")
+    end = str(run.get("statement_period_end") or "")
+    if start and end:
+        return f"{start} to {end}"
+    return start or end or "Unknown period"
+
+
+def combine_duplicate_key(transaction: ParsedTransaction) -> tuple[str, str, str, str, str]:
+    return (
+        str(transaction.transaction_date or ""),
+        normalize_merchant_key(transaction.description),
+        str(decimal_amount(transaction.debit_amount)),
+        str(decimal_amount(transaction.credit_amount)),
+        str(decimal_amount(transaction.running_balance)),
+    )
+
+
+def build_combined_workbook(runs: list[dict[str, Any]], transactions_by_run: dict[str, list[ParsedTransaction]]) -> tuple[bytes, dict[str, Any]]:
+    sorted_runs = sorted(runs, key=lambda run: str(run.get("statement_period_start") or run.get("created_at") or ""))
+    first_run = sorted_runs[0]
+    last_run = sorted_runs[-1]
+    company_name = first_run.get("company_name") or "Unknown company"
+    bank = first_run.get("bank") or "FNB South Africa"
+    account_number = first_run.get("account_number") or ""
+    opening = decimal_amount(first_run.get("opening_balance"))
+    closing = decimal_amount(last_run.get("closing_balance"))
+
+    continuity: list[dict[str, Any]] = []
+    for previous, current in zip(sorted_runs, sorted_runs[1:]):
+        previous_close = decimal_amount(previous.get("closing_balance"))
+        current_open = decimal_amount(current.get("opening_balance"))
+        continuity.append({
+            "previous_period": run_period_label(previous),
+            "next_period": run_period_label(current),
+            "previous_closing": previous_close,
+            "next_opening": current_open,
+            "status": "OK" if previous_close == current_open else "Missing statement period or balance mismatch.",
+            "difference": (current_open - previous_close).quantize(CENT),
+        })
+
+    combined_transactions: list[tuple[ParsedTransaction, dict[str, Any]]] = []
+    seen: set[tuple[str, str, str, str, str]] = set()
+    duplicates_removed = 0
+    for run in sorted_runs:
+        for transaction in transactions_by_run.get(str(run["id"]), []):
+            key = combine_duplicate_key(transaction)
+            if key in seen:
+                duplicates_removed += 1
+                continue
+            seen.add(key)
+            combined_transactions.append((transaction, run))
+
+    rows: list[dict[str, Any]] = []
+    for transaction, run in combined_transactions:
+        row = professional_transaction_row(transaction, "combined")
+        row["source_period"] = run_period_label(run)
+        rows.append(row)
+
+    reportable_rows = [row for row in rows if reporting_account(row) != "Review Required Suspense"]
+    total_debits = sum((row["money_out"] for row in rows), Decimal("0.00")).quantize(CENT)
+    total_credits = sum((row["money_in"] for row in rows), Decimal("0.00")).quantize(CENT)
+    expected_closing = (opening + total_credits - total_debits).quantize(CENT)
+    difference = (expected_closing - closing).quantize(CENT)
+    review_count = sum(1 for row in rows if row.get("review_required") or reporting_account(row) == "Review Required Suspense")
+    continuity_ok = all(item["status"] == "OK" for item in continuity)
+
+    workbook = Workbook()
+    dashboard = workbook.active
+    dashboard.title = "Dashboard"
+    dashboard.merge_cells("A1:H1")
+    dashboard["A1"] = f"{company_name} - Combined Bank Statement Accounting Pack"
+    dashboard["A1"].font = Font(bold=True, size=14, color="FFFFFF")
+    dashboard["A1"].fill = HEADER_FILL
+    dashboard["A1"].alignment = Alignment(horizontal="center")
+    dashboard_rows = [
+        ("Company name", company_name),
+        ("Bank", bank),
+        ("Account number", account_number),
+        ("Combined period", f"{first_run.get('statement_period_start') or '-'} to {last_run.get('statement_period_end') or '-'}"),
+        ("Number of statements", len(sorted_runs)),
+        ("Opening balance", opening),
+        ("Closing balance", closing),
+        ("Total receipts", total_credits),
+        ("Total payments", total_debits),
+        ("Total transactions", len(rows)),
+        ("Review items", review_count),
+        ("Workbook status", "Combined workbook generated with review items." if review_count else "Combined workbook generated."),
+    ]
+    for index, row in enumerate(dashboard_rows, start=3):
+        write_row(dashboard, list(row), index)
+    write_row_at(dashboard, ["Month", "Receipts", "Payments", "Output VAT", "Input VAT", "VAT Payable/(Refund)"], 3, 4, header=True)
+    for row_index, month_row in enumerate(month_summary(reportable_rows), start=4):
+        write_row_at(
+            dashboard,
+            [month_row["month"], month_row["receipts"], month_row["payments"], month_row["output_vat"], month_row["input_vat"], month_row["vat_payable"]],
+            row_index,
+            4,
+        )
+
+    tx = workbook.create_sheet("Transactions")
+    tx_headers = [
+        "Date", "Month", "Source Period", "Description", "Money In", "Money Out", "Amount", "Type", "Balance", "Bank Charge",
+        "Account", "Group", "VAT Treatment", "VAT Claim Status", "Potential Output VAT", "Potential Input VAT",
+    ]
+    write_row(tx, tx_headers, 1, header=True)
+    for row_index, row in enumerate(rows, start=2):
+        write_row(
+            tx,
+            [
+                row["date"], row["month"], row["source_period"], row["description"], row["money_in"], row["money_out"], row["amount"], row["type"],
+                row["balance"], row["bank_charge"], reporting_account(row), row["group"], row["vat_treatment"], reporting_vat_status(row),
+                row["potential_output_vat"] if reporting_account(row) != "Review Required Suspense" else Decimal("0.00"),
+                row["potential_input_vat"] if reporting_account(row) != "Review Required Suspense" else Decimal("0.00"),
+            ],
+            row_index,
+        )
+    apply_number_formats(tx, [5, 6, 7, 9, 10, 15, 16])
+
+    vat = workbook.create_sheet("VAT Schedule")
+    write_row(vat, ["Date", "Month", "Source Period", "Description", "Money In", "Money Out", "Account", "VAT Treatment", "Claim Status", "Output VAT", "Input VAT"], 1, header=True)
+    for row_index, row in enumerate(rows, start=2):
+        write_row(
+            vat,
+            [
+                row["date"], row["month"], row["source_period"], row["description"], row["money_in"], row["money_out"],
+                reporting_account(row), row["vat_treatment"], reporting_vat_status(row),
+                row["potential_output_vat"] if reporting_account(row) != "Review Required Suspense" else Decimal("0.00"),
+                row["potential_input_vat"] if reporting_account(row) != "Review Required Suspense" else Decimal("0.00"),
+            ],
+            row_index,
+        )
+    apply_number_formats(vat, [5, 6, 10, 11])
+
+    ledger = workbook.create_sheet("General Ledger")
+    write_row(ledger, ["Date", "Description", "Account", "Debit", "Credit", "Source Period"], 1, header=True)
+    gl_row = 2
+    write_row(ledger, [workbook_date(first_run.get("statement_period_start")), "Opening balance first statement", "Bank", opening, Decimal("0.00"), run_period_label(first_run)], gl_row)
+    gl_row += 1
+    write_row(ledger, [workbook_date(first_run.get("statement_period_start")), "Opening balance first statement", "Opening Equity / Prior Periods", Decimal("0.00"), opening, run_period_label(first_run)], gl_row)
+    gl_row += 1
+    for row in rows:
+        if row["money_out"] > 0:
+            write_row(ledger, [row["date"], row["description"], reporting_account(row), row["money_out"], Decimal("0.00"), row["source_period"]], gl_row)
+            gl_row += 1
+            write_row(ledger, [row["date"], row["description"], "Bank", Decimal("0.00"), row["money_out"], row["source_period"]], gl_row)
+            gl_row += 1
+        elif row["money_in"] > 0:
+            write_row(ledger, [row["date"], row["description"], "Bank", row["money_in"], Decimal("0.00"), row["source_period"]], gl_row)
+            gl_row += 1
+            write_row(ledger, [row["date"], row["description"], reporting_account(row), Decimal("0.00"), row["money_in"], row["source_period"]], gl_row)
+            gl_row += 1
+    apply_number_formats(ledger, [4, 5])
+
+    trial = workbook.create_sheet("Trial Balance")
+    write_row(trial, ["Account", "Total Debits", "Total Credits", "Debit Balance", "Credit Balance"], 1, header=True)
+    ledger_accounts = sorted({ledger.cell(row=row, column=3).value for row in range(2, ledger.max_row + 1) if ledger.cell(row=row, column=3).value})
+    for row_index, account in enumerate(ledger_accounts, start=2):
+        debits = sum(decimal_amount(ledger.cell(row=row, column=4).value) for row in range(2, ledger.max_row + 1) if ledger.cell(row=row, column=3).value == account)
+        credits = sum(decimal_amount(ledger.cell(row=row, column=5).value) for row in range(2, ledger.max_row + 1) if ledger.cell(row=row, column=3).value == account)
+        net = (debits - credits).quantize(CENT)
+        write_row(trial, [account, debits, credits, net if net > 0 else Decimal("0.00"), abs(net) if net < 0 else Decimal("0.00")], row_index)
+    apply_number_formats(trial, [2, 3, 4, 5])
+
+    rec = workbook.create_sheet("Bank Rec")
+    rec_rows = [
+        ("Opening balance first period", opening),
+        ("Total credits all periods", total_credits),
+        ("Total debits all periods", total_debits),
+        ("Expected closing balance", expected_closing),
+        ("Actual closing balance last period", closing),
+        ("Difference", difference),
+        ("Status", "Reconciled" if difference == 0 and continuity_ok else "Review required"),
+        ("Period continuity check", "OK" if continuity_ok else "Missing statement period or balance mismatch."),
+    ]
+    write_row(rec, ["Combined Bank Reconciliation", "Amount"], 1, header=True)
+    for row_index, row in enumerate(rec_rows, start=2):
+        write_row(rec, list(row), row_index)
+    write_row(rec, ["Previous Period", "Next Period", "Previous Closing", "Next Opening", "Difference", "Status"], 12, header=True)
+    for row_index, item in enumerate(continuity, start=13):
+        write_row(rec, [item["previous_period"], item["next_period"], item["previous_closing"], item["next_opening"], item["difference"], item["status"]], row_index)
+    apply_number_formats(rec, [2, 3, 4, 5])
+
+    review = workbook.create_sheet("Review Items")
+    write_row(review, ["Date", "Source Period", "Description", "Money In", "Money Out", "Account", "VAT Status", "Reason"], 1, header=True)
+    review_row = 2
+    for row in rows:
+        reason = row.get("review_reason") or professional_review_reason(row)
+        if row.get("review_required") or reporting_account(row) == "Review Required Suspense" or reason:
+            write_row(review, [row["date"], row["source_period"], row["description"], row["money_in"], row["money_out"], reporting_account(row), reporting_vat_status(row), reason or "Review recommended"], review_row)
+            review_row += 1
+    apply_number_formats(review, [4, 5])
+
+    assumptions = workbook.create_sheet("Assumptions")
+    assumptions_rows = [
+        ("Area", "Assumption / Note"),
+        ("Batch processing", "Statements are sorted by statement period start date before combining."),
+        ("Duplicate removal", "Potential duplicates are removed by matching date, merchant pattern, amount and running balance."),
+        ("Account rule", "Default batch generation only combines the same company, bank and account number."),
+        ("Review mode", "Statements with review items can be combined, but unresolved transactions stay in Review Required Suspense."),
+        ("Continuity", "Previous closing balance should equal the next opening balance."),
+    ]
+    for row_index, row in enumerate(assumptions_rows, start=1):
+        write_row(assumptions, list(row), row_index, header=row_index == 1)
+
+    diagnostics = workbook.create_sheet("Diagnostics")
+    write_row(diagnostics, ["Metric", "Value"], 1, header=True)
+    diagnostics_rows = [
+        ("worker", worker_version()),
+        ("run_ids", [run.get("id") for run in sorted_runs]),
+        ("duplicates_removed", duplicates_removed),
+        ("continuity", continuity),
+    ]
+    for row_index, row in enumerate(diagnostics_rows, start=2):
+        write_row(diagnostics, [row[0], json.dumps(row[1], default=str)], row_index)
+    diagnostics.sheet_state = "hidden"
+
+    finish_sheet(dashboard, freeze_pane="D4")
+    finish_sheet(tx, filter_ref=f"A1:P{max(tx.max_row, 1)}")
+    finish_sheet(vat, filter_ref=f"A1:K{max(vat.max_row, 1)}")
+    finish_sheet(ledger, filter_ref=f"A1:F{max(ledger.max_row, 1)}")
+    finish_sheet(trial, filter_ref=f"A1:E{max(trial.max_row, 1)}")
+    finish_sheet(rec)
+    finish_sheet(review, filter_ref=f"A1:H{max(review.max_row, 1)}")
+    finish_sheet(assumptions)
+    finish_sheet(diagnostics)
+
+    output = io.BytesIO()
+    validate_workbook_for_export(workbook)
+    workbook.save(output)
+    return output.getvalue(), {
+        "statement_count": len(sorted_runs),
+        "transaction_count": len(rows),
+        "duplicates_removed": duplicates_removed,
+        "review_count": review_count,
+        "continuity_ok": continuity_ok,
+        "difference": str(difference),
+    }
+
+
 @app.get("/health")
 def health() -> dict[str, str]:
     return worker_version()
@@ -1974,6 +2239,65 @@ def health() -> dict[str, str]:
 @app.get("/version")
 def version() -> dict[str, str]:
     return worker_version()
+
+
+@app.post("/combine-fnb-statements")
+def combine_fnb_statements(payload: CombineRequest, authorization: str | None = Header(default=None)) -> Response:
+    verify_worker_token(authorization)
+    if len(payload.run_ids) < 2:
+        raise HTTPException(status_code=400, detail="Select at least two statements to combine.")
+
+    supabase = get_supabase()
+    log_event("worker.combine_request", workspace_id=payload.workspace_id, run_ids=payload.run_ids)
+
+    try:
+      runs_response = (
+          supabase.table("accounting_statement_runs")
+          .select("*")
+          .eq("workspace_id", payload.workspace_id)
+          .in_("id", payload.run_ids)
+          .execute()
+      )
+      runs = runs_response.data if isinstance(runs_response.data, list) else []
+      if len(runs) != len(set(payload.run_ids)):
+          raise HTTPException(status_code=404, detail="One or more selected statements could not be found.")
+
+      if not payload.combine_different_accounts:
+          keys = {
+              (
+                  str(run.get("company_name") or "").strip().lower(),
+                  str(run.get("bank") or "").strip().lower(),
+                  str(run.get("account_number") or "").strip().lower(),
+              )
+              for run in runs
+          }
+          if len(keys) > 1:
+              raise HTTPException(status_code=422, detail="Selected statements are not the same company, bank and account number.")
+
+      transactions_by_run: dict[str, list[ParsedTransaction]] = {}
+      for run in runs:
+          transaction_response = (
+              supabase.table("accounting_transactions")
+              .select("*")
+              .eq("workspace_id", payload.workspace_id)
+              .eq("run_id", run["id"])
+              .execute()
+          )
+          transaction_rows = transaction_response.data if isinstance(transaction_response.data, list) else []
+          transactions_by_run[str(run["id"])] = [parsed_transaction_from_row(row) for row in transaction_rows]
+
+      workbook_bytes, summary = build_combined_workbook(runs, transactions_by_run)
+      log_event("worker.combine_completed", workspace_id=payload.workspace_id, summary=summary)
+      return Response(
+          content=workbook_bytes,
+          media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+          headers={"X-DocuCoreX-Combined-Summary": json.dumps(summary, default=str)},
+      )
+    except HTTPException:
+      raise
+    except Exception as exc:
+      log_exception("worker.combine_failed", workspace_id=payload.workspace_id, run_ids=payload.run_ids, error=str(exc))
+      raise HTTPException(status_code=422, detail=str(exc))
 
 
 @app.exception_handler(RequestValidationError)
