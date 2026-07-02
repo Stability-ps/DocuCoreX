@@ -25,6 +25,7 @@ export function DocumentLibrary({ initialFilter = "Recent" }: { initialFilter?: 
   const [query, setQuery] = useState("");
   const [activeFilter, setActiveFilter] = useState(initialFilter);
   const [status, setStatus] = useState("Loading library…");
+  const [visibleCount, setVisibleCount] = useState(24);
 
   useEffect(() => {
     async function loadDocuments() {
@@ -74,6 +75,8 @@ export function DocumentLibrary({ initialFilter = "Recent" }: { initialFilter?: 
     });
   }, [activeFilter, documents, query]);
 
+  const visibleDocuments = useMemo(() => filteredDocuments.slice(0, visibleCount), [filteredDocuments, visibleCount]);
+
   async function patchDocument(id: string, patch: Partial<DocumentRecord>) {
     const response = await fetch(`/api/documents/${id}`, {
       method: "PATCH",
@@ -99,29 +102,29 @@ export function DocumentLibrary({ initialFilter = "Recent" }: { initialFilter?: 
     <div className="space-y-6">
       <section className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
         <div className="flex flex-col gap-3 lg:flex-row lg:items-center">
-          <div className="flex flex-1 items-center gap-3 rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 focus-within:border-royal-300 focus-within:bg-white">
+          <div className="flex min-h-11 flex-1 items-center gap-3 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2.5 focus-within:border-royal-300 focus-within:bg-white">
             <Search className="h-5 w-5 text-slate-400" />
             <input
               className="w-full bg-transparent text-sm font-semibold outline-none"
               onChange={(event) => setQuery(event.target.value)}
-              placeholder="Search file names, tags, OCR text and extracted fields"
+              placeholder="Search documents…"
               value={query}
             />
           </div>
           <div
             aria-live="polite"
-            className="inline-flex items-center justify-center gap-2 rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm font-semibold text-slate-600 shadow-sm"
+            className="inline-flex min-h-11 items-center justify-center gap-2 rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm font-semibold text-slate-600 shadow-sm"
           >
             <Filter className="h-4 w-4" />
             {status}
           </div>
         </div>
-        <div className="mt-4 flex gap-2 overflow-x-auto">
+        <div className="mt-4 hidden gap-2 overflow-x-auto lg:flex">
           {libraryFilters.map((filter) => (
             <button
               key={filter.label}
               onClick={() => setActiveFilter(filter.label)}
-              className={`flex shrink-0 items-center gap-2 rounded-full px-4 py-2 text-sm font-semibold transition ${
+              className={`flex min-h-11 shrink-0 items-center gap-2 rounded-full px-3 py-2 text-sm font-semibold transition ${
                 activeFilter === filter.label ? "bg-royal-600 text-white" : "bg-slate-100 text-slate-600 hover:bg-royal-50 hover:text-royal-700"
               }`}
             >
@@ -130,9 +133,95 @@ export function DocumentLibrary({ initialFilter = "Recent" }: { initialFilter?: 
             </button>
           ))}
         </div>
+        <div className="mt-4 flex gap-2 overflow-x-auto lg:hidden">
+          {(["Recent", "Shared", "Starred", "Trash"] as const).map((filter) => (
+            <button
+              key={filter}
+              onClick={() => setActiveFilter(filter)}
+              className={`flex min-h-11 shrink-0 items-center rounded-full px-3 py-1.5 text-xs font-semibold transition ${
+                activeFilter === filter ? "bg-royal-600 text-white" : "bg-slate-100 text-slate-600"
+              }`}
+            >
+              {filter}
+            </button>
+          ))}
+        </div>
       </section>
 
-      <section className="overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">
+      <section className="space-y-2 lg:hidden">
+        {visibleDocuments.map((document) => (
+          <article key={document.id} className="rounded-xl border border-slate-200 bg-white p-3 shadow-sm">
+            <div className="flex items-start gap-3">
+              <div className="mt-0.5 flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-rose-50 text-rose-600">PDF</div>
+              <div className="min-w-0 flex-1">
+                <Link href={`/documents/${document.id}`} className="text-sm font-semibold text-navy-950">
+                  <span
+                    className="block overflow-hidden"
+                    style={{
+                      display: "-webkit-box",
+                      WebkitLineClamp: 2,
+                      WebkitBoxOrient: "vertical",
+                    }}
+                  >
+                    {document.name}
+                  </span>
+                </Link>
+                <p className="mt-1 text-xs text-slate-500">Bank statement • {titleCase(document.detectedType)}</p>
+                <div className="mt-1.5 flex items-center gap-2 text-xs text-slate-500">
+                  <span>{new Date(document.updatedAt).toLocaleDateString()}</span>
+                  <StatusPill>{titleCase(document.status)}</StatusPill>
+                </div>
+              </div>
+            </div>
+
+            <div className="mt-3 flex items-center gap-2">
+              <button
+                type="button"
+                onClick={() => patchDocument(document.id, { starred: !document.starred })}
+                aria-label={`${document.starred ? "Unstar" : "Star"} ${document.name}`}
+                className={`min-h-11 min-w-11 rounded-lg p-2 ${document.starred ? "bg-amber-100 text-amber-700" : "bg-slate-100 text-slate-600"}`}
+              >
+                <Star className="h-4 w-4" />
+              </button>
+              <button
+                type="button"
+                onClick={() => patchDocument(document.id, { shared: !document.shared })}
+                aria-label={`${document.shared ? "Unshare" : "Share"} ${document.name}`}
+                className={`min-h-11 min-w-11 rounded-lg p-2 ${document.shared ? "bg-royal-100 text-royal-700" : "bg-slate-100 text-slate-600"}`}
+              >
+                <Share2 className="h-4 w-4" />
+              </button>
+              <button
+                type="button"
+                onClick={() => patchDocument(document.id, { deletedAt: document.deletedAt ? null : new Date().toISOString() })}
+                aria-label={`${document.deletedAt ? "Restore" : "Move to trash"} ${document.name}`}
+                className="min-h-11 min-w-11 rounded-lg bg-slate-100 p-2 text-slate-600"
+              >
+                <Trash2 className="h-4 w-4" />
+              </button>
+              <button
+                type="button"
+                className="min-h-11 rounded-lg bg-slate-100 px-3 text-xs font-semibold text-slate-600"
+                title="More actions coming soon"
+                disabled
+              >
+                More
+              </button>
+            </div>
+          </article>
+        ))}
+        {filteredDocuments.length > visibleCount ? (
+          <button
+            type="button"
+            onClick={() => setVisibleCount((count) => count + 24)}
+            className="min-h-11 w-full rounded-lg border border-slate-200 bg-white text-sm font-semibold text-slate-700"
+          >
+            Load more
+          </button>
+        ) : null}
+      </section>
+
+      <section className="hidden overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm lg:block">
         <div className="grid grid-cols-[1.3fr_0.75fr_0.55fr_0.55fr_0.4fr] gap-4 border-b border-slate-100 px-5 py-4 text-xs font-semibold uppercase tracking-[0.14em] text-slate-400 max-lg:hidden">
           <span>Name</span>
           <span>Type</span>
@@ -141,7 +230,7 @@ export function DocumentLibrary({ initialFilter = "Recent" }: { initialFilter?: 
           <span>Actions</span>
         </div>
         <div className="divide-y divide-slate-100">
-          {filteredDocuments.map((document) => (
+          {visibleDocuments.map((document) => (
             <div key={document.id} className="grid gap-4 px-5 py-4 transition hover:bg-royal-50/40 lg:grid-cols-[1.3fr_0.75fr_0.55fr_0.55fr_0.4fr]">
               <div>
                 <Link href={`/documents/${document.id}`} className="font-semibold text-navy-950 hover:text-royal-700">
@@ -201,13 +290,24 @@ export function DocumentLibrary({ initialFilter = "Recent" }: { initialFilter?: 
               </div>
             </div>
           ))}
-          {filteredDocuments.length === 0 ? (
+          {visibleDocuments.length === 0 ? (
             <div className="px-5 py-12 text-center">
               <p className="font-semibold text-navy-950">No documents found</p>
               <p className="mt-2 text-sm text-slate-500">Try another search or filter.</p>
             </div>
           ) : null}
         </div>
+        {filteredDocuments.length > visibleCount ? (
+          <div className="border-t border-slate-100 p-4">
+            <button
+              type="button"
+              onClick={() => setVisibleCount((count) => count + 24)}
+              className="min-h-11 rounded-lg border border-slate-200 px-4 text-sm font-semibold text-slate-700"
+            >
+              Load more documents
+            </button>
+          </div>
+        ) : null}
       </section>
     </div>
   );

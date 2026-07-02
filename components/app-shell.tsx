@@ -27,6 +27,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const [notifications, setNotifications] = useState<NotificationRecord[]>([]);
   const [showNotifications, setShowNotifications] = useState(false);
   const [showProfile, setShowProfile] = useState(false);
+  const [showMobileNav, setShowMobileNav] = useState(true);
   const [showNewMenu, setShowNewMenu] = useState(false);
   const [expandedGroups, setExpandedGroups] = useState<Record<string, boolean>>({
     Documents: false,
@@ -76,6 +77,23 @@ export function AppShell({ children }: { children: React.ReactNode }) {
 
     return () => window.clearTimeout(handle);
   }, [query]);
+
+  useEffect(() => {
+    let lastY = window.scrollY;
+    const handleScroll = () => {
+      const currentY = window.scrollY;
+      if (currentY <= 8) {
+        setShowMobileNav(true);
+        lastY = currentY;
+        return;
+      }
+      if (currentY > lastY + 6) setShowMobileNav(false);
+      if (currentY < lastY - 6) setShowMobileNav(true);
+      lastY = currentY;
+    };
+    window.addEventListener("scroll", handleScroll, { passive: true });
+    return () => window.removeEventListener("scroll", handleScroll);
+  }, []);
 
   async function markNotificationsRead() {
     const response = await fetch("/api/notifications", {
@@ -215,14 +233,14 @@ export function AppShell({ children }: { children: React.ReactNode }) {
             <div className="flex min-w-0 items-center gap-3">
               <BrandLogo compact />
               <div className="min-w-0">
-                <p className="truncate text-sm font-black text-navy-950">{currentPageTitle}</p>
-                <p className="text-xs font-semibold text-royal-700">Secure workspace</p>
+                <p className="text-[11px] font-medium uppercase tracking-wide text-slate-400">DocuCoreX</p>
+                <p className="truncate text-sm font-semibold text-navy-950">{currentPageTitle}</p>
               </div>
             </div>
             <div className="flex items-center gap-2">
               <button
                 onClick={() => setShowNotifications((value) => !value)}
-                className="relative flex h-11 w-11 items-center justify-center rounded-2xl border border-slate-200 bg-white text-slate-600 shadow-sm"
+                className="relative flex min-h-11 min-w-11 items-center justify-center rounded-lg border border-slate-200 bg-white text-slate-600 shadow-sm"
                 title="Notifications"
                 aria-label="Notifications"
               >
@@ -231,7 +249,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
               </button>
               <button
                 onClick={() => setShowProfile((value) => !value)}
-                className="flex h-11 w-11 items-center justify-center rounded-2xl bg-navy-950 text-sm font-black text-white"
+                className="flex min-h-11 min-w-11 items-center justify-center rounded-lg bg-navy-950 text-sm font-semibold text-white"
                 title="Account menu"
                 aria-label="Account menu"
               >
@@ -330,8 +348,12 @@ export function AppShell({ children }: { children: React.ReactNode }) {
             </div>
           ) : null}
         </header>
-        <main className="pb-[calc(5.75rem+env(safe-area-inset-bottom))] lg:pb-0">{children}</main>
-        <nav className="fixed inset-x-0 bottom-0 z-40 border-t border-slate-200 bg-white/95 px-2 pb-[calc(0.5rem+env(safe-area-inset-bottom))] pt-2 shadow-[0_-10px_30px_rgba(15,23,42,0.08)] backdrop-blur-xl lg:hidden">
+        <main className="pb-[calc(5.75rem+env(safe-area-inset-bottom)+8px)] lg:pb-0">{children}</main>
+        <nav
+          className={`fixed inset-x-0 bottom-0 z-40 border-t border-slate-200 bg-white/95 px-2 pb-[calc(0.5rem+env(safe-area-inset-bottom))] pt-2 shadow-[0_-10px_30px_rgba(15,23,42,0.08)] backdrop-blur-xl transition-transform duration-200 lg:hidden ${
+            showMobileNav ? "translate-y-0" : "translate-y-full"
+          }`}
+        >
           <div className="grid grid-cols-5 gap-1">
             {mobileTabs.map((item) => {
               const active = isActive(item.href);
@@ -339,12 +361,18 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                 <Link
                   key={item.href}
                   href={item.href}
-                  className={`flex min-h-14 flex-col items-center justify-center gap-1 rounded-2xl text-[11px] font-black transition ${
-                    active ? "bg-royal-600 text-white shadow-sm" : "text-slate-500 hover:bg-slate-100"
+                  className={`relative flex min-h-14 flex-col items-center justify-center gap-1 rounded-2xl text-[11px] font-semibold transition ${
+                    active ? "bg-royal-600 text-white shadow-sm scale-[1.02]" : "text-slate-500 hover:bg-slate-100"
                   }`}
                 >
                   <item.icon className="h-5 w-5" />
                   {item.title}
+                  {item.href === "/dashboard" && unreadCount > 0 ? (
+                    <span className="absolute right-2 top-1 rounded-full bg-rose-500 px-1.5 text-[10px] font-semibold text-white">
+                      {unreadCount}
+                    </span>
+                  ) : null}
+                  {active ? <span className="absolute -bottom-0.5 left-1/2 h-1 w-1 -translate-x-1/2 rounded-full bg-white" /> : null}
                 </Link>
               );
             })}

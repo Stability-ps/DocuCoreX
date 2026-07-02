@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useCallback, useEffect, useState } from "react";
+import React, { useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import {
   Activity,
@@ -223,6 +223,7 @@ export function SettingsConsole({ initialSection = "overview" }: { initialSectio
     defaultExport: "xlsx",
     viewerDensity: "comfortable",
   });
+  const drawerRef = useRef<HTMLElement | null>(null);
 
   useEffect(() => {
     async function load() {
@@ -255,6 +256,48 @@ export function SettingsConsole({ initialSection = "overview" }: { initialSectio
     }
     void load();
   }, []);
+
+  useEffect(() => {
+    if (!sidebarOpen) {
+      document.body.style.overflow = "";
+      return;
+    }
+
+    document.body.style.overflow = "hidden";
+    const drawer = drawerRef.current;
+    const firstFocusable = drawer?.querySelector<HTMLElement>("button, a, input, select, textarea, [tabindex]:not([tabindex='-1'])");
+    firstFocusable?.focus();
+
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        setSidebarOpen(false);
+        return;
+      }
+      if (event.key !== "Tab" || !drawer) return;
+
+      const focusable = drawer.querySelectorAll<HTMLElement>(
+        "button, a, input, select, textarea, [tabindex]:not([tabindex='-1'])",
+      );
+      if (!focusable.length) return;
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
+      const active = document.activeElement as HTMLElement | null;
+
+      if (event.shiftKey && active === first) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && active === last) {
+        event.preventDefault();
+        first.focus();
+      }
+    };
+
+    document.addEventListener("keydown", onKeyDown);
+    return () => {
+      document.body.style.overflow = "";
+      document.removeEventListener("keydown", onKeyDown);
+    };
+  }, [sidebarOpen]);
 
   const saveProfile = useCallback(async () => {
     setSaveStatus("saving");
@@ -338,18 +381,22 @@ export function SettingsConsole({ initialSection = "overview" }: { initialSectio
     <div className="flex bg-white" style={{ minHeight: "calc(100vh - 80px)" }}>
       {/* Mobile overlay */}
       {sidebarOpen && (
-        <div className="fixed inset-0 z-40 bg-black/30 lg:hidden" onClick={() => setSidebarOpen(false)} />
+        <div className="fixed inset-0 z-40 bg-black/30 lg:hidden" onClick={() => setSidebarOpen(false)} aria-hidden="true" />
       )}
 
       {/* Settings sidebar */}
       <aside
-        className={`fixed inset-y-0 left-72 z-50 flex w-60 flex-col border-r border-slate-100 bg-white transition-transform lg:sticky lg:top-0 lg:h-screen lg:translate-x-0 ${
+        ref={drawerRef}
+        role="dialog"
+        aria-modal={sidebarOpen ? "true" : "false"}
+        aria-label="Settings navigation"
+        className={`fixed inset-y-0 left-0 z-50 flex w-[82vw] max-w-xs flex-col border-r border-slate-100 bg-white transition-transform lg:sticky lg:top-0 lg:h-screen lg:w-60 lg:max-w-none lg:translate-x-0 ${
           sidebarOpen ? "translate-x-0" : "-translate-x-full lg:translate-x-0"
         }`}
       >
         <div className="flex h-14 items-center justify-between border-b border-slate-100 px-4 lg:hidden">
           <span className="text-sm font-bold text-slate-900">Settings</span>
-          <button onClick={() => setSidebarOpen(false)}>
+          <button onClick={() => setSidebarOpen(false)} className="min-h-11 min-w-11 rounded-lg text-slate-500 hover:bg-slate-100" aria-label="Close settings navigation">
             <X className="h-4 w-4 text-slate-500" />
           </button>
         </div>
@@ -357,7 +404,7 @@ export function SettingsConsole({ initialSection = "overview" }: { initialSectio
           <span className="text-sm font-bold text-slate-500">Settings</span>
         </div>
 
-        <nav className="flex-1 overflow-y-auto py-3">
+        <nav className="flex-1 overflow-y-auto py-3 overscroll-contain" style={{ touchAction: "pan-y" }}>
           {NAV_GROUPS.map((group, gi) => (
             <div key={gi} className="mb-1">
               {group.label && (
@@ -372,7 +419,7 @@ export function SettingsConsole({ initialSection = "overview" }: { initialSectio
                     key={item.id}
                     type="button"
                     onClick={() => navigate(item.id)}
-                    className={`mx-2 flex w-[calc(100%-16px)] items-center gap-2.5 rounded-lg px-3 py-2 text-sm transition ${
+                    className={`mx-2 flex min-h-11 w-[calc(100%-16px)] items-center gap-2.5 rounded-lg px-3 py-2 text-sm transition ${
                       active
                         ? "bg-slate-100 font-semibold text-slate-900"
                         : item.danger
@@ -397,7 +444,7 @@ export function SettingsConsole({ initialSection = "overview" }: { initialSectio
       {/* Content */}
       <main className="min-w-0 flex-1">
         <div className="flex items-center gap-3 border-b border-slate-100 px-4 py-3 lg:hidden">
-          <button onClick={() => setSidebarOpen(true)} className="rounded-lg p-1.5 hover:bg-slate-100">
+          <button onClick={() => setSidebarOpen(true)} className="min-h-11 min-w-11 rounded-lg p-1.5 hover:bg-slate-100" aria-label="Open settings navigation">
             <Menu className="h-5 w-5 text-slate-600" />
           </button>
           <span className="text-sm font-semibold text-slate-700">

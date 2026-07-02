@@ -125,14 +125,14 @@ export function ConversionWorkflow() {
   }
 
   return (
-    <div className="grid gap-6 xl:grid-cols-[0.9fr_1.1fr]">
+    <div className="grid gap-4 xl:grid-cols-[0.9fr_1.1fr]">
       <section className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm sm:p-6">
-        <h2 className="text-xl font-semibold text-navy-950">Choose Conversion</h2>
-        <p className="mt-1 text-sm leading-6 text-slate-500">Convert common business formats with progress tracking and secure downloads.</p>
+        <h2 className="text-lg font-semibold text-navy-950">Choose Conversion</h2>
+        <p className="mt-1 text-sm leading-6 text-slate-500">Select a format pair, then convert.</p>
         <label className="mt-5 block">
           <span className="mb-2 block text-sm font-semibold text-slate-700">Source document</span>
           <select
-            className="w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm font-semibold text-navy-950 outline-none focus:border-royal-300 focus:bg-white"
+            className="min-h-11 w-full rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm font-semibold text-navy-950 outline-none focus:border-royal-300 focus:bg-white"
             onChange={(event) => setSelectedDocumentId(event.target.value)}
             value={selectedDocumentId}
             disabled={!documents.length}
@@ -145,76 +145,72 @@ export function ConversionWorkflow() {
             ))}
           </select>
         </label>
-        <div className="mt-5 grid gap-3">
+        <div className="mt-4 grid gap-2 sm:grid-cols-2">
           {conversionOptions.map((option) => (
             <button
               key={option}
               onClick={() => setSelected(option)}
-              className={`flex items-center justify-between rounded-2xl border p-4 text-left font-semibold transition ${
+              className={`flex min-h-11 items-center justify-between rounded-lg border px-3 py-2.5 text-left text-sm font-semibold transition ${
                 selected === option ? "border-royal-300 bg-royal-50 text-royal-800" : "border-slate-200 bg-slate-50 text-navy-950 hover:bg-white"
               }`}
             >
               <span className="flex items-center gap-3">
-                <RefreshCcw className="h-5 w-5 text-royal-600" />
+                <RefreshCcw className="h-4 w-4 text-royal-600" />
                 {option}
               </span>
-              {selected === option ? <CheckCircle2 className="h-5 w-5 text-emerald-500" /> : null}
+              {selected === option ? <CheckCircle2 className="h-4 w-4 text-emerald-500" /> : null}
             </button>
           ))}
         </div>
       </section>
 
       <section className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm sm:p-6">
-        <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
           <div>
-            <h2 className="text-xl font-semibold text-navy-950">Conversion Job</h2>
-          <p className="mt-1 text-sm text-slate-500">Selected workflow: {selected} • {jobLabel}</p>
+            <h2 className="text-lg font-semibold text-navy-950">Conversion Job</h2>
+            <p className="mt-1 text-sm text-slate-500">{selected} • {jobLabel}</p>
             {error ? <p className="mt-2 text-sm font-semibold text-rose-600">{error}</p> : null}
           </div>
           <button
             onClick={startConversion}
             disabled={isConverting || !selectedDocumentId || !documents.length}
-            className="inline-flex items-center justify-center gap-2 rounded-full bg-royal-600 px-5 py-3 text-sm font-semibold text-white shadow-sm disabled:cursor-wait disabled:bg-slate-300"
+            className="inline-flex min-h-11 items-center justify-center gap-2 rounded-lg bg-royal-600 px-4 py-2 text-sm font-semibold text-white shadow-sm disabled:cursor-wait disabled:bg-slate-300"
           >
             <Play className="h-4 w-4" />
-            {isConverting ? "Converting" : !documents.length ? "Upload a document first" : "Start Conversion"}
+            {isConverting ? "Converting" : !documents.length ? "Upload first" : "Convert"}
           </button>
         </div>
 
-        <div className="mt-6 rounded-[2rem] bg-navy-950 p-5 text-white navy-grid">
-          <div className="flex items-center gap-4">
-            <div className="rounded-2xl bg-white/10 p-3">
-              <FileOutput className="h-6 w-6 text-sky-300" />
+        <div className="mt-4 rounded-xl border border-slate-200 bg-slate-50 p-4">
+          <div className="flex items-center gap-3">
+            <div className="rounded-lg bg-white p-2 text-royal-700">
+              <FileOutput className="h-5 w-5" />
             </div>
             <div>
-              <p className="font-semibold">{selectedDocument?.name ?? "Business Statement Q2.pdf"}</p>
-              <p className="text-sm text-blue-100">Preserving layout, tables and extracted data</p>
+              <p className="text-sm font-semibold text-navy-950">{selectedDocument?.name ?? "Business Statement Q2.pdf"}</p>
+              <p className="text-xs text-slate-500">Status: {jobLabel} • ETA: {complete ? "Done" : "~1 min"}</p>
             </div>
           </div>
-          <div className="mt-6">
+          <div className="mt-3">
             <div className="mb-2 flex items-center justify-between text-sm font-semibold">
-              <span>{complete ? "Conversion complete" : "Converting file…"}</span>
+              <span>{complete ? "Complete" : "Progress"}</span>
               <span>{progress}%</span>
             </div>
-            <div className="h-3 overflow-hidden rounded-full bg-white/10">
-              <div className="h-full rounded-full bg-sky-300 progress-stripe" style={{ width: `${progress}%` }} />
+            <div className="h-2 overflow-hidden rounded-full bg-slate-200">
+              <div className="h-full rounded-full bg-royal-600 progress-stripe" style={{ width: `${progress}%` }} />
             </div>
           </div>
-        </div>
-
-        <div className="mt-5 grid gap-3 sm:grid-cols-3">
-          {["Queued", "Processing", complete ? "Download ready" : "Preparing"].map((step, index) => (
-            <div key={step} className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
-              <p className="text-xs font-semibold uppercase tracking-[0.14em] text-slate-400">Step {index + 1}</p>
-              <p className="mt-2 font-semibold text-navy-950">{step}</p>
-            </div>
-          ))}
+          <div className="mt-3 flex flex-wrap gap-2">
+            <button type="button" disabled className="min-h-11 rounded-lg border border-slate-200 bg-white px-3 text-xs font-semibold text-slate-400">Pause</button>
+            <button type="button" disabled className="min-h-11 rounded-lg border border-slate-200 bg-white px-3 text-xs font-semibold text-slate-400">Cancel</button>
+            <button type="button" disabled className="min-h-11 rounded-lg border border-slate-200 bg-white px-3 text-xs font-semibold text-slate-400">More</button>
+          </div>
         </div>
 
         <a
           href={complete ? downloadHref : undefined}
           aria-disabled={!complete}
-          className={`mt-5 inline-flex w-full items-center justify-center gap-2 rounded-2xl px-5 py-3.5 text-sm font-semibold text-white ${
+          className={`mt-4 inline-flex min-h-11 w-full items-center justify-center gap-2 rounded-lg px-4 py-2.5 text-sm font-semibold text-white ${
             complete ? "bg-navy-950" : "pointer-events-none bg-slate-300"
           }`}
         >

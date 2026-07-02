@@ -124,6 +124,14 @@ function fileNameFromPath(path: string) {
   return path.split("/").pop() ?? "FNB statement.pdf";
 }
 
+function runDisplayTitle(run: AccountingStatementRun) {
+  const source = run.statementPeriodStart || run.createdAt;
+  const date = new Date(source);
+  const month = new Intl.DateTimeFormat("en-ZA", { month: "long" }).format(date);
+  const year = new Intl.DateTimeFormat("en-ZA", { year: "numeric" }).format(date);
+  return `${month} ${year} Statement`;
+}
+
 function formatApiError(data: { error?: string; workerDetail?: unknown; workerRawBody?: string; workerStatus?: number }, fallback: string) {
   const detail =
     data.workerDetail && typeof data.workerDetail === "object" && "message" in data.workerDetail
@@ -175,6 +183,8 @@ export function AccountingIntelligence() {
   const [diagnostics, setDiagnostics] = useState("");
   const [activeTab, setActiveTab] = useState<AccountingTab>("transactions");
   const [query, setQuery] = useState("");
+  const [runSearch, setRunSearch] = useState("");
+  const [runSort, setRunSort] = useState("newest");
   const [exportOpen, setExportOpen] = useState(false);
   const selectedRun = useMemo(() => runs.find((run) => run.id === selectedRunId) ?? null, [runs, selectedRunId]);
 
@@ -339,9 +349,6 @@ export function AccountingIntelligence() {
     return Array.from(groups, ([vatTreatment, values]) => ({ vatTreatment, ...values }));
   }, [transactions]);
 
-  const selectedCompany = detail?.run.companyName || selectedRun?.companyName || "ALLIANZ HOLDINGS (PTY) LTD";
-  const selectedAccount = detail?.run.accountNumber || selectedRun?.accountNumber || "63012589818";
-
   return (
     <div className="space-y-4 p-4 sm:p-6 lg:space-y-5 lg:p-8">
       <header className="flex flex-col gap-2 md:gap-4 lg:flex-row lg:items-center lg:justify-between">
@@ -448,16 +455,9 @@ export function AccountingIntelligence() {
         </div>
       ) : null}
 
-      <section className="grid grid-cols-2 gap-3 md:grid-cols-2 xl:grid-cols-[1.8fr_1fr_1fr_1fr_1fr_1fr_1fr]">
+      <section className="grid grid-cols-2 gap-3 md:grid-cols-3">
         <SummaryCard
-          wide
-          icon={<Building2 className="h-7 w-7" />}
-          label={selectedCompany}
-          value={selectedAccount}
-          subvalue="Business Account"
-        />
-        <SummaryCard
-          label="Statement status"
+          label="Status"
           value={detail ? statusLabel(detail.run.status) : "No statement"}
           subvalue={`Confidence: ${detail ? Math.round(detail.run.confidence) : 0}%`}
           warning={detail?.run.status === "review" || detail?.run.status === "failed"}
@@ -466,13 +466,18 @@ export function AccountingIntelligence() {
         <SummaryCard label="Closing balance" value={money(detail?.run.closingBalance ?? null)} />
         <SummaryCard label="Debits" value={money(transactions.length ? totals.debit : null)} danger />
         <SummaryCard label="Credits" value={money(transactions.length ? totals.credit : null)} success />
-        <SummaryCard label="Review items" value={plainNumber(totals.review)} subvalue={totals.review ? "Needs attention" : "Clear"} warning={totals.review > 0} />
+        <SummaryCard label="Review" value={plainNumber(totals.review)} subvalue={totals.review ? "Needs attention" : "Clear"} warning={totals.review > 0} />
       </section>
 
       <div className="grid gap-5 xl:grid-cols-[360px_1fr]">
         <StatementRuns
           runs={runs}
           selectedRunId={selectedRunId}
+          search={runSearch}
+          sortBy={runSort}
+          onSearchChange={setRunSearch}
+          onSortChange={setRunSort}
+          onReprocess={(runId) => void processRun(runId)}
           onRefresh={() => void loadRuns().catch((loadError) => setError(loadError instanceof Error ? loadError.message : "Refresh failed."))}
           onSelect={(runId) => {
             setSelectedRunId(runId);
@@ -487,7 +492,7 @@ export function AccountingIntelligence() {
               <div className="flex flex-col gap-4 xl:flex-row xl:items-start xl:justify-between">
                 <div className="min-w-0">
                   <div className="flex flex-wrap items-center gap-2">
-                    <h2 className="truncate text-xl font-semibold text-navy-950">{fileNameFromPath(detail.run.sourceStoragePath)}</h2>
+                    <h2 className="truncate text-xl font-semibold text-navy-950">{runDisplayTitle(detail.run)}</h2>
                     <span className={`rounded-full px-2.5 py-1 text-xs font-semibold ${statusTone(detail.run.status)}`}>{statusLabel(detail.run.status)}</span>
                   </div>
                   <p className="mt-1 text-sm font-semibold text-slate-500">
@@ -833,14 +838,61 @@ function SummaryCard({
 function StatementRuns({
   runs,
   selectedRunId,
+  search,
+  sortBy,
+  onSearchChange,
+  onSortChange,
+  onReprocess,
   onRefresh,
   onSelect,
 }: {
   runs: AccountingStatementRun[];
   selectedRunId: string;
+  search: string;
+  sortBy: string;
+  onSearchChange: (value: string) => void;
+  onSortChange: (value: string) => void;
+  onReprocess: (runId: string) => void;
   onRefresh: () => void;
   onSelect: (runId: string) => void;
 }) {
+  const [visibleCount, setVisibleCount] = useState(20);
+  const filteredRuns = useMemo(() => {
+    const normalizedSearch = search.trim().toLowerCase();
+    let next = runs;
+
+    if (normalizedSearch) {
+      next = next.filter((run) => {
+        const haystack = [
+          runDisplayTitle(run),
+          run.companyName,
+          run.accountNumber,
+          statusLabel(run.status),
+          fileNameFromPath(run.sourceStoragePath),
+        ]
+          .filter(Boolean)
+          .join(" ")
+          .toLowerCase();
+        return haystack.includes(normalizedSearch);
+      });
+    }
+
+    const sorted = [...next];
+    sorted.sort((a, b) => {
+      if (sortBy === "oldest") return new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime();
+      if (sortBy === "month") {
+        const keyA = `${new Date(a.createdAt).getFullYear()}-${new Date(a.createdAt).getMonth()}`;
+        const keyB = `${new Date(b.createdAt).getFullYear()}-${new Date(b.createdAt).getMonth()}`;
+        return keyB.localeCompare(keyA);
+      }
+      if (sortBy === "status") return statusLabel(a.status).localeCompare(statusLabel(b.status));
+      if (sortBy === "company") return (a.companyName || "").localeCompare(b.companyName || "");
+      return new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime();
+    });
+    return sorted;
+  }, [runs, search, sortBy]);
+  const visibleRuns = useMemo(() => filteredRuns.slice(0, visibleCount), [filteredRuns, visibleCount]);
+
   return (
     <section className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
       <div className="mb-4 flex items-center justify-between gap-3">
@@ -857,43 +909,107 @@ function StatementRuns({
           <RefreshCcw className="h-4 w-4" />
         </button>
       </div>
+      <div className="mb-3 grid gap-2 sm:grid-cols-2">
+        <label className="relative block">
+          <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
+          <input
+            value={search}
+            onChange={(event) => onSearchChange(event.target.value)}
+            placeholder="Search statements"
+            className="min-h-11 w-full rounded-lg border border-slate-200 bg-white pl-9 pr-3 text-sm font-medium outline-none focus:border-royal-300"
+          />
+        </label>
+        <select
+          value={sortBy}
+          onChange={(event) => onSortChange(event.target.value)}
+          className="min-h-11 rounded-lg border border-slate-200 bg-white px-3 text-sm font-medium text-slate-700 outline-none"
+        >
+          <option value="newest">Newest</option>
+          <option value="oldest">Oldest</option>
+          <option value="month">Month</option>
+          <option value="company">Company</option>
+          <option value="status">Status</option>
+        </select>
+      </div>
       <div className="space-y-3">
-        {runs.length ? (
-          runs.map((run) => (
-            <button
+        {visibleRuns.length ? (
+          visibleRuns.map((run) => (
+            <div
               key={run.id}
-              type="button"
               onClick={() => onSelect(run.id)}
-              className={`w-full rounded-lg border p-4 text-left transition ${
+              onKeyDown={(event) => {
+                if (event.key === "Enter" || event.key === " ") {
+                  event.preventDefault();
+                  onSelect(run.id);
+                }
+              }}
+              role="button"
+              tabIndex={0}
+              className={`w-full rounded-lg border p-3 text-left transition ${
                 selectedRunId === run.id ? "border-royal-300 bg-royal-50 ring-4 ring-royal-50" : "border-slate-200 hover:bg-slate-50"
               }`}
             >
               <div className="flex items-start gap-3">
-                <div className="rounded-xl bg-rose-50 p-2 text-rose-600">
-                  <FileText className="h-5 w-5" />
+                <div className="rounded-lg bg-rose-50 p-2 text-rose-600">
+                  <FileText className="h-4 w-4" />
                 </div>
                 <div className="min-w-0 flex-1">
                   <div className="flex items-start justify-between gap-2">
-                    <p className="truncate text-sm font-semibold text-navy-950">{fileNameFromPath(run.sourceStoragePath)}</p>
+                    <p className="truncate text-sm font-semibold text-navy-950">{runDisplayTitle(run)}</p>
                     <MoreVertical className="h-4 w-4 shrink-0 text-slate-400" />
                   </div>
+                  <p className="mt-1 text-xs text-slate-500">{run.companyName || "Unknown company"}</p>
                   <span className={`mt-2 inline-flex rounded-full px-2.5 py-1 text-xs font-semibold ${statusTone(run.status)}`}>{statusLabel(run.status)}</span>
                   <div className="mt-2 flex items-end justify-between gap-3">
-                    <p className="text-xs font-bold text-slate-500">{compactDateTime(run.createdAt)}</p>
-                    <p className="text-right text-xs font-bold text-slate-500">
+                    <p className="text-xs font-semibold text-slate-500">{compactDateTime(run.createdAt)}</p>
+                    <p className="text-right text-xs font-semibold text-slate-500">
                       Confidence
                       <span className="ml-1 text-base font-semibold text-slate-700">{Math.round(run.confidence)}%</span>
                     </p>
                   </div>
+                  <div className="mt-3 grid grid-cols-5 gap-2">
+                    <button
+                      type="button"
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        onSelect(run.id);
+                      }}
+                      className="min-h-11 rounded-lg bg-white text-[11px] font-semibold text-slate-600"
+                    >
+                      More
+                    </button>
+                    <button
+                      type="button"
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        onReprocess(run.id);
+                      }}
+                      className="min-h-11 rounded-lg bg-white text-[11px] font-semibold text-slate-600"
+                    >
+                      Reprocess
+                    </button>
+                    <button type="button" disabled className="min-h-11 rounded-lg bg-white text-[11px] font-semibold text-slate-400">Export</button>
+                    <button type="button" disabled className="min-h-11 rounded-lg bg-white text-[11px] font-semibold text-slate-400">PDF</button>
+                    <button type="button" disabled className="min-h-11 rounded-lg bg-white text-[11px] font-semibold text-slate-400">Delete</button>
+                  </div>
                 </div>
               </div>
-            </button>
+            </div>
           ))
         ) : (
           <div className="rounded-lg border border-slate-200 bg-slate-50 p-6 text-center text-sm font-semibold text-slate-500">
             No FNB statements uploaded yet.
           </div>
         )}
+        {filteredRuns.length > visibleRuns.length ? (
+          <button
+            type="button"
+            onClick={() => setVisibleCount((count) => count + 20)}
+            className="min-h-11 w-full rounded-lg border border-slate-200 bg-white text-sm font-semibold text-slate-700"
+          >
+            Load more statements
+          </button>
+        ) : null}
       </div>
     </section>
   );
@@ -917,8 +1033,69 @@ function TransactionTable({
   }
 
   return (
-    <div className="hidden overflow-x-auto rounded-lg border border-slate-200 md:block">
-      <table className="w-full min-w-[1220px] text-left text-sm">
+    <>
+      <div className="space-y-2 md:hidden">
+        {transactions.map((transaction) => (
+          <article key={transaction.id} className="rounded-lg border border-slate-200 bg-white p-3">
+            <div className="flex items-start justify-between gap-3">
+              <div className="min-w-0">
+                <p className="text-xs text-slate-500">{transaction.transactionDate || "-"}</p>
+                <p className="mt-1 text-sm font-semibold text-navy-950">{transaction.description}</p>
+              </div>
+              <button
+                type="button"
+                onClick={() =>
+                  void patchTransaction(transaction, {
+                    reviewStatus: transaction.reviewStatus === "approved" ? "needs_review" : "approved",
+                  })
+                }
+                className={`min-h-11 rounded-full px-2.5 py-1 text-xs font-semibold ${
+                  transaction.reviewStatus === "approved" ? "bg-emerald-50 text-emerald-700" : "bg-amber-50 text-amber-700"
+                }`}
+              >
+                {transaction.reviewStatus === "approved" ? "Approved" : "Review"}
+              </button>
+            </div>
+
+            <div className="mt-2 grid grid-cols-2 gap-2 text-xs">
+              <p className="text-slate-500">Amount</p>
+              <p className="text-right font-semibold text-navy-950">{money((transaction.creditAmount ?? 0) - (transaction.debitAmount ?? 0))}</p>
+              <p className="text-slate-500">Category</p>
+              <p className="text-right font-semibold text-navy-950">{transaction.accountCategory}</p>
+              <p className="text-slate-500">VAT</p>
+              <p className="text-right font-semibold text-navy-950">{vatTreatments.find((v) => v.value === transaction.vatTreatment)?.label ?? transaction.vatTreatment}</p>
+            </div>
+
+            <div className="mt-2 grid grid-cols-2 gap-2">
+              <select
+                value={transaction.accountCategory}
+                onChange={(event) => void patchTransaction(transaction, { accountCategory: event.target.value })}
+                className="min-h-11 rounded-lg border border-slate-200 bg-white px-2 text-xs font-medium text-navy-950 outline-none"
+              >
+                {categories.map((category) => (
+                  <option key={category} value={category}>
+                    {category}
+                  </option>
+                ))}
+              </select>
+              <select
+                value={transaction.vatTreatment}
+                onChange={(event) => void patchTransaction(transaction, { vatTreatment: event.target.value as VatTreatment })}
+                className="min-h-11 rounded-lg border border-slate-200 bg-white px-2 text-xs font-medium text-navy-950 outline-none"
+              >
+                {vatTreatments.map((treatment) => (
+                  <option key={treatment.value} value={treatment.value}>
+                    {treatment.label}
+                  </option>
+                ))}
+              </select>
+            </div>
+          </article>
+        ))}
+      </div>
+
+      <div className="hidden overflow-x-auto rounded-lg border border-slate-200 md:block">
+        <table className="w-full min-w-[1220px] text-left text-sm">
         <thead className="bg-slate-50 text-xs font-semibold text-slate-500">
           <tr>
             <th className="px-4 py-3">Date</th>
@@ -1001,8 +1178,9 @@ function TransactionTable({
             </tr>
           ))}
         </tbody>
-      </table>
-    </div>
+        </table>
+      </div>
+    </>
   );
 }
 
