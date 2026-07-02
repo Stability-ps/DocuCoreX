@@ -5,7 +5,14 @@ import { useEffect, useRef, useState } from "react";
 import { ImagePlus, X } from "lucide-react";
 import { InvoiceLineItemsEditor } from "@/components/invoices/InvoiceLineItemsEditor";
 import { InvoicePreview } from "@/components/invoices/InvoicePreview";
-import { createEmptyInvoiceLineItem, paymentTermsOptions } from "@/lib/invoice-utils";
+import {
+  calculateInvoiceFinalTotal,
+  calculateInvoiceSubtotal,
+  calculateInvoiceVatAmount,
+  createEmptyInvoiceLineItem,
+  formatCurrency,
+  paymentTermsOptions,
+} from "@/lib/invoice-utils";
 import type { InvoiceLineItemDraft, InvoicePaymentTerms, InvoiceRecord, InvoiceStatus } from "@/lib/types";
 
 const inputClassName =
@@ -120,6 +127,18 @@ export function InvoiceCreateForm() {
   const [error, setError] = useState("");
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [showPreview, setShowPreview] = useState(false);
+
+  // Live totals — recomputed on every keystroke so the summary always reflects the current
+  // line items, discount, shipping and additional charges. The server recomputes these again
+  // from scratch on submit and never trusts client-sent totals.
+  const subtotal = calculateInvoiceSubtotal(lineItems);
+  const discountValue = Number(discountAmount || 0);
+  const shippingValue = Number(shippingAmount || 0);
+  const additionalValue = Number(additionalCharges || 0);
+  const vatAmount = calculateInvoiceVatAmount(lineItems, discountAmount);
+  const totalAmount = calculateInvoiceFinalTotal(lineItems, discountAmount, shippingAmount, additionalCharges);
+  const amountAfterDiscount = Math.max(subtotal - discountValue, 0);
+  const blendedVatRate = amountAfterDiscount > 0 ? (vatAmount / amountAfterDiscount) * 100 : 0;
 
   useEffect(() => {
     async function loadDefaultIssuer() {
@@ -562,6 +581,39 @@ export function InvoiceCreateForm() {
               <Field label="Additional charges">
                 <input className={inputClassName} type="number" min="0" step="0.01" value={additionalCharges} onChange={(event) => setAdditionalCharges(event.target.value)} />
               </Field>
+            </div>
+
+            <div className="ml-auto mt-4 max-w-xs space-y-1.5 rounded-xl bg-slate-50 p-4 text-sm">
+              <div className="flex justify-between text-slate-600">
+                <span>Subtotal</span>
+                <span className="font-medium text-slate-900">{formatCurrency(subtotal, currency)}</span>
+              </div>
+              {discountValue > 0 ? (
+                <div className="flex justify-between text-slate-600">
+                  <span>Discount</span>
+                  <span className="font-medium text-slate-900">-{formatCurrency(discountValue, currency)}</span>
+                </div>
+              ) : null}
+              {shippingValue > 0 ? (
+                <div className="flex justify-between text-slate-600">
+                  <span>Shipping</span>
+                  <span className="font-medium text-slate-900">{formatCurrency(shippingValue, currency)}</span>
+                </div>
+              ) : null}
+              {additionalValue > 0 ? (
+                <div className="flex justify-between text-slate-600">
+                  <span>Additional charges</span>
+                  <span className="font-medium text-slate-900">{formatCurrency(additionalValue, currency)}</span>
+                </div>
+              ) : null}
+              <div className="flex justify-between text-slate-600">
+                <span>VAT{blendedVatRate > 0 ? ` (${blendedVatRate.toFixed(1)}%)` : ""}</span>
+                <span className="font-medium text-slate-900">{formatCurrency(vatAmount, currency)}</span>
+              </div>
+              <div className="flex justify-between border-t border-slate-200 pt-2 text-base font-bold text-navy-950">
+                <span>Total due</span>
+                <span>{formatCurrency(totalAmount, currency)}</span>
+              </div>
             </div>
           </section>
 
