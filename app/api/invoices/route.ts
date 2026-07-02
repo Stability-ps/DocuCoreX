@@ -13,6 +13,11 @@ type CreateInvoiceBody = {
   clientEmail?: string;
   clientPhone?: string;
   clientAddress?: string;
+  issuerName?: string;
+  issuerEmail?: string;
+  issuerPhone?: string;
+  issuerAddress?: string;
+  logoDataUrl?: string;
   bankDetails?: string;
   notesToClient?: string;
   termsAndConditions?: string;
@@ -41,6 +46,12 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "At least one invoice line item is required" }, { status: 400 });
   }
 
+  const maxLogoDataUrlLength = 400_000; // ~300KB base64, enough for a resized logo thumbnail
+
+  if (body.logoDataUrl && body.logoDataUrl.length > maxLogoDataUrlLength) {
+    return NextResponse.json({ error: "Logo image is too large. Use a smaller image." }, { status: 400 });
+  }
+
   const status = validStatuses.includes(body.status as InvoiceStatus) ? (body.status as InvoiceStatus) : "draft";
 
   try {
@@ -52,6 +63,11 @@ export async function POST(request: Request) {
       clientEmail: body.clientEmail,
       clientPhone: body.clientPhone,
       clientAddress: body.clientAddress,
+      issuerName: body.issuerName,
+      issuerEmail: body.issuerEmail,
+      issuerPhone: body.issuerPhone,
+      issuerAddress: body.issuerAddress,
+      logoDataUrl: body.logoDataUrl,
       bankDetails: body.bankDetails,
       notesToClient: body.notesToClient,
       termsAndConditions: body.termsAndConditions,

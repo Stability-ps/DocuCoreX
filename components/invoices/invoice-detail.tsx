@@ -2,18 +2,10 @@
 
 import Link from "next/link";
 import { useEffect, useState } from "react";
-import { ArrowLeft, Printer } from "lucide-react";
-import { InvoiceLineItemsEditor } from "@/components/invoices/InvoiceLineItemsEditor";
+import { ArrowLeft, Mail, Printer } from "lucide-react";
+import { InvoicePreview } from "@/components/invoices/InvoicePreview";
 import { formatCurrency } from "@/lib/invoice-utils";
 import type { InvoiceLineItemDraft, InvoiceStatus, InvoiceWithItems } from "@/lib/types";
-
-const statusStyles: Record<InvoiceStatus, string> = {
-  draft: "border-slate-200 bg-slate-50 text-slate-600",
-  issued: "border-royal-200 bg-royal-50 text-royal-700",
-  paid: "border-emerald-200 bg-emerald-50 text-emerald-700",
-  overdue: "border-rose-200 bg-rose-50 text-rose-700",
-  cancelled: "border-slate-200 bg-slate-100 text-slate-400",
-};
 
 const statusOptions: InvoiceStatus[] = ["draft", "issued", "paid", "overdue", "cancelled"];
 
@@ -50,6 +42,32 @@ export function InvoiceDetail({ invoiceId }: { invoiceId: string }) {
     }
 
     setIsUpdating(false);
+  }
+
+  // Opens the user's own mail client with a prefilled subject/body. This is an immediate,
+  // zero-config stopgap — DocuCoreX has no transactional email provider configured today (no
+  // Resend/SendGrid/SMTP integration exists in lib/). It does NOT send anything server-side.
+  // TODO: replace with a real "send email" call once a transactional email provider is wired up
+  // (e.g. via a lib/notifications.ts style helper), matching Acapolite's Supabase Edge Function
+  // + template approach but using our own provider/credentials.
+  function emailInvoice() {
+    if (!invoice) return;
+
+    const subject = `Invoice ${invoice.invoiceNumber} from ${invoice.issuerName || "us"}`;
+    const body = [
+      `Hi ${invoice.clientName || ""},`,
+      "",
+      `Please find your invoice ${invoice.invoiceNumber} summarized below:`,
+      `Total due: ${formatCurrency(invoice.totalAmount)}`,
+      invoice.dueDate ? `Due date: ${invoice.dueDate}` : "",
+      "",
+      "A printable copy is attached — use \"Print / Save as PDF\" on the invoice page and attach the PDF before sending.",
+    ]
+      .filter(Boolean)
+      .join("\n");
+
+    const mailto = `mailto:${encodeURIComponent(invoice.clientEmail || "")}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}`;
+    window.location.href = mailto;
   }
 
   if (notFound) {
@@ -96,6 +114,15 @@ export function InvoiceDetail({ invoiceId }: { invoiceId: string }) {
           </select>
           <button
             type="button"
+            onClick={emailInvoice}
+            title="Opens your mail app with the invoice details prefilled — attach the printed PDF before sending."
+            className="inline-flex min-h-11 items-center gap-2 rounded-lg border border-slate-200 bg-white px-4 py-2 text-sm font-semibold text-slate-700 transition hover:border-royal-300"
+          >
+            <Mail className="h-4 w-4" />
+            Email invoice
+          </button>
+          <button
+            type="button"
             onClick={() => window.print()}
             className="inline-flex min-h-11 items-center gap-2 rounded-lg bg-royal-600 px-4 py-2 text-sm font-semibold text-white transition hover:bg-royal-700"
           >
@@ -105,81 +132,32 @@ export function InvoiceDetail({ invoiceId }: { invoiceId: string }) {
         </div>
       </div>
 
-      <div id="invoice-print-area" className="space-y-6 rounded-xl border border-slate-200 bg-white p-6 shadow-sm print:border-0 print:shadow-none">
-        <div className="flex flex-wrap items-start justify-between gap-4">
-          <div>
-            <p className="text-xs font-semibold uppercase tracking-[0.14em] text-royal-700">Invoice</p>
-            <h1 className="mt-1 text-2xl font-semibold text-navy-950">{invoice.invoiceNumber}</h1>
-            {invoice.title ? <p className="mt-1 text-sm text-slate-600">{invoice.title}</p> : null}
-          </div>
-          <span className={`inline-flex items-center rounded-full border px-3 py-1 text-xs font-semibold capitalize ${statusStyles[invoice.status]}`}>
-            {invoice.status}
-          </span>
-        </div>
-
-        <div className="grid gap-4 md:grid-cols-2">
-          <div>
-            <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Billed to</p>
-            <p className="mt-1 font-semibold text-slate-900">{invoice.clientName}</p>
-            {invoice.clientEmail ? <p className="text-sm text-slate-600">{invoice.clientEmail}</p> : null}
-            {invoice.clientPhone ? <p className="text-sm text-slate-600">{invoice.clientPhone}</p> : null}
-            {invoice.clientAddress ? <p className="text-sm text-slate-600">{invoice.clientAddress}</p> : null}
-          </div>
-          <div className="md:text-right">
-            <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Due date</p>
-            <p className="mt-1 font-semibold text-slate-900">{invoice.dueDate ?? "No due date set"}</p>
-          </div>
-        </div>
-
-        {invoice.description ? <p className="text-sm leading-6 text-slate-600">{invoice.description}</p> : null}
-
-        <InvoiceLineItemsEditor items={lineItemDrafts} readOnly />
-
-        <div className="ml-auto max-w-xs space-y-2 rounded-lg bg-slate-50 p-4 text-sm">
-          <div className="flex justify-between text-slate-600">
-            <span>Subtotal</span>
-            <span className="font-semibold text-slate-900">{formatCurrency(invoice.subtotal)}</span>
-          </div>
-          <div className="flex justify-between text-slate-600">
-            <span>Discount</span>
-            <span className="font-semibold text-slate-900">-{formatCurrency(invoice.discountAmount)}</span>
-          </div>
-          <div className="flex justify-between text-slate-600">
-            <span>VAT ({invoice.taxRate}%)</span>
-            <span className="font-semibold text-slate-900">{formatCurrency(invoice.taxAmount)}</span>
-          </div>
-          <div className="flex justify-between border-t border-slate-200 pt-2 text-base font-semibold text-navy-950">
-            <span>Total due</span>
-            <span>{formatCurrency(invoice.totalAmount)}</span>
-          </div>
-        </div>
-
-        {invoice.bankDetails ? (
-          <div>
-            <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Banking details</p>
-            <p className="mt-1 whitespace-pre-line text-sm text-slate-600">{invoice.bankDetails}</p>
-          </div>
-        ) : null}
-
-        {invoice.notesToClient ? (
-          <div>
-            <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Notes</p>
-            <p className="mt-1 whitespace-pre-line text-sm text-slate-600">{invoice.notesToClient}</p>
-          </div>
-        ) : null}
-
-        {invoice.termsAndConditions ? (
-          <div>
-            <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Terms and conditions</p>
-            <p className="mt-1 whitespace-pre-line text-sm text-slate-600">{invoice.termsAndConditions}</p>
-          </div>
-        ) : null}
+      <div id="invoice-print-area">
+        <InvoicePreview
+          invoice={{
+            invoiceNumber: invoice.invoiceNumber,
+            title: invoice.title,
+            description: invoice.description,
+            status: invoice.status,
+            clientName: invoice.clientName,
+            clientEmail: invoice.clientEmail,
+            clientPhone: invoice.clientPhone,
+            clientAddress: invoice.clientAddress,
+            issuerName: invoice.issuerName,
+            issuerEmail: invoice.issuerEmail,
+            issuerPhone: invoice.issuerPhone,
+            issuerAddress: invoice.issuerAddress,
+            logoDataUrl: invoice.logoDataUrl,
+            bankDetails: invoice.bankDetails,
+            notesToClient: invoice.notesToClient,
+            termsAndConditions: invoice.termsAndConditions,
+            dueDate: invoice.dueDate,
+            lineItems: lineItemDrafts,
+            taxRate: String(invoice.taxRate),
+            discountAmount: String(invoice.discountAmount),
+          }}
+        />
       </div>
-
-      {/* TODO: wire real client email notifications on invoice creation / status change once a
-          transactional email provider is configured. DocuCoreX currently only has the in-app
-          `appStore.notifications` mock feed (lib/app-state.ts) — no outbound email delivery
-          exists yet, unlike Acapolite's Supabase Edge Function + template email. */}
     </div>
   );
 }

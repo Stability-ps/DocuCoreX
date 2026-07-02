@@ -140,6 +140,11 @@ export type InvoiceRecord = {
   clientEmail: string | null;
   clientPhone: string | null;
   clientAddress: string | null;
+  issuerName: string | null;
+  issuerEmail: string | null;
+  issuerPhone: string | null;
+  issuerAddress: string | null;
+  logoDataUrl: string | null;
   bankDetails: string | null;
   notesToClient: string | null;
   termsAndConditions: string | null;

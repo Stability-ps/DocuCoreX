@@ -30,6 +30,11 @@ type InvoiceRow = {
   client_email: string | null;
   client_phone: string | null;
   client_address: string | null;
+  issuer_name: string | null;
+  issuer_email: string | null;
+  issuer_phone: string | null;
+  issuer_address: string | null;
+  logo_data_url: string | null;
   bank_details: string | null;
   notes_to_client: string | null;
   terms_and_conditions: string | null;
@@ -72,6 +77,11 @@ function mapInvoiceRow(row: InvoiceRow): InvoiceRecord {
     clientEmail: row.client_email,
     clientPhone: row.client_phone,
     clientAddress: row.client_address,
+    issuerName: row.issuer_name,
+    issuerEmail: row.issuer_email,
+    issuerPhone: row.issuer_phone,
+    issuerAddress: row.issuer_address,
+    logoDataUrl: row.logo_data_url,
     bankDetails: row.bank_details,
     notesToClient: row.notes_to_client,
     termsAndConditions: row.terms_and_conditions,
@@ -158,6 +168,11 @@ export type CreateInvoiceInput = {
   clientEmail?: string | null;
   clientPhone?: string | null;
   clientAddress?: string | null;
+  issuerName?: string | null;
+  issuerEmail?: string | null;
+  issuerPhone?: string | null;
+  issuerAddress?: string | null;
+  logoDataUrl?: string | null;
   bankDetails?: string | null;
   notesToClient?: string | null;
   termsAndConditions?: string | null;
@@ -285,6 +300,11 @@ export async function createInvoice(input: CreateInvoiceInput): Promise<InvoiceW
       clientEmail: input.clientEmail?.trim() || null,
       clientPhone: input.clientPhone?.trim() || null,
       clientAddress: input.clientAddress?.trim() || null,
+      issuerName: input.issuerName?.trim() || null,
+      issuerEmail: input.issuerEmail?.trim() || null,
+      issuerPhone: input.issuerPhone?.trim() || null,
+      issuerAddress: input.issuerAddress?.trim() || null,
+      logoDataUrl: input.logoDataUrl || null,
       bankDetails: input.bankDetails?.trim() || null,
       notesToClient: input.notesToClient?.trim() || null,
       termsAndConditions: input.termsAndConditions?.trim() || null,
@@ -333,6 +353,11 @@ export async function createInvoice(input: CreateInvoiceInput): Promise<InvoiceW
       client_email: input.clientEmail?.trim() || null,
       client_phone: input.clientPhone?.trim() || null,
       client_address: input.clientAddress?.trim() || null,
+      issuer_name: input.issuerName?.trim() || null,
+      issuer_email: input.issuerEmail?.trim() || null,
+      issuer_phone: input.issuerPhone?.trim() || null,
+      issuer_address: input.issuerAddress?.trim() || null,
+      logo_data_url: input.logoDataUrl || null,
       bank_details: input.bankDetails?.trim() || null,
       notes_to_client: input.notesToClient?.trim() || null,
       terms_and_conditions: input.termsAndConditions?.trim() || null,
