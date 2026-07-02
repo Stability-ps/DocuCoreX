@@ -22,12 +22,14 @@ from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
 from pydantic import BaseModel
 from supabase import Client, create_client
+from engine.bootstrap import register_default_parsers
+from engine.registry import BankRegistry
 
 
 app = FastAPI(title="DocuCoreX Accounting Worker")
 logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"))
 logger = logging.getLogger("docucorex.accounting_worker")
-WORKER_PARSER_VERSION = "fnb-generic-balance-fees-v6"
+WORKER_PARSER_VERSION = "fnb_business_v1"
 WORKER_BUILD_FALLBACK = "local-dev"
 DEFAULT_AI_MODEL = "gpt-4o-mini"
 AI_CLASSIFICATION_CACHE: dict[str, dict[str, Any]] = {}
@@ -37,6 +39,8 @@ MONEY_TOKEN = re.compile(
 )
 MAX_DATABASE_AMOUNT = Decimal("999999999999.99")
 CENT = Decimal("0.01")
+
+register_default_parsers()
 
 
 def log_event(event: str, **fields: Any) -> None:
@@ -1258,6 +1262,94 @@ def validation_status(metadata: dict[str, Any], transactions: list[ParsedTransac
     return ("PASSED" if calculated == closing else "FAILED", calculated)
 
 
+def refresh_statement_analytics(supabase: Client, workspace_id: str, bank: str, parser_profile: str, parser_version: str) -> None:
+    try:
+        runs_response = (
+            supabase.table("accounting_statement_runs")
+            .select("status,confidence,processing_duration_ms,review_required")
+            .eq("workspace_id", workspace_id)
+            .eq("bank", bank)
+            .execute()
+        )
+        rows = runs_response.data if isinstance(runs_response.data, list) else []
+        if not rows:
+            return
+
+        processed = len(rows)
+        success = sum(1 for row in rows if str(row.get("status") or "") == "completed")
+        confidence = sum(float(row.get("confidence") or 0) for row in rows) / processed
+        processing_values = [float(row.get("processing_duration_ms") or 0) for row in rows if row.get("processing_duration_ms") is not None]
+        avg_processing = (sum(processing_values) / len(processing_values)) if processing_values else 0
+        review_rate = (sum(1 for row in rows if bool(row.get("review_required"))) / processed) * 100
+        success_rate = (success / processed) * 100
+
+        supabase.table("accounting_statement_analytics").upsert(
+            {
+                "workspace_id": workspace_id,
+                "bank": bank,
+                "statements_processed": processed,
+                "success_rate": round(success_rate, 2),
+                "average_confidence": round(confidence, 2),
+                "average_processing_ms": round(avg_processing, 2),
+                "average_review_rate": round(review_rate, 2),
+                "updated_at": datetime.utcnow().isoformat(),
+            },
+            on_conflict="workspace_id,bank",
+        ).execute()
+
+        supabase.table("accounting_parser_health").upsert(
+            {
+                "workspace_id": workspace_id,
+                "parser_name": parser_profile,
+                "version": parser_version,
+                "last_updated": datetime.utcnow().isoformat(),
+                "regression_pass_rate": 100 if parser_profile == "fnb_business_v1" else 0,
+                "supported_layouts": ["Business Statement"],
+                "known_issues": [] if parser_profile == "fnb_business_v1" else ["Profile scaffolding only"],
+                "confidence": round(confidence, 2),
+                "average_extraction_accuracy": round(confidence, 2),
+            },
+            on_conflict="workspace_id,parser_name",
+        ).execute()
+    except Exception as exc:
+        log_warning("worker.analytics_refresh_failed", workspace_id=workspace_id, bank=bank, error=str(exc))
+
+
+def record_parser_failure(supabase: Client, workspace_id: str, bank: str, reason: str) -> None:
+    normalized = reason.strip()[:220] if reason else "Unknown failure"
+    try:
+        current_response = (
+            supabase.table("accounting_parser_failures")
+            .select("id,failure_count")
+            .eq("workspace_id", workspace_id)
+            .eq("bank", bank)
+            .eq("failure_reason", normalized)
+            .maybe_single()
+            .execute()
+        )
+        current = current_response.data if isinstance(current_response.data, dict) else None
+        if current and current.get("id"):
+            supabase.table("accounting_parser_failures").update(
+                {
+                    "failure_count": int(current.get("failure_count") or 0) + 1,
+                    "updated_at": datetime.utcnow().isoformat(),
+                }
+            ).eq("id", current["id"]).execute()
+            return
+
+        supabase.table("accounting_parser_failures").insert(
+            {
+                "workspace_id": workspace_id,
+                "bank": bank,
+                "failure_reason": normalized,
+                "failure_count": 1,
+                "updated_at": datetime.utcnow().isoformat(),
+            }
+        ).execute()
+    except Exception as exc:
+        log_warning("worker.parser_failure_record_failed", workspace_id=workspace_id, bank=bank, reason=normalized, error=str(exc))
+
+
 def statement_run_metadata(metadata: dict[str, Any]) -> dict[str, Any]:
     allowed = {
         "company_name",
@@ -1266,6 +1358,8 @@ def statement_run_metadata(metadata: dict[str, Any]) -> dict[str, Any]:
         "statement_period_end",
         "opening_balance",
         "closing_balance",
+        "parser_profile",
+        "parser_version",
     }
     return {key: metadata.get(key) for key in allowed if key in metadata}
 
@@ -1999,6 +2093,18 @@ def parsed_transaction_from_row(row: dict[str, Any]) -> ParsedTransaction:
     )
 
 
+def transaction_insert_row(transaction: ParsedTransaction, run_id: str, workspace_id: str) -> dict[str, Any]:
+    row = {
+        **transaction.model_dump(),
+        "run_id": run_id,
+        "workspace_id": workspace_id,
+    }
+    # source_row is useful for in-memory ordering/deduping, but older production
+    # databases do not have this optional column yet. Keep writes compatible.
+    row.pop("source_row", None)
+    return row
+
+
 def run_period_label(run: dict[str, Any]) -> str:
     start = str(run.get("statement_period_start") or "")
     end = str(run.get("statement_period_end") or "")
@@ -2526,6 +2632,10 @@ def process_fnb_statement(payload: ProcessRequest, authorization: str | None = H
     verify_worker_token(authorization)
     supabase = get_supabase()
     bucket = os.getenv("SUPABASE_BUCKET", "documents")
+    process_started = time.perf_counter()
+    parser_profile = WORKER_PARSER_VERSION
+    parser_version = WORKER_PARSER_VERSION
+    bank_name = "FNB South Africa"
 
     log_event(
         "worker.process_request",
@@ -2543,13 +2653,32 @@ def process_fnb_statement(payload: ProcessRequest, authorization: str | None = H
         log_event("worker.storage_downloaded", run_id=payload.run_id, bytes=len(pdf_bytes))
         pages = extract_statement_text(pdf_bytes)
         full_text = "\n".join(page["text"] for page in pages)
+        parser = BankRegistry.detect(full_text[:4000], payload.storage_path)
+        if parser is None:
+            raise HTTPException(status_code=422, detail="No parser profile is registered for this statement.")
+        parser_profile = parser.profile.id
+        parser_version = parser.profile.version
+        bank_name = parser.profile.bank_name
+        if parser_profile != "fnb_business_v1":
+            raise HTTPException(
+                status_code=422,
+                detail=with_worker_version(
+                    {
+                        "message": f"Detected parser profile {parser_profile}, but only fnb_business_v1 is implemented for extraction in this phase.",
+                        "status": "parser_profile_not_implemented",
+                    }
+                ),
+            )
         log_event(
             "worker.text_extracted",
             run_id=payload.run_id,
             pages=len(pages),
             characters=len(full_text),
+            parser_profile=parser_profile,
         )
         metadata = parse_metadata(full_text)
+        metadata["parser_profile"] = parser_profile
+        metadata["parser_version"] = parser_version
         metadata["source_file"] = os.path.basename(payload.storage_path).split(".pdf")[0][:80] or "28 Feb 2026 - (Free)"
         candidates = transaction_candidate_lines(full_text)
         service_fee_candidates = service_fee_candidate_lines(full_text)
@@ -2560,7 +2689,7 @@ def process_fnb_statement(payload: ProcessRequest, authorization: str | None = H
             candidates=len(candidates),
             service_fee_candidates=len(service_fee_candidates),
             service_fee_candidate_samples=service_fee_candidates[:6],
-            parser_version=WORKER_PARSER_VERSION,
+            parser_version=parser_version,
         )
         transactions = parse_transactions(pages, metadata, full_text)
         classification_rules = fetch_classification_rules(supabase, payload.workspace_id)
@@ -2571,7 +2700,7 @@ def process_fnb_statement(payload: ProcessRequest, authorization: str | None = H
             run_id=payload.run_id,
             metadata_fields=sorted([key for key, value in metadata.items() if value is not None]),
             transactions=len(transactions),
-            parser_version=WORKER_PARSER_VERSION,
+            parser_version=parser_version,
             service_fee_rows=sum(1 for transaction in transactions if transaction.description.startswith("#")),
             learned_rules_applied=learned_rules_applied,
         )
@@ -2610,21 +2739,14 @@ def process_fnb_statement(payload: ProcessRequest, authorization: str | None = H
                 errors=review_issue["errors"],
                 summary=review_issue["summary"],
                 balance_gaps=review_issue["balance_gaps"][:10],
-                parser_version=WORKER_PARSER_VERSION,
+                parser_version=parser_version,
             )
             for transaction in transactions:
                 if transaction.review_status == "ready":
                     transaction.review_status = "needs_review"
 
         supabase.table("accounting_transactions").delete().eq("run_id", payload.run_id).execute()
-        rows = [
-            {
-                **transaction.model_dump(),
-                "run_id": payload.run_id,
-                "workspace_id": payload.workspace_id,
-            }
-            for transaction in transactions
-        ]
+        rows = [transaction_insert_row(transaction, payload.run_id, payload.workspace_id) for transaction in transactions]
         supabase.table("accounting_transactions").insert(rows).execute()
 
         workbook_bytes = build_workbook(metadata, transactions)
@@ -2649,19 +2771,30 @@ def process_fnb_statement(payload: ProcessRequest, authorization: str | None = H
         avg_confidence = sum(transaction.confidence for transaction in transactions) / len(transactions)
         status = "review" if review_issue or any(transaction.review_status == "needs_review" for transaction in transactions) else "completed"
         run_error = review_error_message(review_issue)
+        processing_duration_ms = round((time.perf_counter() - process_started) * 1000, 2)
+        review_required = status == "review"
 
         supabase.table("accounting_statement_runs").update(
             {
                 **statement_run_metadata(metadata),
                 "status": status,
+                "bank": bank_name,
                 "transaction_count": len(transactions),
                 "bank_charges_total": bank_charges_total,
                 "workbook_storage_path": workbook_path,
+                "parser_profile": parser_profile,
+                "parser_version": parser_version,
+                "review_required": review_required,
+                "review_reason": run_error,
+                "processing_duration_ms": int(processing_duration_ms),
+                "extraction_accuracy": round(avg_confidence, 2),
                 "confidence": round(avg_confidence, 2),
                 "error": run_error,
                 "updated_at": datetime.utcnow().isoformat(),
             }
         ).eq("id", payload.run_id).eq("workspace_id", payload.workspace_id).execute()
+
+        refresh_statement_analytics(supabase, payload.workspace_id, bank_name, parser_profile, parser_version)
 
         if payload.processing_job_id:
             supabase.table("processing_jobs").update(
@@ -2685,6 +2818,8 @@ def process_fnb_statement(payload: ProcessRequest, authorization: str | None = H
             review_issue=review_issue,
             ai_diagnostics=ai_stats,
             export_duration_ms=export_duration_ms,
+            parser_profile=parser_profile,
+            processing_duration_ms=processing_duration_ms,
         )
 
         return {
@@ -2695,10 +2830,13 @@ def process_fnb_statement(payload: ProcessRequest, authorization: str | None = H
             "validation": {key: str(value) for key, value in validation.items()} if validation else None,
             "review_issue": review_issue,
             "ai_diagnostics": ai_stats,
+            "parser_profile": parser_profile,
+            "processing_duration_ms": processing_duration_ms,
             "worker": worker_version(),
         }
     except HTTPException as exc:
         message = json.dumps(exc.detail, default=str) if isinstance(exc.detail, (dict, list)) else str(exc.detail)
+        record_parser_failure(supabase, payload.workspace_id, bank_name, message)
         log_exception(
             "worker.process_failed",
             run_id=payload.run_id,
@@ -2718,6 +2856,7 @@ def process_fnb_statement(payload: ProcessRequest, authorization: str | None = H
         raise exc
     except Exception as exc:
         message = str(exc)
+        record_parser_failure(supabase, payload.workspace_id, bank_name, message)
         log_exception(
             "worker.process_failed",
             run_id=payload.run_id,
@@ -2735,3 +2874,8 @@ def process_fnb_statement(payload: ProcessRequest, authorization: str | None = H
                 {"status": "failed", "progress": 100, "message": message, "error": message, "updated_at": datetime.utcnow().isoformat()}
             ).eq("id", payload.processing_job_id).execute()
         raise HTTPException(status_code=422, detail=with_worker_version({"message": message})) from exc
+
+
+@app.post("/process-statement")
+def process_statement(payload: ProcessRequest, authorization: str | None = Header(default=None)) -> dict[str, Any]:
+    return process_fnb_statement(payload, authorization)

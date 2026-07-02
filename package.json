@@ -7,7 +7,7 @@
     "build": "next build",
     "start": "next start",
     "lint": "tsc --noEmit -p tsconfig.lint.json",
-    "test:accounting-regression": "python3 workers/accounting_worker/tests/regression_suite.py"
+    "test:accounting-regression": "./workers/accounting_worker/tests/run_regression.sh"
   },
   "dependencies": {
     "@supabase/ssr": "^0.12.0",

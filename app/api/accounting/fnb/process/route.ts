@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { recordAuditLog } from "@/lib/audit";
+import { detectBankProfile } from "@/lib/accounting/engine/registry";
 import { getAccountingRunDetail } from "@/lib/accounting/server";
 import { getWorkspaceContext } from "@/lib/server-documents";
 
@@ -103,6 +104,7 @@ export async function POST(request: Request) {
       processing_job_id: detail.run.processingJobId,
       storage_path: detail.run.sourceStoragePath,
     };
+    const parserProfile = detectBankProfile({ bank: detail.run.bank, fileName: detail.run.sourceStoragePath });
 
     console.info("[accounting/process] sending worker payload", {
       runId,
@@ -110,11 +112,12 @@ export async function POST(request: Request) {
       documentId: detail.run.documentId,
       processingJobId: detail.run.processingJobId,
       storagePath: detail.run.sourceStoragePath,
+      parserProfile,
       workerUrlConfigured: Boolean(workerUrl),
       workerOrigin: getWorkerOrigin(workerUrl),
     });
 
-    const response = await fetch(`${workerUrl.replace(/\/$/, "")}/process-fnb-statement`, {
+    const response = await fetch(`${workerUrl.replace(/\/$/, "")}/process-statement`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -177,7 +180,7 @@ export async function POST(request: Request) {
       action: "accounting_extraction_completed",
       entityType: "accounting_run",
       entityId: runId,
-      metadata: { bank: "FNB South Africa", worker: "fastapi" },
+      metadata: { bank: detail.run.bank, parserProfile, worker: "fastapi" },
     });
 
     return NextResponse.json({ ok: true, result });

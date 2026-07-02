@@ -1,13 +1,17 @@
 import { randomUUID } from "node:crypto";
 import { recordAuditLog } from "@/lib/audit";
+import { detectBankProfile } from "@/lib/accounting/engine/registry";
+import { BASE_MERCHANT_KNOWLEDGE } from "@/lib/accounting/engine/merchant-kb";
 import { getWorkspaceContext } from "@/lib/server-documents";
 import { createDocumentVersionRecord } from "@/lib/supabase-server-adapter";
 import type {
   AccountingRunDetail,
+  AccountingReviewStatus,
   AccountingStatementRun,
   AccountingTransaction,
   AccountingTransactionPatch,
 } from "@/lib/accounting/types";
+import type { AccountingActionAuditInput, ReviewQueueItem, ReviewQueueStatus } from "@/lib/accounting/engine/types";
 
 const accountingMaxUploadBytes = 200 * 1024 * 1024;
 
@@ -30,6 +34,12 @@ type AccountingRunRow = {
   source_storage_path: string;
   workbook_storage_path: string | null;
   extraction_provider: string;
+  parser_profile?: string | null;
+  parser_version?: string | null;
+  review_required?: boolean | null;
+  review_reason?: string | null;
+  processing_duration_ms?: number | null;
+  extraction_accuracy?: number | string | null;
   confidence: number | string;
   error: string | null;
   created_at: string;
@@ -53,6 +63,8 @@ type AccountingTransactionRow = {
   confidence: number | string;
   review_status: AccountingTransaction["reviewStatus"];
   source_page: number | null;
+  source_row?: number | null;
+  review_comment?: string | null;
   raw_text: string | null;
   created_at: string;
   updated_at: string;
@@ -98,6 +110,12 @@ function mapRun(row: AccountingRunRow): AccountingStatementRun {
     sourceStoragePath: row.source_storage_path,
     workbookStoragePath: row.workbook_storage_path,
     extractionProvider: row.extraction_provider,
+    parserProfile: row.parser_profile ?? undefined,
+    parserVersion: row.parser_version ?? undefined,
+    reviewRequired: Boolean(row.review_required),
+    reviewReason: row.review_reason ?? null,
+    processingDurationMs: row.processing_duration_ms ?? null,
+    extractionAccuracy: toNumber(row.extraction_accuracy ?? null) ?? null,
     confidence: toNumber(row.confidence) ?? 0,
     error: row.error,
     createdAt: row.created_at,
@@ -123,10 +141,56 @@ function mapTransaction(row: AccountingTransactionRow): AccountingTransaction {
     confidence: toNumber(row.confidence) ?? 0,
     reviewStatus: row.review_status,
     sourcePage: row.source_page,
+    sourceRow: row.source_row ?? null,
+    reviewComment: row.review_comment ?? "",
     rawText: row.raw_text,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
+}
+
+async function recordAccountingActionAudit(input: AccountingActionAuditInput) {
+  const context = await getWorkspaceContext().catch(() => null);
+  if (!context) return;
+
+  const { error } = await context.supabase.from("accounting_action_audit").insert({
+    workspace_id: context.workspaceId,
+    actor_id: context.userId,
+    action: input.action,
+    entity_type: input.entityType,
+    entity_id: input.entityId,
+    previous_value: input.previousValue ?? null,
+    new_value: input.newValue ?? null,
+    metadata: input.metadata ?? {},
+  });
+
+  if (error && error.code !== "42P01" && error.code !== "PGRST204") {
+    console.warn("[accounting] action audit insert failed", error.message);
+  }
+}
+
+async function ensureMerchantKnowledgeBase() {
+  const context = await getWorkspaceContext();
+  if (!context) return;
+
+  const rows = BASE_MERCHANT_KNOWLEDGE.map((entry) => ({
+    workspace_id: context.workspaceId,
+    canonical_name: entry.canonicalName,
+    aliases: entry.aliases,
+    default_category: entry.defaultCategory,
+    default_vat_treatment: entry.defaultVatTreatment,
+    confidence: 90,
+    created_by: context.userId,
+    updated_at: new Date().toISOString(),
+  }));
+
+  const { error } = await context.supabase
+    .from("accounting_merchant_knowledge")
+    .upsert(rows, { onConflict: "workspace_id,canonical_name", ignoreDuplicates: true });
+
+  if (error && error.code !== "42P01" && error.code !== "PGRST204") {
+    console.warn("[accounting] could not seed merchant knowledge base", error.message);
+  }
 }
 
 function assertFnbPdf(file: File) {
@@ -157,6 +221,7 @@ export async function createFnbAccountingRun(file: File) {
   }
 
   const storagePath = accountingStoragePath(context.workspaceId, file.name);
+  const parserProfile = detectBankProfile({ bank: "FNB South Africa", fileName: file.name });
   const upload = await context.supabase.storage.from("documents").upload(storagePath, file, {
     contentType: file.type || "application/pdf",
     upsert: false,
@@ -223,6 +288,8 @@ export async function createFnbAccountingRun(file: File) {
       document_id: document.id,
       processing_job_id: job.id,
       bank: "FNB South Africa",
+      parser_profile: parserProfile,
+      parser_version: parserProfile,
       status: "queued",
       source_storage_path: storagePath,
       created_by: context.userId,
@@ -240,6 +307,15 @@ export async function createFnbAccountingRun(file: File) {
     entityId: document.id,
     metadata: { runId: run.id, bank: "FNB South Africa", fileName: file.name },
   });
+
+  await recordAccountingActionAudit({
+    action: "statement_uploaded",
+    entityType: "accounting_statement_run",
+    entityId: run.id,
+    newValue: { bank: "FNB South Africa", parserProfile, fileName: file.name },
+  });
+
+  await ensureMerchantKnowledgeBase();
 
   return mapRun(run as AccountingRunRow);
 }
@@ -300,6 +376,13 @@ export async function updateAccountingTransaction(transactionId: string, patch: 
     throw new Error("Unauthorized");
   }
 
+  const { data: previousRow } = await context.supabase
+    .from("accounting_transactions")
+    .select("*")
+    .eq("workspace_id", context.workspaceId)
+    .eq("id", transactionId)
+    .single();
+
   const update = {
     ...(patch.accountCategory !== undefined ? { account_category: patch.accountCategory } : {}),
     ...(patch.vatTreatment !== undefined ? { vat_treatment: patch.vatTreatment } : {}),
@@ -353,6 +436,21 @@ export async function updateAccountingTransaction(transactionId: string, patch: 
     }
   }
 
+  const { error: learningEventError } = await context.supabase.from("accounting_ai_learning_events").insert({
+    workspace_id: context.workspaceId,
+    transaction_id: transaction.id,
+    merchant: merchantKey || transaction.description,
+    description: transaction.description,
+    chosen_category: transaction.accountCategory,
+    vat_treatment: transaction.vatTreatment,
+    confidence: transaction.confidence,
+    manual_correction: Boolean(patch.accountCategory || patch.vatTreatment || patch.reviewStatus),
+    created_by: context.userId,
+  });
+  if (learningEventError && learningEventError.code !== "42P01" && learningEventError.code !== "PGRST204") {
+    console.warn("[accounting] could not save learning event", learningEventError.message);
+  }
+
   await recordAuditLog({
     action: "accounting_transaction_reviewed",
     entityType: "accounting_transaction",
@@ -360,5 +458,178 @@ export async function updateAccountingTransaction(transactionId: string, patch: 
     metadata: update,
   });
 
+  await recordAccountingActionAudit({
+    action: "manual_edit",
+    entityType: "accounting_transaction",
+    entityId: transactionId,
+    previousValue: previousRow ? mapTransaction(previousRow as AccountingTransactionRow) : null,
+    newValue: transaction,
+    metadata: { patch },
+  });
+
   return transaction;
+}
+
+export async function listAccountingReviewQueue(status?: ReviewQueueStatus): Promise<ReviewQueueItem[]> {
+  const context = await getWorkspaceContext();
+  if (!context) {
+    throw new Error("Unauthorized");
+  }
+
+  const query = context.supabase
+    .from("accounting_transactions")
+    .select("id,run_id,transaction_date,description,account_category,vat_treatment,confidence,review_status,notes,created_at,updated_at")
+    .eq("workspace_id", context.workspaceId)
+    .order("updated_at", { ascending: false });
+
+  if (status) {
+    query.eq("review_status", status as AccountingReviewStatus);
+  }
+
+  const { data: rows, error } = await query;
+  if (error) {
+    throw new Error(error.message);
+  }
+
+  const runIds = Array.from(new Set((rows ?? []).map((row) => row.run_id))).filter(Boolean);
+  const { data: runs } = runIds.length
+    ? await context.supabase
+        .from("accounting_statement_runs")
+        .select("id,bank,statement_period_start,statement_period_end")
+        .in("id", runIds)
+    : { data: [] as Array<{ id: string; bank: string; statement_period_start: string | null; statement_period_end: string | null }> };
+
+  const runMap = new Map((runs ?? []).map((run) => [run.id, run]));
+
+  return (rows ?? []).map((row) => {
+    const run = runMap.get(row.run_id);
+    return {
+      transactionId: row.id,
+      runId: row.run_id,
+      bank: run?.bank ?? "Unknown",
+      statementLabel: `${run?.statement_period_start ?? "Unknown"} to ${run?.statement_period_end ?? "Unknown"}`,
+      transactionDate: row.transaction_date,
+      description: row.description,
+      accountCategory: row.account_category,
+      vatTreatment: row.vat_treatment,
+      confidence: Number(row.confidence ?? 0),
+      status: row.review_status as ReviewQueueStatus,
+      notes: row.notes ?? "",
+      createdAt: row.created_at,
+      updatedAt: row.updated_at,
+    };
+  });
+}
+
+export async function updateAccountingReviewWorkflow(transactionId: string, status: ReviewQueueStatus, comment: string) {
+  const context = await getWorkspaceContext();
+  if (!context) {
+    throw new Error("Unauthorized");
+  }
+
+  const { data: previousRow } = await context.supabase
+    .from("accounting_transactions")
+    .select("*")
+    .eq("workspace_id", context.workspaceId)
+    .eq("id", transactionId)
+    .single();
+
+  const { data, error } = await context.supabase
+    .from("accounting_transactions")
+    .update({ review_status: status, review_comment: comment || null, updated_at: new Date().toISOString() })
+    .eq("workspace_id", context.workspaceId)
+    .eq("id", transactionId)
+    .select("*")
+    .single();
+
+  if (error || !data) {
+    throw new Error(error?.message ?? "Unable to update review workflow.");
+  }
+
+  const transaction = mapTransaction(data as AccountingTransactionRow);
+  await recordAuditLog({
+    action: "accounting_review_status_changed",
+    entityType: "accounting_transaction",
+    entityId: transactionId,
+    metadata: { status, comment },
+  });
+  await recordAccountingActionAudit({
+    action: "review_status_changed",
+    entityType: "accounting_transaction",
+    entityId: transactionId,
+    previousValue: previousRow ? mapTransaction(previousRow as AccountingTransactionRow) : null,
+    newValue: transaction,
+    metadata: { comment },
+  });
+
+  return transaction;
+}
+
+export async function listAccountingReviewComments(transactionId: string) {
+  const context = await getWorkspaceContext();
+  if (!context) {
+    throw new Error("Unauthorized");
+  }
+
+  const { data, error } = await context.supabase
+    .from("accounting_review_comments")
+    .select("id, transaction_id, body, created_at, author_id")
+    .eq("workspace_id", context.workspaceId)
+    .eq("transaction_id", transactionId)
+    .order("created_at", { ascending: false });
+
+  if (error) {
+    throw new Error(error.message);
+  }
+
+  return (data ?? []).map((row) => ({
+    id: row.id,
+    transactionId: row.transaction_id,
+    body: row.body,
+    createdAt: row.created_at,
+    authorId: row.author_id,
+  }));
+}
+
+export async function addAccountingReviewComment(transactionId: string, body: string) {
+  const context = await getWorkspaceContext();
+  if (!context) {
+    throw new Error("Unauthorized");
+  }
+
+  const { data, error } = await context.supabase
+    .from("accounting_review_comments")
+    .insert({
+      workspace_id: context.workspaceId,
+      transaction_id: transactionId,
+      body,
+      author_id: context.userId,
+    })
+    .select("id, transaction_id, body, created_at, author_id")
+    .single();
+
+  if (error || !data) {
+    throw new Error(error?.message ?? "Unable to add review comment.");
+  }
+
+  await recordAuditLog({
+    action: "accounting_review_comment_added",
+    entityType: "accounting_transaction",
+    entityId: transactionId,
+    metadata: { commentLength: body.length },
+  });
+  await recordAccountingActionAudit({
+    action: "review_comment_added",
+    entityType: "accounting_transaction",
+    entityId: transactionId,
+    newValue: { body },
+  });
+
+  return {
+    id: data.id,
+    transactionId: data.transaction_id,
+    body: data.body,
+    createdAt: data.created_at,
+    authorId: data.author_id,
+  };
 }

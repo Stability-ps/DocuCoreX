@@ -1412,9 +1412,24 @@ function TransactionTable({
 }) {
   const [mobileOffsets, setMobileOffsets] = useState<Record<string, number>>({});
   const [dismissedTransactionIds, setDismissedTransactionIds] = useState<Record<string, true>>({});
+  const [mobileVisibleCount, setMobileVisibleCount] = useState(120);
+  const [desktopScrollTop, setDesktopScrollTop] = useState(0);
   const touchStartRef = useRef<Record<string, { x: number; y: number }>>({});
 
   const mobileTransactions = transactions.filter((transaction) => !dismissedTransactionIds[transaction.id]);
+  const visibleMobileTransactions = useMemo(() => mobileTransactions.slice(0, mobileVisibleCount), [mobileTransactions, mobileVisibleCount]);
+
+  const desktopRowHeight = 58;
+  const desktopViewportHeight = 540;
+  const desktopWindowRows = 40;
+  const desktopStart = Math.max(0, Math.floor(desktopScrollTop / desktopRowHeight) - 8);
+  const desktopEnd = Math.min(transactions.length, desktopStart + desktopWindowRows);
+  const desktopVisibleTransactions = useMemo(
+    () => transactions.slice(desktopStart, desktopEnd),
+    [transactions, desktopStart, desktopEnd],
+  );
+  const desktopTopSpacer = desktopStart * desktopRowHeight;
+  const desktopBottomSpacer = Math.max(0, (transactions.length - desktopEnd) * desktopRowHeight);
 
   if (!transactions.length) {
     return (
@@ -1429,7 +1444,7 @@ function TransactionTable({
   return (
     <>
       <div className="space-y-2 md:hidden">
-        {mobileTransactions.map((transaction) => (
+        {visibleMobileTransactions.map((transaction) => (
           <article
             key={transaction.id}
             className="relative overflow-hidden rounded-lg border border-slate-200 bg-white"
@@ -1542,9 +1557,23 @@ function TransactionTable({
             All mobile cards were dismissed in this view.
           </div>
         ) : null}
+        {mobileTransactions.length > visibleMobileTransactions.length ? (
+          <button
+            type="button"
+            onClick={() => setMobileVisibleCount((count) => count + 120)}
+            className="min-h-11 w-full rounded-lg border border-slate-200 bg-white text-sm font-semibold text-slate-700"
+          >
+            Load more transactions
+          </button>
+        ) : null}
       </div>
 
       <div className="hidden overflow-x-auto rounded-lg border border-slate-200 md:block">
+        <div
+          className="overflow-auto"
+          style={{ maxHeight: `${desktopViewportHeight}px` }}
+          onScroll={(event) => setDesktopScrollTop(event.currentTarget.scrollTop)}
+        >
         <table className="w-full min-w-[1220px] text-left text-sm">
         <thead className="bg-slate-50 text-xs font-semibold text-slate-500">
           <tr>
@@ -1561,7 +1590,12 @@ function TransactionTable({
           </tr>
         </thead>
         <tbody className="divide-y divide-slate-100">
-          {transactions.map((transaction) => (
+          {desktopTopSpacer > 0 ? (
+            <tr aria-hidden>
+              <td colSpan={10} style={{ height: `${desktopTopSpacer}px`, padding: 0 }} />
+            </tr>
+          ) : null}
+          {desktopVisibleTransactions.map((transaction) => (
             <tr key={transaction.id} className="align-middle hover:bg-slate-50/70">
               <td className="whitespace-nowrap px-4 py-3 font-bold text-slate-600">{transaction.transactionDate || "-"}</td>
               <td className="max-w-[300px] px-4 py-3">
@@ -1627,8 +1661,14 @@ function TransactionTable({
               </td>
             </tr>
           ))}
+          {desktopBottomSpacer > 0 ? (
+            <tr aria-hidden>
+              <td colSpan={10} style={{ height: `${desktopBottomSpacer}px`, padding: 0 }} />
+            </tr>
+          ) : null}
         </tbody>
         </table>
+        </div>
       </div>
     </>
   );

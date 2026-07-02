@@ -116,6 +116,11 @@ def run_synthetic_case(case_id: str, fixture_path: Path) -> None:
     assert_equal(str(summary["total_credits"]), expected["total_credits"], f"{case_id} total credits")
     assert_equal(str(summary["total_debits"]), expected["total_debits"], f"{case_id} total debits")
     assert_equal(validation["transaction_count"], expected["transaction_count"], f"{case_id} transaction count")
+    assert_equal(
+        str(validation["calculated_closing"]),
+        str(validation["closing_balance"]),
+        f"{case_id} reconciliation",
+    )
 
     workbook_bytes = build_workbook(metadata, transactions)
     workbook = load_workbook(io.BytesIO(workbook_bytes), data_only=True)
@@ -126,6 +131,12 @@ def run_synthetic_case(case_id: str, fixture_path: Path) -> None:
     vat_sheet = workbook["VAT Schedule"]
     if vat_sheet.max_row < 2:
         raise AssertionError(f"{case_id} VAT extraction failed: expected transaction rows in VAT Schedule")
+
+    tx_sheet = workbook["Transactions"]
+    for row_index in range(2, tx_sheet.max_row + 1):
+        account = tx_sheet.cell(row=row_index, column=11).value
+        if not account:
+            raise AssertionError(f"{case_id} AI/account categorisation missing at transaction row {row_index}")
 
     ai_diagnostics = metadata.get("_ai_diagnostics")
     if not isinstance(ai_diagnostics, dict):

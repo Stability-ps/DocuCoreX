@@ -3,7 +3,7 @@ import { updateAccountingTransaction } from "@/lib/accounting/server";
 import type { AccountingTransactionPatch } from "@/lib/accounting/types";
 
 const allowedVatTreatments = new Set(["standard", "zero_rated", "exempt", "out_of_scope", "review"]);
-const allowedReviewStatuses = new Set(["needs_review", "ready", "approved"]);
+const allowedReviewStatuses = new Set(["needs_review", "ready", "approved", "in_review", "rejected", "resolved"]);
 
 export async function PATCH(request: Request, { params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;

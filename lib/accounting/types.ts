@@ -2,7 +2,7 @@ export type AccountingRunStatus = "queued" | "processing" | "review" | "complete
 
 export type VatTreatment = "standard" | "zero_rated" | "exempt" | "out_of_scope" | "review";
 
-export type AccountingReviewStatus = "needs_review" | "ready" | "approved";
+export type AccountingReviewStatus = "needs_review" | "ready" | "approved" | "in_review" | "rejected" | "resolved";
 
 export type AccountingStatementRun = {
   id: string;
@@ -23,6 +23,12 @@ export type AccountingStatementRun = {
   sourceStoragePath: string;
   workbookStoragePath: string | null;
   extractionProvider: string;
+  parserProfile?: string;
+  parserVersion?: string;
+  reviewRequired?: boolean;
+  reviewReason?: string | null;
+  processingDurationMs?: number | null;
+  extractionAccuracy?: number | null;
   confidence: number;
   error: string | null;
   createdAt: string;
@@ -46,6 +52,8 @@ export type AccountingTransaction = {
   confidence: number;
   reviewStatus: AccountingReviewStatus;
   sourcePage: number | null;
+  sourceRow?: number | null;
+  reviewComment?: string;
   rawText: string | null;
   createdAt: string;
   updatedAt: string;
