@@ -37,3 +37,7 @@ Thumbs.db
 *.tsbuildinfo
 .vercel
 .env*
+
+# Python cache
+__pycache__/
+*.pyc
