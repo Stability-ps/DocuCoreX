@@ -30,6 +30,16 @@ import type {
 } from "@/lib/accounting/types";
 
 type AccountingTab = "transactions" | "review" | "summary" | "bank-rec" | "vat" | "general-ledger" | "trial-balance";
+type UploadQueueStatus = "Queued" | "Uploading" | "Uploaded" | "Processing" | "Completed" | "Needs Review" | "Failed";
+type UploadQueueItem = {
+  id: string;
+  name: string;
+  size: number;
+  status: UploadQueueStatus;
+  runId?: string;
+  error?: string;
+  file?: File;
+};
 
 const categories = [
   "Income",
@@ -85,6 +95,18 @@ function money(value: number | null) {
 
 function plainNumber(value: number) {
   return new Intl.NumberFormat("en-ZA").format(value);
+}
+
+function fileSize(bytes: number) {
+  if (bytes < 1024) return `${bytes} B`;
+  const units = ["KB", "MB", "GB"];
+  let value = bytes / 1024;
+  let unit = units[0];
+  for (let index = 1; index < units.length && value >= 1024; index += 1) {
+    value /= 1024;
+    unit = units[index];
+  }
+  return `${value.toFixed(value >= 10 ? 1 : 2)} ${unit}`;
 }
 
 function statusLabel(status: AccountingStatementRun["status"]) {
@@ -173,10 +195,25 @@ function getReviewItems(transactions: AccountingTransaction[]) {
   );
 }
 
+function runAccountKey(run: AccountingStatementRun) {
+  return [run.companyName?.trim().toLowerCase() ?? "", run.bank.trim().toLowerCase(), run.accountNumber?.trim().toLowerCase() ?? ""].join("|");
+}
+
+function fileNameFromContentDisposition(header: string | null) {
+  if (!header) return null;
+  const encodedMatch = /filename\*=UTF-8''([^;]+)/i.exec(header);
+  if (encodedMatch?.[1]) return decodeURIComponent(encodedMatch[1]);
+  const plainMatch = /filename="?([^";]+)"?/i.exec(header);
+  if (plainMatch?.[1]) return plainMatch[1];
+  return null;
+}
+
+type CombineOverrideType = "account" | "continuity";
+
 export function AccountingIntelligence() {
   const inputRef = useRef<HTMLInputElement>(null);
   const [runs, setRuns] = useState<AccountingStatementRun[]>([]);
-  const [uploadQueue, setUploadQueue] = useState<Array<{ name: string; status: string; error?: string }>>([]);
+  const [uploadQueue, setUploadQueue] = useState<UploadQueueItem[]>([]);
   const [selectedRunIds, setSelectedRunIds] = useState<string[]>([]);
   const [selectedRunId, setSelectedRunId] = useState("");
   const [detail, setDetail] = useState<AccountingRunDetail | null>(null);
@@ -189,6 +226,9 @@ export function AccountingIntelligence() {
   const [runSearch, setRunSearch] = useState("");
   const [runSort, setRunSort] = useState("newest");
   const [exportOpen, setExportOpen] = useState(false);
+  const [overrideDialogOpen, setOverrideDialogOpen] = useState(false);
+  const [overrideType, setOverrideType] = useState<CombineOverrideType>("account");
+  const [overrideText, setOverrideText] = useState("");
   const selectedRun = useMemo(() => runs.find((run) => run.id === selectedRunId) ?? null, [runs, selectedRunId]);
 
   async function loadRuns(preferredRunId?: string) {
@@ -215,15 +255,27 @@ export function AccountingIntelligence() {
 
   async function uploadFiles(files: File[]) {
     if (!files.length) return;
-    setUploadQueue(files.map((file) => ({ name: file.name, status: "Uploaded" })));
-    for (const file of files) {
-      setUploadQueue((queue) => queue.map((item) => (item.name === file.name ? { ...item, status: "Processing" } : item)));
-      await uploadFile(file);
-      setUploadQueue((queue) => queue.map((item) => (item.name === file.name ? { ...item, status: "Completed" } : item)));
+    const items = files.map((file) => ({
+      id: `${file.name}-${file.size}-${file.lastModified}-${crypto.randomUUID()}`,
+      name: file.name,
+      size: file.size,
+      status: "Queued" as const,
+      file,
+    }));
+    setUploadQueue((queue) => [...items, ...queue]);
+
+    for (const item of items) {
+      setUploadQueue((queue) => queue.map((queuedItem) => (queuedItem.id === item.id ? { ...queuedItem, status: "Uploading", error: undefined } : queuedItem)));
+      const run = await uploadFile(item.file, item.id);
+      if (run) {
+        setUploadQueue((queue) =>
+          queue.map((queuedItem) => (queuedItem.id === item.id ? { ...queuedItem, status: "Uploaded", runId: run.id, file: undefined } : queuedItem)),
+        );
+      }
     }
   }
 
-  async function uploadFile(file: File) {
+  async function uploadFile(file: File, queueItemId?: string) {
     setBusy("upload");
     setError("");
     setDiagnostics("");
@@ -235,21 +287,89 @@ export function AccountingIntelligence() {
       const response = await fetch("/api/accounting/fnb/upload", { method: "POST", body: formData });
       const data = (await response.json().catch(() => ({}))) as { run?: AccountingStatementRun; error?: string };
       if (!response.ok || !data.run) throw new Error(data.error ?? "Upload failed.");
-      setMessage("FNB statement uploaded. Accounting job queued.");
+      setMessage("FNB statement uploaded and queued for extraction.");
       await loadRuns(data.run.id);
+      return data.run;
     } catch (uploadError) {
-      setUploadQueue((queue) =>
-        queue.map((item) =>
-          item.name === file.name ? { ...item, status: "Failed", error: uploadError instanceof Error ? uploadError.message : "Upload failed." } : item,
-        ),
-      );
+      if (queueItemId) {
+        setUploadQueue((queue) =>
+          queue.map((item) =>
+            item.id === queueItemId ? { ...item, status: "Failed", error: uploadError instanceof Error ? uploadError.message : "Upload failed.", file } : item,
+          ),
+        );
+      }
       setError(uploadError instanceof Error ? uploadError.message : "Upload failed.");
+      return null;
     } finally {
       setBusy("");
     }
   }
 
-  async function createCombinedWorkbook() {
+  async function retryUpload(item: UploadQueueItem) {
+    if (!item.file) return;
+    setUploadQueue((queue) => queue.map((queuedItem) => (queuedItem.id === item.id ? { ...queuedItem, status: "Queued", error: undefined } : queuedItem)));
+    const run = await uploadFile(item.file, item.id);
+    if (run) {
+      setUploadQueue((queue) =>
+        queue.map((queuedItem) => (queuedItem.id === item.id ? { ...queuedItem, status: "Uploaded", runId: run.id, file: undefined } : queuedItem)),
+      );
+    }
+  }
+
+  async function processQueueItem(item: UploadQueueItem) {
+    if (!item.runId) return;
+    setUploadQueue((queue) => queue.map((queuedItem) => (queuedItem.id === item.id ? { ...queuedItem, status: "Processing", error: undefined } : queuedItem)));
+
+    const response = await fetch("/api/accounting/fnb/process", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ runId: item.runId }),
+    });
+    const data = (await response.json().catch(() => ({}))) as {
+      error?: string;
+      result?: { status?: AccountingStatementRun["status"] };
+    };
+
+    if (!response.ok) {
+      setUploadQueue((queue) =>
+        queue.map((queuedItem) => (queuedItem.id === item.id ? { ...queuedItem, status: "Failed", error: data.error ?? "Processing failed." } : queuedItem)),
+      );
+      return;
+    }
+
+    const nextStatus = data.result?.status === "review" ? "Needs Review" : data.result?.status === "completed" ? "Completed" : "Uploaded";
+    setUploadQueue((queue) => queue.map((queuedItem) => (queuedItem.id === item.id ? { ...queuedItem, status: nextStatus } : queuedItem)));
+  }
+
+  async function processUploadedQueue() {
+    const items = uploadQueue.filter((item) => item.runId && item.status === "Uploaded");
+    if (!items.length) return;
+    setBusy("queue-process");
+    setError("");
+    setMessage("");
+    try {
+      for (const item of items) {
+        await processQueueItem(item);
+      }
+      setMessage("Uploaded statements processed. Select completed statements to create a combined workbook.");
+      await loadRuns(items[0]?.runId);
+    } catch (queueError) {
+      setError(queueError instanceof Error ? queueError.message : "Queue processing failed.");
+    } finally {
+      setBusy("");
+    }
+  }
+
+  function selectReadyQueueRuns() {
+    const readyIds = uploadQueue
+      .filter((item) => item.runId && (item.status === "Completed" || item.status === "Needs Review"))
+      .map((item) => item.runId as string);
+    if (!readyIds.length) return;
+    setSelectedRunIds((current) => Array.from(new Set([...current, ...readyIds])));
+    setMessage("Ready statements selected for combined workbook.");
+  }
+
+  async function createCombinedWorkbook(options?: { combineDifferentAccounts?: boolean; overrideContinuity?: boolean; confirmationText?: string }) {
     setBusy("combine");
     setError("");
     setMessage("");
@@ -258,17 +378,32 @@ export function AccountingIntelligence() {
       const response = await fetch("/api/accounting/fnb/combine", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ runIds: selectedRunIds }),
+        body: JSON.stringify({
+          runIds: selectedRunIds,
+          combineDifferentAccounts: Boolean(options?.combineDifferentAccounts),
+          overrideContinuity: Boolean(options?.overrideContinuity),
+          confirmationText: options?.confirmationText,
+        }),
       });
       if (!response.ok) {
-        const data = (await response.json().catch(() => ({}))) as { error?: string };
-        throw new Error(data.error ?? "Combined workbook generation failed.");
+        const data = (await response.json().catch(() => ({}))) as {
+          error?: string;
+          message?: string;
+          status?: string;
+          allowOverride?: boolean;
+        };
+        if (data.status === "review_required" && data.allowOverride) {
+          setOverrideType("continuity");
+          setOverrideText("");
+          setOverrideDialogOpen(true);
+        }
+        throw new Error(data.error ?? data.message ?? "Combined workbook generation failed.");
       }
       const blob = await response.blob();
       const url = URL.createObjectURL(blob);
       const link = document.createElement("a");
       link.href = url;
-      link.download = "FNB-combined-accounting-pack.xlsx";
+      link.download = fileNameFromContentDisposition(response.headers.get("Content-Disposition")) ?? "FNB-combined-accounting-pack.xlsx";
       document.body.appendChild(link);
       link.click();
       link.remove();
@@ -279,6 +414,18 @@ export function AccountingIntelligence() {
     } finally {
       setBusy("");
     }
+  }
+
+  async function createCombinedWorkbookWithPrecheck() {
+    const selectedRuns = runs.filter((run) => selectedRunIds.includes(run.id));
+    const keys = new Set(selectedRuns.map(runAccountKey));
+    if (keys.size > 1) {
+      setOverrideType("account");
+      setOverrideText("");
+      setOverrideDialogOpen(true);
+      return;
+    }
+    await createCombinedWorkbook();
   }
 
   async function processRun(runId: string) {
@@ -498,20 +645,100 @@ export function AccountingIntelligence() {
               <h2 className="font-semibold text-navy-950">Upload queue</h2>
               <p className="text-sm font-medium text-slate-500">Multiple statements can be uploaded and processed together.</p>
             </div>
-            <button type="button" onClick={() => setUploadQueue([])} className="text-xs font-black text-slate-500">
-              Clear
-            </button>
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                disabled={!uploadQueue.some((item) => item.status === "Uploaded" && item.runId) || busy === "queue-process"}
+                onClick={() => void processUploadedQueue()}
+                className="rounded-lg bg-royal-600 px-3 py-2 text-xs font-black text-white disabled:cursor-not-allowed disabled:bg-slate-300"
+              >
+                {busy === "queue-process" ? "Processing..." : "Process uploaded"}
+              </button>
+              <button
+                type="button"
+                disabled={!uploadQueue.some((item) => item.runId && (item.status === "Completed" || item.status === "Needs Review"))}
+                onClick={selectReadyQueueRuns}
+                className="rounded-lg bg-white px-3 py-2 text-xs font-black text-royal-700 ring-1 ring-slate-200 disabled:cursor-not-allowed disabled:text-slate-300"
+              >
+                Select ready
+              </button>
+              <button type="button" onClick={() => setUploadQueue([])} className="text-xs font-black text-slate-500">
+                Clear
+              </button>
+            </div>
           </div>
           <div className="grid gap-2 md:grid-cols-2">
             {uploadQueue.map((item) => (
-              <div key={item.name} className="rounded-lg border border-slate-200 bg-slate-50 p-3">
+              <div key={item.id} className="rounded-lg border border-slate-200 bg-slate-50 p-3">
                 <div className="flex items-center justify-between gap-3">
-                  <p className="min-w-0 truncate text-sm font-black text-navy-950">{item.name}</p>
-                  <span className={`shrink-0 rounded-full px-2 py-1 text-[11px] font-black ${item.status === "Failed" ? "bg-rose-50 text-rose-700" : item.status === "Completed" ? "bg-emerald-50 text-emerald-700" : "bg-blue-50 text-blue-700"}`}>
+                  <div className="min-w-0">
+                    <p className="truncate text-sm font-black text-navy-950">{item.name}</p>
+                    <p className="mt-0.5 text-xs font-semibold text-slate-500">{fileSize(item.size)}</p>
+                  </div>
+                  <span
+                    className={`shrink-0 rounded-full px-2 py-1 text-[11px] font-black ${
+                      item.status === "Failed"
+                        ? "bg-rose-50 text-rose-700"
+                        : item.status === "Uploaded" || item.status === "Completed"
+                          ? "bg-emerald-50 text-emerald-700"
+                          : item.status === "Needs Review"
+                            ? "bg-amber-50 text-amber-700"
+                          : "bg-blue-50 text-blue-700"
+                    }`}
+                  >
                     {item.status}
                   </span>
                 </div>
-                {item.error ? <p className="mt-1 text-xs font-semibold text-rose-700">{item.error}</p> : null}
+                {item.status === "Uploading" || item.status === "Processing" ? (
+                  <div className="mt-3 h-2 overflow-hidden rounded-full bg-blue-100">
+                    <div className="h-full w-2/3 animate-pulse rounded-full bg-royal-500" />
+                  </div>
+                ) : null}
+                {item.status === "Uploaded" ? <p className="mt-2 text-xs font-semibold text-emerald-700">Stored and ready for extraction.</p> : null}
+                {item.status === "Completed" ? <p className="mt-2 text-xs font-semibold text-emerald-700">Extraction complete. Select it for a combined workbook.</p> : null}
+                {item.status === "Needs Review" ? <p className="mt-2 text-xs font-semibold text-amber-700">Extraction complete with review items.</p> : null}
+                {item.error ? <p className="mt-2 text-xs font-semibold text-rose-700">{item.error}</p> : null}
+                <div className="mt-3 flex flex-wrap gap-2">
+                  {item.runId ? (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setSelectedRunId(item.runId ?? "");
+                        setActiveTab("transactions");
+                        void loadRunDetail(item.runId ?? "").catch((loadError) => setError(loadError instanceof Error ? loadError.message : "Unable to open run."));
+                      }}
+                      className="rounded-lg bg-white px-3 py-2 text-xs font-black text-royal-700 shadow-sm ring-1 ring-slate-200"
+                    >
+                      Open run
+                    </button>
+                  ) : null}
+                  {item.status === "Uploaded" && item.runId ? (
+                    <button
+                      type="button"
+                      disabled={busy === "queue-process"}
+                      onClick={() => void processQueueItem(item)}
+                      className="rounded-lg bg-white px-3 py-2 text-xs font-black text-royal-700 shadow-sm ring-1 ring-slate-200 disabled:text-slate-400"
+                    >
+                      Process
+                    </button>
+                  ) : null}
+                  {item.status === "Failed" && item.file ? (
+                    <button
+                      type="button"
+                      onClick={() => void retryUpload(item)}
+                      className="rounded-lg bg-white px-3 py-2 text-xs font-black text-royal-700 shadow-sm ring-1 ring-slate-200"
+                    >
+                      Retry
+                    </button>
+                  ) : null}
+                  <button
+                    type="button"
+                    onClick={() => setUploadQueue((queue) => queue.filter((queuedItem) => queuedItem.id !== item.id))}
+                    className="rounded-lg bg-white px-3 py-2 text-xs font-black text-slate-600 shadow-sm ring-1 ring-slate-200"
+                  >
+                    Remove
+                  </button>
+                </div>
               </div>
             ))}
           </div>
@@ -574,9 +801,9 @@ export function AccountingIntelligence() {
                   <p className="font-black text-navy-950">{selectedRunIds.length} statements selected</p>
                   <p className="text-sm font-semibold text-slate-600">DocuCoreX will sort them by statement period and check balance continuity.</p>
                 </div>
-                <button
+                  <button
                   type="button"
-                  onClick={() => void createCombinedWorkbook()}
+                    onClick={() => void createCombinedWorkbookWithPrecheck()}
                   disabled={selectedRunIds.length < 2 || busy === "combine"}
                   className="inline-flex min-h-11 items-center justify-center gap-2 rounded-xl bg-royal-600 px-4 text-sm font-black text-white disabled:bg-slate-300"
                 >
@@ -699,6 +926,52 @@ export function AccountingIntelligence() {
           )}
         </section>
       </div>
+      {overrideDialogOpen ? (
+        <div className="fixed inset-0 z-[70] flex items-end bg-slate-950/40 p-3 sm:items-center sm:justify-center">
+          <div className="w-full max-w-lg rounded-2xl border border-slate-200 bg-white p-5 shadow-2xl">
+            <h3 className="text-lg font-semibold text-navy-950">Confirm Combined Workbook Override</h3>
+            <p className="mt-2 text-sm font-medium text-slate-600">
+              {overrideType === "account"
+                ? "The selected statements belong to different accounts. Do you want to combine them anyway?"
+                : "Continuity checks failed between one or more selected statements. Do you want to combine them anyway?"}
+            </p>
+            <p className="mt-3 text-xs font-semibold uppercase tracking-[0.12em] text-slate-400">Type COMBINE to continue</p>
+            <input
+              value={overrideText}
+              onChange={(event) => setOverrideText(event.target.value)}
+              placeholder="COMBINE"
+              className="mt-2 min-h-11 w-full rounded-xl border border-slate-200 bg-white px-3 text-sm font-semibold text-navy-950 outline-none focus:border-royal-300"
+            />
+            <div className="mt-4 flex gap-2">
+              <button
+                type="button"
+                onClick={() => {
+                  setOverrideDialogOpen(false);
+                  setOverrideText("");
+                }}
+                className="min-h-11 flex-1 rounded-xl border border-slate-200 bg-white text-sm font-semibold text-slate-700"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                disabled={overrideText.trim().toUpperCase() !== "COMBINE" || busy === "combine"}
+                onClick={() => {
+                  setOverrideDialogOpen(false);
+                  void createCombinedWorkbook({
+                    combineDifferentAccounts: overrideType === "account",
+                    overrideContinuity: overrideType === "continuity",
+                    confirmationText: overrideText.trim(),
+                  });
+                }}
+                className="min-h-11 flex-1 rounded-xl bg-royal-600 text-sm font-semibold text-white disabled:bg-slate-300"
+              >
+                Combine Anyway
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
       {detail ? (
         <div className="fixed inset-x-0 bottom-[calc(4.75rem+env(safe-area-inset-bottom))] z-30 grid grid-cols-3 gap-2 border-t border-slate-200 bg-white/95 p-3 shadow-[0_-10px_30px_rgba(15,23,42,0.08)] backdrop-blur-xl md:hidden">
           <ExportDropdown run={detail.run} reviewCount={totals.review} open={exportOpen} onOpenChange={setExportOpen} mobile />

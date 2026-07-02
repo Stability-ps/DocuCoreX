@@ -49,6 +49,7 @@ if importlib.util.find_spec("fastapi") is None:
 
     fastapi_responses = types.ModuleType("fastapi.responses")
     fastapi_responses.JSONResponse = dict
+    fastapi_responses.Response = object
     sys.modules["fastapi.responses"] = fastapi_responses
 
 if importlib.util.find_spec("openpyxl") is None:

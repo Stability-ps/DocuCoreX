@@ -1,0 +1,9 @@
+{
+  "cases": [
+    {
+      "id": "synthetic-balanced-baseline",
+      "source": "synthetic",
+      "fixture": "workers/accounting_worker/tests/fixtures/synthetic-balanced-baseline.json"
+    }
+  ]
+}

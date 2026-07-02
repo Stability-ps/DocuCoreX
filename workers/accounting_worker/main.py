@@ -5,6 +5,7 @@ import os
 import re
 import subprocess
 import tempfile
+import time
 import urllib.error
 import urllib.request
 from datetime import date, datetime
@@ -91,6 +92,7 @@ class CombineRequest(BaseModel):
     workspace_id: str
     run_ids: list[str]
     combine_different_accounts: bool = False
+    override_continuity: bool = False
 
 
 class ParsedTransaction(BaseModel):
@@ -107,6 +109,7 @@ class ParsedTransaction(BaseModel):
     confidence: float = 70
     review_status: str = "needs_review"
     source_page: int | None = None
+    source_row: int | None = None
     raw_text: str | None = None
 
 
@@ -1764,7 +1767,11 @@ def build_workbook(metadata: dict[str, Any], transactions: list[ParsedTransactio
     account_number = "63012589818"
     source_file = metadata.get("source_file") or "28 Feb 2026 - (Free)"
     rows = [professional_transaction_row(transaction, source_file) for transaction in transactions]
+    ai_started = time.perf_counter()
     ai_stats = apply_ai_classifications(rows)
+    ai_duration_ms = round((time.perf_counter() - ai_started) * 1000, 2)
+    ai_stats["ai_classification_duration_ms"] = ai_duration_ms
+    log_event("worker.ai_classification_duration", duration_ms=ai_duration_ms, parser_profile=WORKER_PARSER_VERSION)
     mark_possible_duplicates(rows)
     metadata["_ai_diagnostics"] = ai_stats
     months = month_summary(rows)
@@ -1987,6 +1994,7 @@ def parsed_transaction_from_row(row: dict[str, Any]) -> ParsedTransaction:
         confidence=float(row.get("confidence") or 0),
         review_status=str(row.get("review_status") or "needs_review"),
         source_page=row.get("source_page"),
+        source_row=row.get("source_row"),
         raw_text=row.get("raw_text"),
     )
 
@@ -2009,43 +2017,171 @@ def combine_duplicate_key(transaction: ParsedTransaction) -> tuple[str, str, str
     )
 
 
+def combine_fingerprint(run: dict[str, Any], transaction: ParsedTransaction, fallback_row: int) -> tuple[str, str, str, str, str, str, str, str, str]:
+    return (
+        str(run.get("account_number") or "").strip().lower(),
+        str(run.get("id") or "").strip().lower(),
+        str(transaction.transaction_date or ""),
+        normalize_merchant_key(transaction.description),
+        str(decimal_amount(transaction.debit_amount)),
+        str(decimal_amount(transaction.credit_amount)),
+        str(decimal_amount(transaction.running_balance)),
+        str(transaction.source_page or 0),
+        str(transaction.source_row or fallback_row),
+    )
+
+
+def extract_transaction_time(raw_text: str | None) -> str:
+    if not raw_text:
+        return ""
+    match = re.search(r"\b([01]\d|2[0-3]):([0-5]\d)(?::([0-5]\d))?\b", raw_text)
+    if not match:
+        return ""
+    second = match.group(3) or "00"
+    return f"{match.group(1)}:{match.group(2)}:{second}"
+
+
+def parse_iso_date_or_max(value: str | None) -> date:
+    if not value:
+        return date.max
+    try:
+        return date.fromisoformat(value)
+    except ValueError:
+        return date.max
+
+
+def continuity_state(previous_closing: float | None, next_opening: float | None) -> tuple[str, Decimal | None]:
+    if previous_closing is None or next_opening is None:
+        return "UNKNOWN", None
+    previous_decimal = decimal_amount(previous_closing)
+    next_decimal = decimal_amount(next_opening)
+    difference = (next_decimal - previous_decimal).quantize(CENT)
+    if difference == 0:
+        return "PASSED", Decimal("0.00")
+    return "FAILED", difference
+
+
+def continuity_failure_message(continuity: list[dict[str, Any]]) -> str:
+    failures = [
+        item
+        for item in continuity
+        if item.get("status") in {"FAILED", "UNKNOWN"}
+    ]
+    if not failures:
+        return ""
+    parts = []
+    for item in failures:
+        parts.append(
+            f"{item['previous_period']} -> {item['next_period']}: {item['status']}"
+        )
+    return "Continuity checks require review: " + "; ".join(parts)
+
+
+def run_continuity_summary(runs: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], str, str]:
+    sorted_runs = sorted(runs, key=lambda run: str(run.get("statement_period_start") or run.get("created_at") or ""))
+    continuity: list[dict[str, Any]] = []
+    for previous, current in zip(sorted_runs, sorted_runs[1:]):
+        state, diff = continuity_state(previous.get("closing_balance"), current.get("opening_balance"))
+        continuity.append(
+            {
+                "previous_period": run_period_label(previous),
+                "next_period": run_period_label(current),
+                "previous_closing": decimal_amount(previous.get("closing_balance")) if previous.get("closing_balance") is not None else None,
+                "next_opening": decimal_amount(current.get("opening_balance")) if current.get("opening_balance") is not None else None,
+                "status": state,
+                "difference": diff,
+            }
+        )
+
+    continuity_passed = all(item["status"] == "PASSED" for item in continuity)
+    continuity_failed = any(item["status"] == "FAILED" for item in continuity)
+    continuity_result = "PASSED" if continuity_passed else "FAILED" if continuity_failed else "UNKNOWN"
+    return continuity, continuity_result, continuity_failure_message(continuity)
+
+
+def validate_combine_runs(runs: list[dict[str, Any]], payload: CombineRequest) -> list[dict[str, Any]]:
+    if len(runs) != len(set(payload.run_ids)):
+        raise HTTPException(status_code=404, detail="One or more selected statements could not be found.")
+
+    invalid_statuses = [
+        run for run in runs if str(run.get("status") or "") not in {"completed", "review"}
+    ]
+    if invalid_statuses:
+        raise HTTPException(status_code=422, detail="Only completed or review-ready statements can be combined.")
+
+    keys = {
+        (
+            str(run.get("company_name") or "").strip().lower(),
+            str(run.get("bank") or "").strip().lower(),
+            str(run.get("account_number") or "").strip().lower(),
+        )
+        for run in runs
+    }
+    if len(keys) > 1 and not payload.combine_different_accounts:
+        raise HTTPException(status_code=422, detail="Selected statements are not the same company, bank and account number.")
+    return runs
+
+
 def build_combined_workbook(runs: list[dict[str, Any]], transactions_by_run: dict[str, list[ParsedTransaction]]) -> tuple[bytes, dict[str, Any]]:
+    generation_started = time.perf_counter()
     sorted_runs = sorted(runs, key=lambda run: str(run.get("statement_period_start") or run.get("created_at") or ""))
     first_run = sorted_runs[0]
     last_run = sorted_runs[-1]
     company_name = first_run.get("company_name") or "Unknown company"
     bank = first_run.get("bank") or "FNB South Africa"
     account_number = first_run.get("account_number") or ""
-    opening = decimal_amount(first_run.get("opening_balance"))
-    closing = decimal_amount(last_run.get("closing_balance"))
+    opening_known = first_run.get("opening_balance") is not None
+    closing_known = last_run.get("closing_balance") is not None
+    opening = decimal_amount(first_run.get("opening_balance")) if opening_known else None
+    closing = decimal_amount(last_run.get("closing_balance")) if closing_known else None
 
     continuity: list[dict[str, Any]] = []
     for previous, current in zip(sorted_runs, sorted_runs[1:]):
-        previous_close = decimal_amount(previous.get("closing_balance"))
-        current_open = decimal_amount(current.get("opening_balance"))
+        previous_close = previous.get("closing_balance")
+        current_open = current.get("opening_balance")
+        state, diff = continuity_state(previous_close, current_open)
         continuity.append({
             "previous_period": run_period_label(previous),
             "next_period": run_period_label(current),
-            "previous_closing": previous_close,
-            "next_opening": current_open,
-            "status": "OK" if previous_close == current_open else "Missing statement period or balance mismatch.",
-            "difference": (current_open - previous_close).quantize(CENT),
+            "previous_closing": decimal_amount(previous_close) if previous_close is not None else None,
+            "next_opening": decimal_amount(current_open) if current_open is not None else None,
+            "status": state,
+            "difference": diff,
         })
 
-    combined_transactions: list[tuple[ParsedTransaction, dict[str, Any]]] = []
-    seen: set[tuple[str, str, str, str, str]] = set()
+    combined_transactions: list[tuple[ParsedTransaction, dict[str, Any], int]] = []
+    seen: dict[tuple[str, str, str, str, str, str, str, str, str], float] = {}
     duplicates_removed = 0
-    for run in sorted_runs:
-        for transaction in transactions_by_run.get(str(run["id"]), []):
-            key = combine_duplicate_key(transaction)
-            if key in seen:
+    for run_index, run in enumerate(sorted_runs):
+        for row_index, transaction in enumerate(transactions_by_run.get(str(run["id"]), []), start=1):
+            key = combine_fingerprint(run, transaction, row_index)
+            previous_confidence = seen.get(key)
+            current_confidence = float(transaction.confidence or 0)
+            if previous_confidence is not None and previous_confidence >= 98 and current_confidence >= 98:
                 duplicates_removed += 1
+                log_event(
+                    "worker.combine_duplicate_removed",
+                    run_id=run.get("id"),
+                    transaction_date=transaction.transaction_date,
+                    description=transaction.description,
+                    confidence=current_confidence,
+                )
                 continue
-            seen.add(key)
-            combined_transactions.append((transaction, run))
+            seen[key] = max(previous_confidence or 0, current_confidence)
+            combined_transactions.append((transaction, run, run_index))
+
+    combined_transactions.sort(
+        key=lambda item: (
+            parse_iso_date_or_max(item[0].transaction_date),
+            extract_transaction_time(item[0].raw_text),
+            item[2],
+            item[0].source_page if item[0].source_page is not None else 10**9,
+            item[0].source_row if item[0].source_row is not None else 10**9,
+        )
+    )
 
     rows: list[dict[str, Any]] = []
-    for transaction, run in combined_transactions:
+    for transaction, run, _run_index in combined_transactions:
         row = professional_transaction_row(transaction, "combined")
         row["source_period"] = run_period_label(run)
         rows.append(row)
@@ -2053,10 +2189,13 @@ def build_combined_workbook(runs: list[dict[str, Any]], transactions_by_run: dic
     reportable_rows = [row for row in rows if reporting_account(row) != "Review Required Suspense"]
     total_debits = sum((row["money_out"] for row in rows), Decimal("0.00")).quantize(CENT)
     total_credits = sum((row["money_in"] for row in rows), Decimal("0.00")).quantize(CENT)
-    expected_closing = (opening + total_credits - total_debits).quantize(CENT)
-    difference = (expected_closing - closing).quantize(CENT)
+    expected_closing = (opening + total_credits - total_debits).quantize(CENT) if opening is not None else None
+    difference = (expected_closing - closing).quantize(CENT) if expected_closing is not None and closing is not None else None
     review_count = sum(1 for row in rows if row.get("review_required") or reporting_account(row) == "Review Required Suspense")
-    continuity_ok = all(item["status"] == "OK" for item in continuity)
+    continuity_passed = all(item["status"] == "PASSED" for item in continuity)
+    continuity_failed = any(item["status"] == "FAILED" for item in continuity)
+    continuity_unknown = any(item["status"] == "UNKNOWN" for item in continuity)
+    continuity_result = "PASSED" if continuity_passed else "FAILED" if continuity_failed else "UNKNOWN"
 
     workbook = Workbook()
     dashboard = workbook.active
@@ -2072,8 +2211,8 @@ def build_combined_workbook(runs: list[dict[str, Any]], transactions_by_run: dic
         ("Account number", account_number),
         ("Combined period", f"{first_run.get('statement_period_start') or '-'} to {last_run.get('statement_period_end') or '-'}"),
         ("Number of statements", len(sorted_runs)),
-        ("Opening balance", opening),
-        ("Closing balance", closing),
+        ("Opening balance", opening if opening is not None else "Unknown"),
+        ("Closing balance", closing if closing is not None else "Unknown"),
         ("Total receipts", total_credits),
         ("Total payments", total_debits),
         ("Total transactions", len(rows)),
@@ -2157,14 +2296,14 @@ def build_combined_workbook(runs: list[dict[str, Any]], transactions_by_run: dic
 
     rec = workbook.create_sheet("Bank Rec")
     rec_rows = [
-        ("Opening balance first period", opening),
+        ("Opening balance first period", opening if opening is not None else "Unknown"),
         ("Total credits all periods", total_credits),
         ("Total debits all periods", total_debits),
-        ("Expected closing balance", expected_closing),
-        ("Actual closing balance last period", closing),
-        ("Difference", difference),
-        ("Status", "Reconciled" if difference == 0 and continuity_ok else "Review required"),
-        ("Period continuity check", "OK" if continuity_ok else "Missing statement period or balance mismatch."),
+        ("Expected closing balance", expected_closing if expected_closing is not None else "Unknown"),
+        ("Actual closing balance last period", closing if closing is not None else "Unknown"),
+        ("Difference", difference if difference is not None else "Unknown"),
+        ("Status", "Reconciled" if difference == 0 and continuity_result == "PASSED" else "Review required"),
+        ("Period continuity check", continuity_result),
     ]
     write_row(rec, ["Combined Bank Reconciliation", "Amount"], 1, header=True)
     for row_index, row in enumerate(rec_rows, start=2):
@@ -2208,6 +2347,29 @@ def build_combined_workbook(runs: list[dict[str, Any]], transactions_by_run: dic
         write_row(diagnostics, [row[0], json.dumps(row[1], default=str)], row_index)
     diagnostics.sheet_state = "hidden"
 
+    metadata_sheet = workbook.create_sheet("Metadata")
+    generated_at = datetime.utcnow().isoformat()
+    combined_start = first_run.get("statement_period_start") or "Unknown"
+    combined_end = last_run.get("statement_period_end") or "Unknown"
+    metadata_rows = [
+        ("Parser Version", WORKER_PARSER_VERSION),
+        ("Worker Version", worker_version()),
+        ("Generated Date", generated_at),
+        ("Company", company_name),
+        ("Bank", bank),
+        ("Account Number", account_number),
+        ("Combined Months", f"{combined_start} to {combined_end}"),
+        ("Statement Count", len(sorted_runs)),
+        ("Duplicate Rows Removed", duplicates_removed),
+        ("Continuity Result", continuity_result),
+        ("Review Status", "Review Required" if review_count or continuity_result != "PASSED" else "Completed"),
+        ("Generation Time", "pending"),
+    ]
+    write_row(metadata_sheet, ["Metric", "Value"], 1, header=True)
+    for row_index, row in enumerate(metadata_rows, start=2):
+        write_row(metadata_sheet, [row[0], json.dumps(row[1], default=str) if isinstance(row[1], (dict, list)) else row[1]], row_index)
+    metadata_sheet.sheet_state = "hidden"
+
     finish_sheet(dashboard, freeze_pane="D4")
     finish_sheet(tx, filter_ref=f"A1:P{max(tx.max_row, 1)}")
     finish_sheet(vat, filter_ref=f"A1:K{max(vat.max_row, 1)}")
@@ -2217,17 +2379,35 @@ def build_combined_workbook(runs: list[dict[str, Any]], transactions_by_run: dic
     finish_sheet(review, filter_ref=f"A1:H{max(review.max_row, 1)}")
     finish_sheet(assumptions)
     finish_sheet(diagnostics)
+    finish_sheet(metadata_sheet)
 
+    generation_duration_ms = round((time.perf_counter() - generation_started) * 1000, 2)
+    metadata_sheet.cell(row=13, column=2).value = f"{generation_duration_ms} ms"
     output = io.BytesIO()
     validate_workbook_for_export(workbook)
     workbook.save(output)
+    continuity_message = continuity_failure_message(continuity)
+    if continuity_message:
+        log_warning("worker.combine_continuity_review", continuity=continuity, message=continuity_message)
+    log_event(
+        "worker.combine_summary",
+        parser_profile=WORKER_PARSER_VERSION,
+        continuity_result=continuity_result,
+        continuity=continuity,
+        duplicates_removed=duplicates_removed,
+        workbook_generation_duration_ms=generation_duration_ms,
+    )
     return output.getvalue(), {
         "statement_count": len(sorted_runs),
         "transaction_count": len(rows),
         "duplicates_removed": duplicates_removed,
         "review_count": review_count,
-        "continuity_ok": continuity_ok,
-        "difference": str(difference),
+        "continuity_ok": continuity_result == "PASSED",
+        "continuity_result": continuity_result,
+        "continuity": continuity,
+        "difference": str(difference) if difference is not None else "Unknown",
+        "continuity_message": continuity_message,
+        "workbook_generation_duration_ms": generation_duration_ms,
     }
 
 
@@ -2244,6 +2424,7 @@ def version() -> dict[str, str]:
 @app.post("/combine-fnb-statements")
 def combine_fnb_statements(payload: CombineRequest, authorization: str | None = Header(default=None)) -> Response:
     verify_worker_token(authorization)
+    validation_started = time.perf_counter()
     if len(payload.run_ids) < 2:
         raise HTTPException(status_code=400, detail="Select at least two statements to combine.")
 
@@ -2259,20 +2440,30 @@ def combine_fnb_statements(payload: CombineRequest, authorization: str | None = 
           .execute()
       )
       runs = runs_response.data if isinstance(runs_response.data, list) else []
-      if len(runs) != len(set(payload.run_ids)):
-          raise HTTPException(status_code=404, detail="One or more selected statements could not be found.")
+      runs = validate_combine_runs(runs, payload)
+      validation_duration_ms = round((time.perf_counter() - validation_started) * 1000, 2)
+      log_event("worker.combine_validated", validation_duration_ms=validation_duration_ms, parser_profile=WORKER_PARSER_VERSION)
 
-      if not payload.combine_different_accounts:
-          keys = {
-              (
-                  str(run.get("company_name") or "").strip().lower(),
-                  str(run.get("bank") or "").strip().lower(),
-                  str(run.get("account_number") or "").strip().lower(),
-              )
-              for run in runs
-          }
-          if len(keys) > 1:
-              raise HTTPException(status_code=422, detail="Selected statements are not the same company, bank and account number.")
+      continuity, continuity_result, continuity_message = run_continuity_summary(runs)
+      log_event("worker.combine_continuity_checked", continuity_result=continuity_result, continuity=continuity)
+      if continuity_result != "PASSED" and not payload.override_continuity:
+          message = continuity_message or "Continuity checks failed. Review required before combining."
+          supabase.table("accounting_statement_runs").update(
+              {
+                  "status": "review",
+                  "error": message,
+                  "updated_at": datetime.utcnow().isoformat(),
+              }
+          ).eq("workspace_id", payload.workspace_id).in_("id", payload.run_ids).execute()
+          raise HTTPException(
+              status_code=422,
+              detail={
+                  "status": "review_required",
+                  "message": message,
+                  "continuity": continuity,
+                  "allow_override": True,
+              },
+          )
 
       transactions_by_run: dict[str, list[ParsedTransaction]] = {}
       for run in runs:
@@ -2286,7 +2477,11 @@ def combine_fnb_statements(payload: CombineRequest, authorization: str | None = 
           transaction_rows = transaction_response.data if isinstance(transaction_response.data, list) else []
           transactions_by_run[str(run["id"])] = [parsed_transaction_from_row(row) for row in transaction_rows]
 
+      export_started = time.perf_counter()
       workbook_bytes, summary = build_combined_workbook(runs, transactions_by_run)
+
+      export_duration_ms = round((time.perf_counter() - export_started) * 1000, 2)
+      summary["export_duration_ms"] = export_duration_ms
       log_event("worker.combine_completed", workspace_id=payload.workspace_id, summary=summary)
       return Response(
           content=workbook_bytes,
@@ -2396,11 +2591,14 @@ def process_fnb_statement(payload: ProcessRequest, authorization: str | None = H
         validation: dict[str, Any] | None = None
         review_issue: dict[str, Any] | None = None
         try:
+            validation_started = time.perf_counter()
             validation = validate_statement(metadata, transactions)
+            validation_duration_ms = round((time.perf_counter() - validation_started) * 1000, 2)
             log_event(
                 "worker.statement_validated",
                 run_id=payload.run_id,
                 validation={key: str(value) for key, value in validation.items()},
+                validation_duration_ms=validation_duration_ms,
             )
         except HTTPException as exc:
             review_issue = review_validation_issue(exc)
@@ -2432,6 +2630,7 @@ def process_fnb_statement(payload: ProcessRequest, authorization: str | None = H
         workbook_bytes = build_workbook(metadata, transactions)
         ai_stats = metadata.get("_ai_diagnostics") or ai_diagnostics(enabled=False)
         workbook_path = f"{payload.workspace_id}/accounting/fnb/exports/{payload.run_id}.xlsx"
+        export_started = time.perf_counter()
         with tempfile.NamedTemporaryFile(suffix=".xlsx") as handle:
             handle.write(workbook_bytes)
             handle.flush()
@@ -2443,6 +2642,8 @@ def process_fnb_statement(payload: ProcessRequest, authorization: str | None = H
                     "upsert": "true",
                 },
             )
+        export_duration_ms = round((time.perf_counter() - export_started) * 1000, 2)
+        log_event("worker.workbook_exported", run_id=payload.run_id, duration_ms=export_duration_ms, parser_profile=WORKER_PARSER_VERSION)
 
         bank_charges_total = sum(transaction.debit_amount or 0 for transaction in transactions if transaction.bank_charge)
         avg_confidence = sum(transaction.confidence for transaction in transactions) / len(transactions)
@@ -2483,6 +2684,7 @@ def process_fnb_statement(payload: ProcessRequest, authorization: str | None = H
             validation={key: str(value) for key, value in validation.items()} if validation else None,
             review_issue=review_issue,
             ai_diagnostics=ai_stats,
+            export_duration_ms=export_duration_ms,
         )
 
         return {
