@@ -1,12 +1,12 @@
 import { calculateInvoiceFinalTotal, calculateInvoiceSubtotal, calculateInvoiceVatAmount, calculateLineTotalInclVat, formatCurrency, paymentTermsOptions } from "@/lib/invoice-utils";
 import type { InvoicePreviewData } from "@/components/invoices/InvoicePreview";
 
-const label = "text-[8px] font-semibold uppercase tracking-wide text-slate-500";
+const label = "text-[9px] font-semibold uppercase tracking-wide text-slate-500";
 
 /**
  * Compact, print-only invoice layout — deliberately independent of the dashboard/card-styled
  * <InvoicePreview>. This is what actually gets rendered on paper/PDF via window.print(), so it
- * uses tight tables and borders instead of rounded cards/shadows, 9px body text, and a
+ * uses tight tables and borders instead of rounded cards/shadows, readable print text, and a
  * single-page-first layout, matching a real accounting invoice rather than a web app screenshot.
  * Rendered hidden on screen (`hidden print:block`) alongside the normal preview
  * (`print:hidden`) — see InvoiceDetail.
@@ -25,7 +25,7 @@ export function InvoicePrintDocument({ invoice }: { invoice: InvoicePreviewData 
   const hasNotes = invoice.notesToClient || invoice.termsAndConditions;
 
   return (
-    <div className="mx-auto w-full max-w-[210mm] bg-white p-0 text-[9px] leading-tight text-slate-900">
+    <div className="mx-auto w-full max-w-[210mm] bg-white p-0 text-[10.5px] leading-snug text-slate-900">
       {/* Top header */}
       <div className="flex items-start justify-between border-b border-slate-300 pb-2">
         <div className="flex items-start gap-2">
@@ -34,7 +34,7 @@ export function InvoicePrintDocument({ invoice }: { invoice: InvoicePreviewData 
             <img src={invoice.logoDataUrl} alt="" className="h-10 w-10 object-contain" />
           ) : null}
           <div>
-            <p className="text-[12px] font-bold text-slate-900">{invoice.issuerName || "Your business name"}</p>
+            <p className="text-[14px] font-bold text-slate-900">{invoice.issuerName || "Your business name"}</p>
             {invoice.issuerAddress ? <p className="text-slate-600">{invoice.issuerAddress}</p> : null}
             {invoice.issuerEmail ? <p className="text-slate-600">{invoice.issuerEmail}</p> : null}
             {invoice.issuerPhone ? <p className="text-slate-600">{invoice.issuerPhone}</p> : null}
@@ -46,7 +46,7 @@ export function InvoicePrintDocument({ invoice }: { invoice: InvoicePreviewData 
           </div>
         </div>
         <div className="text-right">
-          <p className="text-[22px] font-bold uppercase tracking-wide text-slate-900">Tax invoice</p>
+          <p className="text-[24px] font-bold uppercase tracking-wide text-slate-900">Tax invoice</p>
           <p className="mt-0.5 font-semibold text-slate-900">{invoice.invoiceNumber || "—"}</p>
           <p className="text-slate-600">Date: {invoice.invoiceDate || "—"}</p>
           <p className="text-slate-600">Due: {invoice.dueDate || "—"}</p>
@@ -107,7 +107,7 @@ export function InvoicePrintDocument({ invoice }: { invoice: InvoicePreviewData 
       ) : null}
 
       {/* Line items table */}
-      <table className="mt-2 w-full border-collapse text-[9px]">
+      <table className="mt-2 w-full border-collapse text-[10px]">
         <thead>
           <tr className="border-b border-slate-400">
             <th className={`${label} px-1 py-1 text-left`}>Description</th>
@@ -132,7 +132,7 @@ export function InvoicePrintDocument({ invoice }: { invoice: InvoicePreviewData 
 
       {/* Totals */}
       <div className="mt-2 flex justify-end">
-        <table className="w-56 border-collapse text-[9px]">
+        <table className="w-60 border-collapse text-[10px]">
           <tbody>
             <tr>
               <td className="px-1 py-0.5 text-slate-600">Subtotal</td>
@@ -161,8 +161,8 @@ export function InvoicePrintDocument({ invoice }: { invoice: InvoicePreviewData 
               <td className="px-1 py-0.5 text-right font-medium">{formatCurrency(vatAmount, invoice.currency)}</td>
             </tr>
             <tr className="border-t border-slate-400">
-              <td className="px-1 py-1 text-[12px] font-bold text-slate-900">Grand total</td>
-              <td className="px-1 py-1 text-right text-[12px] font-bold text-slate-900">{formatCurrency(totalAmount, invoice.currency)}</td>
+              <td className="px-1 py-1 text-[13px] font-bold text-slate-900">Grand total</td>
+              <td className="px-1 py-1 text-right text-[13px] font-bold text-slate-900">{formatCurrency(totalAmount, invoice.currency)}</td>
             </tr>
             {amountPaid > 0 ? (
               <>
@@ -182,7 +182,7 @@ export function InvoicePrintDocument({ invoice }: { invoice: InvoicePreviewData 
 
       {/* Notes and terms */}
       {hasNotes ? (
-        <div className="mt-3 grid grid-cols-2 gap-4 border-t border-slate-300 pt-2 text-[8px] text-slate-600">
+        <div className="mt-4 grid grid-cols-2 gap-4 border-t border-slate-300 pt-2 text-[9px] text-slate-600">
           {invoice.notesToClient ? (
             <div>
               <p className={label}>Notes</p>
@@ -198,7 +198,9 @@ export function InvoicePrintDocument({ invoice }: { invoice: InvoicePreviewData 
         </div>
       ) : null}
 
-      <div className="mt-3 border-t border-slate-200 pt-1 text-center text-[8px] text-slate-400">Generated by DocuCoreX</div>
+      <div className="mt-4 border-t border-slate-300 pt-2 text-center text-[9px] font-medium text-slate-600">
+        Generated by DocuCoreX | Document Intelligence Platform
+      </div>
     </div>
   );
 }

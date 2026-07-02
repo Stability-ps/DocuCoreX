@@ -71,6 +71,20 @@ export function InvoiceDetail({ invoiceId }: { invoiceId: string }) {
     window.location.href = mailto;
   }
 
+  function printInvoice() {
+    const originalTitle = document.title;
+    document.title = " ";
+
+    const restoreTitle = () => {
+      document.title = originalTitle;
+      window.removeEventListener("afterprint", restoreTitle);
+    };
+
+    window.addEventListener("afterprint", restoreTitle);
+    window.print();
+    window.setTimeout(restoreTitle, 1200);
+  }
+
   if (notFound) {
     return (
       <div className="p-4 sm:p-6 lg:p-8">
@@ -173,7 +187,7 @@ export function InvoiceDetail({ invoiceId }: { invoiceId: string }) {
           </button>
           <button
             type="button"
-            onClick={() => window.print()}
+            onClick={printInvoice}
             className="inline-flex min-h-9 items-center gap-2 rounded-lg bg-royal-600 px-3.5 py-1.5 text-xs font-semibold text-white transition hover:bg-royal-700"
           >
             <Printer className="h-3.5 w-3.5" />
