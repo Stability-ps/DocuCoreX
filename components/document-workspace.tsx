@@ -1,8 +1,8 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
-import { Bot, CheckCircle2, Download, FileJson, FileSpreadsheet, MessageSquareText, Send, ScanText, Share2, Trash2 } from "lucide-react";
+import { Bot, CheckCircle2, Download, FileJson, FileSpreadsheet, Send, ScanText, Share2, Trash2 } from "lucide-react";
 import { PdfViewer } from "@/components/pdf-viewer";
 import {
   comments,
@@ -51,6 +51,9 @@ export function DocumentWorkspace({ documentId }: { documentId: string }) {
   const [tab, setTab] = useState("Overview");
   const [workflowStatus, setWorkflowStatus] = useState("");
   const [loadState, setLoadState] = useState<"loading" | "ready" | "not_found" | "error">("loading");
+  const mobileTabs = ["Overview", "Preview", "Metadata", "History", "Actions"] as const;
+  const [mobileTab, setMobileTab] = useState<(typeof mobileTabs)[number]>("Overview");
+  const touchStartRef = useRef<{ x: number; y: number } | null>(null);
 
   useEffect(() => {
     async function loadWorkspace() {
@@ -206,6 +209,38 @@ export function DocumentWorkspace({ documentId }: { documentId: string }) {
   const displayPages = doc?.pageCount ?? fallbackDoc.pages;
   const displaySize = doc ? formatBytes(doc.sizeBytes) : fallbackDoc.size;
 
+  function onMobileTouchStart(event: React.TouchEvent<HTMLDivElement>) {
+    const target = event.target as HTMLElement;
+    if (target.closest("button,a,input,select,textarea,label")) {
+      touchStartRef.current = null;
+      return;
+    }
+
+    const touch = event.touches[0];
+    touchStartRef.current = { x: touch.clientX, y: touch.clientY };
+  }
+
+  function onMobileTouchEnd(event: React.TouchEvent<HTMLDivElement>) {
+    if (!touchStartRef.current) return;
+
+    const touch = event.changedTouches[0];
+    const deltaX = touch.clientX - touchStartRef.current.x;
+    const deltaY = touch.clientY - touchStartRef.current.y;
+    touchStartRef.current = null;
+
+    if (Math.abs(deltaX) < 60 || Math.abs(deltaX) <= Math.abs(deltaY)) return;
+
+    const currentIndex = mobileTabs.indexOf(mobileTab);
+    if (deltaX < 0 && currentIndex < mobileTabs.length - 1) {
+      setMobileTab(mobileTabs[currentIndex + 1]);
+      return;
+    }
+
+    if (deltaX > 0 && currentIndex > 0) {
+      setMobileTab(mobileTabs[currentIndex - 1]);
+    }
+  }
+
   if (loadState === "loading") {
     return (
       <div className="p-4 sm:p-6 lg:p-8">
@@ -230,7 +265,7 @@ export function DocumentWorkspace({ documentId }: { documentId: string }) {
 
   return (
     <div className="space-y-6 p-4 sm:p-6 lg:p-8">
-      <section className="rounded-[2rem] border border-slate-200 bg-white p-5 shadow-sm sm:p-6">
+      <section className="rounded-[1.25rem] border border-slate-200 bg-white p-4 shadow-sm sm:rounded-[2rem] sm:p-6">
         <div className="flex flex-col gap-5 xl:flex-row xl:items-start xl:justify-between">
           <div>
             <div className="mb-3 flex flex-wrap gap-2">
@@ -243,7 +278,7 @@ export function DocumentWorkspace({ documentId }: { documentId: string }) {
               Owned by {doc?.ownerId ?? fallbackDoc.owner} • Updated {doc ? new Date(doc.updatedAt).toLocaleString() : fallbackDoc.updated} • {displaySize}
             </p>
           </div>
-          <div className="flex flex-wrap gap-2">
+          <div className="hidden flex-wrap gap-2 sm:flex">
             <Link href="/documents" className="rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm font-semibold text-slate-600 shadow-sm">
               Back
             </Link>
@@ -265,7 +300,25 @@ export function DocumentWorkspace({ documentId }: { documentId: string }) {
           </div>
         </div>
         {workflowStatus ? <p className="mt-4 rounded-2xl bg-slate-50 px-4 py-3 text-sm font-semibold text-slate-600">{workflowStatus}</p> : null}
-        <div className="mt-6 flex gap-2 overflow-x-auto border-b border-slate-100 pb-2">
+
+        <div className="mt-4 grid grid-cols-2 gap-2 sm:hidden">
+          <button
+            type="button"
+            onClick={() => setMobileTab("Actions")}
+            className="min-h-11 rounded-xl border border-slate-200 bg-white px-3 text-sm font-semibold text-slate-700"
+          >
+            Actions
+          </button>
+          <button
+            type="button"
+            onClick={() => setMobileTab("Preview")}
+            className="min-h-11 rounded-xl bg-royal-600 px-3 text-sm font-semibold text-white"
+          >
+            Preview
+          </button>
+        </div>
+
+        <div className="mt-6 hidden gap-2 overflow-x-auto border-b border-slate-100 pb-2 sm:flex">
           {workspaceTabs.map((item) => (
             <button
               key={item}
@@ -278,16 +331,65 @@ export function DocumentWorkspace({ documentId }: { documentId: string }) {
             </button>
           ))}
         </div>
+
+        <div className="mt-4 sm:hidden">
+          <div className="-mx-1 flex gap-1 overflow-x-auto pb-1">
+            {mobileTabs.map((item) => (
+              <button
+                key={item}
+                type="button"
+                onClick={() => setMobileTab(item)}
+                className={`min-h-10 shrink-0 rounded-full px-3 text-xs font-semibold transition ${
+                  mobileTab === item ? "bg-royal-600 text-white" : "bg-slate-100 text-slate-600"
+                }`}
+              >
+                {item}
+              </button>
+            ))}
+          </div>
+          <p className="mt-2 text-xs font-semibold text-slate-400">Swipe left or right to switch sections</p>
+        </div>
       </section>
 
-      {tab === "Overview" ? <OverviewTab data={workspaceData} /> : null}
-      {tab === "Preview" ? <PdfViewer /> : null}
-      {tab === "OCR" ? <OcrTab ocr={workspaceData.ocr} onRun={runOcr} /> : null}
-      {tab === "Extracted Data" ? <ExtractionTab extraction={workspaceData.extraction} onRun={runExtraction} /> : null}
-      {tab === "AI Analysis" ? <AiTab documentId={documentId} insights={workspaceData.insights} onInsight={refreshWorkspacePanels} /> : null}
-      {tab === "History" ? <HistoryTab versions={workspaceData.versions} /> : null}
-      {tab === "Comments" ? <CommentsTab comments={workspaceData.comments} documentId={documentId} onComment={refreshWorkspacePanels} /> : null}
-      {tab === "Downloads" ? <DownloadsTab downloads={workspaceData.downloads} /> : null}
+      <div className="sm:hidden" onTouchStart={onMobileTouchStart} onTouchEnd={onMobileTouchEnd}>
+        {mobileTab === "Overview" ? <OverviewTab data={workspaceData} /> : null}
+        {mobileTab === "Preview" ? <PdfViewer /> : null}
+        {mobileTab === "Metadata" ? <ExtractionTab extraction={workspaceData.extraction} onRun={runExtraction} /> : null}
+        {mobileTab === "History" ? <HistoryTab versions={workspaceData.versions} /> : null}
+        {mobileTab === "Actions" ? (
+          <div className="space-y-4">
+            <SectionPanel title="Quick Actions" description="Document actions and collaboration shortcuts.">
+              <div className="grid grid-cols-2 gap-2">
+                <button type="button" onClick={shareDocument} className="min-h-11 rounded-xl border border-slate-200 bg-white px-3 text-sm font-semibold text-slate-700">
+                  {doc?.shared ? "Unshare" : "Share"}
+                </button>
+                <button type="button" onClick={() => setTab("Downloads")} className="min-h-11 rounded-xl bg-royal-600 px-3 text-sm font-semibold text-white">
+                  Open Downloads
+                </button>
+                <Link href="/documents" className="min-h-11 rounded-xl border border-slate-200 bg-white px-3 py-3 text-center text-sm font-semibold text-slate-700">
+                  Back
+                </Link>
+                <button type="button" onClick={deleteDocument} className="min-h-11 rounded-xl border border-rose-200 bg-rose-50 px-3 text-sm font-semibold text-rose-700">
+                  Move to Trash
+                </button>
+              </div>
+            </SectionPanel>
+            <CommentsTab comments={workspaceData.comments} documentId={documentId} onComment={refreshWorkspacePanels} />
+            <DownloadsTab downloads={workspaceData.downloads} />
+          </div>
+        ) : null}
+      </div>
+
+      <div className="hidden sm:block">
+        {tab === "Overview" ? <OverviewTab data={workspaceData} /> : null}
+        {tab === "Preview" ? <PdfViewer /> : null}
+        {tab === "OCR" ? <OcrTab ocr={workspaceData.ocr} onRun={runOcr} /> : null}
+        {tab === "Extracted Data" ? <ExtractionTab extraction={workspaceData.extraction} onRun={runExtraction} /> : null}
+        {tab === "AI Analysis" ? <AiTab documentId={documentId} insights={workspaceData.insights} onInsight={refreshWorkspacePanels} /> : null}
+        {tab === "History" ? <HistoryTab versions={workspaceData.versions} /> : null}
+        {tab === "Comments" ? <CommentsTab comments={workspaceData.comments} documentId={documentId} onComment={refreshWorkspacePanels} /> : null}
+        {tab === "Downloads" ? <DownloadsTab downloads={workspaceData.downloads} /> : null}
+      </div>
     </div>
   );
 }

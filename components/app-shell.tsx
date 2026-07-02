@@ -233,7 +233,6 @@ export function AppShell({ children }: { children: React.ReactNode }) {
             <div className="flex min-w-0 items-center gap-3">
               <BrandLogo compact />
               <div className="min-w-0">
-                <p className="text-[11px] font-medium uppercase tracking-wide text-slate-400">DocuCoreX</p>
                 <p className="truncate text-sm font-semibold text-navy-950">{currentPageTitle}</p>
               </div>
             </div>

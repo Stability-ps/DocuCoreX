@@ -14,6 +14,7 @@ import {
   Filter,
   Loader2,
   MoreVertical,
+  PackageCheck,
   PencilLine,
   RefreshCcw,
   Search,
@@ -175,6 +176,8 @@ function getReviewItems(transactions: AccountingTransaction[]) {
 export function AccountingIntelligence() {
   const inputRef = useRef<HTMLInputElement>(null);
   const [runs, setRuns] = useState<AccountingStatementRun[]>([]);
+  const [uploadQueue, setUploadQueue] = useState<Array<{ name: string; status: string; error?: string }>>([]);
+  const [selectedRunIds, setSelectedRunIds] = useState<string[]>([]);
   const [selectedRunId, setSelectedRunId] = useState("");
   const [detail, setDetail] = useState<AccountingRunDetail | null>(null);
   const [busy, setBusy] = useState("");
@@ -210,6 +213,16 @@ export function AccountingIntelligence() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  async function uploadFiles(files: File[]) {
+    if (!files.length) return;
+    setUploadQueue(files.map((file) => ({ name: file.name, status: "Uploaded" })));
+    for (const file of files) {
+      setUploadQueue((queue) => queue.map((item) => (item.name === file.name ? { ...item, status: "Processing" } : item)));
+      await uploadFile(file);
+      setUploadQueue((queue) => queue.map((item) => (item.name === file.name ? { ...item, status: "Completed" } : item)));
+    }
+  }
+
   async function uploadFile(file: File) {
     setBusy("upload");
     setError("");
@@ -225,7 +238,44 @@ export function AccountingIntelligence() {
       setMessage("FNB statement uploaded. Accounting job queued.");
       await loadRuns(data.run.id);
     } catch (uploadError) {
+      setUploadQueue((queue) =>
+        queue.map((item) =>
+          item.name === file.name ? { ...item, status: "Failed", error: uploadError instanceof Error ? uploadError.message : "Upload failed." } : item,
+        ),
+      );
       setError(uploadError instanceof Error ? uploadError.message : "Upload failed.");
+    } finally {
+      setBusy("");
+    }
+  }
+
+  async function createCombinedWorkbook() {
+    setBusy("combine");
+    setError("");
+    setMessage("");
+    setDiagnostics("");
+    try {
+      const response = await fetch("/api/accounting/fnb/combine", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ runIds: selectedRunIds }),
+      });
+      if (!response.ok) {
+        const data = (await response.json().catch(() => ({}))) as { error?: string };
+        throw new Error(data.error ?? "Combined workbook generation failed.");
+      }
+      const blob = await response.blob();
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = "FNB-combined-accounting-pack.xlsx";
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      URL.revokeObjectURL(url);
+      setMessage("Combined workbook generated.");
+    } catch (combineError) {
+      setError(combineError instanceof Error ? combineError.message : "Combined workbook generation failed.");
     } finally {
       setBusy("");
     }
@@ -374,8 +424,7 @@ export function AccountingIntelligence() {
         onDragOver={(event) => event.preventDefault()}
         onDrop={(event) => {
           event.preventDefault();
-          const file = event.dataTransfer.files.item(0);
-          if (file) void uploadFile(file);
+          void uploadFiles(Array.from(event.dataTransfer.files));
         }}
         className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm md:p-6"
       >
@@ -403,10 +452,10 @@ export function AccountingIntelligence() {
                 ref={inputRef}
                 type="file"
                 accept="application/pdf,.pdf"
+                multiple
                 className="hidden"
                 onChange={(event) => {
-                  const file = event.currentTarget.files?.[0];
-                  if (file) void uploadFile(file);
+                  void uploadFiles(Array.from(event.currentTarget.files ?? []));
                   event.currentTarget.value = "";
                 }}
               />
@@ -417,7 +466,7 @@ export function AccountingIntelligence() {
                 className="inline-flex h-12 w-full min-w-44 items-center justify-center gap-2 rounded-lg bg-royal-600 px-5 text-sm font-semibold text-white shadow-sm transition hover:bg-royal-700 disabled:cursor-not-allowed disabled:bg-slate-300 sm:w-auto"
               >
                 {busy === "upload" ? <Loader2 className="h-4 w-4 animate-spin" /> : <UploadCloud className="h-4 w-4" />}
-                Upload FNB PDF
+                Upload FNB PDFs
               </button>
               <p className="mt-2 text-xs font-semibold text-slate-500">PDF up to 200MB</p>
             </div>
@@ -441,6 +490,33 @@ export function AccountingIntelligence() {
           </div>
         </div>
       </section>
+
+      {uploadQueue.length ? (
+        <section className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
+          <div className="mb-3 flex items-center justify-between gap-3">
+            <div>
+              <h2 className="font-semibold text-navy-950">Upload queue</h2>
+              <p className="text-sm font-medium text-slate-500">Multiple statements can be uploaded and processed together.</p>
+            </div>
+            <button type="button" onClick={() => setUploadQueue([])} className="text-xs font-black text-slate-500">
+              Clear
+            </button>
+          </div>
+          <div className="grid gap-2 md:grid-cols-2">
+            {uploadQueue.map((item) => (
+              <div key={item.name} className="rounded-lg border border-slate-200 bg-slate-50 p-3">
+                <div className="flex items-center justify-between gap-3">
+                  <p className="min-w-0 truncate text-sm font-black text-navy-950">{item.name}</p>
+                  <span className={`shrink-0 rounded-full px-2 py-1 text-[11px] font-black ${item.status === "Failed" ? "bg-rose-50 text-rose-700" : item.status === "Completed" ? "bg-emerald-50 text-emerald-700" : "bg-blue-50 text-blue-700"}`}>
+                    {item.status}
+                  </span>
+                </div>
+                {item.error ? <p className="mt-1 text-xs font-semibold text-rose-700">{item.error}</p> : null}
+              </div>
+            ))}
+          </div>
+        </section>
+      ) : null}
 
       {message ? <div className="rounded-lg border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm font-bold text-emerald-800">{message}</div> : null}
       {error ? (
@@ -473,8 +549,12 @@ export function AccountingIntelligence() {
         <StatementRuns
           runs={runs}
           selectedRunId={selectedRunId}
+          selectedRunIds={selectedRunIds}
           search={runSearch}
           sortBy={runSort}
+          onToggleSelected={(runId) =>
+            setSelectedRunIds((current) => (current.includes(runId) ? current.filter((id) => id !== runId) : [...current, runId]))
+          }
           onSearchChange={setRunSearch}
           onSortChange={setRunSort}
           onReprocess={(runId) => void processRun(runId)}
@@ -487,6 +567,25 @@ export function AccountingIntelligence() {
         />
 
         <section className="min-w-0 rounded-xl border border-slate-200 bg-white shadow-sm">
+          {selectedRunIds.length ? (
+            <div className="border-b border-slate-200 bg-royal-50 p-4">
+              <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+                <div>
+                  <p className="font-black text-navy-950">{selectedRunIds.length} statements selected</p>
+                  <p className="text-sm font-semibold text-slate-600">DocuCoreX will sort them by statement period and check balance continuity.</p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => void createCombinedWorkbook()}
+                  disabled={selectedRunIds.length < 2 || busy === "combine"}
+                  className="inline-flex min-h-11 items-center justify-center gap-2 rounded-xl bg-royal-600 px-4 text-sm font-black text-white disabled:bg-slate-300"
+                >
+                  {busy === "combine" ? <Loader2 className="h-4 w-4 animate-spin" /> : <PackageCheck className="h-4 w-4" />}
+                  Create Combined Workbook
+                </button>
+              </div>
+            </div>
+          ) : null}
           {selectedRun && detail ? (
             <div className="space-y-4 p-4 sm:p-5">
               <div className="flex flex-col gap-4 xl:flex-row xl:items-start xl:justify-between">
@@ -838,8 +937,10 @@ function SummaryCard({
 function StatementRuns({
   runs,
   selectedRunId,
+  selectedRunIds,
   search,
   sortBy,
+  onToggleSelected,
   onSearchChange,
   onSortChange,
   onReprocess,
@@ -848,8 +949,10 @@ function StatementRuns({
 }: {
   runs: AccountingStatementRun[];
   selectedRunId: string;
+  selectedRunIds: string[];
   search: string;
   sortBy: string;
+  onToggleSelected: (runId: string) => void;
   onSearchChange: (value: string) => void;
   onSortChange: (value: string) => void;
   onReprocess: (runId: string) => void;
@@ -950,6 +1053,18 @@ function StatementRuns({
               }`}
             >
               <div className="flex items-start gap-3">
+                <input
+                  type="checkbox"
+                  checked={selectedRunIds.includes(run.id)}
+                  disabled={!["completed", "review"].includes(run.status)}
+                  onChange={(event) => {
+                    event.stopPropagation();
+                    onToggleSelected(run.id);
+                  }}
+                  onClick={(event) => event.stopPropagation()}
+                  className="mt-2 h-5 w-5 rounded border-slate-300 text-royal-600 disabled:opacity-30"
+                  aria-label={`Select ${runDisplayTitle(run)} for combined workbook`}
+                />
                 <div className="rounded-lg bg-rose-50 p-2 text-rose-600">
                   <FileText className="h-4 w-4" />
                 </div>
@@ -1022,6 +1137,12 @@ function TransactionTable({
   transactions: AccountingTransaction[];
   patchTransaction: (transaction: AccountingTransaction, patch: AccountingTransactionPatch) => Promise<void>;
 }) {
+  const [mobileOffsets, setMobileOffsets] = useState<Record<string, number>>({});
+  const [dismissedTransactionIds, setDismissedTransactionIds] = useState<Record<string, true>>({});
+  const touchStartRef = useRef<Record<string, { x: number; y: number }>>({});
+
+  const mobileTransactions = transactions.filter((transaction) => !dismissedTransactionIds[transaction.id]);
+
   if (!transactions.length) {
     return (
       <div className="rounded-lg border border-slate-200 bg-slate-50 p-8 text-center">
@@ -1035,63 +1156,119 @@ function TransactionTable({
   return (
     <>
       <div className="space-y-2 md:hidden">
-        {transactions.map((transaction) => (
-          <article key={transaction.id} className="rounded-lg border border-slate-200 bg-white p-3">
-            <div className="flex items-start justify-between gap-3">
-              <div className="min-w-0">
-                <p className="text-xs text-slate-500">{transaction.transactionDate || "-"}</p>
-                <p className="mt-1 text-sm font-semibold text-navy-950">{transaction.description}</p>
+        {mobileTransactions.map((transaction) => (
+          <article
+            key={transaction.id}
+            className="relative overflow-hidden rounded-lg border border-slate-200 bg-white"
+            onTouchStart={(event) => {
+              const target = event.target as HTMLElement;
+              if (target.closest("button,select,input,textarea,a,label")) {
+                delete touchStartRef.current[transaction.id];
+                return;
+              }
+
+              const touch = event.touches[0];
+              touchStartRef.current[transaction.id] = { x: touch.clientX, y: touch.clientY };
+            }}
+            onTouchMove={(event) => {
+              const start = touchStartRef.current[transaction.id];
+              if (!start) return;
+
+              const touch = event.touches[0];
+              const deltaX = touch.clientX - start.x;
+              const deltaY = touch.clientY - start.y;
+              if (Math.abs(deltaX) <= Math.abs(deltaY)) return;
+
+              setMobileOffsets((current) => ({ ...current, [transaction.id]: Math.max(-120, Math.min(120, deltaX)) }));
+            }}
+            onTouchEnd={() => {
+              const offset = mobileOffsets[transaction.id] ?? 0;
+              delete touchStartRef.current[transaction.id];
+
+              if (offset >= 80) {
+                void patchTransaction(transaction, { reviewStatus: "approved" });
+              }
+              if (offset <= -80) {
+                setDismissedTransactionIds((current) => ({ ...current, [transaction.id]: true }));
+              }
+
+              setMobileOffsets((current) => ({ ...current, [transaction.id]: 0 }));
+            }}
+          >
+            <div className="pointer-events-none absolute inset-y-0 left-0 flex w-24 items-center justify-center bg-emerald-50 text-xs font-semibold text-emerald-700">
+              Approve
+            </div>
+            <div className="pointer-events-none absolute inset-y-0 right-0 flex w-24 items-center justify-center bg-rose-50 text-xs font-semibold text-rose-700">
+              Dismiss
+            </div>
+
+            <div
+              className="rounded-lg bg-white p-3 transition-transform duration-150"
+              style={{ transform: `translateX(${mobileOffsets[transaction.id] ?? 0}px)` }}
+            >
+              <div className="flex items-start justify-between gap-3">
+                <div className="min-w-0">
+                  <p className="text-xs text-slate-500">{transaction.transactionDate || "-"}</p>
+                  <p className="mt-1 text-sm font-semibold text-navy-950">{transaction.description}</p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() =>
+                    void patchTransaction(transaction, {
+                      reviewStatus: transaction.reviewStatus === "approved" ? "needs_review" : "approved",
+                    })
+                  }
+                  className={`min-h-11 rounded-full px-2.5 py-1 text-xs font-semibold ${
+                    transaction.reviewStatus === "approved" ? "bg-emerald-50 text-emerald-700" : "bg-amber-50 text-amber-700"
+                  }`}
+                >
+                  {transaction.reviewStatus === "approved" ? "Approved" : "Review"}
+                </button>
               </div>
-              <button
-                type="button"
-                onClick={() =>
-                  void patchTransaction(transaction, {
-                    reviewStatus: transaction.reviewStatus === "approved" ? "needs_review" : "approved",
-                  })
-                }
-                className={`min-h-11 rounded-full px-2.5 py-1 text-xs font-semibold ${
-                  transaction.reviewStatus === "approved" ? "bg-emerald-50 text-emerald-700" : "bg-amber-50 text-amber-700"
-                }`}
-              >
-                {transaction.reviewStatus === "approved" ? "Approved" : "Review"}
-              </button>
-            </div>
 
-            <div className="mt-2 grid grid-cols-2 gap-2 text-xs">
-              <p className="text-slate-500">Amount</p>
-              <p className="text-right font-semibold text-navy-950">{money((transaction.creditAmount ?? 0) - (transaction.debitAmount ?? 0))}</p>
-              <p className="text-slate-500">Category</p>
-              <p className="text-right font-semibold text-navy-950">{transaction.accountCategory}</p>
-              <p className="text-slate-500">VAT</p>
-              <p className="text-right font-semibold text-navy-950">{vatTreatments.find((v) => v.value === transaction.vatTreatment)?.label ?? transaction.vatTreatment}</p>
-            </div>
+              <p className="mt-2 text-[11px] font-semibold text-slate-400">Swipe right to approve / Swipe left to dismiss</p>
 
-            <div className="mt-2 grid grid-cols-2 gap-2">
-              <select
-                value={transaction.accountCategory}
-                onChange={(event) => void patchTransaction(transaction, { accountCategory: event.target.value })}
-                className="min-h-11 rounded-lg border border-slate-200 bg-white px-2 text-xs font-medium text-navy-950 outline-none"
-              >
-                {categories.map((category) => (
-                  <option key={category} value={category}>
-                    {category}
-                  </option>
-                ))}
-              </select>
-              <select
-                value={transaction.vatTreatment}
-                onChange={(event) => void patchTransaction(transaction, { vatTreatment: event.target.value as VatTreatment })}
-                className="min-h-11 rounded-lg border border-slate-200 bg-white px-2 text-xs font-medium text-navy-950 outline-none"
-              >
-                {vatTreatments.map((treatment) => (
-                  <option key={treatment.value} value={treatment.value}>
-                    {treatment.label}
-                  </option>
-                ))}
-              </select>
+              <div className="mt-2 grid grid-cols-2 gap-2 text-xs">
+                <p className="text-slate-500">Amount</p>
+                <p className="text-right font-semibold text-navy-950">{money((transaction.creditAmount ?? 0) - (transaction.debitAmount ?? 0))}</p>
+                <p className="text-slate-500">Category</p>
+                <p className="text-right font-semibold text-navy-950">{transaction.accountCategory}</p>
+                <p className="text-slate-500">VAT</p>
+                <p className="text-right font-semibold text-navy-950">{vatTreatments.find((v) => v.value === transaction.vatTreatment)?.label ?? transaction.vatTreatment}</p>
+              </div>
+
+              <div className="mt-2 grid grid-cols-2 gap-2">
+                <select
+                  value={transaction.accountCategory}
+                  onChange={(event) => void patchTransaction(transaction, { accountCategory: event.target.value })}
+                  className="min-h-11 rounded-lg border border-slate-200 bg-white px-2 text-xs font-medium text-navy-950 outline-none"
+                >
+                  {categories.map((category) => (
+                    <option key={category} value={category}>
+                      {category}
+                    </option>
+                  ))}
+                </select>
+                <select
+                  value={transaction.vatTreatment}
+                  onChange={(event) => void patchTransaction(transaction, { vatTreatment: event.target.value as VatTreatment })}
+                  className="min-h-11 rounded-lg border border-slate-200 bg-white px-2 text-xs font-medium text-navy-950 outline-none"
+                >
+                  {vatTreatments.map((treatment) => (
+                    <option key={treatment.value} value={treatment.value}>
+                      {treatment.label}
+                    </option>
+                  ))}
+                </select>
+              </div>
             </div>
           </article>
         ))}
+        {!mobileTransactions.length ? (
+          <div className="rounded-lg border border-slate-200 bg-slate-50 p-4 text-center text-sm font-semibold text-slate-500">
+            All mobile cards were dismissed in this view.
+          </div>
+        ) : null}
       </div>
 
       <div className="hidden overflow-x-auto rounded-lg border border-slate-200 md:block">
