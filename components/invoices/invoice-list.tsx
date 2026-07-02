@@ -89,16 +89,16 @@ function initialsFor(name: string) {
 }
 
 function formatDueDate(dueDate: string | null) {
-  if (!dueDate) return "No due date";
+  if (!dueDate) return "Due —";
   const date = new Date(dueDate);
-  if (Number.isNaN(date.getTime())) return "No due date";
+  if (Number.isNaN(date.getTime())) return "Due —";
   return `Due ${date.toLocaleDateString("en-ZA", { day: "2-digit", month: "short", year: "numeric" })}`;
 }
 
 function SkeletonRow() {
   return (
-    <div className="flex items-center gap-3 rounded-2xl border border-slate-200 bg-white p-3.5">
-      <div className="h-11 w-11 flex-none animate-pulse rounded-full bg-slate-100" />
+    <div className="flex items-center gap-2.5 rounded-2xl border border-slate-200 bg-white p-3">
+      <div className="h-9 w-9 flex-none animate-pulse rounded-full bg-slate-100" />
       <div className="min-w-0 flex-1 space-y-2">
         <div className="h-3.5 w-1/3 animate-pulse rounded bg-slate-100" />
         <div className="h-3 w-1/4 animate-pulse rounded bg-slate-100" />
@@ -173,6 +173,9 @@ export function InvoiceList() {
         totals.paid.amount += invoice.totalAmount;
         totals.paid.count += 1;
       } else if (invoice.status === "overdue") {
+        // Overdue invoices are unpaid, so they also count toward Outstanding.
+        totals.outstanding.amount += invoice.totalAmount - invoice.amountPaid;
+        totals.outstanding.count += 1;
         totals.overdue.amount += invoice.totalAmount - invoice.amountPaid;
         totals.overdue.count += 1;
       } else if (invoice.status === "draft") {
@@ -364,35 +367,36 @@ export function InvoiceList() {
   ] as const;
 
   return (
-    <div ref={containerRef} className="space-y-4">
+    <div ref={containerRef} className="space-y-3">
       {/* Header */}
-      <div className="flex flex-wrap items-center justify-between gap-3">
+      <div className="flex flex-wrap items-center justify-between gap-2.5">
         <div>
-          <h1 className="text-2xl font-semibold tracking-tight text-slate-900">Invoices</h1>
-          <p className="mt-0.5 text-sm text-slate-500">Create, manage and track your invoices.</p>
+          <h1 className="text-xl font-semibold tracking-tight text-slate-900">Invoices</h1>
+          <p className="text-xs text-slate-500">Create, manage and track your invoices.</p>
         </div>
         <Link
           href="/invoices/new"
-          className="inline-flex min-h-10 items-center gap-1.5 rounded-lg bg-royal-600 px-4 py-2 text-sm font-semibold text-white shadow-sm transition hover:bg-royal-700"
+          className="inline-flex h-11 items-center gap-1.5 rounded-lg bg-royal-600 px-3.5 text-sm font-semibold text-white shadow-sm transition hover:bg-royal-700"
         >
           <Plus className="h-4 w-4" />
-          New invoice
+          New Invoice
         </Link>
       </div>
 
-      {/* Search & filters */}
-      <div className="flex flex-wrap items-center gap-2">
-        <div className="relative min-w-[200px] flex-1">
-          <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
-          <input
-            value={query}
-            onChange={(event) => setQuery(event.target.value)}
-            placeholder="Search invoices..."
-            className="h-10 w-full rounded-lg border border-slate-200 bg-white pl-9 pr-3 text-sm text-slate-900 outline-none transition focus:border-royal-300 focus:ring-2 focus:ring-royal-100"
-          />
-        </div>
+      {/* Search — full width on its own row */}
+      <div className="relative">
+        <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
+        <input
+          value={query}
+          onChange={(event) => setQuery(event.target.value)}
+          placeholder="Search by client, invoice or number..."
+          className="h-10 w-full rounded-lg border border-slate-200 bg-white pl-9 pr-3 text-sm text-slate-900 outline-none transition focus:border-royal-300 focus:ring-2 focus:ring-royal-100"
+        />
+      </div>
 
-        <div className="relative">
+      {/* Filters | Sort | Calendar — one even row, never wraps */}
+      <div className="flex items-center gap-2">
+        <div className="relative flex-1">
           <button
             type="button"
             onClick={() => {
@@ -400,7 +404,7 @@ export function InvoiceList() {
               setShowSort(false);
               setShowDateFilter(false);
             }}
-            className={`inline-flex h-10 items-center gap-1.5 rounded-lg border px-3 text-sm font-semibold transition ${
+            className={`inline-flex h-10 w-full items-center justify-center gap-1.5 rounded-lg border px-3 text-sm font-semibold transition ${
               statusFilter !== "all" ? "border-royal-300 bg-royal-50 text-royal-700" : "border-slate-200 bg-white text-slate-600 hover:border-royal-300"
             }`}
           >
@@ -428,7 +432,7 @@ export function InvoiceList() {
           ) : null}
         </div>
 
-        <div className="relative">
+        <div className="relative flex-1">
           <button
             type="button"
             onClick={() => {
@@ -436,7 +440,7 @@ export function InvoiceList() {
               setShowFilters(false);
               setShowDateFilter(false);
             }}
-            className="inline-flex h-10 items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-3 text-sm font-semibold text-slate-600 transition hover:border-royal-300"
+            className="inline-flex h-10 w-full items-center justify-center gap-1.5 rounded-lg border border-slate-200 bg-white px-3 text-sm font-semibold text-slate-600 transition hover:border-royal-300"
           >
             <ArrowUpDown className="h-3.5 w-3.5" />
             Sort
@@ -462,7 +466,7 @@ export function InvoiceList() {
           ) : null}
         </div>
 
-        <div className="relative">
+        <div className="relative flex-1">
           <button
             type="button"
             onClick={() => {
@@ -470,13 +474,14 @@ export function InvoiceList() {
               setShowFilters(false);
               setShowSort(false);
             }}
-            className={`inline-flex h-10 w-10 items-center justify-center rounded-lg border transition ${
+            className={`inline-flex h-10 w-full items-center justify-center gap-1.5 rounded-lg border px-3 text-sm font-semibold transition ${
               dateFilter !== "all" ? "border-royal-300 bg-royal-50 text-royal-700" : "border-slate-200 bg-white text-slate-600 hover:border-royal-300"
             }`}
             title="Filter by date"
             aria-label="Filter by date"
           >
-            <Calendar className="h-4 w-4" />
+            <Calendar className="h-3.5 w-3.5" />
+            Date
           </button>
           {showDateFilter ? (
             <div className="absolute right-0 top-11 z-20 w-44 overflow-hidden rounded-xl border border-slate-200 bg-white p-1.5 shadow-soft">
@@ -502,16 +507,19 @@ export function InvoiceList() {
 
       {error ? <p className="text-sm font-semibold text-rose-600">{error}</p> : null}
 
-      {/* Summary cards */}
-      <div className="-mx-1 flex gap-3 overflow-x-auto px-1 pb-1 sm:grid sm:grid-cols-4 sm:overflow-visible">
+      {/* Summary cards — horizontal scroll only on mobile, never vertical */}
+      <div className="no-scrollbar -mx-1 mb-1 flex snap-x snap-mandatory flex-nowrap gap-2.5 overflow-x-auto overflow-y-hidden px-1 pb-1 [-webkit-overflow-scrolling:touch] sm:grid sm:grid-cols-4 sm:overflow-visible">
         {summaryCards.map((card) => (
-          <div key={card.key} className="min-w-[150px] flex-none rounded-2xl border border-slate-200 bg-white p-3.5 sm:min-w-0">
-            <div className={`inline-flex h-8 w-8 items-center justify-center rounded-lg ${card.iconBg}`}>
-              <card.icon className={`h-4 w-4 ${card.iconColor}`} />
+          <div
+            key={card.key}
+            className="w-[155px] flex-none snap-start rounded-2xl border border-slate-200 bg-white p-3 sm:w-auto"
+          >
+            <div className={`inline-flex h-7 w-7 items-center justify-center rounded-lg ${card.iconBg}`}>
+              <card.icon className={`h-3.5 w-3.5 ${card.iconColor}`} />
             </div>
-            <p className="mt-2.5 text-xs font-semibold text-slate-500">{card.label}</p>
-            <p className={`mt-0.5 text-lg font-bold ${card.amountColor}`}>{formatCurrency(card.data.amount, "ZAR")}</p>
-            <p className="mt-0.5 text-xs text-slate-400">
+            <p className="mt-2 text-xs font-semibold text-slate-500">{card.label}</p>
+            <p className={`mt-0.5 text-base font-bold ${card.amountColor}`}>{formatCurrency(card.data.amount, "ZAR")}</p>
+            <p className="mt-0.5 text-[11px] text-slate-400">
               {card.data.count} invoice{card.data.count === 1 ? "" : "s"}
             </p>
           </div>
@@ -546,7 +554,7 @@ export function InvoiceList() {
         </div>
       ) : (
         <>
-          <div className="space-y-2.5">
+          <div className="space-y-2">
             {visibleInvoices.map((invoice) => {
               const avatar = avatarStyle(invoice.clientName || "?");
               const menuOpen = openMenuId === invoice.id;
@@ -555,22 +563,22 @@ export function InvoiceList() {
               return (
                 <div
                   key={invoice.id}
-                  className="group relative rounded-2xl border border-slate-200 bg-white p-3.5 transition hover:-translate-y-0.5 hover:shadow-md"
+                  className="group relative rounded-2xl border border-slate-200 bg-white p-3 transition hover:-translate-y-0.5 hover:shadow-md"
                 >
-                  <Link href={`/invoices/${invoice.id}`} className="flex items-center gap-3">
-                    <span className={`flex h-11 w-11 flex-none items-center justify-center rounded-full text-sm font-bold ${avatar.bg} ${avatar.text}`}>
+                  <Link href={`/invoices/${invoice.id}`} className="flex items-center gap-2.5 pr-9">
+                    <span className={`flex h-9 w-9 flex-none items-center justify-center rounded-full text-xs font-bold ${avatar.bg} ${avatar.text}`}>
                       {initialsFor(invoice.clientName || "?")}
                     </span>
                     <div className="min-w-0 flex-1">
-                      <p className="truncate text-[17px] font-semibold leading-tight text-slate-900">{invoice.clientName || "Unnamed client"}</p>
+                      <p className="truncate text-[16px] font-semibold leading-tight text-slate-900">{invoice.clientName || "Unnamed client"}</p>
                       <p className="truncate text-[13px] text-slate-500">{invoice.title || "Untitled invoice"}</p>
                       <p className="mt-0.5 truncate text-[11px] font-medium text-slate-400">
                         {invoice.invoiceNumber} · {formatDueDate(invoice.dueDate)}
                       </p>
                     </div>
-                    <div className="flex flex-none flex-col items-end gap-1.5 pl-2">
-                      <p className="text-[20px] font-bold leading-none text-slate-900">{formatCurrency(invoice.totalAmount, invoice.currency)}</p>
-                      <span className={`inline-flex items-center rounded-full px-2 py-0.5 text-[11px] font-medium ${statusStyles[invoice.status]}`}>
+                    <div className="flex flex-none flex-col items-end gap-1 pl-2">
+                      <p className="text-[19px] font-bold leading-none text-slate-900">{formatCurrency(invoice.totalAmount, invoice.currency)}</p>
+                      <span className={`inline-flex items-center rounded-full px-1.5 py-0.5 text-[10px] font-medium ${statusStyles[invoice.status]}`}>
                         {statusLabels[invoice.status]}
                       </span>
                     </div>
@@ -585,7 +593,7 @@ export function InvoiceList() {
                     }}
                     disabled={busy}
                     className={`absolute right-2 top-1/2 flex h-8 w-8 -translate-y-1/2 items-center justify-center rounded-lg text-slate-300 transition hover:bg-slate-100 hover:text-slate-600 disabled:opacity-50 sm:right-3 ${
-                      menuOpen ? "opacity-100" : "opacity-0 group-hover:opacity-100"
+                      menuOpen ? "opacity-100" : "opacity-60 sm:opacity-0 sm:group-hover:opacity-100"
                     }`}
                     title="More actions"
                     aria-label="More actions"
