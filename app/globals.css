@@ -12,6 +12,17 @@
   box-sizing: border-box;
 }
 
+/* Hides scrollbars on horizontally-scrollable strips (e.g. mobile summary cards)
+   while keeping the element scrollable via touch/mouse. */
+.no-scrollbar {
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+
 html {
   scroll-behavior: smooth;
   overflow-x: hidden;
