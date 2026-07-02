@@ -59,9 +59,9 @@ export function DashboardLive() {
   const exportsCreated = usage?.exportsCreated ?? usage?.exports_created ?? 9718;
 
   const metrics = [
-    { label: "Documents Uploaded", value: documents.toLocaleString(), detail: "Current billing period", icon: FileText },
+    { label: "Documents", value: documents.toLocaleString(), detail: "Current billing period", icon: FileText },
     { label: "Pages Processed", value: pages.toLocaleString(), detail: "OCR and extraction volume", icon: BookOpenText },
-    { label: "OCR Credits Remaining", value: credits.toLocaleString(), detail: "Available workspace credits", icon: ScanText },
+    { label: "Credits Remaining", value: credits.toLocaleString(), detail: "Available workspace credits", icon: ScanText },
     { label: "Storage Used", value: formatBytes(storage), detail: "Secure vault usage", icon: CloudUpload },
     { label: "Exports", value: exportsCreated.toLocaleString(), detail: "Excel, CSV and JSON", icon: Download },
     { label: "Active Jobs", value: jobs.length.toLocaleString(), detail: "Processing queue", icon: Activity },
@@ -69,29 +69,32 @@ export function DashboardLive() {
 
   return (
     <>
-      <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
-        {metrics.map((stat) => (
-          <MetricCard key={stat.label} {...stat} />
+      <div className="grid grid-cols-3 gap-3 sm:grid-cols-2 xl:grid-cols-3">
+        {metrics.map((stat, index) => (
+          <div key={stat.label} className={index > 2 ? "hidden md:block" : ""}>
+            <MetricCard {...stat} />
+          </div>
         ))}
       </div>
 
-      <SectionPanel title="Processing Queue" description="Live OCR, extraction, conversion and export jobs.">
-        <div className="grid gap-3 lg:grid-cols-3">
-          {jobs.map((job) => (
-            <div key={job.id} className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
-              <div className="flex items-center justify-between gap-3">
-                <p className="font-semibold capitalize text-navy-950">{job.type.replace("_", " ")}</p>
-                <span className="rounded-full bg-white px-2.5 py-1 text-xs font-semibold text-royal-700">{job.status}</span>
+      <div className="hidden md:block">
+        <SectionPanel title="Processing Queue" description="Live OCR, extraction, conversion and export jobs.">
+          <div className="grid gap-3 lg:grid-cols-3">
+            {jobs.map((job) => (
+              <div key={job.id} className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
+                <div className="flex items-center justify-between gap-3">
+                  <p className="font-semibold capitalize text-navy-950">{job.type.replace("_", " ")}</p>
+                  <span className="rounded-full bg-white px-2.5 py-1 text-xs font-semibold text-royal-700">{job.status}</span>
+                </div>
+                <p className="mt-2 text-sm text-slate-500">{job.message}</p>
+                <div className="mt-4 h-2 rounded-full bg-white">
+                  <div className="h-full rounded-full bg-royal-600" style={{ width: `${job.progress}%` }} />
+                </div>
               </div>
-              <p className="mt-2 text-sm text-slate-500">{job.message}</p>
-              <div className="mt-4 h-2 rounded-full bg-white">
-                <div className="h-full rounded-full bg-royal-600" style={{ width: `${job.progress}%` }} />
-              </div>
-            </div>
-          ))}
-        </div>
-      </SectionPanel>
+            ))}
+          </div>
+        </SectionPanel>
+      </div>
     </>
   );
 }
-

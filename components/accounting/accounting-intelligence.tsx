@@ -68,6 +68,15 @@ const tabs: Array<{ id: AccountingTab; label: string }> = [
   { id: "trial-balance", label: "Trial Balance" },
 ];
 
+const supportedBanks = [
+  { name: "FNB", active: true },
+  { name: "ABSA", active: false },
+  { name: "Nedbank", active: false },
+  { name: "Standard Bank", active: false },
+  { name: "Capitec", active: false },
+  { name: "Investec", active: false },
+];
+
 function money(value: number | null) {
   if (value === null) return "-";
   return new Intl.NumberFormat("en-ZA", { style: "currency", currency: "ZAR" }).format(value);
@@ -334,13 +343,15 @@ export function AccountingIntelligence() {
   const selectedAccount = detail?.run.accountNumber || selectedRun?.accountNumber || "63012589818";
 
   return (
-    <div className="space-y-5 p-4 sm:p-6 lg:p-8">
-      <header className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
+    <div className="space-y-4 p-4 sm:p-6 lg:space-y-5 lg:p-8">
+      <header className="flex flex-col gap-2 md:gap-4 lg:flex-row lg:items-center lg:justify-between">
         <div>
-          <p className="text-sm font-bold text-slate-500">Accounting Intelligence <span className="mx-2 text-slate-300">›</span> FNB Statements</p>
-          <h1 className="mt-2 text-2xl font-semibold tracking-tight text-navy-950 sm:text-3xl">FNB statement accounting engine</h1>
+          <p className="hidden text-sm font-bold text-slate-500 md:block">Accounting Intelligence <span className="mx-2 text-slate-300">›</span> Bank Statements</p>
+          <h1 className="text-2xl font-semibold tracking-tight text-navy-950 md:mt-2 sm:text-3xl md:hidden">Accounting</h1>
+          <h1 className="mt-2 hidden text-2xl font-semibold tracking-tight text-navy-950 sm:text-3xl md:block">Bank statement accounting engine</h1>
+          <p className="mt-1 text-sm font-semibold text-slate-500 md:hidden">Bank statement extraction & accounting workpapers</p>
         </div>
-        <label className="relative block w-full max-w-xl">
+        <label className="relative hidden w-full max-w-xl md:block">
           <Search className="pointer-events-none absolute left-4 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
           <input
             value={query}
@@ -359,28 +370,28 @@ export function AccountingIntelligence() {
           const file = event.dataTransfer.files.item(0);
           if (file) void uploadFile(file);
         }}
-        className="rounded-xl border border-slate-200 bg-white p-6 shadow-sm"
+        className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm md:p-6"
       >
-        <div className="grid gap-6 xl:grid-cols-[1fr_460px] xl:items-center">
-          <div>
+        <div className="grid gap-4 xl:grid-cols-[1fr_460px] xl:items-center">
+          <div className="hidden md:block">
             <p className="text-xs font-semibold uppercase tracking-[0.18em] text-royal-600">Accounting Intelligence</p>
-            <h2 className="mt-2 text-2xl font-semibold text-navy-950">Upload an FNB business bank statement PDF</h2>
+            <h2 className="mt-2 text-2xl font-semibold text-navy-950">Upload a business bank statement PDF</h2>
             <p className="mt-2 max-w-3xl text-sm font-medium leading-6 text-slate-600">
               Extract transactions, review accounting treatment, reconcile bank movement and export a structured Excel workpaper.
             </p>
           </div>
           <div className="grid gap-3 sm:grid-cols-[1fr_auto] sm:items-end">
             <label className="block">
-              <span className="mb-2 block text-xs font-semibold text-slate-500">Bank</span>
+              <span className="mb-2 block text-xs font-semibold text-slate-500">Select Bank</span>
               <select
                 value="FNB South Africa"
                 disabled
-                className="h-12 w-full rounded-lg border border-slate-200 bg-slate-50 px-4 text-sm font-semibold text-navy-950"
+                className="h-12 w-full rounded-lg border border-slate-200 bg-slate-50 px-4 text-base font-semibold text-navy-950 md:text-sm"
               >
                 <option>FNB South Africa</option>
               </select>
             </label>
-            <div className="rounded-xl bg-royal-50 p-4 text-center">
+            <div className="rounded-xl bg-royal-50 p-3 text-center md:p-4">
               <input
                 ref={inputRef}
                 type="file"
@@ -396,12 +407,29 @@ export function AccountingIntelligence() {
                 type="button"
                 disabled={busy === "upload"}
                 onClick={() => inputRef.current?.click()}
-                className="inline-flex h-12 min-w-44 items-center justify-center gap-2 rounded-lg bg-royal-600 px-5 text-sm font-semibold text-white shadow-sm transition hover:bg-royal-700 disabled:cursor-not-allowed disabled:bg-slate-300"
+                className="inline-flex h-12 w-full min-w-44 items-center justify-center gap-2 rounded-lg bg-royal-600 px-5 text-sm font-semibold text-white shadow-sm transition hover:bg-royal-700 disabled:cursor-not-allowed disabled:bg-slate-300 sm:w-auto"
               >
                 {busy === "upload" ? <Loader2 className="h-4 w-4 animate-spin" /> : <UploadCloud className="h-4 w-4" />}
                 Upload FNB PDF
               </button>
-              <p className="mt-3 text-xs font-semibold text-slate-500">PDF up to 200 MB · drag and drop supported</p>
+              <p className="mt-2 text-xs font-semibold text-slate-500">PDF up to 200MB</p>
+            </div>
+          </div>
+          <div className="xl:col-span-2">
+            <p className="mb-2 text-xs font-semibold text-slate-500">Supported Banks</p>
+            <div className="grid grid-cols-3 gap-2 sm:flex sm:flex-wrap">
+              {supportedBanks.map((bank) => (
+                <span
+                  key={bank.name}
+                  className={`rounded-full border px-3 py-2 text-center text-xs font-black ${
+                    bank.active ? "border-royal-200 bg-royal-50 text-royal-700" : "border-slate-200 bg-slate-50 text-slate-400"
+                  }`}
+                  title={bank.active ? "Active" : "Coming Soon"}
+                >
+                  {bank.name}
+                  {!bank.active ? <span className="block text-[10px] font-semibold sm:inline sm:pl-1">Soon</span> : null}
+                </span>
+              ))}
             </div>
           </div>
         </div>
@@ -420,7 +448,7 @@ export function AccountingIntelligence() {
         </div>
       ) : null}
 
-      <section className="grid gap-4 md:grid-cols-2 xl:grid-cols-[1.8fr_1fr_1fr_1fr_1fr_1fr_1fr]">
+      <section className="grid grid-cols-2 gap-3 md:grid-cols-2 xl:grid-cols-[1.8fr_1fr_1fr_1fr_1fr_1fr_1fr]">
         <SummaryCard
           wide
           icon={<Building2 className="h-7 w-7" />}
@@ -466,7 +494,7 @@ export function AccountingIntelligence() {
                     {detail.run.transactionCount || detail.transactions.length} transactions · {totals.review} review items
                   </p>
                 </div>
-                <div className="flex flex-wrap gap-2">
+                <div className="hidden flex-wrap gap-2 md:flex">
                   <button
                     type="button"
                     disabled={busy === `process:${detail.run.id}` || detail.run.status === "processing"}
@@ -498,7 +526,7 @@ export function AccountingIntelligence() {
                 </div>
               ) : null}
 
-              <div className="overflow-x-auto border-b border-slate-200">
+              <div className="-mx-4 overflow-x-auto border-b border-slate-200 px-4 md:mx-0 md:px-0">
                 <div className="flex min-w-max gap-2">
                   {tabs.map((tab) => (
                     <button
@@ -525,7 +553,7 @@ export function AccountingIntelligence() {
                         value={query}
                         onChange={(event) => setQuery(event.target.value)}
                         placeholder="Search transactions..."
-                        className="h-11 w-full rounded-lg border border-slate-200 bg-white pl-11 pr-4 text-sm font-semibold outline-none focus:border-royal-300"
+                        className="h-11 w-full rounded-lg border border-slate-200 bg-white pl-11 pr-4 text-base font-semibold outline-none focus:border-royal-300 md:text-sm"
                       />
                     </label>
                     <div className="flex gap-2">
@@ -549,6 +577,7 @@ export function AccountingIntelligence() {
                       </button>
                     </div>
                   </div>
+                  <MobileTransactionCards transactions={filteredRows} patchTransaction={patchTransaction} reviewMode={activeTab === "review"} />
                   <TransactionTable transactions={filteredRows} patchTransaction={patchTransaction} />
                 </>
               ) : null}
@@ -566,6 +595,26 @@ export function AccountingIntelligence() {
           )}
         </section>
       </div>
+      {detail ? (
+        <div className="fixed inset-x-0 bottom-[calc(4.75rem+env(safe-area-inset-bottom))] z-30 grid grid-cols-3 gap-2 border-t border-slate-200 bg-white/95 p-3 shadow-[0_-10px_30px_rgba(15,23,42,0.08)] backdrop-blur-xl md:hidden">
+          <ExportDropdown run={detail.run} reviewCount={totals.review} open={exportOpen} onOpenChange={setExportOpen} mobile />
+          <button
+            type="button"
+            onClick={() => setActiveTab("review")}
+            className="h-11 rounded-xl border border-slate-200 bg-white text-sm font-black text-navy-950"
+          >
+            Review
+          </button>
+          <button
+            type="button"
+            onClick={() => void processRun(detail.run.id)}
+            disabled={busy === `process:${detail.run.id}` || detail.run.status === "processing"}
+            className="h-11 rounded-xl border border-slate-200 bg-white text-sm font-black text-navy-950 disabled:text-slate-300"
+          >
+            More
+          </button>
+        </div>
+      ) : null}
     </div>
   );
 }
@@ -575,11 +624,13 @@ function ExportDropdown({
   reviewCount,
   open,
   onOpenChange,
+  mobile = false,
 }: {
   run: AccountingStatementRun;
   reviewCount: number;
   open: boolean;
   onOpenChange: (open: boolean) => void;
+  mobile?: boolean;
 }) {
   const options = [
     { label: "Export Transactions", section: "transactions", detail: "CSV transaction listing" },
@@ -598,7 +649,7 @@ function ExportDropdown({
         type="button"
         disabled={!run.workbookStoragePath}
         onClick={() => onOpenChange(!open)}
-        className="inline-flex h-11 items-center gap-2 rounded-lg bg-royal-600 px-4 text-sm font-semibold text-white hover:bg-royal-700 disabled:cursor-not-allowed disabled:bg-slate-100 disabled:text-slate-400"
+        className={`${mobile ? "h-11 w-full justify-center rounded-xl" : "h-11 rounded-lg px-4"} inline-flex items-center gap-2 bg-royal-600 text-sm font-semibold text-white hover:bg-royal-700 disabled:cursor-not-allowed disabled:bg-slate-100 disabled:text-slate-400`}
         aria-expanded={open}
         aria-haspopup="menu"
       >
@@ -607,7 +658,7 @@ function ExportDropdown({
         <ChevronDown className="h-4 w-4" />
       </button>
       {open ? (
-        <div className="absolute right-0 z-20 mt-2 w-80 overflow-hidden rounded-lg border border-slate-200 bg-white p-2 shadow-xl" role="menu">
+        <div className={`${mobile ? "fixed inset-x-3 bottom-[calc(9.5rem+env(safe-area-inset-bottom))]" : "absolute right-0 mt-2 w-80"} z-50 overflow-hidden rounded-lg border border-slate-200 bg-white p-2 shadow-xl`} role="menu">
           <p className="px-3 py-2 text-[11px] font-semibold uppercase tracking-[0.14em] text-slate-400">Export options</p>
           {options.map((option, index) => (
             <a
@@ -628,6 +679,117 @@ function ExportDropdown({
           ))}
         </div>
       ) : null}
+    </div>
+  );
+}
+
+function MobileTransactionCards({
+  transactions,
+  patchTransaction,
+  reviewMode,
+}: {
+  transactions: AccountingTransaction[];
+  patchTransaction: (transaction: AccountingTransaction, patch: AccountingTransactionPatch) => Promise<void>;
+  reviewMode: boolean;
+}) {
+  if (!transactions.length) {
+    return (
+      <div className="rounded-lg border border-slate-200 bg-slate-50 p-6 text-center md:hidden">
+        <FileSpreadsheet className="mx-auto h-7 w-7 text-royal-500" />
+        <p className="mt-3 font-semibold text-navy-950">No transactions</p>
+        <p className="mt-1 text-sm text-slate-500">Process a statement or adjust search.</p>
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-3 md:hidden">
+      {transactions.map((transaction) => {
+        const amount = transaction.creditAmount ?? transaction.debitAmount;
+        const isCredit = Boolean(transaction.creditAmount);
+        return (
+          <article key={transaction.id} className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
+            <div className="flex items-start justify-between gap-3">
+              <div className="min-w-0">
+                <p className="text-xs font-black text-slate-500">{transaction.transactionDate || "-"}</p>
+                <p className="mt-1 line-clamp-2 text-sm font-black leading-5 text-navy-950">{transaction.description}</p>
+              </div>
+              <p className={`shrink-0 text-right text-sm font-black ${isCredit ? "text-emerald-700" : "text-rose-700"}`}>{money(amount ?? null)}</p>
+            </div>
+            <div className="mt-3 grid grid-cols-2 gap-2 text-xs">
+              <div className="rounded-lg bg-slate-50 p-2">
+                <p className="font-semibold text-slate-400">Category</p>
+                <p className="mt-1 font-black text-navy-950">{transaction.accountCategory}</p>
+              </div>
+              <div className="rounded-lg bg-slate-50 p-2">
+                <p className="font-semibold text-slate-400">VAT</p>
+                <p className="mt-1 font-black text-navy-950">{transaction.vatTreatment}</p>
+              </div>
+              <div className="rounded-lg bg-slate-50 p-2">
+                <p className="font-semibold text-slate-400">Confidence</p>
+                <p className="mt-1 font-black text-navy-950">{Math.round(transaction.confidence)}%</p>
+              </div>
+              <div className="rounded-lg bg-slate-50 p-2">
+                <p className="font-semibold text-slate-400">Review</p>
+                <p className="mt-1 font-black text-navy-950">{transaction.reviewStatus === "approved" ? "Approved" : "Review"}</p>
+              </div>
+            </div>
+            {reviewMode ? (
+              <div className="mt-3 grid grid-cols-3 gap-2">
+                <button
+                  type="button"
+                  onClick={() => void patchTransaction(transaction, { reviewStatus: "approved" })}
+                  className="h-11 rounded-xl bg-emerald-50 text-xs font-black text-emerald-700"
+                >
+                  Approve
+                </button>
+                <button
+                  type="button"
+                  onClick={() => void patchTransaction(transaction, { reviewStatus: "needs_review" })}
+                  className="h-11 rounded-xl bg-rose-50 text-xs font-black text-rose-700"
+                >
+                  Reject
+                </button>
+                <button
+                  type="button"
+                  onClick={() => void patchTransaction(transaction, { notes: transaction.notes || "AI explanation requested." })}
+                  className="h-11 rounded-xl bg-royal-50 text-xs font-black text-royal-700"
+                >
+                  AI Reason
+                </button>
+              </div>
+            ) : (
+              <details className="mt-3 rounded-lg bg-slate-50 p-3">
+                <summary className="cursor-pointer text-xs font-black text-royal-700">View More</summary>
+                <div className="mt-3 space-y-2">
+                  <select
+                    value={transaction.accountCategory}
+                    onChange={(event) => void patchTransaction(transaction, { accountCategory: event.target.value })}
+                    className="h-11 w-full rounded-lg border border-slate-200 bg-white px-3 text-base font-semibold"
+                  >
+                    {categories.map((category) => (
+                      <option key={category} value={category}>
+                        {category}
+                      </option>
+                    ))}
+                  </select>
+                  <select
+                    value={transaction.vatTreatment}
+                    onChange={(event) => void patchTransaction(transaction, { vatTreatment: event.target.value as VatTreatment })}
+                    className="h-11 w-full rounded-lg border border-slate-200 bg-white px-3 text-base font-semibold"
+                  >
+                    {vatTreatments.map((treatment) => (
+                      <option key={treatment.value} value={treatment.value}>
+                        {treatment.label}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              </details>
+            )}
+          </article>
+        );
+      })}
     </div>
   );
 }
@@ -755,7 +917,7 @@ function TransactionTable({
   }
 
   return (
-    <div className="overflow-x-auto rounded-lg border border-slate-200">
+    <div className="hidden overflow-x-auto rounded-lg border border-slate-200 md:block">
       <table className="w-full min-w-[1220px] text-left text-sm">
         <thead className="bg-slate-50 text-xs font-semibold text-slate-500">
           <tr>

@@ -23,6 +23,19 @@ export default async function DashboardPage() {
         }
       />
       <div className="space-y-6 p-4 sm:p-6 lg:p-8">
+        <section className="space-y-4 md:hidden">
+          <div>
+            <p className="text-2xl font-black tracking-tight text-navy-950">Welcome back, {profileName}</p>
+            <p className="mt-1 text-sm font-semibold text-slate-500">Upload, convert, extract and export documents.</p>
+          </div>
+          <Link
+            href="/upload"
+            className="flex min-h-12 items-center justify-center gap-2 rounded-2xl bg-royal-600 px-4 text-sm font-black text-white shadow-sm"
+          >
+            <Upload className="h-5 w-5" />
+            Upload Document
+          </Link>
+        </section>
         <DashboardLive />
 
         <div className="grid gap-6 xl:grid-cols-[1.1fr_0.9fr]">
