@@ -27,6 +27,7 @@ type MockStore = {
   aiInsights: AiInsight[];
   invoices: InvoiceRecord[];
   invoiceItems: InvoiceItemRecord[];
+  invoiceSequences: Record<string, number>;
   usageSummary: {
     periodStart: string;
     periodEnd: string;
@@ -315,29 +316,57 @@ const seedInvoices: InvoiceRecord[] = [
   {
     id: "invoice_demo_1",
     workspaceId: "workspace_demo",
-    invoiceNumber: `INV-${new Date().getFullYear()}-0001`,
+    invoiceNumber: "INV-000001",
+    sequenceNumber: 1,
     title: "Document processing services",
     description: "OCR, extraction and conversion services for Q2 statements.",
     status: "issued",
+    currency: "ZAR",
+    invoiceDate: now.slice(0, 10),
+    dueDate: new Date(Date.now() + 14 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10),
+    paymentTerms: "14_days",
+    referenceNumber: null,
+    internalNotes: null,
     clientName: "Acme Holdings",
+    clientCompanyName: "Acme Holdings (Pty) Ltd",
+    clientContactPerson: "Jordan Naidoo",
     clientEmail: "accounts@acmeholdings.example",
     clientPhone: "+27 82 555 0100",
     clientAddress: "12 Market Street, Cape Town, South Africa",
+    clientPostalAddress: null,
+    clientVatNumber: null,
+    clientRegistrationNumber: null,
+    attentionTo: "Accounts Payable",
+    purchaseOrderNumber: null,
+    clientReference: null,
     issuerName: "DocuCoreX Workspace",
+    issuerTradingName: null,
     issuerEmail: "billing@docucorex.local",
     issuerPhone: "+27 21 555 0199",
+    issuerWebsite: "https://docucorex.com",
     issuerAddress: "4 Harbour Road, Cape Town, South Africa",
+    issuerPostalAddress: null,
+    issuerVatNumber: null,
+    issuerRegistrationNumber: null,
     logoDataUrl: null,
+    bankName: "First National Bank",
+    bankAccountHolder: "DocuCoreX Workspace",
+    bankAccountNumber: "62812345678",
+    bankBranchCode: "250655",
+    bankSwift: null,
+    paymentReference: "INV-000001",
+    paymentInstructions: null,
     bankDetails: "First National Bank | Acc: 62812345678 | Branch: 250655",
     notesToClient: "Thank you for your business.",
     termsAndConditions: "Payment due within 14 days of invoice date.",
     subtotal: 4200,
     discountAmount: 0,
+    shippingAmount: 0,
+    additionalCharges: 0,
     taxRate: 15,
     taxAmount: 630,
     totalAmount: 4830,
     amountPaid: 0,
-    dueDate: new Date(Date.now() + 14 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10),
     createdBy: "user_demo",
     sentAt: now,
     paidAt: null,
@@ -356,6 +385,8 @@ const seedInvoiceItems: InvoiceItemRecord[] = [
     quantity: 3,
     unitPrice: 1000,
     lineTotal: 3000,
+    vatType: "standard",
+    vatRate: 15,
     position: 0,
     createdAt: now,
   },
@@ -366,6 +397,8 @@ const seedInvoiceItems: InvoiceItemRecord[] = [
     quantity: 4,
     unitPrice: 300,
     lineTotal: 1200,
+    vatType: "standard",
+    vatRate: 15,
     position: 1,
     createdAt: now,
   },
@@ -386,6 +419,7 @@ const store =
     aiInsights: [...seedAiInsights],
     invoices: [...seedInvoices],
     invoiceItems: [...seedInvoiceItems],
+    invoiceSequences: { workspace_demo: 2 },
     usageSummary: { ...seedUsageSummary },
   });
 
@@ -401,6 +435,7 @@ export const documentDownloads = store.documentDownloads;
 export const aiInsights = store.aiInsights;
 export const invoices = store.invoices;
 export const invoiceItems = store.invoiceItems;
+export const invoiceSequences = store.invoiceSequences;
 export const usageSummary = store.usageSummary;
 
 export function getDocument(id: string) {
