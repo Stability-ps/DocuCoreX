@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { useEffect, useRef, useState } from "react";
-import { Bell, ChevronDown, Command, CreditCard, Folder, Home, Landmark, LogOut, Plus, Search, Settings, ShieldCheck, Upload, UsersRound } from "lucide-react";
+import { Bell, ChevronDown, Command, CreditCard, Folder, Home, Landmark, LogOut, Plus, Receipt, Search, Settings, ShieldCheck, Upload, UsersRound } from "lucide-react";
 import { BrandLogo } from "@/components/brand";
 import { appNav, newActionItems } from "@/lib/product-data";
 import type { NotificationRecord } from "@/lib/app-state";
@@ -16,7 +16,7 @@ const SHELL_NOTIFICATIONS_CACHE_KEY = "docucorex:shell:notifications";
 const SHELL_CACHE_TTL_MS = 60_000;
 const mobileTabs = [
   { title: "Home", href: "/dashboard", icon: Home },
-  { title: "Documents", href: "/documents", icon: Folder },
+  { title: "Invoices", href: "/invoices", icon: Receipt },
   { title: "Upload", href: "/upload", icon: Upload },
   { title: "Accounting", href: "/accounting", icon: Landmark },
   { title: "Settings", href: "/settings", icon: Settings },
@@ -421,6 +421,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
               <p className="text-sm text-slate-500">{profile?.company ?? ""}</p>
               <div className="mt-4 grid gap-2">
                 <Link href="/settings" onClick={() => setShowProfile(false)} className="rounded-lg bg-slate-50 px-3 py-2 text-sm font-semibold text-slate-700 hover:text-royal-700">Profile</Link>
+                <Link href="/documents" onClick={() => setShowProfile(false)} className="flex items-center gap-2 rounded-lg bg-slate-50 px-3 py-2 text-sm font-semibold text-slate-700 hover:text-royal-700 lg:hidden"><Folder className="h-4 w-4" /> Documents</Link>
                 <Link href="/billing" onClick={() => setShowProfile(false)} className="flex items-center gap-2 rounded-lg bg-slate-50 px-3 py-2 text-sm font-semibold text-slate-700 hover:text-royal-700"><CreditCard className="h-4 w-4" /> Billing & Subscription</Link>
                 <Link href="/team" onClick={() => setShowProfile(false)} className="flex items-center gap-2 rounded-lg bg-slate-50 px-3 py-2 text-sm font-semibold text-slate-700 hover:text-royal-700"><UsersRound className="h-4 w-4" /> Team</Link>
                 <button
