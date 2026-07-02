@@ -99,13 +99,13 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           <button
             type="button"
             onClick={() => setShowNewMenu((value) => !value)}
-            className="flex w-full items-center justify-center gap-2 rounded-2xl bg-navy-950 px-4 py-3 text-sm font-black text-white shadow-sm transition hover:bg-royal-700"
+            className="flex w-full items-center justify-center gap-2 rounded-lg bg-navy-950 px-4 py-3 text-sm font-semibold text-white shadow-sm transition hover:bg-royal-700"
           >
             <Plus className="h-4 w-4" />
             New
           </button>
           {showNewMenu ? (
-            <div className="absolute left-4 right-4 top-16 z-50 overflow-hidden rounded-2xl border border-slate-200 bg-white p-2 shadow-soft">
+            <div className="absolute left-4 right-4 top-16 z-50 overflow-hidden rounded-lg border border-slate-200 bg-white p-2 shadow-soft">
               {newActionItems.map((item) => (
                 <Link
                   key={item.title}
@@ -131,7 +131,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                   <button
                     type="button"
                     onClick={() => setExpandedGroups((current) => ({ ...current, [item.title]: !(current[item.title] ?? active) }))}
-                    className={`flex w-full items-center gap-3 rounded-2xl px-4 py-3 text-sm font-black transition ${
+                    className={`flex w-full items-center gap-3 rounded-lg px-4 py-3 text-sm font-semibold transition ${
                       active ? "bg-royal-50 text-royal-800" : "text-slate-600 hover:bg-slate-50 hover:text-navy-950"
                     }`}
                   >
@@ -166,8 +166,8 @@ export function AppShell({ children }: { children: React.ReactNode }) {
               <Link
                 key={item.href}
                 href={item.href}
-                className={`flex items-center gap-3 rounded-2xl px-4 py-3 text-sm font-black transition ${
-                  active ? "bg-royal-600 text-white shadow-glow" : "text-slate-600 hover:bg-royal-50 hover:text-royal-700"
+                className={`flex items-center gap-3 rounded-lg px-4 py-3 text-sm font-semibold transition ${
+                  active ? "bg-royal-600 text-white shadow-sm" : "text-slate-600 hover:bg-royal-50 hover:text-royal-700"
                 }`}
               >
                 <item.icon className="h-5 w-5" />
@@ -176,13 +176,13 @@ export function AppShell({ children }: { children: React.ReactNode }) {
             );
           })}
         </nav>
-        <div className="absolute inset-x-4 bottom-4 rounded-3xl bg-navy-950 p-4 text-white navy-grid">
+        <div className="absolute inset-x-4 bottom-4 rounded-xl bg-navy-950 p-4 text-white navy-grid">
           <div className="flex items-center gap-3">
-            <div className="rounded-2xl bg-white/10 p-2">
+            <div className="rounded-lg bg-white/10 p-2">
               <ShieldCheck className="h-5 w-5 text-sky-300" />
             </div>
             <div>
-              <p className="text-sm font-black">Enterprise vault</p>
+              <p className="text-sm font-semibold">Enterprise vault</p>
               <p className="text-xs text-blue-100">Encrypted storage ready</p>
             </div>
           </div>
@@ -215,7 +215,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                 <Command className="h-4 w-4 text-slate-400" />
               </div>
               {searchResults.length ? (
-                <div className="absolute left-0 right-0 top-12 z-50 overflow-hidden rounded-3xl border border-slate-200 bg-white shadow-soft">
+                <div className="absolute left-0 right-0 top-12 z-50 overflow-hidden rounded-xl border border-slate-200 bg-white shadow-soft">
                   {searchResults.map((document) => (
                     <Link
                       key={document.id}
@@ -223,7 +223,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                       onClick={() => setQuery("")}
                       className="block border-b border-slate-100 px-4 py-3 last:border-b-0 hover:bg-royal-50"
                     >
-                      <p className="font-black text-navy-950">{document.name}</p>
+                      <p className="font-semibold text-navy-950">{document.name}</p>
                       <p className="text-sm text-slate-500">{document.detail || document.type}</p>
                     </Link>
                   ))}
@@ -233,16 +233,16 @@ export function AppShell({ children }: { children: React.ReactNode }) {
             <div className="flex items-center gap-2">
               <button
                 onClick={() => setShowNotifications((value) => !value)}
-                className="relative rounded-2xl border border-slate-200 bg-white p-3 text-slate-600 shadow-sm transition hover:text-royal-700"
+                className="relative rounded-lg border border-slate-200 bg-white p-3 text-slate-600 shadow-sm transition hover:text-royal-700"
                 title="Notifications"
               >
                 <Bell className="h-5 w-5" />
-                {unreadCount ? <span className="absolute -right-1 -top-1 rounded-full bg-rose-500 px-1.5 text-[10px] font-black text-white">{unreadCount}</span> : null}
+                {unreadCount ? <span className="absolute -right-1 -top-1 rounded-full bg-rose-500 px-1.5 text-[10px] font-semibold text-white">{unreadCount}</span> : null}
               </button>
               <button
                 type="button"
                 onClick={signOut}
-                className="rounded-2xl border border-slate-200 bg-white p-3 text-slate-600 shadow-sm transition hover:text-royal-700"
+                className="rounded-lg border border-slate-200 bg-white p-3 text-slate-600 shadow-sm transition hover:text-royal-700"
                 title="Sign out"
                 aria-label="Sign out"
               >
@@ -250,7 +250,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
               </button>
               <button
                 onClick={() => setShowProfile((value) => !value)}
-                className="flex h-11 min-w-11 items-center justify-center rounded-2xl bg-navy-950 px-2 text-sm font-black text-white"
+                className="flex h-11 min-w-11 items-center justify-center rounded-lg bg-navy-950 px-2 text-sm font-semibold text-white"
                 title="Account menu"
               >
                 {profile?.fullName?.charAt(0) ?? "?"}
@@ -258,15 +258,15 @@ export function AppShell({ children }: { children: React.ReactNode }) {
             </div>
           </div>
           {showNotifications ? (
-            <div className="absolute right-20 top-20 z-50 w-[min(420px,calc(100vw-2rem))] rounded-3xl border border-slate-200 bg-white p-4 shadow-soft">
+            <div className="absolute right-20 top-20 z-50 w-[min(420px,calc(100vw-2rem))] rounded-xl border border-slate-200 bg-white p-4 shadow-soft">
               <div className="mb-3 flex items-center justify-between">
-                <p className="font-black text-navy-950">Notifications</p>
-                <button onClick={markNotificationsRead} className="text-xs font-black text-royal-700">Mark all read</button>
+                <p className="font-semibold text-navy-950">Notifications</p>
+                <button onClick={markNotificationsRead} className="text-xs font-semibold text-royal-700">Mark all read</button>
               </div>
               <div className="space-y-2">
                 {notifications.map((notification) => (
-                  <div key={notification.id} className={`rounded-2xl p-3 ${notification.read ? "bg-slate-50" : "bg-royal-50"}`}>
-                    <p className="font-black text-navy-950">{notification.title}</p>
+                  <div key={notification.id} className={`rounded-lg p-3 ${notification.read ? "bg-slate-50" : "bg-royal-50"}`}>
+                    <p className="font-semibold text-navy-950">{notification.title}</p>
                     <p className="mt-1 text-sm leading-5 text-slate-600">{notification.body}</p>
                   </div>
                 ))}
@@ -274,16 +274,16 @@ export function AppShell({ children }: { children: React.ReactNode }) {
             </div>
           ) : null}
           {showProfile ? (
-            <div className="absolute right-6 top-20 z-50 w-64 rounded-3xl border border-slate-200 bg-white p-4 shadow-soft">
-              <p className="font-black text-navy-950">{profile?.fullName ?? "Account"}</p>
+            <div className="absolute right-6 top-20 z-50 w-64 rounded-xl border border-slate-200 bg-white p-4 shadow-soft">
+              <p className="font-semibold text-navy-950">{profile?.fullName ?? "Account"}</p>
               <p className="text-sm text-slate-500">{profile?.company ?? ""}</p>
               <div className="mt-4 grid gap-2">
-                <Link href="/settings" className="rounded-2xl bg-slate-50 px-3 py-2 text-sm font-black text-slate-700 hover:text-royal-700">Account settings</Link>
-                <Link href="/team" className="rounded-2xl bg-slate-50 px-3 py-2 text-sm font-black text-slate-700 hover:text-royal-700">Team access</Link>
+                <Link href="/settings" className="rounded-lg bg-slate-50 px-3 py-2 text-sm font-semibold text-slate-700 hover:text-royal-700">Account settings</Link>
+                <Link href="/team" className="rounded-lg bg-slate-50 px-3 py-2 text-sm font-semibold text-slate-700 hover:text-royal-700">Team access</Link>
                 <button
                   type="button"
                   onClick={signOut}
-                  className="rounded-2xl bg-rose-50 px-3 py-2 text-left text-sm font-black text-rose-700"
+                  className="rounded-lg bg-rose-50 px-3 py-2 text-left text-sm font-semibold text-rose-700"
                 >
                   Sign out
                 </button>
@@ -297,7 +297,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                 <Link
                   key={item.href}
                   href={item.href}
-                  className={`flex shrink-0 items-center gap-2 rounded-full px-3 py-2 text-xs font-black ${
+                  className={`flex shrink-0 items-center gap-2 rounded-full px-3 py-2 text-xs font-semibold ${
                     active ? "bg-royal-600 text-white" : "bg-slate-100 text-slate-600"
                   }`}
                 >
