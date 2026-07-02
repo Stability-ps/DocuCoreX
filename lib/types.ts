@@ -108,3 +108,60 @@ export type AiInsight = {
   confidence: number;
   createdAt: string;
 };
+
+export type InvoiceStatus = "draft" | "issued" | "paid" | "overdue" | "cancelled";
+
+export type InvoiceLineItemDraft = {
+  id?: string;
+  serviceItem: string;
+  quantity: string;
+  unitPrice: string;
+};
+
+export type InvoiceItemRecord = {
+  id: string;
+  invoiceId: string;
+  serviceItem: string;
+  quantity: number;
+  unitPrice: number;
+  lineTotal: number;
+  position: number;
+  createdAt: string;
+};
+
+export type InvoiceRecord = {
+  id: string;
+  workspaceId: string;
+  invoiceNumber: string;
+  title: string | null;
+  description: string | null;
+  status: InvoiceStatus;
+  clientName: string;
+  clientEmail: string | null;
+  clientPhone: string | null;
+  clientAddress: string | null;
+  issuerName: string | null;
+  issuerEmail: string | null;
+  issuerPhone: string | null;
+  issuerAddress: string | null;
+  logoDataUrl: string | null;
+  bankDetails: string | null;
+  notesToClient: string | null;
+  termsAndConditions: string | null;
+  subtotal: number;
+  discountAmount: number;
+  taxRate: number;
+  taxAmount: number;
+  totalAmount: number;
+  amountPaid: number;
+  dueDate: string | null;
+  createdBy: string | null;
+  sentAt: string | null;
+  paidAt: string | null;
+  overdueAt: string | null;
+  cancelledAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type InvoiceWithItems = InvoiceRecord & { items: InvoiceItemRecord[] };

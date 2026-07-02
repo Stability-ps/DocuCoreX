@@ -6,6 +6,8 @@ import type {
   DocumentRecord,
   DocumentVersion,
   ExtractionResult,
+  InvoiceItemRecord,
+  InvoiceRecord,
   OcrResult,
   ProcessingJob,
 } from "@/lib/types";
@@ -23,6 +25,8 @@ type MockStore = {
   documentComments: DocumentComment[];
   documentDownloads: DocumentDownload[];
   aiInsights: AiInsight[];
+  invoices: InvoiceRecord[];
+  invoiceItems: InvoiceItemRecord[];
   usageSummary: {
     periodStart: string;
     periodEnd: string;
@@ -307,6 +311,66 @@ const seedAiInsights: AiInsight[] = [
   },
 ];
 
+const seedInvoices: InvoiceRecord[] = [
+  {
+    id: "invoice_demo_1",
+    workspaceId: "workspace_demo",
+    invoiceNumber: `INV-${new Date().getFullYear()}-0001`,
+    title: "Document processing services",
+    description: "OCR, extraction and conversion services for Q2 statements.",
+    status: "issued",
+    clientName: "Acme Holdings",
+    clientEmail: "accounts@acmeholdings.example",
+    clientPhone: "+27 82 555 0100",
+    clientAddress: "12 Market Street, Cape Town, South Africa",
+    issuerName: "DocuCoreX Workspace",
+    issuerEmail: "billing@docucorex.local",
+    issuerPhone: "+27 21 555 0199",
+    issuerAddress: "4 Harbour Road, Cape Town, South Africa",
+    logoDataUrl: null,
+    bankDetails: "First National Bank | Acc: 62812345678 | Branch: 250655",
+    notesToClient: "Thank you for your business.",
+    termsAndConditions: "Payment due within 14 days of invoice date.",
+    subtotal: 4200,
+    discountAmount: 0,
+    taxRate: 15,
+    taxAmount: 630,
+    totalAmount: 4830,
+    amountPaid: 0,
+    dueDate: new Date(Date.now() + 14 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10),
+    createdBy: "user_demo",
+    sentAt: now,
+    paidAt: null,
+    overdueAt: null,
+    cancelledAt: null,
+    createdAt: now,
+    updatedAt: now,
+  },
+];
+
+const seedInvoiceItems: InvoiceItemRecord[] = [
+  {
+    id: "invoice_item_demo_1",
+    invoiceId: "invoice_demo_1",
+    serviceItem: "Bank statement OCR & extraction",
+    quantity: 3,
+    unitPrice: 1000,
+    lineTotal: 3000,
+    position: 0,
+    createdAt: now,
+  },
+  {
+    id: "invoice_item_demo_2",
+    invoiceId: "invoice_demo_1",
+    serviceItem: "Excel export conversion",
+    quantity: 4,
+    unitPrice: 300,
+    lineTotal: 1200,
+    position: 1,
+    createdAt: now,
+  },
+];
+
 const store =
   globalMockStore.__docucorexMockStore ??
   (globalMockStore.__docucorexMockStore = {
@@ -320,6 +384,8 @@ const store =
     documentComments: [...seedDocumentComments],
     documentDownloads: [...seedDocumentDownloads],
     aiInsights: [...seedAiInsights],
+    invoices: [...seedInvoices],
+    invoiceItems: [...seedInvoiceItems],
     usageSummary: { ...seedUsageSummary },
   });
 
@@ -333,6 +399,8 @@ export const auditLogs = store.auditLogs;
 export const documentComments = store.documentComments;
 export const documentDownloads = store.documentDownloads;
 export const aiInsights = store.aiInsights;
+export const invoices = store.invoices;
+export const invoiceItems = store.invoiceItems;
 export const usageSummary = store.usageSummary;
 
 export function getDocument(id: string) {

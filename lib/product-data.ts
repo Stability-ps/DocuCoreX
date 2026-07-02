@@ -93,6 +93,7 @@ export const appNav: NavGroup[] = [
     ],
   },
   { title: "Accounting Intelligence", href: "/accounting", icon: ReceiptText },
+  { title: "Invoices", href: "/invoices", icon: FileText },
   { title: "Billing & Subscription", href: "/billing", icon: CreditCard },
   { title: "Team & Collaboration", href: "/team", icon: UsersRound },
   { title: "Help & Support", href: "/help", icon: BookOpen },
