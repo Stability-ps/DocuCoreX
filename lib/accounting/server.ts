@@ -370,6 +370,68 @@ export async function getAccountingRunDetail(runId: string): Promise<AccountingR
   };
 }
 
+export async function deleteAccountingRuns(runIds: string[]) {
+  const context = await getWorkspaceContext();
+  if (!context) {
+    throw new Error("Unauthorized");
+  }
+
+  const ids = Array.from(new Set(runIds)).filter(Boolean);
+  if (!ids.length) return { deletedIds: [] as string[] };
+
+  const { data: runs, error: runError } = await context.supabase
+    .from("accounting_statement_runs")
+    .select("id, document_id, processing_job_id, source_storage_path, workbook_storage_path")
+    .eq("workspace_id", context.workspaceId)
+    .in("id", ids);
+
+  if (runError) {
+    throw new Error(runError.message);
+  }
+
+  const foundRuns = runs ?? [];
+  const foundIds = foundRuns.map((run) => run.id);
+  if (!foundIds.length) return { deletedIds: [] as string[] };
+
+  await context.supabase.from("accounting_transactions").delete().eq("workspace_id", context.workspaceId).in("run_id", foundIds);
+  await context.supabase.from("accounting_statement_runs").delete().eq("workspace_id", context.workspaceId).in("id", foundIds);
+
+  const documentIds = foundRuns.map((run) => run.document_id).filter(Boolean) as string[];
+  if (documentIds.length) {
+    await context.supabase
+      .from("documents")
+      .update({ deleted_at: new Date().toISOString(), status: "trashed", updated_at: new Date().toISOString() })
+      .eq("workspace_id", context.workspaceId)
+      .in("id", documentIds);
+  }
+
+  const jobIds = foundRuns.map((run) => run.processing_job_id).filter(Boolean) as string[];
+  if (jobIds.length) {
+    await context.supabase.from("processing_jobs").update({ status: "cancelled", updated_at: new Date().toISOString() }).in("id", jobIds);
+  }
+
+  await Promise.all(
+    foundIds.map((id) =>
+      recordAuditLog({
+        action: "accounting_statement_deleted",
+        entityType: "accounting_statement_run",
+        entityId: id,
+        metadata: { bulk: foundIds.length > 1 },
+      }),
+    ),
+  );
+
+  await recordAccountingActionAudit({
+    action: "statement_deleted",
+    entityType: "accounting_statement_run",
+    entityId: foundIds.join(","),
+    previousValue: { runs: foundRuns },
+    metadata: { count: foundIds.length },
+  });
+
+  return { deletedIds: foundIds };
+}
+
 export async function updateAccountingTransaction(transactionId: string, patch: AccountingTransactionPatch) {
   const context = await getWorkspaceContext();
   if (!context) {

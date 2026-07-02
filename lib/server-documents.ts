@@ -53,7 +53,7 @@ type UploadFileInput = {
   storagePath?: string;
 };
 
-type DocumentPatch = Partial<Pick<DocumentRecord, "starred" | "shared" | "tags" | "status" | "deletedAt" | "folderId">>;
+type DocumentPatch = Partial<Pick<DocumentRecord, "name" | "starred" | "shared" | "tags" | "status" | "deletedAt" | "folderId">>;
 
 function mapDocumentRow(row: DocumentRow): DocumentRecord {
   return {
@@ -79,6 +79,7 @@ function mapDocumentRow(row: DocumentRow): DocumentRecord {
 
 function toPatchRow(patch: DocumentPatch) {
   return {
+    ...(patch.name !== undefined ? { name: patch.name } : {}),
     ...(patch.starred !== undefined ? { starred: patch.starred } : {}),
     ...(patch.shared !== undefined ? { shared: patch.shared } : {}),
     ...(patch.tags !== undefined ? { tags: patch.tags } : {}),

@@ -5,11 +5,20 @@ import type { CookieOptions } from "@supabase/ssr";
 import { dedupeCookies, setSupabaseAuthCookie } from "@/lib/auth-cookies";
 
 export async function POST(request: NextRequest) {
-  const { email, password } = await request.json();
+  const { email, password, fullName } = await request.json();
 
-  if (!email || !password) {
+  const normalizedName = typeof fullName === "string" ? fullName.trim().replace(/\s+/g, " ") : "";
+
+  if (!email || !password || !normalizedName) {
     return NextResponse.json(
-      { error: "Email and password are required" },
+      { error: "Full name, email and password are required" },
+      { status: 400 }
+    );
+  }
+
+  if (normalizedName.length < 2) {
+    return NextResponse.json(
+      { error: "Full name must be at least 2 characters." },
       { status: 400 }
     );
   }
@@ -40,7 +49,7 @@ export async function POST(request: NextRequest) {
       password,
       options: {
         emailRedirectTo: redirectUrl,
-        data: { product: "DocuCoreX" },
+        data: { product: "DocuCoreX", full_name: normalizedName, name: normalizedName },
       },
     });
 

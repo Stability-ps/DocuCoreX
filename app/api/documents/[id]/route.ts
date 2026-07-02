@@ -19,7 +19,7 @@ export async function GET(_request: Request, { params }: { params: Promise<{ id:
 export async function PATCH(request: Request, { params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
   const body = (await request.json().catch(() => ({}))) as Partial<
-    Pick<DocumentRecord, "starred" | "shared" | "tags" | "status" | "deletedAt" | "folderId">
+    Pick<DocumentRecord, "name" | "starred" | "shared" | "tags" | "status" | "deletedAt" | "folderId">
   >;
 
   const document = await patchDocument(id, body);

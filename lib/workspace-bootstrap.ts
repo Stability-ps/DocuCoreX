@@ -33,9 +33,13 @@ export async function ensureUserWorkspace(user: User): Promise<WorkspaceBootstra
   const company = typeof user.user_metadata?.company === "string" && user.user_metadata.company.trim()
     ? user.user_metadata.company.trim()
     : "DocuCoreX Workspace";
-  const fullName = typeof user.user_metadata?.full_name === "string" && user.user_metadata.full_name.trim()
-    ? user.user_metadata.full_name.trim()
-    : (user.email ?? "DocuCoreX User");
+  const fullName =
+    (typeof user.user_metadata?.full_name === "string" && user.user_metadata.full_name.trim()
+      ? user.user_metadata.full_name.trim()
+      : undefined) ??
+    (typeof user.user_metadata?.name === "string" && user.user_metadata.name.trim()
+      ? user.user_metadata.name.trim()
+      : null);
 
   const { data: workspace, error: workspaceError } = await admin
     .from("workspaces")

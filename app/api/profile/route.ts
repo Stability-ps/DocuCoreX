@@ -48,7 +48,23 @@ export async function GET() {
     return NextResponse.json({ error: "Your workspace is not ready yet. Please refresh or contact support if this continues." }, { status: 500 });
   }
 
-  return NextResponse.json({ profile: data, mode: "live" });
+  const metadataName =
+    typeof user.user_metadata?.full_name === "string" && user.user_metadata.full_name.trim()
+      ? user.user_metadata.full_name.trim()
+      : typeof user.user_metadata?.name === "string" && user.user_metadata.name.trim()
+        ? user.user_metadata.name.trim()
+        : null;
+  const resolvedFullName =
+    typeof data.full_name === "string" && data.full_name.trim() ? data.full_name.trim() : metadataName;
+
+  return NextResponse.json({
+    profile: {
+      ...data,
+      full_name: resolvedFullName,
+      fullName: resolvedFullName,
+    },
+    mode: "live",
+  });
 }
 
 export async function PATCH(request: Request) {

@@ -219,6 +219,12 @@ export function UploadCenter({ workflow }: { workflow?: string }) {
   const activeItems = items.filter((item) => item.uploadStatus !== "cancelled" && item.conversionStatus !== "cancelled");
   const readyToConvertItems = activeItems.filter((item) => item.documentId && item.uploadStatus === "uploaded" && (item.conversionStatus === "none" || item.conversionStatus === "ready"));
   const completedConversions = activeItems.filter((item) => item.conversionId && item.conversionStatus === "completed");
+  const latestReadyItem = readyToConvertItems[0] ?? null;
+  const shouldRecommendAccounting = useMemo(() => {
+    if (!latestReadyItem) return false;
+    const text = `${latestReadyItem.name} ${latestReadyItem.mimeType}`.toLowerCase();
+    return ["statement", "invoice", "receipt", "supplier", "financial report", "bank"].some((token) => text.includes(token));
+  }, [latestReadyItem]);
   const totalProgress = useMemo(
     () => (activeItems.length ? Math.round(activeItems.reduce((sum, item) => sum + visibleProgress(item), 0) / activeItems.length) : 0),
     [activeItems],
@@ -623,6 +629,34 @@ export function UploadCenter({ workflow }: { workflow?: string }) {
           </div>
         </div>
       </section>
+
+      {latestReadyItem ? (
+        <section className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm sm:p-6">
+          <h2 className="text-xl font-semibold text-navy-950">What would you like to do?</h2>
+          <p className="mt-1 text-sm text-slate-500">{latestReadyItem.name}</p>
+          <div className="mt-4 grid gap-2 sm:grid-cols-2">
+            <button
+              type="button"
+              onClick={() => setTarget("pdf")}
+              className="min-h-11 rounded-2xl border border-slate-200 bg-white px-4 text-left text-sm font-semibold text-navy-950"
+            >
+              Convert Document
+            </button>
+            <Link href={`/upload?workflow=scan_document`} className="inline-flex min-h-11 items-center rounded-2xl border border-slate-200 bg-white px-4 text-sm font-semibold text-navy-950">
+              OCR & Text Extraction
+            </Link>
+            <Link
+              href="/accounting"
+              className={`inline-flex min-h-11 items-center rounded-2xl border px-4 text-sm font-semibold ${shouldRecommendAccounting ? "border-emerald-200 bg-emerald-50 text-emerald-800" : "border-slate-200 bg-white text-navy-950"}`}
+            >
+              {shouldRecommendAccounting ? "Recommended: Accounting Intelligence" : "Accounting Intelligence"}
+            </Link>
+            <Link href={`/documents/${latestReadyItem.documentId}`} className="inline-flex min-h-11 items-center rounded-2xl border border-slate-200 bg-white px-4 text-sm font-semibold text-navy-950">
+              Open Original
+            </Link>
+          </div>
+        </section>
+      ) : null}
 
       <section className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm sm:p-6">
         <div className="flex flex-col gap-2 sm:flex-row sm:items-end sm:justify-between">

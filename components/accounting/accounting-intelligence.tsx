@@ -1,14 +1,13 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import type { ReactNode } from "react";
 import {
-  AlertTriangle,
   ArrowDownToLine,
+  AlertTriangle,
   BadgeCheck,
   Banknote,
-  Building2,
   ChevronDown,
+  CheckCircle2,
   FileSpreadsheet,
   FileText,
   Filter,
@@ -29,8 +28,8 @@ import type {
   VatTreatment,
 } from "@/lib/accounting/types";
 
-type AccountingTab = "transactions" | "review" | "summary" | "bank-rec" | "vat" | "general-ledger" | "trial-balance";
-type UploadQueueStatus = "Queued" | "Uploading" | "Uploaded" | "Processing" | "Completed" | "Needs Review" | "Failed";
+type AccountingTab = "transactions" | "review" | "difference" | "summary" | "bank-rec" | "vat" | "general-ledger" | "trial-balance";
+type UploadQueueStatus = "Queued" | "Uploading" | "Uploaded" | "Processing" | "Completed" | "Review Required" | "Failed";
 type UploadQueueItem = {
   id: string;
   name: string;
@@ -71,7 +70,8 @@ const vatTreatments: Array<{ value: VatTreatment; label: string }> = [
 
 const tabs: Array<{ id: AccountingTab; label: string }> = [
   { id: "transactions", label: "Transactions" },
-  { id: "review", label: "Review Items" },
+  { id: "review", label: "Review" },
+  { id: "difference", label: "Difference Inspector" },
   { id: "summary", label: "Summary" },
   { id: "bank-rec", label: "Bank Reconciliation" },
   { id: "vat", label: "VAT" },
@@ -87,6 +87,9 @@ const supportedBanks = [
   { name: "Capitec", active: false },
   { name: "Investec", active: false },
 ];
+
+const canShowTechnicalDetails =
+  process.env.NODE_ENV !== "production" || process.env.NEXT_PUBLIC_ACCOUNTING_DIAGNOSTICS === "true";
 
 function money(value: number | null) {
   if (value === null) return "-";
@@ -113,7 +116,7 @@ function statusLabel(status: AccountingStatementRun["status"]) {
   const labels: Record<AccountingStatementRun["status"], string> = {
     queued: "Queued",
     processing: "Processing",
-    review: "Review required",
+    review: "Review Required",
     completed: "Completed",
     failed: "Failed",
     cancelled: "Cancelled",
@@ -131,6 +134,27 @@ function statusTone(status: AccountingStatementRun["status"]) {
     cancelled: "bg-slate-100 text-slate-500",
   };
   return tones[status];
+}
+
+function canProcessRunStatus(status: AccountingStatementRun["status"]) {
+  return status !== "processing";
+}
+
+function processLabelForRunStatus(status: AccountingStatementRun["status"]) {
+  if (status === "queued") return "Process";
+  if (status === "processing") return "Processing...";
+  if (status === "completed") return "Process Again";
+  if (status === "failed") return "Retry";
+  return "Process";
+}
+
+function queueStatusFromRunStatus(status: AccountingStatementRun["status"]): UploadQueueStatus {
+  if (status === "queued") return "Queued";
+  if (status === "processing") return "Processing";
+  if (status === "completed") return "Completed";
+  if (status === "review") return "Review Required";
+  if (status === "failed" || status === "cancelled") return "Failed";
+  return "Queued";
 }
 
 function compactDateTime(value: string) {
@@ -162,7 +186,7 @@ function formatApiError(data: { error?: string; workerDetail?: unknown; workerRa
       : data.error;
 
   if (detail?.toLowerCase().includes("parser validation failed")) {
-    return "Parser validation failed. The statement layout needs review.";
+    return "Review required. We extracted a draft workbook, but this statement needs review before final export. Some transactions or bank charges may need correction.";
   }
 
   if (data.workerStatus) {
@@ -182,6 +206,87 @@ function formatDiagnostics(data: { workerDetail?: unknown; workerRawBody?: strin
     null,
     2,
   );
+}
+
+type ReviewDiagnostics = {
+  openingBalance: number | null;
+  closingBalance: number | null;
+  calculatedClosing: number | null;
+  difference: number | null;
+  credits: number | null;
+  debits: number | null;
+  parserVersion: string | null;
+  validationTime: string | null;
+  confidence: number | null;
+  detectedLayout: string | null;
+  balanceGap: number | null;
+  rawMessage: string;
+};
+
+function parseAmount(value: unknown): number | null {
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  if (typeof value !== "string") return null;
+  const cleaned = value.replace(/[^\d.-]/g, "");
+  const parsed = Number(cleaned);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function findJsonPayload(value: string): unknown | null {
+  const trimmed = value.trim();
+  if (!trimmed) return null;
+  const candidates = [trimmed];
+  const firstBrace = trimmed.indexOf("{");
+  const lastBrace = trimmed.lastIndexOf("}");
+  if (firstBrace >= 0 && lastBrace > firstBrace) candidates.push(trimmed.slice(firstBrace, lastBrace + 1));
+
+  for (const candidate of candidates) {
+    try {
+      return JSON.parse(candidate);
+    } catch {
+      // Keep trying less precise payloads.
+    }
+  }
+  return null;
+}
+
+function objectRecord(value: unknown): Record<string, unknown> {
+  return value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : {};
+}
+
+function parseReviewDiagnostics(run: AccountingStatementRun | null, totals?: { debit: number; credit: number }) {
+  const rawMessage = run?.error ?? "";
+  const parsed = findJsonPayload(rawMessage);
+  const root = objectRecord(parsed);
+  const detail = objectRecord(root.detail);
+  const summary = objectRecord(root.summary ?? detail.summary);
+  const worker = objectRecord(root.worker ?? detail.worker);
+  const openingBalance = parseAmount(summary.opening_balance) ?? run?.openingBalance ?? null;
+  const closingBalance = parseAmount(summary.closing_balance) ?? run?.closingBalance ?? null;
+  const calculatedClosing =
+    parseAmount(summary.calculated_closing) ??
+    (openingBalance !== null && totals ? openingBalance + totals.credit - totals.debit : null);
+  const difference =
+    closingBalance !== null && calculatedClosing !== null
+      ? Math.abs(calculatedClosing - closingBalance)
+      : null;
+
+  const errors = Array.isArray(root.errors ?? detail.errors) ? ((root.errors ?? detail.errors) as unknown[]).map(String) : [];
+  const gapMatch = rawMessage.match(/(?:gap|difference|missing)[^\d-]*(-?\d[\d,]*(?:\.\d+)?)/i);
+
+  return {
+    openingBalance,
+    closingBalance,
+    calculatedClosing,
+    difference,
+    credits: parseAmount(summary.total_credits),
+    debits: parseAmount(summary.total_debits),
+    parserVersion: typeof worker.parser_version === "string" ? worker.parser_version : run?.parserVersion ?? null,
+    validationTime: run?.updatedAt ?? null,
+    confidence: run?.confidence ?? null,
+    detectedLayout: run?.parserProfile ?? "FNB statement layout",
+    balanceGap: parseAmount(gapMatch?.[1]) ?? difference,
+    rawMessage: errors.length ? errors.join("\n") : rawMessage,
+  } satisfies ReviewDiagnostics;
 }
 
 function getReviewItems(transactions: AccountingTransaction[]) {
@@ -225,12 +330,33 @@ export function AccountingIntelligence() {
   const [query, setQuery] = useState("");
   const [runSearch, setRunSearch] = useState("");
   const [runSort, setRunSort] = useState("newest");
-  const [exportOpen, setExportOpen] = useState(false);
   const [overrideDialogOpen, setOverrideDialogOpen] = useState(false);
   const [overrideType, setOverrideType] = useState<CombineOverrideType>("account");
   const [overrideText, setOverrideText] = useState("");
+  const [uploadCollapsed, setUploadCollapsed] = useState(false);
+  const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
+  const [deleteTargetIds, setDeleteTargetIds] = useState<string[]>([]);
   const selectedRun = useMemo(() => runs.find((run) => run.id === selectedRunId) ?? null, [runs, selectedRunId]);
+  const runById = useMemo(() => new Map(runs.map((run) => [run.id, run])), [runs]);
+  const processableRunIds = useMemo(() => runs.filter((run) => canProcessRunStatus(run.status)).map((run) => run.id), [runs]);
+  const selectedProcessableRunIds = useMemo(
+    () => selectedRunIds.filter((runId) => canProcessRunStatus(runById.get(runId)?.status ?? "queued")),
+    [runById, selectedRunIds],
+  );
+  const selectedRunLabel = `${selectedRunIds.length} ${selectedRunIds.length === 1 ? "Statement" : "Statements"} Selected`;
+  const contextualProcessLabel = useMemo(() => {
+    if (busy === "bulk-process") return "Processing...";
+    if (!selectedRunIds.length) return "Process";
+    if (selectedRunIds.length === 1) {
+      const status = runById.get(selectedRunIds[0])?.status ?? "queued";
+      return processLabelForRunStatus(status);
+    }
 
+    const statuses = selectedRunIds.map((runId) => runById.get(runId)?.status ?? "queued");
+    if (statuses.every((status) => status === "completed")) return "Process Again";
+    if (statuses.every((status) => status === "failed")) return "Retry";
+    return "Process";
+  }, [busy, runById, selectedRunIds]);
   async function loadRuns(preferredRunId?: string) {
     const response = await fetch("/api/accounting/fnb/runs");
     const data = (await response.json().catch(() => ({}))) as { runs?: AccountingStatementRun[]; error?: string };
@@ -252,6 +378,20 @@ export function AccountingIntelligence() {
     void loadRuns().catch((loadError) => setError(loadError instanceof Error ? loadError.message : "Unable to load Accounting Intelligence."));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  useEffect(() => {
+    if (!runs.length) return;
+    setUploadQueue((queue) =>
+      queue.map((item) => {
+        if (!item.runId) return item;
+        const run = runById.get(item.runId);
+        if (!run) return item;
+        const nextStatus = queueStatusFromRunStatus(run.status);
+        if (nextStatus === item.status) return item;
+        return { ...item, status: nextStatus, error: nextStatus === "Failed" ? run.error ?? item.error : item.error };
+      }),
+    );
+  }, [runById, runs.length]);
 
   async function uploadFiles(files: File[]) {
     if (!files.length) return;
@@ -288,6 +428,7 @@ export function AccountingIntelligence() {
       const data = (await response.json().catch(() => ({}))) as { run?: AccountingStatementRun; error?: string };
       if (!response.ok || !data.run) throw new Error(data.error ?? "Upload failed.");
       setMessage("FNB statement uploaded and queued for extraction.");
+      setUploadCollapsed(true);
       await loadRuns(data.run.id);
       return data.run;
     } catch (uploadError) {
@@ -314,59 +455,6 @@ export function AccountingIntelligence() {
         queue.map((queuedItem) => (queuedItem.id === item.id ? { ...queuedItem, status: "Uploaded", runId: run.id, file: undefined } : queuedItem)),
       );
     }
-  }
-
-  async function processQueueItem(item: UploadQueueItem) {
-    if (!item.runId) return;
-    setUploadQueue((queue) => queue.map((queuedItem) => (queuedItem.id === item.id ? { ...queuedItem, status: "Processing", error: undefined } : queuedItem)));
-
-    const response = await fetch("/api/accounting/fnb/process", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ runId: item.runId }),
-    });
-    const data = (await response.json().catch(() => ({}))) as {
-      error?: string;
-      result?: { status?: AccountingStatementRun["status"] };
-    };
-
-    if (!response.ok) {
-      setUploadQueue((queue) =>
-        queue.map((queuedItem) => (queuedItem.id === item.id ? { ...queuedItem, status: "Failed", error: data.error ?? "Processing failed." } : queuedItem)),
-      );
-      return;
-    }
-
-    const nextStatus = data.result?.status === "review" ? "Needs Review" : data.result?.status === "completed" ? "Completed" : "Uploaded";
-    setUploadQueue((queue) => queue.map((queuedItem) => (queuedItem.id === item.id ? { ...queuedItem, status: nextStatus } : queuedItem)));
-  }
-
-  async function processUploadedQueue() {
-    const items = uploadQueue.filter((item) => item.runId && item.status === "Uploaded");
-    if (!items.length) return;
-    setBusy("queue-process");
-    setError("");
-    setMessage("");
-    try {
-      for (const item of items) {
-        await processQueueItem(item);
-      }
-      setMessage("Uploaded statements processed. Select completed statements to create a combined workbook.");
-      await loadRuns(items[0]?.runId);
-    } catch (queueError) {
-      setError(queueError instanceof Error ? queueError.message : "Queue processing failed.");
-    } finally {
-      setBusy("");
-    }
-  }
-
-  function selectReadyQueueRuns() {
-    const readyIds = uploadQueue
-      .filter((item) => item.runId && (item.status === "Completed" || item.status === "Needs Review"))
-      .map((item) => item.runId as string);
-    if (!readyIds.length) return;
-    setSelectedRunIds((current) => Array.from(new Set([...current, ...readyIds])));
-    setMessage("Ready statements selected for combined workbook.");
   }
 
   async function createCombinedWorkbook(options?: { combineDifferentAccounts?: boolean; overrideContinuity?: boolean; confirmationText?: string }) {
@@ -428,8 +516,99 @@ export function AccountingIntelligence() {
     await createCombinedWorkbook();
   }
 
-  async function processRun(runId: string) {
-    setBusy(`process:${runId}`);
+  async function deleteRuns(runIds: string[]) {
+    const ids = Array.from(new Set(runIds)).filter(Boolean);
+    if (!ids.length) return;
+    const previousRuns = runs;
+    const previousDetail = detail;
+    const nextSelectedId = runs.find((run) => !ids.includes(run.id))?.id ?? "";
+
+    setBusy("delete");
+    setError("");
+    setMessage("");
+    setRuns((current) => current.filter((run) => !ids.includes(run.id)));
+    setSelectedRunIds((current) => current.filter((id) => !ids.includes(id)));
+    if (ids.includes(selectedRunId)) {
+      setSelectedRunId(nextSelectedId);
+      setDetail(null);
+    }
+
+    try {
+      const response =
+        ids.length === 1
+          ? await fetch(`/api/accounting/fnb/runs/${ids[0]}`, { method: "DELETE" })
+          : await fetch("/api/accounting/fnb/runs/bulk", {
+              method: "DELETE",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ runIds: ids }),
+            });
+      const data = (await response.json().catch(() => ({}))) as { deletedIds?: string[]; error?: string };
+      if (!response.ok) throw new Error(data.error ?? "Could not delete selected statements.");
+      setMessage(ids.length === 1 ? "Statement deleted." : `${ids.length} statements deleted.`);
+      await loadRuns(nextSelectedId).catch(() => undefined);
+    } catch (deleteError) {
+      setRuns(previousRuns);
+      setDetail(previousDetail);
+      setSelectedRunIds(runIds);
+      if (previousDetail) setSelectedRunId(previousDetail.run.id);
+      setError(deleteError instanceof Error ? deleteError.message : "Could not delete selected statements.");
+    } finally {
+      setBusy("");
+      setDeleteDialogOpen(false);
+      setDeleteTargetIds([]);
+    }
+  }
+
+  function requestDelete(runIds: string[]) {
+    setDeleteTargetIds(Array.from(new Set(runIds)).filter(Boolean));
+    setDeleteDialogOpen(true);
+  }
+
+  async function processAllRuns() {
+    if (!processableRunIds.length) return;
+    setBusy("bulk-process");
+    setError("");
+    setMessage("");
+    try {
+      for (const runId of processableRunIds) {
+        await processRun(runId, { manageBusy: false, refreshAfter: false });
+      }
+      await loadRuns(processableRunIds[0]).catch(() => undefined);
+      setMessage(`${processableRunIds.length} statements queued for processing.`);
+    } finally {
+      setBusy("");
+    }
+  }
+
+  async function processSelectedRuns() {
+    if (!selectedProcessableRunIds.length) return;
+    setBusy("bulk-process");
+    setError("");
+    setMessage("");
+    try {
+      for (const runId of selectedProcessableRunIds) {
+        await processRun(runId, { manageBusy: false, refreshAfter: false });
+      }
+      await loadRuns(selectedProcessableRunIds[0]).catch(() => undefined);
+      setMessage(`${selectedProcessableRunIds.length} selected statements queued for processing.`);
+    } finally {
+      setBusy("");
+    }
+  }
+
+  function exportSelectedRuns() {
+    if (selectedRunIds.length === 1) {
+      window.location.href = `/api/accounting/fnb/export/${selectedRunIds[0]}`;
+      return;
+    }
+    void createCombinedWorkbookWithPrecheck();
+  }
+
+  async function processRun(runId: string, options?: { manageBusy?: boolean; refreshAfter?: boolean }) {
+    const manageBusy = options?.manageBusy ?? true;
+    const refreshAfter = options?.refreshAfter ?? true;
+
+    if (manageBusy) setBusy(`process:${runId}`);
     setError("");
     setDiagnostics("");
     setMessage("");
@@ -452,16 +631,16 @@ export function AccountingIntelligence() {
         throw new Error(formatApiError(data, "Processing failed."));
       }
       if (data.result?.status === "review") {
-        setMessage(data.result.review_issue?.message ?? "FNB statement processed as a draft. Review the balance gap and extracted transactions.");
+        setMessage(data.result.review_issue?.message ?? "Statement processed. Manual review is required before export.");
       } else {
-        setMessage("FNB statement processed. Review the extracted transactions.");
+        setMessage("Statement processed successfully. You can now review and export.");
       }
-      await loadRuns(runId);
+      if (refreshAfter) await loadRuns(runId);
     } catch (processError) {
       setError(processError instanceof Error ? processError.message : "Processing failed.");
-      await loadRuns(runId).catch(() => undefined);
+      if (refreshAfter) await loadRuns(runId).catch(() => undefined);
     } finally {
-      setBusy("");
+      if (manageBusy) setBusy("");
     }
   }
 
@@ -520,6 +699,24 @@ export function AccountingIntelligence() {
 
   const expectedClosing = (detail?.run.openingBalance ?? 0) + totals.credit - totals.debit;
   const recDifference = expectedClosing - (detail?.run.closingBalance ?? 0);
+  const reviewDiagnostics = useMemo(() => parseReviewDiagnostics(detail?.run ?? null, totals), [detail?.run, totals]);
+  const estimatedAffectedRows = Math.max(
+    1,
+    Math.min(
+      transactions.length || 1,
+      Math.max(reviewItems.length, reviewDiagnostics.difference && reviewDiagnostics.difference > 0.01 ? 3 : 0),
+    ),
+  );
+  const affectedTransactions = useMemo(() => {
+    const explicitReviewRows = reviewItems.slice(0, estimatedAffectedRows);
+    if (explicitReviewRows.length) return explicitReviewRows;
+    if (!transactions.length) return [];
+    const lowConfidenceRows = transactions
+      .filter((transaction) => transaction.confidence < 85 || transaction.bankCharge)
+      .slice(0, estimatedAffectedRows);
+    return lowConfidenceRows.length ? lowConfidenceRows : transactions.slice(0, estimatedAffectedRows);
+  }, [estimatedAffectedRows, reviewItems, transactions]);
+  const affectedTransactionIds = useMemo(() => new Set(affectedTransactions.map((transaction) => transaction.id)), [affectedTransactions]);
 
   const accountRows = useMemo(() => {
     const groups = new Map<string, { debit: number; credit: number; count: number }>();
@@ -547,13 +744,13 @@ export function AccountingIntelligence() {
   }, [transactions]);
 
   return (
-    <div className="space-y-4 p-4 sm:p-6 lg:space-y-5 lg:p-8">
+    <div className={`space-y-4 p-4 sm:p-6 lg:space-y-5 lg:p-8 ${detail ? "pb-[calc(11rem+env(safe-area-inset-bottom))] md:pb-6 lg:pb-8" : ""}`}>
       <header className="flex flex-col gap-2 md:gap-4 lg:flex-row lg:items-center lg:justify-between">
         <div>
           <p className="hidden text-sm font-bold text-slate-500 md:block">Accounting Intelligence <span className="mx-2 text-slate-300">›</span> Bank Statements</p>
           <h1 className="text-2xl font-semibold tracking-tight text-navy-950 md:mt-2 sm:text-3xl md:hidden">Accounting</h1>
-          <h1 className="mt-2 hidden text-2xl font-semibold tracking-tight text-navy-950 sm:text-3xl md:block">Bank statement accounting engine</h1>
-          <p className="mt-1 text-sm font-semibold text-slate-500 md:hidden">Bank statement extraction & accounting workpapers</p>
+          <h1 className="mt-2 hidden text-2xl font-semibold tracking-tight text-navy-950 sm:text-3xl md:block">Bank statement processing</h1>
+          <p className="mt-1 text-sm font-semibold text-slate-500 md:hidden">Upload, process, review, and export statements</p>
         </div>
         <label className="relative hidden w-full max-w-xl md:block">
           <Search className="pointer-events-none absolute left-4 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
@@ -573,115 +770,190 @@ export function AccountingIntelligence() {
           event.preventDefault();
           void uploadFiles(Array.from(event.dataTransfer.files));
         }}
-        className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm md:p-6"
+        className="rounded-xl border border-slate-200 bg-white p-3 shadow-sm md:p-4"
       >
-        <div className="grid gap-4 xl:grid-cols-[1fr_460px] xl:items-center">
-          <div className="hidden md:block">
-            <p className="text-xs font-semibold uppercase tracking-[0.18em] text-royal-600">Accounting Intelligence</p>
-            <h2 className="mt-2 text-2xl font-semibold text-navy-950">Upload a business bank statement PDF</h2>
-            <p className="mt-2 max-w-3xl text-sm font-medium leading-6 text-slate-600">
-              Extract transactions, review accounting treatment, reconcile bank movement and export a structured Excel workpaper.
-            </p>
+        <input
+          ref={inputRef}
+          type="file"
+          accept="application/pdf,.pdf"
+          multiple
+          className="hidden"
+          onChange={(event) => {
+            void uploadFiles(Array.from(event.currentTarget.files ?? []));
+            event.currentTarget.value = "";
+          }}
+        />
+        <div className="grid gap-3 xl:grid-cols-[1fr_auto] xl:items-center">
+          <div>
+            <div className="flex flex-wrap items-center gap-2">
+              <p className="text-sm font-semibold text-navy-950">FNB bank statements</p>
+              {uploadCollapsed ? (
+                <button type="button" onClick={() => setUploadCollapsed(false)} className="text-xs font-black text-royal-700">
+                  Show upload options
+                </button>
+              ) : null}
+            </div>
+            <p className="mt-1 text-xs font-semibold text-slate-500">Upload, process, review, and export transactions.</p>
           </div>
-          <div className="grid gap-3 sm:grid-cols-[1fr_auto] sm:items-end">
+          {!uploadCollapsed ? (
+          <div className="grid gap-3 sm:grid-cols-[220px_auto] sm:items-end">
             <label className="block">
               <span className="mb-2 block text-xs font-semibold text-slate-500">Select Bank</span>
               <select
                 value="FNB South Africa"
                 disabled
-                className="h-12 w-full rounded-lg border border-slate-200 bg-slate-50 px-4 text-base font-semibold text-navy-950 md:text-sm"
+                className="h-10 w-full rounded-lg border border-slate-200 bg-slate-50 px-3 text-sm font-semibold text-navy-950"
               >
                 <option>FNB South Africa</option>
               </select>
             </label>
-            <div className="rounded-xl bg-royal-50 p-3 text-center md:p-4">
-              <input
-                ref={inputRef}
-                type="file"
-                accept="application/pdf,.pdf"
-                multiple
-                className="hidden"
-                onChange={(event) => {
-                  void uploadFiles(Array.from(event.currentTarget.files ?? []));
-                  event.currentTarget.value = "";
-                }}
-              />
+            <div className="rounded-xl bg-royal-50 p-2 text-center">
               <button
                 type="button"
                 disabled={busy === "upload"}
                 onClick={() => inputRef.current?.click()}
-                className="inline-flex h-12 w-full min-w-44 items-center justify-center gap-2 rounded-lg bg-royal-600 px-5 text-sm font-semibold text-white shadow-sm transition hover:bg-royal-700 disabled:cursor-not-allowed disabled:bg-slate-300 sm:w-auto"
+                className="inline-flex h-10 w-full min-w-40 items-center justify-center gap-2 rounded-lg bg-royal-600 px-4 text-sm font-semibold text-white shadow-sm transition hover:bg-royal-700 disabled:cursor-not-allowed disabled:bg-slate-300 sm:w-auto"
               >
                 {busy === "upload" ? <Loader2 className="h-4 w-4 animate-spin" /> : <UploadCloud className="h-4 w-4" />}
-                Upload FNB PDFs
+                Upload PDFs
               </button>
-              <p className="mt-2 text-xs font-semibold text-slate-500">PDF up to 200MB</p>
+              <p className="mt-1 text-[11px] font-semibold text-slate-500">PDF up to 200MB</p>
             </div>
           </div>
+          ) : (
+            <button
+              type="button"
+              disabled={busy === "upload"}
+              onClick={() => inputRef.current?.click()}
+              className="inline-flex h-10 items-center justify-center gap-2 rounded-lg bg-royal-600 px-4 text-sm font-semibold text-white shadow-sm disabled:bg-slate-300"
+            >
+              <UploadCloud className="h-4 w-4" />
+              Upload Statement
+            </button>
+          )}
+          {!uploadCollapsed ? (
           <div className="xl:col-span-2">
-            <p className="mb-2 text-xs font-semibold text-slate-500">Supported Banks</p>
-            <div className="grid grid-cols-3 gap-2 sm:flex sm:flex-wrap">
+            <div className="flex flex-wrap gap-2">
               {supportedBanks.map((bank) => (
                 <span
                   key={bank.name}
-                  className={`rounded-full border px-3 py-2 text-center text-xs font-black ${
+                  className={`rounded-full border px-2.5 py-1 text-center text-[11px] font-black ${
                     bank.active ? "border-royal-200 bg-royal-50 text-royal-700" : "border-slate-200 bg-slate-50 text-slate-400"
                   }`}
                   title={bank.active ? "Active" : "Coming Soon"}
                 >
                   {bank.name}
-                  {!bank.active ? <span className="block text-[10px] font-semibold sm:inline sm:pl-1">Soon</span> : null}
+                  {!bank.active ? <span className="pl-1 text-[10px] font-semibold">Soon</span> : null}
                 </span>
               ))}
             </div>
           </div>
+          ) : null}
         </div>
       </section>
 
+      <section className="rounded-xl border border-slate-200 bg-white p-3 shadow-sm md:p-4">
+        <div className="flex flex-wrap items-center gap-2">
+          <button
+            type="button"
+            disabled={busy === "upload"}
+            onClick={() => inputRef.current?.click()}
+            className="inline-flex min-h-10 items-center justify-center gap-2 rounded-lg bg-royal-600 px-3 text-xs font-black text-white shadow-sm disabled:bg-slate-300"
+          >
+            <UploadCloud className="h-4 w-4" />
+            Upload Statements
+          </button>
+          <button
+            type="button"
+            disabled={!processableRunIds.length || busy === "bulk-process"}
+            onClick={() => void processAllRuns()}
+            className="inline-flex min-h-10 items-center justify-center rounded-lg border border-slate-200 bg-white px-3 text-xs font-black text-slate-700 disabled:text-slate-300"
+          >
+            {busy === "bulk-process" ? "Processing..." : "Process All"}
+          </button>
+          <button
+            type="button"
+            disabled={!selectedRunIds.length || !selectedProcessableRunIds.length || busy === "bulk-process"}
+            onClick={() => void processSelectedRuns()}
+            className="inline-flex min-h-10 items-center justify-center rounded-lg border border-slate-200 bg-white px-3 text-xs font-black text-slate-700 disabled:text-slate-300"
+          >
+            {busy === "bulk-process" ? "Processing..." : "Process Selected"}
+          </button>
+          <button
+            type="button"
+            disabled={!uploadQueue.some((item) => item.status === "Completed")}
+            onClick={() => {
+              setUploadQueue((queue) => queue.filter((item) => item.status !== "Completed"));
+              setMessage("Completed queue items cleared.");
+            }}
+            className="inline-flex min-h-10 items-center justify-center rounded-lg border border-slate-200 bg-white px-3 text-xs font-black text-slate-700 disabled:text-slate-300"
+          >
+            Clear Completed
+          </button>
+        </div>
+      </section>
+
+      {selectedRunIds.length ? (
+        <section className="rounded-xl border border-slate-200 bg-slate-50 p-3 shadow-sm md:p-4">
+          <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+            <p className="text-sm font-black text-navy-950">{selectedRunLabel}</p>
+            <div className="flex flex-wrap gap-2">
+              <button
+                type="button"
+                onClick={() => void processSelectedRuns()}
+                disabled={!selectedProcessableRunIds.length || busy === "bulk-process"}
+                className="inline-flex min-h-10 items-center justify-center rounded-lg border border-slate-200 bg-white px-3 text-xs font-black text-slate-700 disabled:text-slate-300"
+              >
+                {contextualProcessLabel}
+              </button>
+              <button
+                type="button"
+                onClick={() => requestDelete(selectedRunIds)}
+                disabled={busy === "delete"}
+                className="inline-flex min-h-10 items-center justify-center rounded-lg border border-rose-200 bg-white px-3 text-xs font-black text-rose-700 disabled:text-slate-300"
+              >
+                Delete
+              </button>
+              <button
+                type="button"
+                onClick={exportSelectedRuns}
+                className="inline-flex min-h-10 items-center justify-center rounded-lg border border-slate-200 bg-white px-3 text-xs font-black text-slate-700"
+              >
+                Export
+              </button>
+            </div>
+          </div>
+        </section>
+      ) : null}
+
       {uploadQueue.length ? (
         <section className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
-          <div className="mb-3 flex items-center justify-between gap-3">
+          <div className="mb-3 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
             <div>
               <h2 className="font-semibold text-navy-950">Upload queue</h2>
               <p className="text-sm font-medium text-slate-500">Multiple statements can be uploaded and processed together.</p>
             </div>
-            <div className="flex items-center gap-2">
-              <button
-                type="button"
-                disabled={!uploadQueue.some((item) => item.status === "Uploaded" && item.runId) || busy === "queue-process"}
-                onClick={() => void processUploadedQueue()}
-                className="rounded-lg bg-royal-600 px-3 py-2 text-xs font-black text-white disabled:cursor-not-allowed disabled:bg-slate-300"
-              >
-                {busy === "queue-process" ? "Processing..." : "Process uploaded"}
-              </button>
-              <button
-                type="button"
-                disabled={!uploadQueue.some((item) => item.runId && (item.status === "Completed" || item.status === "Needs Review"))}
-                onClick={selectReadyQueueRuns}
-                className="rounded-lg bg-white px-3 py-2 text-xs font-black text-royal-700 ring-1 ring-slate-200 disabled:cursor-not-allowed disabled:text-slate-300"
-              >
-                Select ready
-              </button>
-              <button type="button" onClick={() => setUploadQueue([])} className="text-xs font-black text-slate-500">
-                Clear
-              </button>
-            </div>
+            <button type="button" onClick={() => setUploadQueue([])} className="text-xs font-black text-slate-500" title="Remove all items from queue">
+              Clear Queue
+            </button>
           </div>
-          <div className="grid gap-2 md:grid-cols-2">
+          <div className="w-full space-y-4">
             {uploadQueue.map((item) => (
-              <div key={item.id} className="rounded-lg border border-slate-200 bg-slate-50 p-3">
-                <div className="flex items-center justify-between gap-3">
+              <div key={item.id} className="relative box-border h-auto w-full rounded-lg border border-slate-200 bg-slate-50 p-3">
+                <div className="grid grid-cols-[minmax(0,1fr)_auto] items-start gap-2">
                   <div className="min-w-0">
-                    <p className="truncate text-sm font-black text-navy-950">{item.name}</p>
+                    <p className="truncate text-sm font-black text-navy-950" title={item.name}>
+                      {item.name}
+                    </p>
                     <p className="mt-0.5 text-xs font-semibold text-slate-500">{fileSize(item.size)}</p>
                   </div>
                   <span
-                    className={`shrink-0 rounded-full px-2 py-1 text-[11px] font-black ${
+                    className={`max-w-full shrink-0 whitespace-nowrap rounded-full px-2 py-1 text-[11px] font-black ${
                       item.status === "Failed"
                         ? "bg-rose-50 text-rose-700"
                         : item.status === "Uploaded" || item.status === "Completed"
                           ? "bg-emerald-50 text-emerald-700"
-                          : item.status === "Needs Review"
+                          : item.status === "Review Required"
                             ? "bg-amber-50 text-amber-700"
                           : "bg-blue-50 text-blue-700"
                     }`}
@@ -690,14 +962,14 @@ export function AccountingIntelligence() {
                   </span>
                 </div>
                 {item.status === "Uploading" || item.status === "Processing" ? (
-                  <div className="mt-3 h-2 overflow-hidden rounded-full bg-blue-100">
+                  <div className="mt-3 h-2 w-full max-w-full overflow-hidden rounded-full bg-blue-100">
                     <div className="h-full w-2/3 animate-pulse rounded-full bg-royal-500" />
                   </div>
                 ) : null}
-                {item.status === "Uploaded" ? <p className="mt-2 text-xs font-semibold text-emerald-700">Stored and ready for extraction.</p> : null}
-                {item.status === "Completed" ? <p className="mt-2 text-xs font-semibold text-emerald-700">Extraction complete. Select it for a combined workbook.</p> : null}
-                {item.status === "Needs Review" ? <p className="mt-2 text-xs font-semibold text-amber-700">Extraction complete with review items.</p> : null}
-                {item.error ? <p className="mt-2 text-xs font-semibold text-rose-700">{item.error}</p> : null}
+                {item.status === "Uploaded" ? <p className="mt-2 break-words text-xs font-semibold text-slate-600">Uploaded and ready to process.</p> : null}
+                {item.status === "Completed" ? <p className="mt-2 break-words text-xs font-semibold text-emerald-700">Completed. Ready for export.</p> : null}
+                {item.status === "Review Required" ? <p className="mt-2 break-words text-xs font-semibold text-amber-700">Review required before final export.</p> : null}
+                {item.error ? <p className="mt-2 break-words text-xs font-semibold text-rose-700">{item.error}</p> : null}
                 <div className="mt-3 flex flex-wrap gap-2">
                   {item.runId ? (
                     <button
@@ -705,36 +977,26 @@ export function AccountingIntelligence() {
                       onClick={() => {
                         setSelectedRunId(item.runId ?? "");
                         setActiveTab("transactions");
-                        void loadRunDetail(item.runId ?? "").catch((loadError) => setError(loadError instanceof Error ? loadError.message : "Unable to open run."));
+                        void loadRunDetail(item.runId ?? "").catch((loadError) => setError(loadError instanceof Error ? loadError.message : "Unable to open statement."));
                       }}
-                      className="rounded-lg bg-white px-3 py-2 text-xs font-black text-royal-700 shadow-sm ring-1 ring-slate-200"
+                      className="min-h-10 rounded-lg bg-white px-3 py-2 text-xs font-black text-royal-700 shadow-sm ring-1 ring-slate-200"
                     >
-                      Open run
-                    </button>
-                  ) : null}
-                  {item.status === "Uploaded" && item.runId ? (
-                    <button
-                      type="button"
-                      disabled={busy === "queue-process"}
-                      onClick={() => void processQueueItem(item)}
-                      className="rounded-lg bg-white px-3 py-2 text-xs font-black text-royal-700 shadow-sm ring-1 ring-slate-200 disabled:text-slate-400"
-                    >
-                      Process
+                      Open Statement
                     </button>
                   ) : null}
                   {item.status === "Failed" && item.file ? (
                     <button
                       type="button"
                       onClick={() => void retryUpload(item)}
-                      className="rounded-lg bg-white px-3 py-2 text-xs font-black text-royal-700 shadow-sm ring-1 ring-slate-200"
+                      className="min-h-10 rounded-lg bg-white px-3 py-2 text-xs font-black text-royal-700 shadow-sm ring-1 ring-slate-200"
                     >
-                      Retry
+                      Retry Upload
                     </button>
                   ) : null}
                   <button
                     type="button"
                     onClick={() => setUploadQueue((queue) => queue.filter((queuedItem) => queuedItem.id !== item.id))}
-                    className="rounded-lg bg-white px-3 py-2 text-xs font-black text-slate-600 shadow-sm ring-1 ring-slate-200"
+                    className="min-h-10 rounded-lg bg-white px-3 py-2 text-xs font-black text-slate-600 shadow-sm ring-1 ring-slate-200"
                   >
                     Remove
                   </button>
@@ -749,30 +1011,23 @@ export function AccountingIntelligence() {
       {error ? (
         <div className="rounded-lg border border-rose-200 bg-rose-50 px-4 py-3 text-sm font-bold text-rose-800">
           <p>{error}</p>
-          {diagnostics ? (
+          {diagnostics && canShowTechnicalDetails ? (
             <details className="mt-3 rounded-xl border border-rose-200 bg-white/70 p-3 text-xs font-semibold text-rose-900">
-              <summary className="cursor-pointer">Developer diagnostics</summary>
+              <summary className="cursor-pointer">Show technical details</summary>
               <pre className="mt-2 max-h-72 overflow-auto whitespace-pre-wrap break-words font-mono text-[11px] leading-5">{diagnostics}</pre>
             </details>
           ) : null}
         </div>
       ) : null}
 
-      <section className="grid grid-cols-2 gap-3 md:grid-cols-3">
-        <SummaryCard
-          label="Status"
-          value={detail ? statusLabel(detail.run.status) : "No statement"}
-          subvalue={`Confidence: ${detail ? Math.round(detail.run.confidence) : 0}%`}
-          warning={detail?.run.status === "review" || detail?.run.status === "failed"}
-        />
-        <SummaryCard label="Opening balance" value={money(detail?.run.openingBalance ?? null)} />
-        <SummaryCard label="Closing balance" value={money(detail?.run.closingBalance ?? null)} />
-        <SummaryCard label="Debits" value={money(transactions.length ? totals.debit : null)} danger />
-        <SummaryCard label="Credits" value={money(transactions.length ? totals.credit : null)} success />
-        <SummaryCard label="Review" value={plainNumber(totals.review)} subvalue={totals.review ? "Needs attention" : "Clear"} warning={totals.review > 0} />
-      </section>
+      <CompactSummaryBar
+        run={detail?.run ?? null}
+        debit={transactions.length ? totals.debit : null}
+        credit={transactions.length ? totals.credit : null}
+        reviewCount={totals.review}
+      />
 
-      <div className="grid gap-5 xl:grid-cols-[360px_1fr]">
+      <div className="grid gap-4 xl:grid-cols-[360px_1fr]">
         <StatementRuns
           runs={runs}
           selectedRunId={selectedRunId}
@@ -782,37 +1037,18 @@ export function AccountingIntelligence() {
           onToggleSelected={(runId) =>
             setSelectedRunIds((current) => (current.includes(runId) ? current.filter((id) => id !== runId) : [...current, runId]))
           }
+          onSetSelected={setSelectedRunIds}
           onSearchChange={setRunSearch}
           onSortChange={setRunSort}
-          onReprocess={(runId) => void processRun(runId)}
           onRefresh={() => void loadRuns().catch((loadError) => setError(loadError instanceof Error ? loadError.message : "Refresh failed."))}
           onSelect={(runId) => {
             setSelectedRunId(runId);
             setActiveTab("transactions");
-            void loadRunDetail(runId).catch((loadError) => setError(loadError instanceof Error ? loadError.message : "Unable to open run."));
+            void loadRunDetail(runId).catch((loadError) => setError(loadError instanceof Error ? loadError.message : "Unable to open statement."));
           }}
         />
 
         <section className="min-w-0 rounded-xl border border-slate-200 bg-white shadow-sm">
-          {selectedRunIds.length ? (
-            <div className="border-b border-slate-200 bg-royal-50 p-4">
-              <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
-                <div>
-                  <p className="font-black text-navy-950">{selectedRunIds.length} statements selected</p>
-                  <p className="text-sm font-semibold text-slate-600">DocuCoreX will sort them by statement period and check balance continuity.</p>
-                </div>
-                  <button
-                  type="button"
-                    onClick={() => void createCombinedWorkbookWithPrecheck()}
-                  disabled={selectedRunIds.length < 2 || busy === "combine"}
-                  className="inline-flex min-h-11 items-center justify-center gap-2 rounded-xl bg-royal-600 px-4 text-sm font-black text-white disabled:bg-slate-300"
-                >
-                  {busy === "combine" ? <Loader2 className="h-4 w-4 animate-spin" /> : <PackageCheck className="h-4 w-4" />}
-                  Create Combined Workbook
-                </button>
-              </div>
-            </div>
-          ) : null}
           {selectedRun && detail ? (
             <div className="space-y-4 p-4 sm:p-5">
               <div className="flex flex-col gap-4 xl:flex-row xl:items-start xl:justify-between">
@@ -825,36 +1061,28 @@ export function AccountingIntelligence() {
                     {detail.run.transactionCount || detail.transactions.length} transactions · {totals.review} review items
                   </p>
                 </div>
-                <div className="hidden flex-wrap gap-2 md:flex">
-                  <button
-                    type="button"
-                    disabled={busy === `process:${detail.run.id}` || detail.run.status === "processing"}
-                    onClick={() => void processRun(detail.run.id)}
-                    className="inline-flex h-11 items-center gap-2 rounded-lg border border-slate-200 bg-white px-4 text-sm font-semibold text-navy-950 hover:border-royal-200 hover:text-royal-700 disabled:cursor-not-allowed disabled:bg-slate-100 disabled:text-slate-400"
-                  >
-                    {busy === `process:${detail.run.id}` ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCcw className="h-4 w-4" />}
-                    Re-run extraction
-                  </button>
-                  <button
-                    type="button"
-                    disabled
-                    title="Deleting statement runs is coming soon."
-                    className="inline-flex h-11 cursor-not-allowed items-center gap-2 rounded-lg border border-rose-100 bg-rose-50 px-4 text-sm font-semibold text-rose-300"
-                  >
-                    <Trash2 className="h-4 w-4" />
-                    Delete
-                  </button>
-                  <ExportDropdown run={detail.run} reviewCount={totals.review} open={exportOpen} onOpenChange={setExportOpen} />
-                </div>
+                <div className="hidden md:block" />
               </div>
 
               {detail.run.status === "review" && detail.run.error ? (
-                <div className="rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm font-bold text-amber-900">
-                  <p>{detail.run.error}</p>
-                  <p className="mt-1 text-xs font-semibold text-amber-800">
-                    A draft workbook and extracted transactions are available. Review highlighted rows before using the final accounting pack.
-                  </p>
-                </div>
+                <ReviewRequiredPanel
+                  run={detail.run}
+                  diagnostics={reviewDiagnostics}
+                  affectedRows={affectedTransactions.length}
+                  onReview={() => {
+                    setActiveTab("review");
+                    window.requestAnimationFrame(() => {
+                      const firstAffected = affectedTransactions[0];
+                      document.getElementById(firstAffected ? `transaction-${firstAffected.id}` : "accounting-review-table")?.scrollIntoView({
+                        behavior: "smooth",
+                        block: "center",
+                      });
+                    });
+                  }}
+                  onViewDifference={() => setActiveTab("difference")}
+                  onRegenerate={() => void processRun(detail.run.id)}
+                  busy={busy === `process:${detail.run.id}`}
+                />
               ) : null}
 
               <div className="-mx-4 overflow-x-auto border-b border-slate-200 px-4 md:mx-0 md:px-0">
@@ -908,11 +1136,27 @@ export function AccountingIntelligence() {
                       </button>
                     </div>
                   </div>
-                  <MobileTransactionCards transactions={filteredRows} patchTransaction={patchTransaction} reviewMode={activeTab === "review"} />
-                  <TransactionTable transactions={filteredRows} patchTransaction={patchTransaction} />
+                  <div id="accounting-review-table">
+                    <TransactionTable transactions={filteredRows} patchTransaction={patchTransaction} affectedTransactionIds={affectedTransactionIds} />
+                  </div>
                 </>
               ) : null}
 
+              {activeTab === "difference" ? (
+                <DifferenceInspector
+                  run={detail.run}
+                  diagnostics={reviewDiagnostics}
+                  affectedTransactions={affectedTransactions}
+                  totals={totals}
+                  expectedClosing={expectedClosing}
+                  difference={recDifference}
+                  onReviewTransactions={() => setActiveTab("review")}
+                  onAcceptSuggestion={() => {
+                    const firstAffected = affectedTransactions[0];
+                    if (firstAffected) void patchTransaction(firstAffected, { reviewStatus: "approved", notes: firstAffected.notes || "Reviewed from Difference Inspector." });
+                  }}
+                />
+              ) : null}
               {activeTab === "summary" ? <SummaryPanel run={detail.run} totals={totals} transactionCount={transactions.length} /> : null}
               {activeTab === "bank-rec" ? (
                 <BankRecPanel run={detail.run} totals={totals} expectedClosing={expectedClosing} difference={recDifference} />
@@ -972,26 +1216,37 @@ export function AccountingIntelligence() {
           </div>
         </div>
       ) : null}
-      {detail ? (
-        <div className="fixed inset-x-0 bottom-[calc(4.75rem+env(safe-area-inset-bottom))] z-30 grid grid-cols-3 gap-2 border-t border-slate-200 bg-white/95 p-3 shadow-[0_-10px_30px_rgba(15,23,42,0.08)] backdrop-blur-xl md:hidden">
-          <ExportDropdown run={detail.run} reviewCount={totals.review} open={exportOpen} onOpenChange={setExportOpen} mobile />
-          <button
-            type="button"
-            onClick={() => setActiveTab("review")}
-            className="h-11 rounded-xl border border-slate-200 bg-white text-sm font-black text-navy-950"
-          >
-            Review
-          </button>
-          <button
-            type="button"
-            onClick={() => void processRun(detail.run.id)}
-            disabled={busy === `process:${detail.run.id}` || detail.run.status === "processing"}
-            className="h-11 rounded-xl border border-slate-200 bg-white text-sm font-black text-navy-950 disabled:text-slate-300"
-          >
-            More
-          </button>
+      {deleteDialogOpen ? (
+        <div className="fixed inset-0 z-[80] flex items-end bg-slate-950/40 p-3 sm:items-center sm:justify-center">
+          <div className="w-full max-w-md rounded-2xl border border-slate-200 bg-white p-5 shadow-2xl">
+            <h3 className="text-lg font-semibold text-navy-950">Delete {deleteTargetIds.length === 1 ? "statement" : "statements"}?</h3>
+            <p className="mt-2 text-sm font-medium leading-6 text-slate-600">
+              This removes the selected statement{deleteTargetIds.length === 1 ? "" : "s"} from this workspace and moves related documents to Trash.
+            </p>
+            <div className="mt-4 flex gap-2">
+              <button
+                type="button"
+                onClick={() => {
+                  setDeleteDialogOpen(false);
+                  setDeleteTargetIds([]);
+                }}
+                className="min-h-11 flex-1 rounded-xl border border-slate-200 bg-white text-sm font-semibold text-slate-700"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                disabled={busy === "delete"}
+                onClick={() => void deleteRuns(deleteTargetIds)}
+                className="min-h-11 flex-1 rounded-xl bg-rose-600 text-sm font-semibold text-white disabled:bg-slate-300"
+              >
+                {busy === "delete" ? "Deleting..." : "Delete"}
+              </button>
+            </div>
+          </div>
         </div>
       ) : null}
+
     </div>
   );
 }
@@ -1002,36 +1257,40 @@ function ExportDropdown({
   open,
   onOpenChange,
   mobile = false,
+  disabled = false,
 }: {
   run: AccountingStatementRun;
   reviewCount: number;
   open: boolean;
   onOpenChange: (open: boolean) => void;
   mobile?: boolean;
+  disabled?: boolean;
 }) {
+  const isDraftExport = run.status === "review";
+  const buttonLabel = isDraftExport ? "Export draft" : "Export";
   const options = [
-    { label: "Export Transactions", section: "transactions", detail: "CSV transaction listing" },
-    { label: `Export Review Items (${reviewCount})`, section: "review-items", detail: "Rows requiring accountant review" },
-    { label: "Export Summary", section: "summary", detail: "Statement summary metrics" },
-    { label: "Export Bank Reconciliation", section: "bank-reconciliation", detail: "Opening, receipts, payments and closing check" },
-    { label: "Export VAT", section: "vat", detail: "VAT treatment schedule" },
-    { label: "Export General Ledger", section: "general-ledger", detail: "Account movement summary" },
-    { label: "Export Trial Balance", section: "trial-balance", detail: "Debit and credit balances" },
-    { label: "Export All in a single file", section: "all", detail: "All sections in one Excel file", requiresWorkbook: true },
+    { label: `${buttonLabel} Transactions`, section: "transactions", detail: "CSV transaction listing" },
+    { label: `${buttonLabel} Review Items (${reviewCount})`, section: "review-items", detail: "Rows requiring accountant review" },
+    { label: `${buttonLabel} Summary`, section: "summary", detail: "Statement summary metrics" },
+    { label: `${buttonLabel} Bank Reconciliation`, section: "bank-reconciliation", detail: "Opening, receipts, payments and closing check" },
+    { label: `${buttonLabel} VAT`, section: "vat", detail: "VAT treatment schedule" },
+    { label: `${buttonLabel} General Ledger`, section: "general-ledger", detail: "Account movement summary" },
+    { label: `${buttonLabel} Trial Balance`, section: "trial-balance", detail: "Debit and credit balances" },
+    { label: isDraftExport ? "Export draft workbook" : "Export All in a single file", section: "all", detail: isDraftExport ? "Draft workbook for review, not final filing" : "All sections in one Excel file", requiresWorkbook: true },
   ];
 
   return (
     <div className="relative">
       <button
         type="button"
-        disabled={!run.workbookStoragePath}
+        disabled={!run.workbookStoragePath || disabled}
         onClick={() => onOpenChange(!open)}
         className={`${mobile ? "h-11 w-full justify-center rounded-xl" : "h-11 rounded-lg px-4"} inline-flex items-center gap-2 bg-royal-600 text-sm font-semibold text-white hover:bg-royal-700 disabled:cursor-not-allowed disabled:bg-slate-100 disabled:text-slate-400`}
         aria-expanded={open}
         aria-haspopup="menu"
       >
         <ArrowDownToLine className="h-4 w-4" />
-        Export
+        {buttonLabel}
         <ChevronDown className="h-4 w-4" />
       </button>
       {open ? (
@@ -1060,14 +1319,238 @@ function ExportDropdown({
   );
 }
 
+function ReviewRequiredPanel({
+  run,
+  diagnostics,
+  affectedRows,
+  onReview,
+  onViewDifference,
+  onRegenerate,
+  busy,
+}: {
+  run: AccountingStatementRun;
+  diagnostics: ReviewDiagnostics;
+  affectedRows: number;
+  onReview: () => void;
+  onViewDifference: () => void;
+  onRegenerate: () => void;
+  busy: boolean;
+}) {
+  const confidence = diagnostics.confidence ?? run.confidence;
+  return (
+    <section className="rounded-xl border border-amber-200 bg-amber-50/60 p-4">
+      <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+        <div>
+          <div className="inline-flex items-center gap-2 rounded-full bg-white px-3 py-1 text-xs font-black text-amber-700 shadow-sm ring-1 ring-amber-200">
+            <AlertTriangle className="h-4 w-4" />
+            Review required
+          </div>
+          <h3 className="mt-3 text-xl font-semibold text-navy-950">Review required</h3>
+          <p className="mt-1 max-w-3xl text-sm font-semibold leading-6 text-slate-600">
+            We extracted a draft workbook, but this statement needs review before final export. Some transactions or bank charges may need correction.
+          </p>
+        </div>
+        <div className="grid gap-2 sm:grid-cols-3 lg:min-w-[420px]">
+          {[
+            ["Transactions extracted", "Complete", true],
+            ["Workbook generated", run.workbookStoragePath ? "Ready" : "Draft ready", true],
+            ["Reconciliation needs review", "Needs attention", false],
+          ].map(([label, value, ok]) => (
+            <div key={label as string} className="rounded-lg bg-white p-3 shadow-sm ring-1 ring-amber-100">
+              <div className={`inline-flex h-7 w-7 items-center justify-center rounded-full ${ok ? "bg-emerald-50 text-emerald-700" : "bg-amber-50 text-amber-700"}`}>
+                {ok ? <CheckCircle2 className="h-4 w-4" /> : <AlertTriangle className="h-4 w-4" />}
+              </div>
+              <p className="mt-2 text-xs font-black uppercase tracking-[0.08em] text-slate-400">{label}</p>
+              <p className="mt-1 text-sm font-black text-navy-950">{value}</p>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      <div className="mt-4 grid gap-3 sm:grid-cols-3">
+        <ReviewMetric label="Difference detected" value={money(diagnostics.difference)} tone="text-amber-700" />
+        <ReviewMetric label="Confidence" value={`${Math.round(confidence)}%`} tone={confidence < 70 ? "text-amber-700" : "text-navy-950"} />
+        <ReviewMetric label="Estimated affected rows" value={plainNumber(affectedRows)} tone="text-navy-950" />
+      </div>
+
+      <div className="mt-4 flex flex-wrap gap-2">
+        <button type="button" onClick={onReview} className="min-h-10 rounded-lg bg-royal-600 px-4 text-sm font-black text-white shadow-sm">
+          Review Transactions
+        </button>
+        <button type="button" onClick={onViewDifference} className="min-h-10 rounded-lg border border-amber-200 bg-white px-4 text-sm font-black text-amber-800">
+          View Difference
+        </button>
+        <button type="button" onClick={onRegenerate} disabled={busy} className="inline-flex min-h-10 items-center gap-2 rounded-lg border border-slate-200 bg-white px-4 text-sm font-black text-slate-700 disabled:text-slate-300">
+          {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCcw className="h-4 w-4" />}
+          Regenerate Workbook
+        </button>
+      </div>
+
+      {canShowTechnicalDetails ? <TechnicalDetails diagnostics={diagnostics} /> : null}
+    </section>
+  );
+}
+
+function ReviewMetric({ label, value, tone }: { label: string; value: string; tone: string }) {
+  return (
+    <div className="rounded-lg bg-white p-3 shadow-sm ring-1 ring-amber-100">
+      <p className="text-xs font-black uppercase tracking-[0.08em] text-slate-400">{label}</p>
+      <p className={`mt-1 text-lg font-black ${tone}`}>{value}</p>
+    </div>
+  );
+}
+
+function TechnicalDetails({ diagnostics }: { diagnostics: ReviewDiagnostics }) {
+  const rows: Array<[string, string]> = [
+    ["Opening Balance", money(diagnostics.openingBalance)],
+    ["Closing Balance", money(diagnostics.closingBalance)],
+    ["Calculated Closing", money(diagnostics.calculatedClosing)],
+    ["Difference", money(diagnostics.difference)],
+    ["Credits", money(diagnostics.credits)],
+    ["Debits", money(diagnostics.debits)],
+    ["Parser Version", diagnostics.parserVersion ?? "-"],
+    ["Validation Time", diagnostics.validationTime ? compactDateTime(diagnostics.validationTime) : "-"],
+    ["Confidence", diagnostics.confidence !== null ? `${Math.round(diagnostics.confidence)}%` : "-"],
+    ["Detected Layout", diagnostics.detectedLayout ?? "-"],
+    ["Balance Gap", money(diagnostics.balanceGap)],
+  ];
+
+  return (
+    <details className="mt-4 rounded-lg border border-amber-200 bg-white p-3">
+      <summary className="cursor-pointer text-sm font-black text-navy-950">Technical Details</summary>
+      <div className="mt-3 grid gap-2 sm:grid-cols-2">
+        {rows.map(([label, value]) => (
+          <div key={label} className="rounded-lg bg-slate-50 px-3 py-2">
+            <p className="text-[11px] font-black uppercase tracking-[0.08em] text-slate-400">{label}</p>
+            <p className="mt-1 break-words text-sm font-black text-navy-950">{value}</p>
+          </div>
+        ))}
+      </div>
+      {diagnostics.rawMessage ? (
+        <div className="mt-3 rounded-lg bg-slate-950 p-3 text-xs font-semibold leading-5 text-slate-100">
+          <p className="mb-2 text-[11px] font-black uppercase tracking-[0.12em] text-slate-400">Raw Validation Message</p>
+          <pre className="max-h-56 overflow-auto whitespace-pre-wrap break-words">{diagnostics.rawMessage}</pre>
+        </div>
+      ) : null}
+    </details>
+  );
+}
+
+function DifferenceInspector({
+  run,
+  diagnostics,
+  affectedTransactions,
+  totals,
+  expectedClosing,
+  difference,
+  onReviewTransactions,
+  onAcceptSuggestion,
+}: {
+  run: AccountingStatementRun;
+  diagnostics: ReviewDiagnostics;
+  affectedTransactions: AccountingTransaction[];
+  totals: { debit: number; credit: number; bankCharges: number; review: number };
+  expectedClosing: number;
+  difference: number;
+  onReviewTransactions: () => void;
+  onAcceptSuggestion: () => void;
+}) {
+  const previous = affectedTransactions[0] ?? null;
+  const current = affectedTransactions[1] ?? affectedTransactions[0] ?? null;
+  const absDifference = Math.abs(difference);
+  return (
+    <section className="space-y-4">
+      <div className="rounded-xl border border-amber-200 bg-white p-4 shadow-sm">
+        <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
+          <div>
+            <p className="text-xs font-black uppercase tracking-[0.14em] text-amber-600">Difference Inspector</p>
+            <h3 className="mt-1 text-xl font-semibold text-navy-950">Reconciliation needs review</h3>
+            <p className="mt-1 text-sm font-semibold text-slate-500">Review the suggested rows and update the statement until the difference reaches zero.</p>
+          </div>
+          <span className={`rounded-full px-3 py-1 text-xs font-black ${absDifference < 0.01 ? "bg-emerald-50 text-emerald-700" : "bg-amber-50 text-amber-700"}`}>
+            {absDifference < 0.01 ? "Reconciled" : `Difference remaining: ${money(absDifference)}`}
+          </span>
+        </div>
+        <div className="mt-4 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+          <ReviewMetric label="Expected balance" value={money(expectedClosing)} tone="text-navy-950" />
+          <ReviewMetric label="Actual balance" value={money(run.closingBalance)} tone="text-navy-950" />
+          <ReviewMetric label="Difference" value={money(absDifference)} tone={absDifference < 0.01 ? "text-emerald-700" : "text-amber-700"} />
+          <ReviewMetric label="Confidence" value={`${Math.round(diagnostics.confidence ?? run.confidence)}%`} tone="text-navy-950" />
+        </div>
+      </div>
+
+      <div className="grid gap-4 xl:grid-cols-2">
+        <TransactionSnapshot title="Previous transaction" transaction={previous} />
+        <TransactionSnapshot title="Current transaction" transaction={current} />
+      </div>
+
+      <div className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
+        <h4 className="text-sm font-black text-navy-950">Suggested fixes</h4>
+        <div className="mt-3 grid gap-3 md:grid-cols-3">
+          {[
+            ["Possible missing bank charge", diagnostics.balanceGap ?? absDifference, "A balance movement may not have appeared as a visible transaction."],
+            ["Possible OCR amount issue", absDifference, "One amount may need correction if the PDF text was unclear."],
+            ["Possible missing transaction", absDifference, "A transaction around the highlighted rows may be absent."],
+          ].map(([title, value, description]) => (
+            <div key={title as string} className="rounded-lg border border-slate-200 bg-slate-50 p-3">
+              <p className="text-sm font-black text-navy-950">{title}</p>
+              <p className="mt-1 text-lg font-black text-amber-700">{money(value as number)}</p>
+              <p className="mt-1 text-xs font-semibold leading-5 text-slate-500">{description}</p>
+            </div>
+          ))}
+        </div>
+        <div className="mt-4 flex flex-wrap gap-2">
+          <button type="button" onClick={onAcceptSuggestion} className="min-h-10 rounded-lg bg-royal-600 px-4 text-sm font-black text-white">
+            Accept Suggestion
+          </button>
+          <button type="button" onClick={onReviewTransactions} className="min-h-10 rounded-lg border border-slate-200 bg-white px-4 text-sm font-black text-slate-700">
+            Edit Transaction
+          </button>
+          <button type="button" disabled title="Manual insert flow is coming next." className="min-h-10 cursor-not-allowed rounded-lg border border-slate-200 bg-slate-50 px-4 text-sm font-black text-slate-400">
+            Insert Missing Transaction
+          </button>
+          <button type="button" onClick={onAcceptSuggestion} className="min-h-10 rounded-lg border border-slate-200 bg-white px-4 text-sm font-black text-slate-700">
+            Mark as Correct
+          </button>
+        </div>
+      </div>
+
+      <BankRecPanel run={run} totals={totals} expectedClosing={expectedClosing} difference={difference} />
+    </section>
+  );
+}
+
+function TransactionSnapshot({ title, transaction }: { title: string; transaction: AccountingTransaction | null }) {
+  return (
+    <div className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
+      <p className="text-xs font-black uppercase tracking-[0.12em] text-slate-400">{title}</p>
+      {transaction ? (
+        <div className="mt-3 space-y-2">
+          <p className="text-sm font-black text-navy-950">{transaction.transactionDate || "-"}</p>
+          <p className="text-sm font-semibold leading-6 text-slate-600">{transaction.description}</p>
+          <div className="grid grid-cols-3 gap-2 text-xs">
+            <ReviewMetric label="Money in" value={money(transaction.creditAmount)} tone="text-emerald-700" />
+            <ReviewMetric label="Money out" value={money(transaction.debitAmount)} tone="text-rose-700" />
+            <ReviewMetric label="Balance" value={money(transaction.runningBalance)} tone="text-navy-950" />
+          </div>
+        </div>
+      ) : (
+        <p className="mt-3 text-sm font-semibold text-slate-500">No transaction selected.</p>
+      )}
+    </div>
+  );
+}
+
 function MobileTransactionCards({
   transactions,
   patchTransaction,
   reviewMode,
+  affectedTransactionIds,
 }: {
   transactions: AccountingTransaction[];
   patchTransaction: (transaction: AccountingTransaction, patch: AccountingTransactionPatch) => Promise<void>;
   reviewMode: boolean;
+  affectedTransactionIds?: Set<string>;
 }) {
   if (!transactions.length) {
     return (
@@ -1084,8 +1567,19 @@ function MobileTransactionCards({
       {transactions.map((transaction) => {
         const amount = transaction.creditAmount ?? transaction.debitAmount;
         const isCredit = Boolean(transaction.creditAmount);
+        const isAffected = affectedTransactionIds?.has(transaction.id) ?? false;
         return (
-          <article key={transaction.id} className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
+          <article
+            id={`transaction-${transaction.id}`}
+            key={transaction.id}
+            className={`rounded-xl border p-4 shadow-sm ${isAffected ? "border-amber-300 bg-amber-50/60" : "border-slate-200 bg-white"}`}
+          >
+            {isAffected ? (
+              <div className="mb-3 inline-flex items-center gap-1.5 rounded-full bg-white px-2.5 py-1 text-xs font-black text-amber-700 ring-1 ring-amber-200">
+                <AlertTriangle className="h-3.5 w-3.5" />
+                Balance mismatch
+              </div>
+            ) : null}
             <div className="flex items-start justify-between gap-3">
               <div className="min-w-0">
                 <p className="text-xs font-black text-slate-500">{transaction.transactionDate || "-"}</p>
@@ -1171,39 +1665,42 @@ function MobileTransactionCards({
   );
 }
 
-function SummaryCard({
-  label,
-  value,
-  subvalue,
-  icon,
-  wide = false,
-  danger = false,
-  success = false,
-  warning = false,
+function CompactSummaryBar({
+  run,
+  debit,
+  credit,
+  reviewCount,
 }: {
-  label: string;
-  value: string;
-  subvalue?: string;
-  icon?: ReactNode;
-  wide?: boolean;
-  danger?: boolean;
-  success?: boolean;
-  warning?: boolean;
+  run: AccountingStatementRun | null;
+  debit: number | null;
+  credit: number | null;
+  reviewCount: number;
 }) {
+  const items = [
+    { label: "Status", value: run ? statusLabel(run.status) : "No statement", tone: run?.status === "failed" ? "text-rose-700" : run?.status === "review" ? "text-amber-700" : "text-navy-950" },
+    { label: "Opening", value: money(run?.openingBalance ?? null), tone: "text-navy-950" },
+    { label: "Closing", value: money(run?.closingBalance ?? null), tone: "text-navy-950" },
+    { label: "Money out", value: money(debit), tone: "text-rose-700" },
+    { label: "Money in", value: money(credit), tone: "text-emerald-700" },
+    { label: "Review", value: plainNumber(reviewCount), tone: reviewCount ? "text-amber-700" : "text-navy-950" },
+  ];
+
   return (
-    <div className={`rounded-xl border border-slate-200 bg-white p-5 shadow-sm ${wide ? "md:col-span-2 xl:col-span-1" : ""}`}>
-      <div className="flex items-center gap-4">
-        {icon ? <div className="rounded-lg bg-royal-50 p-3 text-royal-600">{icon}</div> : null}
-        <div className="min-w-0">
-          <p className="text-xs font-semibold text-slate-500">{label}</p>
-          <p className={`mt-2 truncate text-lg font-semibold ${danger ? "text-rose-700" : success ? "text-emerald-700" : warning ? "text-amber-700" : "text-navy-950"}`}>
-            {value}
-          </p>
-          {subvalue ? <p className="mt-1 text-xs font-semibold text-slate-500">{subvalue}</p> : null}
-        </div>
-        {warning ? <AlertTriangle className="ml-auto h-5 w-5 text-amber-500" /> : null}
+    <section className="h-24 overflow-x-auto overflow-y-hidden overscroll-y-none rounded-xl border border-slate-200 bg-white shadow-sm">
+      <div className="flex h-full min-w-max flex-nowrap divide-x divide-slate-100 overflow-y-hidden">
+        {items.map((item) => (
+          <div key={item.label} className="flex h-full min-w-40 flex-[0_0_auto] flex-col justify-center px-4 py-3">
+            <p className="truncate whitespace-nowrap text-[11px] font-black uppercase tracking-[0.08em] text-slate-400">{item.label}</p>
+            <p className={`mt-1 truncate whitespace-nowrap text-sm font-black ${item.tone}`}>{item.value}</p>
+            {item.label === "Status" && run ? (
+              <p className="mt-0.5 truncate whitespace-nowrap text-[11px] font-semibold text-slate-500">
+                {run.status === "processing" || run.status === "queued" ? "Confidence: Calculating..." : `${Math.round(run.confidence)}% confidence`}
+              </p>
+            ) : null}
+          </div>
+        ))}
       </div>
-    </div>
+    </section>
   );
 }
 
@@ -1214,9 +1711,9 @@ function StatementRuns({
   search,
   sortBy,
   onToggleSelected,
+  onSetSelected,
   onSearchChange,
   onSortChange,
-  onReprocess,
   onRefresh,
   onSelect,
 }: {
@@ -1226,9 +1723,9 @@ function StatementRuns({
   search: string;
   sortBy: string;
   onToggleSelected: (runId: string) => void;
+  onSetSelected: (runIds: string[]) => void;
   onSearchChange: (value: string) => void;
   onSortChange: (value: string) => void;
-  onReprocess: (runId: string) => void;
   onRefresh: () => void;
   onSelect: (runId: string) => void;
 }) {
@@ -1268,46 +1765,62 @@ function StatementRuns({
     return sorted;
   }, [runs, search, sortBy]);
   const visibleRuns = useMemo(() => filteredRuns.slice(0, visibleCount), [filteredRuns, visibleCount]);
+  const allVisibleSelected = visibleRuns.length > 0 && visibleRuns.every((run) => selectedRunIds.includes(run.id));
 
   return (
-    <section className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
-      <div className="mb-4 flex items-center justify-between gap-3">
+    <section className="overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">
+      <div className="flex items-center justify-between gap-3 border-b border-slate-100 px-3 py-2">
         <div>
-          <h2 className="text-xl font-semibold text-navy-950">Statement runs</h2>
-          <p className="mt-1 text-sm font-medium text-slate-500">Uploaded FNB statements and processing state.</p>
+          <h2 className="text-sm font-black text-navy-950">Statements</h2>
+          <p className="text-xs font-semibold text-slate-500">{runs.length} total</p>
         </div>
         <button
           type="button"
           onClick={onRefresh}
-          className="rounded-xl border border-slate-200 p-2 text-slate-500 hover:text-royal-700"
+          className="rounded-lg border border-slate-200 p-2 text-slate-500 hover:text-royal-700"
           aria-label="Refresh accounting runs"
         >
           <RefreshCcw className="h-4 w-4" />
         </button>
       </div>
-      <div className="mb-3 grid gap-2 sm:grid-cols-2">
+      <div className="grid gap-2 border-b border-slate-100 p-2">
         <label className="relative block">
           <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
           <input
             value={search}
             onChange={(event) => onSearchChange(event.target.value)}
             placeholder="Search statements"
-            className="min-h-11 w-full rounded-lg border border-slate-200 bg-white pl-9 pr-3 text-sm font-medium outline-none focus:border-royal-300"
+            className="h-9 w-full rounded-lg border border-slate-200 bg-white pl-9 pr-3 text-sm font-medium outline-none focus:border-royal-300"
           />
         </label>
-        <select
-          value={sortBy}
-          onChange={(event) => onSortChange(event.target.value)}
-          className="min-h-11 rounded-lg border border-slate-200 bg-white px-3 text-sm font-medium text-slate-700 outline-none"
-        >
-          <option value="newest">Newest</option>
-          <option value="oldest">Oldest</option>
-          <option value="month">Month</option>
-          <option value="company">Company</option>
-          <option value="status">Status</option>
-        </select>
+        <div className="flex items-center gap-2">
+          <input
+            type="checkbox"
+            checked={allVisibleSelected}
+            onChange={(event) =>
+              onSetSelected(
+                event.target.checked
+                  ? Array.from(new Set([...selectedRunIds, ...visibleRuns.map((run) => run.id)]))
+                  : selectedRunIds.filter((id) => !visibleRuns.some((run) => run.id === id)),
+              )
+            }
+            className="h-4 w-4 rounded border-slate-300 text-royal-600"
+            aria-label="Select visible statements"
+          />
+          <select
+            value={sortBy}
+            onChange={(event) => onSortChange(event.target.value)}
+            className="h-9 flex-1 rounded-lg border border-slate-200 bg-white px-2 text-xs font-bold text-slate-700 outline-none"
+          >
+            <option value="newest">Newest</option>
+            <option value="oldest">Oldest</option>
+            <option value="month">Month</option>
+            <option value="company">Company</option>
+            <option value="status">Status</option>
+          </select>
+        </div>
       </div>
-      <div className="space-y-3">
+      <div className="max-h-[620px] overflow-auto">
         {visibleRuns.length ? (
           visibleRuns.map((run) => (
             <div
@@ -1321,71 +1834,48 @@ function StatementRuns({
               }}
               role="button"
               tabIndex={0}
-              className={`w-full rounded-lg border p-3 text-left transition ${
-                selectedRunId === run.id ? "border-royal-300 bg-royal-50 ring-4 ring-royal-50" : "border-slate-200 hover:bg-slate-50"
+              className={`group border-b border-slate-100 px-2 py-2 text-left transition ${
+                selectedRunId === run.id ? "bg-royal-50" : "hover:bg-slate-50"
               }`}
             >
-              <div className="flex items-start gap-3">
+              <div className="flex items-center gap-2">
                 <input
                   type="checkbox"
                   checked={selectedRunIds.includes(run.id)}
-                  disabled={!["completed", "review"].includes(run.status)}
                   onChange={(event) => {
                     event.stopPropagation();
                     onToggleSelected(run.id);
                   }}
                   onClick={(event) => event.stopPropagation()}
-                  className="mt-2 h-5 w-5 rounded border-slate-300 text-royal-600 disabled:opacity-30"
+                  className="h-4 w-4 rounded border-slate-300 text-royal-600"
                   aria-label={`Select ${runDisplayTitle(run)} for combined workbook`}
                 />
-                <div className="rounded-lg bg-rose-50 p-2 text-rose-600">
-                  <FileText className="h-4 w-4" />
-                </div>
                 <div className="min-w-0 flex-1">
-                  <div className="flex items-start justify-between gap-2">
-                    <p className="truncate text-sm font-semibold text-navy-950">{runDisplayTitle(run)}</p>
-                    <MoreVertical className="h-4 w-4 shrink-0 text-slate-400" />
+                  <div className="flex items-center justify-between gap-2">
+                    <p className="truncate text-sm font-black text-navy-950">{runDisplayTitle(run)}</p>
+                    <span className={`shrink-0 rounded-full px-2 py-0.5 text-[10px] font-black ${statusTone(run.status)}`}>{statusLabel(run.status)}</span>
                   </div>
-                  <p className="mt-1 text-xs text-slate-500">{run.companyName || "Unknown company"}</p>
-                  <span className={`mt-2 inline-flex rounded-full px-2.5 py-1 text-xs font-semibold ${statusTone(run.status)}`}>{statusLabel(run.status)}</span>
-                  <div className="mt-2 flex items-end justify-between gap-3">
-                    <p className="text-xs font-semibold text-slate-500">{compactDateTime(run.createdAt)}</p>
-                    <p className="text-right text-xs font-semibold text-slate-500">
-                      Confidence
-                      <span className="ml-1 text-base font-semibold text-slate-700">{Math.round(run.confidence)}%</span>
-                    </p>
-                  </div>
-                  <div className="mt-3 grid grid-cols-5 gap-2">
-                    <button
-                      type="button"
-                      onClick={(event) => {
-                        event.stopPropagation();
-                        onSelect(run.id);
-                      }}
-                      className="min-h-11 rounded-lg bg-white text-[11px] font-semibold text-slate-600"
-                    >
-                      More
-                    </button>
-                    <button
-                      type="button"
-                      onClick={(event) => {
-                        event.stopPropagation();
-                        onReprocess(run.id);
-                      }}
-                      className="min-h-11 rounded-lg bg-white text-[11px] font-semibold text-slate-600"
-                    >
-                      Reprocess
-                    </button>
-                    <button type="button" disabled className="min-h-11 rounded-lg bg-white text-[11px] font-semibold text-slate-400">Export</button>
-                    <button type="button" disabled className="min-h-11 rounded-lg bg-white text-[11px] font-semibold text-slate-400">PDF</button>
-                    <button type="button" disabled className="min-h-11 rounded-lg bg-white text-[11px] font-semibold text-slate-400">Delete</button>
+                  <div className="mt-1 flex items-center justify-between gap-2 text-[11px] font-semibold text-slate-500">
+                    <span className="truncate">{run.accountNumber || run.companyName || compactDateTime(run.createdAt)}</span>
+                    <span>{run.status === "processing" || run.status === "queued" ? "Calculating..." : `${Math.round(run.confidence)}%`}</span>
                   </div>
                 </div>
+                <button
+                  type="button"
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    onSelect(run.id);
+                  }}
+                  className="rounded-md p-1.5 text-slate-400 hover:bg-white hover:text-slate-700"
+                  aria-label={`Open ${runDisplayTitle(run)}`}
+                >
+                  <MoreVertical className="h-4 w-4" />
+                </button>
               </div>
             </div>
           ))
         ) : (
-          <div className="rounded-lg border border-slate-200 bg-slate-50 p-6 text-center text-sm font-semibold text-slate-500">
+          <div className="p-6 text-center text-sm font-semibold text-slate-500">
             No FNB statements uploaded yet.
           </div>
         )}
@@ -1393,7 +1883,7 @@ function StatementRuns({
           <button
             type="button"
             onClick={() => setVisibleCount((count) => count + 20)}
-            className="min-h-11 w-full rounded-lg border border-slate-200 bg-white text-sm font-semibold text-slate-700"
+            className="min-h-10 w-full bg-white text-sm font-semibold text-slate-700 hover:bg-slate-50"
           >
             Load more statements
           </button>
@@ -1406,9 +1896,11 @@ function StatementRuns({
 function TransactionTable({
   transactions,
   patchTransaction,
+  affectedTransactionIds,
 }: {
   transactions: AccountingTransaction[];
   patchTransaction: (transaction: AccountingTransaction, patch: AccountingTransactionPatch) => Promise<void>;
+  affectedTransactionIds?: Set<string>;
 }) {
   const [mobileOffsets, setMobileOffsets] = useState<Record<string, number>>({});
   const [dismissedTransactionIds, setDismissedTransactionIds] = useState<Record<string, true>>({});
@@ -1419,9 +1911,9 @@ function TransactionTable({
   const mobileTransactions = transactions.filter((transaction) => !dismissedTransactionIds[transaction.id]);
   const visibleMobileTransactions = useMemo(() => mobileTransactions.slice(0, mobileVisibleCount), [mobileTransactions, mobileVisibleCount]);
 
-  const desktopRowHeight = 58;
-  const desktopViewportHeight = 540;
-  const desktopWindowRows = 40;
+  const desktopRowHeight = 44;
+  const desktopViewportHeight = 500;
+  const desktopWindowRows = 48;
   const desktopStart = Math.max(0, Math.floor(desktopScrollTop / desktopRowHeight) - 8);
   const desktopEnd = Math.min(transactions.length, desktopStart + desktopWindowRows);
   const desktopVisibleTransactions = useMemo(
@@ -1444,10 +1936,13 @@ function TransactionTable({
   return (
     <>
       <div className="space-y-2 md:hidden">
-        {visibleMobileTransactions.map((transaction) => (
+        {visibleMobileTransactions.map((transaction) => {
+          const isAffected = affectedTransactionIds?.has(transaction.id) ?? false;
+          return (
           <article
+            id={`transaction-${transaction.id}`}
             key={transaction.id}
-            className="relative overflow-hidden rounded-lg border border-slate-200 bg-white"
+            className={`relative overflow-hidden rounded-lg border ${isAffected ? "border-amber-300 bg-amber-50/60" : "border-slate-200 bg-white"}`}
             onTouchStart={(event) => {
               const target = event.target as HTMLElement;
               if (target.closest("button,select,input,textarea,a,label")) {
@@ -1494,6 +1989,12 @@ function TransactionTable({
               className="rounded-lg bg-white p-3 transition-transform duration-150"
               style={{ transform: `translateX(${mobileOffsets[transaction.id] ?? 0}px)` }}
             >
+              {isAffected ? (
+                <div className="mb-2 inline-flex items-center gap-1.5 rounded-full bg-amber-50 px-2 py-1 text-xs font-black text-amber-700">
+                  <AlertTriangle className="h-3.5 w-3.5" />
+                  Possible missing bank charge
+                </div>
+              ) : null}
               <div className="flex items-start justify-between gap-3">
                 <div className="min-w-0">
                   <p className="text-xs text-slate-500">{transaction.transactionDate || "-"}</p>
@@ -1551,7 +2052,7 @@ function TransactionTable({
               </div>
             </div>
           </article>
-        ))}
+        );})}
         {!mobileTransactions.length ? (
           <div className="rounded-lg border border-slate-200 bg-slate-50 p-4 text-center text-sm font-semibold text-slate-500">
             All mobile cards were dismissed in this view.
@@ -1574,19 +2075,19 @@ function TransactionTable({
           style={{ maxHeight: `${desktopViewportHeight}px` }}
           onScroll={(event) => setDesktopScrollTop(event.currentTarget.scrollTop)}
         >
-        <table className="w-full min-w-[1220px] text-left text-sm">
-        <thead className="bg-slate-50 text-xs font-semibold text-slate-500">
+        <table className="w-full min-w-[1180px] text-left text-xs">
+        <thead className="sticky top-0 z-10 bg-slate-50 text-[11px] font-black uppercase tracking-[0.04em] text-slate-500">
           <tr>
-            <th className="px-4 py-3">Date</th>
-            <th className="px-4 py-3">Description</th>
-            <th className="px-4 py-3">Money In (R)</th>
-            <th className="px-4 py-3">Money Out (R)</th>
-            <th className="px-4 py-3">Balance (R)</th>
-            <th className="px-4 py-3">Bank Charge (R)</th>
-            <th className="px-4 py-3">Account</th>
-            <th className="px-4 py-3">VAT</th>
-            <th className="px-4 py-3">Review</th>
-            <th className="px-4 py-3">Actions</th>
+            <th className="px-3 py-2">Date</th>
+            <th className="px-3 py-2">Description</th>
+            <th className="px-3 py-2">In</th>
+            <th className="px-3 py-2">Out</th>
+            <th className="px-3 py-2">Balance</th>
+            <th className="px-3 py-2">Fees</th>
+            <th className="px-3 py-2">Account</th>
+            <th className="px-3 py-2">VAT</th>
+            <th className="px-3 py-2">Review</th>
+            <th className="px-3 py-2"></th>
           </tr>
         </thead>
         <tbody className="divide-y divide-slate-100">
@@ -1595,22 +2096,32 @@ function TransactionTable({
               <td colSpan={10} style={{ height: `${desktopTopSpacer}px`, padding: 0 }} />
             </tr>
           ) : null}
-          {desktopVisibleTransactions.map((transaction) => (
-            <tr key={transaction.id} className="align-middle hover:bg-slate-50/70">
-              <td className="whitespace-nowrap px-4 py-3 font-bold text-slate-600">{transaction.transactionDate || "-"}</td>
-              <td className="max-w-[300px] px-4 py-3">
-                <p className="font-semibold leading-5 text-navy-950">{transaction.description}</p>
-                <p className="mt-1 text-xs font-bold text-slate-400">Confidence {Math.round(transaction.confidence)}%</p>
+          {desktopVisibleTransactions.map((transaction) => {
+            const isAffected = affectedTransactionIds?.has(transaction.id) ?? false;
+            return (
+            <tr
+              id={`transaction-${transaction.id}`}
+              key={transaction.id}
+              className={`align-middle hover:bg-slate-50/70 ${isAffected ? "bg-amber-50/70 ring-1 ring-inset ring-amber-200" : ""}`}
+            >
+              <td className="whitespace-nowrap px-3 py-2 font-bold text-slate-600">{transaction.transactionDate || "-"}</td>
+              <td className="max-w-[360px] px-3 py-2">
+                <div className="flex items-center gap-2">
+                  {isAffected ? <AlertTriangle className="h-3.5 w-3.5 shrink-0 text-amber-600" /> : null}
+                  <p className="truncate font-semibold text-navy-950">{transaction.description}</p>
+                </div>
+                {isAffected ? <p className="text-[10px] font-black text-amber-700">Balance mismatch · possible missing bank charge</p> : null}
+                <p className="text-[10px] font-bold text-slate-400">{Math.round(transaction.confidence)}% confidence</p>
               </td>
-              <td className="whitespace-nowrap px-4 py-3 font-semibold text-emerald-700">{money(transaction.creditAmount)}</td>
-              <td className="whitespace-nowrap px-4 py-3 font-semibold text-rose-700">{money(transaction.debitAmount)}</td>
-              <td className="whitespace-nowrap px-4 py-3 font-bold text-navy-950">{money(transaction.runningBalance)}</td>
-              <td className="whitespace-nowrap px-4 py-3 font-bold text-slate-600">{transaction.bankCharge ? money(transaction.debitAmount) : "-"}</td>
-              <td className="px-4 py-3">
+              <td className="whitespace-nowrap px-3 py-2 font-semibold text-emerald-700">{money(transaction.creditAmount)}</td>
+              <td className="whitespace-nowrap px-3 py-2 font-semibold text-rose-700">{money(transaction.debitAmount)}</td>
+              <td className="whitespace-nowrap px-3 py-2 font-bold text-navy-950">{money(transaction.runningBalance)}</td>
+              <td className="whitespace-nowrap px-3 py-2 font-bold text-slate-600">{transaction.bankCharge ? money(transaction.debitAmount) : "-"}</td>
+              <td className="px-3 py-2">
                 <select
                   value={transaction.accountCategory}
                   onChange={(event) => void patchTransaction(transaction, { accountCategory: event.target.value })}
-                  className="w-48 rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-navy-950 outline-none focus:border-royal-300"
+                  className="w-44 rounded-lg border border-slate-200 bg-white px-2 py-1.5 text-xs font-semibold text-navy-950 outline-none focus:border-royal-300"
                 >
                   {categories.map((category) => (
                     <option key={category} value={category}>
@@ -1619,11 +2130,11 @@ function TransactionTable({
                   ))}
                 </select>
               </td>
-              <td className="px-4 py-3">
+              <td className="px-3 py-2">
                 <select
                   value={transaction.vatTreatment}
                   onChange={(event) => void patchTransaction(transaction, { vatTreatment: event.target.value as VatTreatment })}
-                  className="w-36 rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-navy-950 outline-none focus:border-royal-300"
+                  className="w-32 rounded-lg border border-slate-200 bg-white px-2 py-1.5 text-xs font-semibold text-navy-950 outline-none focus:border-royal-300"
                 >
                   {vatTreatments.map((treatment) => (
                     <option key={treatment.value} value={treatment.value}>
@@ -1632,7 +2143,7 @@ function TransactionTable({
                   ))}
                 </select>
               </td>
-              <td className="px-4 py-3">
+              <td className="px-3 py-2">
                 <button
                   type="button"
                   onClick={() =>
@@ -1640,7 +2151,7 @@ function TransactionTable({
                       reviewStatus: transaction.reviewStatus === "approved" ? "needs_review" : "approved",
                     })
                   }
-                  className={`inline-flex items-center gap-1 rounded-full px-2.5 py-1 text-xs font-semibold ${
+                  className={`inline-flex items-center gap-1 rounded-full px-2 py-1 text-[11px] font-black ${
                     transaction.reviewStatus === "approved" ? "bg-emerald-50 text-emerald-700" : "bg-amber-50 text-amber-700"
                   }`}
                 >
@@ -1648,7 +2159,7 @@ function TransactionTable({
                   {transaction.reviewStatus === "approved" ? "Approved" : "Review"}
                 </button>
               </td>
-              <td className="px-4 py-3">
+              <td className="px-3 py-2">
                 <button
                   type="button"
                   disabled
@@ -1660,7 +2171,7 @@ function TransactionTable({
                 </button>
               </td>
             </tr>
-          ))}
+          );})}
           {desktopBottomSpacer > 0 ? (
             <tr aria-hidden>
               <td colSpan={10} style={{ height: `${desktopBottomSpacer}px`, padding: 0 }} />

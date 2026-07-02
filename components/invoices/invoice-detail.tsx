@@ -3,7 +3,8 @@
 import Link from "next/link";
 import { useEffect, useState } from "react";
 import { ArrowLeft, Mail, Printer } from "lucide-react";
-import { InvoicePreview } from "@/components/invoices/InvoicePreview";
+import { InvoicePreview, type InvoicePreviewData } from "@/components/invoices/InvoicePreview";
+import { InvoicePrintDocument } from "@/components/invoices/InvoicePrintDocument";
 import { formatCurrency } from "@/lib/invoice-utils";
 import type { InvoiceLineItemDraft, InvoiceStatus, InvoiceWithItems } from "@/lib/types";
 
@@ -94,6 +95,53 @@ export function InvoiceDetail({ invoiceId }: { invoiceId: string }) {
     vatRate: String(item.vatRate),
   }));
 
+  const previewData: InvoicePreviewData = {
+    invoiceNumber: invoice.invoiceNumber,
+    title: invoice.title,
+    description: invoice.description,
+    status: invoice.status,
+    currency: invoice.currency,
+    invoiceDate: invoice.invoiceDate,
+    dueDate: invoice.dueDate,
+    paymentTerms: invoice.paymentTerms,
+    referenceNumber: invoice.referenceNumber,
+    purchaseOrderNumber: invoice.purchaseOrderNumber,
+    clientName: invoice.clientName,
+    clientCompanyName: invoice.clientCompanyName,
+    clientContactPerson: invoice.clientContactPerson,
+    clientEmail: invoice.clientEmail,
+    clientPhone: invoice.clientPhone,
+    clientAddress: invoice.clientAddress,
+    clientPostalAddress: invoice.clientPostalAddress,
+    clientVatNumber: invoice.clientVatNumber,
+    clientRegistrationNumber: invoice.clientRegistrationNumber,
+    attentionTo: invoice.attentionTo,
+    clientReference: invoice.clientReference,
+    issuerName: invoice.issuerName,
+    issuerTradingName: invoice.issuerTradingName,
+    issuerEmail: invoice.issuerEmail,
+    issuerPhone: invoice.issuerPhone,
+    issuerWebsite: invoice.issuerWebsite,
+    issuerAddress: invoice.issuerAddress,
+    issuerVatNumber: invoice.issuerVatNumber,
+    issuerRegistrationNumber: invoice.issuerRegistrationNumber,
+    logoDataUrl: invoice.logoDataUrl,
+    bankName: invoice.bankName,
+    bankAccountHolder: invoice.bankAccountHolder,
+    bankAccountNumber: invoice.bankAccountNumber,
+    bankBranchCode: invoice.bankBranchCode,
+    bankSwift: invoice.bankSwift,
+    paymentReference: invoice.paymentReference,
+    paymentInstructions: invoice.paymentInstructions,
+    notesToClient: invoice.notesToClient,
+    termsAndConditions: invoice.termsAndConditions,
+    lineItems: lineItemDrafts,
+    discountAmount: String(invoice.discountAmount),
+    shippingAmount: String(invoice.shippingAmount),
+    additionalCharges: String(invoice.additionalCharges),
+    amountPaid: invoice.amountPaid,
+  };
+
   return (
     <div className="space-y-5 p-4 sm:p-6 lg:p-8">
       <div className="flex flex-wrap items-center justify-between gap-3 print:hidden">
@@ -134,55 +182,14 @@ export function InvoiceDetail({ invoiceId }: { invoiceId: string }) {
         </div>
       </div>
 
-      <div id="invoice-print-area">
-        <InvoicePreview
-          invoice={{
-            invoiceNumber: invoice.invoiceNumber,
-            title: invoice.title,
-            description: invoice.description,
-            status: invoice.status,
-            currency: invoice.currency,
-            invoiceDate: invoice.invoiceDate,
-            dueDate: invoice.dueDate,
-            paymentTerms: invoice.paymentTerms,
-            referenceNumber: invoice.referenceNumber,
-            purchaseOrderNumber: invoice.purchaseOrderNumber,
-            clientName: invoice.clientName,
-            clientCompanyName: invoice.clientCompanyName,
-            clientContactPerson: invoice.clientContactPerson,
-            clientEmail: invoice.clientEmail,
-            clientPhone: invoice.clientPhone,
-            clientAddress: invoice.clientAddress,
-            clientPostalAddress: invoice.clientPostalAddress,
-            clientVatNumber: invoice.clientVatNumber,
-            clientRegistrationNumber: invoice.clientRegistrationNumber,
-            attentionTo: invoice.attentionTo,
-            clientReference: invoice.clientReference,
-            issuerName: invoice.issuerName,
-            issuerTradingName: invoice.issuerTradingName,
-            issuerEmail: invoice.issuerEmail,
-            issuerPhone: invoice.issuerPhone,
-            issuerWebsite: invoice.issuerWebsite,
-            issuerAddress: invoice.issuerAddress,
-            issuerVatNumber: invoice.issuerVatNumber,
-            issuerRegistrationNumber: invoice.issuerRegistrationNumber,
-            logoDataUrl: invoice.logoDataUrl,
-            bankName: invoice.bankName,
-            bankAccountHolder: invoice.bankAccountHolder,
-            bankAccountNumber: invoice.bankAccountNumber,
-            bankBranchCode: invoice.bankBranchCode,
-            bankSwift: invoice.bankSwift,
-            paymentReference: invoice.paymentReference,
-            paymentInstructions: invoice.paymentInstructions,
-            notesToClient: invoice.notesToClient,
-            termsAndConditions: invoice.termsAndConditions,
-            lineItems: lineItemDrafts,
-            discountAmount: String(invoice.discountAmount),
-            shippingAmount: String(invoice.shippingAmount),
-            additionalCharges: String(invoice.additionalCharges),
-            amountPaid: invoice.amountPaid,
-          }}
-        />
+      {/* Dashboard-styled preview — shown on screen, hidden when printing/saving as PDF. */}
+      <div className="print:hidden">
+        <InvoicePreview invoice={previewData} />
+      </div>
+
+      {/* Compact, print-only invoice layout — hidden on screen, shown only for print/PDF. */}
+      <div id="invoice-print-area" className="hidden print:block">
+        <InvoicePrintDocument invoice={previewData} />
       </div>
     </div>
   );

@@ -1,4 +1,4 @@
-import { FolderPlus } from "lucide-react";
+import { Upload } from "lucide-react";
 import { DocumentLibrary } from "@/components/document-library";
 import { PageHeader, PrimaryButton } from "@/components/ui";
 
@@ -7,11 +7,11 @@ export default function DocumentsPage() {
     <>
       <PageHeader
         eyebrow="Document Library"
-        title="Stored documents, folders and shared workspaces"
-        description="Every uploaded file is stored with search, filters, folders, tags, recent files, sharing, starred items, trash and version history."
+        title="Stored documents and shared workspaces"
+        description="Every uploaded file is stored with search, filters, tags, recent files, sharing, archive and trash."
         action={
           <PrimaryButton href="/upload">
-            <FolderPlus className="h-5 w-5" />
+            <Upload className="h-5 w-5" />
             New Upload
           </PrimaryButton>
         }

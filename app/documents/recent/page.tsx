@@ -1,4 +1,4 @@
-import { FolderPlus } from "lucide-react";
+import { Upload } from "lucide-react";
 import { DocumentLibrary } from "@/components/document-library";
 import { PageHeader, PrimaryButton } from "@/components/ui";
 
@@ -11,7 +11,7 @@ export default function RecentDocumentsPage() {
         description="Recently uploaded and updated documents across your workspace."
         action={
           <PrimaryButton href="/upload">
-            <FolderPlus className="h-5 w-5" />
+            <Upload className="h-5 w-5" />
             New Upload
           </PrimaryButton>
         }

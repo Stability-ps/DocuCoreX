@@ -6,8 +6,8 @@ export default function AccountingPage() {
     <>
       <PageHeader
         eyebrow="Accounting Intelligence"
-        title="FNB statement accounting engine"
-        description="Upload FNB South Africa business bank statement PDFs, extract transactions, review accounting treatment and export a structured Excel workpaper."
+        title="Accounting workspace for finance teams"
+        description="Built for accountants, bookkeepers, auditors, tax practitioners and finance teams."
       />
       <AccountingIntelligence />
     </>

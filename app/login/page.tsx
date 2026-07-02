@@ -12,8 +12,11 @@ function LoginContent() {
   const searchParams = useSearchParams();
   const [mode, setMode] = useState<"signin" | "signup" | "forgot">("signin");
   const [showPassword, setShowPassword] = useState(false);
+  const [showConfirmPassword, setShowConfirmPassword] = useState(false);
+  const [fullName, setFullName] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
+  const [confirmPassword, setConfirmPassword] = useState("");
   const [status, setStatus] = useState("");
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [callbackError, setCallbackError] = useState("");
@@ -77,10 +80,23 @@ function LoginContent() {
     }
 
     if (mode === "signup") {
+      const normalizedName = fullName.trim().replace(/\s+/g, " ");
+      if (normalizedName.length < 2) {
+        setStatus("Enter your full name (minimum 2 characters).");
+        setIsSubmitting(false);
+        return;
+      }
+
+      if (password !== confirmPassword) {
+        setStatus("Password and confirm password must match.");
+        setIsSubmitting(false);
+        return;
+      }
+
       const response = await fetch("/api/auth/signup", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ email, password }),
+        body: JSON.stringify({ email, password, fullName: normalizedName }),
       }).catch(() => null);
 
       if (!response?.ok) {
@@ -254,6 +270,24 @@ function LoginContent() {
             </div>
 
             <form onSubmit={handleEmailAuth} className="space-y-4">
+              {mode === "signup" ? (
+                <label className="block">
+                  <span className="mb-2 block text-sm font-semibold text-slate-700">Full name</span>
+                  <span className="flex items-center gap-3 rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 focus-within:border-royal-300 focus-within:bg-white">
+                    <ShieldCheck className="h-5 w-5 text-slate-400" />
+                    <input
+                      className="w-full bg-transparent text-sm font-semibold outline-none"
+                      onChange={(event) => setFullName(event.target.value)}
+                      placeholder="Your full name"
+                      required
+                      minLength={2}
+                      type="text"
+                      value={fullName}
+                    />
+                  </span>
+                </label>
+              ) : null}
+
               <label className="block">
                 <span className="mb-2 block text-sm font-semibold text-slate-700">Email address</span>
                 <span className="flex items-center gap-3 rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 focus-within:border-royal-300 focus-within:bg-white">
@@ -270,24 +304,46 @@ function LoginContent() {
               </label>
 
               {mode !== "forgot" ? (
-                <label className="block">
-                  <span className="mb-2 block text-sm font-semibold text-slate-700">Password</span>
-                  <span className="flex items-center gap-3 rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 focus-within:border-royal-300 focus-within:bg-white">
-                    <KeyRound className="h-5 w-5 text-slate-400" />
-                    <input
-                      className="w-full bg-transparent text-sm font-semibold outline-none"
-                      minLength={8}
-                      onChange={(event) => setPassword(event.target.value)}
-                      placeholder="Enter your password"
-                      required
-                      type={showPassword ? "text" : "password"}
-                      value={password}
-                    />
-                    <button type="button" onClick={() => setShowPassword((value) => !value)} className="text-slate-400">
-                      {showPassword ? <EyeOff className="h-5 w-5" /> : <Eye className="h-5 w-5" />}
-                    </button>
-                  </span>
-                </label>
+                <>
+                  <label className="block">
+                    <span className="mb-2 block text-sm font-semibold text-slate-700">Password</span>
+                    <span className="flex items-center gap-3 rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 focus-within:border-royal-300 focus-within:bg-white">
+                      <KeyRound className="h-5 w-5 text-slate-400" />
+                      <input
+                        className="w-full bg-transparent text-sm font-semibold outline-none"
+                        minLength={8}
+                        onChange={(event) => setPassword(event.target.value)}
+                        placeholder="Enter your password"
+                        required
+                        type={showPassword ? "text" : "password"}
+                        value={password}
+                      />
+                      <button type="button" onClick={() => setShowPassword((value) => !value)} className="text-slate-400">
+                        {showPassword ? <EyeOff className="h-5 w-5" /> : <Eye className="h-5 w-5" />}
+                      </button>
+                    </span>
+                  </label>
+                  {mode === "signup" ? (
+                    <label className="block">
+                      <span className="mb-2 block text-sm font-semibold text-slate-700">Confirm password</span>
+                      <span className="flex items-center gap-3 rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 focus-within:border-royal-300 focus-within:bg-white">
+                        <KeyRound className="h-5 w-5 text-slate-400" />
+                        <input
+                          className="w-full bg-transparent text-sm font-semibold outline-none"
+                          minLength={8}
+                          onChange={(event) => setConfirmPassword(event.target.value)}
+                          placeholder="Confirm your password"
+                          required
+                          type={showConfirmPassword ? "text" : "password"}
+                          value={confirmPassword}
+                        />
+                        <button type="button" onClick={() => setShowConfirmPassword((value) => !value)} className="text-slate-400">
+                          {showConfirmPassword ? <EyeOff className="h-5 w-5" /> : <Eye className="h-5 w-5" />}
+                        </button>
+                      </span>
+                    </label>
+                  ) : null}
+                </>
               ) : null}
 
               {mode !== "forgot" ? (

@@ -1,26 +1,57 @@
 "use client";
 
 import Link from "next/link";
-import { usePathname } from "next/navigation";
-import { useEffect, useState } from "react";
-import { Bell, ChevronDown, Command, CreditCard, Folder, HelpCircle, Home, LogOut, Plus, ReceiptText, RefreshCcw, Search, Settings, ShieldCheck, UsersRound } from "lucide-react";
+import { usePathname, useRouter } from "next/navigation";
+import { useEffect, useRef, useState } from "react";
+import { Bell, ChevronDown, Command, CreditCard, Folder, Home, Landmark, LogOut, Plus, Search, Settings, ShieldCheck, Upload, UsersRound } from "lucide-react";
 import { BrandLogo } from "@/components/brand";
 import { appNav, newActionItems } from "@/lib/product-data";
 import type { NotificationRecord } from "@/lib/app-state";
 
-type ProfileState = { fullName?: string; company?: string; role?: string } | null;
+type ProfileState = { fullName?: string; full_name?: string; email?: string; company?: string; role?: string } | null;
 type SearchResult = { id: string; name: string; type: string; detail: string };
 
+const SHELL_PROFILE_CACHE_KEY = "docucorex:shell:profile";
+const SHELL_NOTIFICATIONS_CACHE_KEY = "docucorex:shell:notifications";
+const SHELL_CACHE_TTL_MS = 60_000;
 const mobileTabs = [
-  { title: "Dashboard", href: "/dashboard", icon: Home },
+  { title: "Home", href: "/dashboard", icon: Home },
   { title: "Documents", href: "/documents", icon: Folder },
-  { title: "Convert", href: "/convert", icon: RefreshCcw },
-  { title: "Accounting", href: "/accounting", icon: ReceiptText },
+  { title: "Upload", href: "/upload", icon: Upload },
+  { title: "Accounting", href: "/accounting", icon: Landmark },
   { title: "Settings", href: "/settings", icon: Settings },
 ];
 
+function profileName(profile: ProfileState) {
+  if (!profile) return "";
+  return profile.fullName?.trim() || profile.full_name?.trim() || "";
+}
+
+function profileInitials(profile: ProfileState) {
+  const candidates = [
+    profileName(profile),
+    profile?.email?.split("@")[0] ?? "",
+    profile?.company ?? "",
+    "DocuCoreX User",
+  ];
+
+  for (const value of candidates) {
+    const parts = value
+      .trim()
+      .split(/\s+/)
+      .filter(Boolean);
+
+    if (!parts.length) continue;
+    if (parts.length === 1) return parts[0].slice(0, 2).toUpperCase();
+    return `${parts[0].slice(0, 1)}${parts[1].slice(0, 1)}`.toUpperCase();
+  }
+
+  return "DU";
+}
+
 export function AppShell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
+  const router = useRouter();
   const [profile, setProfile] = useState<ProfileState>(null);
   const [query, setQuery] = useState("");
   const [searchResults, setSearchResults] = useState<SearchResult[]>([]);
@@ -34,49 +65,106 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     "Convert Files": false,
   });
   const [shellError, setShellError] = useState("");
+  const searchCacheRef = useRef<Map<string, SearchResult[]>>(new Map());
 
   useEffect(() => {
+    const cachedProfile = readCached<ProfileState>(SHELL_PROFILE_CACHE_KEY, SHELL_CACHE_TTL_MS);
+    const cachedNotifications = readCached<NotificationRecord[]>(SHELL_NOTIFICATIONS_CACHE_KEY, SHELL_CACHE_TTL_MS);
+
+    if (cachedProfile !== null) {
+      setProfile(cachedProfile);
+    }
+
+    if (cachedNotifications) {
+      setNotifications(cachedNotifications);
+    }
+
+    const controller = new AbortController();
+
     async function loadShellData() {
-      const [profileResponse, notificationsResponse] = await Promise.all([
-        fetch("/api/profile"),
-        fetch("/api/notifications"),
+      const [profileResult, notificationsResult] = await Promise.allSettled([
+        fetch("/api/profile", { signal: controller.signal }),
+        fetch("/api/notifications", { signal: controller.signal }),
       ]);
 
-      if (profileResponse.ok) {
-        const data = (await profileResponse.json()) as { profile?: ProfileState };
-        setProfile(data.profile ?? null);
-        setShellError("");
-      } else if (profileResponse.status === 401) {
-        setProfile(null);
-        setShellError("");
-      } else {
-        const data = (await profileResponse.json().catch(() => ({}))) as { error?: string };
-        setShellError(data.error ?? "Workspace profile could not be loaded. Refresh the page or open diagnostics if this continues.");
+      if (profileResult.status === "fulfilled") {
+        const profileResponse = profileResult.value;
+
+        if (profileResponse.ok) {
+          const data = (await profileResponse.json()) as { profile?: ProfileState };
+          const resolvedProfile = data.profile ?? null;
+          setProfile(resolvedProfile);
+          writeCached(SHELL_PROFILE_CACHE_KEY, resolvedProfile);
+          setShellError("");
+        } else if (profileResponse.status === 401) {
+          setProfile(null);
+          setShellError("");
+        } else {
+          const data = (await profileResponse.json().catch(() => ({}))) as { error?: string };
+          setShellError(data.error ?? "Workspace profile could not be loaded. Refresh the page or open diagnostics if this continues.");
+        }
       }
 
-      if (notificationsResponse.ok) {
-        const data = (await notificationsResponse.json()) as { notifications?: NotificationRecord[] };
-        setNotifications(data.notifications ?? []);
+      if (notificationsResult.status === "fulfilled") {
+        const notificationsResponse = notificationsResult.value;
+
+        if (notificationsResponse.ok) {
+          const data = (await notificationsResponse.json()) as { notifications?: NotificationRecord[] };
+          const resolvedNotifications = data.notifications ?? [];
+          setNotifications(resolvedNotifications);
+          writeCached(SHELL_NOTIFICATIONS_CACHE_KEY, resolvedNotifications);
+        }
       }
     }
 
     void loadShellData();
+
+    return () => controller.abort();
   }, []);
 
   useEffect(() => {
+    const normalized = query.trim().toLowerCase();
+
+    if (!normalized) {
+      setSearchResults([]);
+      return;
+    }
+
+    const cached = searchCacheRef.current.get(normalized);
+    if (cached) {
+      setSearchResults(cached);
+    }
+
+    const controller = new AbortController();
     const handle = window.setTimeout(async () => {
-      if (!query.trim()) {
-        setSearchResults([]);
-        return;
-      }
-      const response = await fetch(`/api/search?q=${encodeURIComponent(query)}`);
+      const response = await fetch(`/api/search?q=${encodeURIComponent(normalized)}`, { signal: controller.signal });
       if (!response.ok) return;
       const data = (await response.json()) as { results?: SearchResult[] };
-      setSearchResults(data.results ?? []);
-    }, 180);
+      const results = data.results ?? [];
+      searchCacheRef.current.set(normalized, results);
+      setSearchResults(results);
+    }, 120);
 
-    return () => window.clearTimeout(handle);
+    return () => {
+      window.clearTimeout(handle);
+      controller.abort();
+    };
   }, [query]);
+
+  useEffect(() => {
+    for (const tab of mobileTabs) {
+      router.prefetch(tab.href);
+    }
+
+    for (const item of appNav) {
+      router.prefetch(item.href);
+      if (item.children?.length) {
+        for (const child of item.children) {
+          router.prefetch(child.href);
+        }
+      }
+    }
+  }, [router]);
 
   useEffect(() => {
     let lastY = window.scrollY;
@@ -252,7 +340,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                 title="Account menu"
                 aria-label="Account menu"
               >
-                {profile?.fullName?.charAt(0) ?? "?"}
+                {profileInitials(profile)}
               </button>
             </div>
           </div>
@@ -263,7 +351,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                 <input
                   className="w-full bg-transparent text-sm font-semibold outline-none placeholder:text-slate-400"
                   onChange={(event) => setQuery(event.target.value)}
-                  placeholder="Search documents, folders, tags or extracted text"
+                  placeholder="Search documents, tags or extracted text"
                   value={query}
                 />
                 <Command className="h-4 w-4 text-slate-400" />
@@ -307,7 +395,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                 className="flex h-11 min-w-11 items-center justify-center rounded-lg bg-navy-950 px-2 text-sm font-semibold text-white"
                 title="Account menu"
               >
-                {profile?.fullName?.charAt(0) ?? "?"}
+                {profileInitials(profile)}
               </button>
             </div>
           </div>
@@ -329,13 +417,12 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           ) : null}
           {showProfile ? (
             <div className="absolute right-4 top-16 z-50 w-72 rounded-xl border border-slate-200 bg-white p-4 shadow-soft lg:right-6 lg:top-20">
-              <p className="font-semibold text-navy-950">{profile?.fullName ?? "Account"}</p>
+              <p className="font-semibold text-navy-950">{profileName(profile) || "Account"}</p>
               <p className="text-sm text-slate-500">{profile?.company ?? ""}</p>
               <div className="mt-4 grid gap-2">
                 <Link href="/settings" onClick={() => setShowProfile(false)} className="rounded-lg bg-slate-50 px-3 py-2 text-sm font-semibold text-slate-700 hover:text-royal-700">Profile</Link>
                 <Link href="/billing" onClick={() => setShowProfile(false)} className="flex items-center gap-2 rounded-lg bg-slate-50 px-3 py-2 text-sm font-semibold text-slate-700 hover:text-royal-700"><CreditCard className="h-4 w-4" /> Billing & Subscription</Link>
                 <Link href="/team" onClick={() => setShowProfile(false)} className="flex items-center gap-2 rounded-lg bg-slate-50 px-3 py-2 text-sm font-semibold text-slate-700 hover:text-royal-700"><UsersRound className="h-4 w-4" /> Team</Link>
-                <Link href="/help" onClick={() => setShowProfile(false)} className="flex items-center gap-2 rounded-lg bg-slate-50 px-3 py-2 text-sm font-semibold text-slate-700 hover:text-royal-700"><HelpCircle className="h-4 w-4" /> Help & Support</Link>
                 <button
                   type="button"
                   onClick={signOut}
@@ -356,12 +443,17 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           <div className="grid grid-cols-5 gap-1">
             {mobileTabs.map((item) => {
               const active = isActive(item.href);
+              const uploadTab = item.href === "/upload";
               return (
                 <Link
                   key={item.href}
                   href={item.href}
                   className={`relative flex min-h-14 flex-col items-center justify-center gap-1 rounded-2xl text-[11px] font-semibold transition ${
-                    active ? "bg-royal-600 text-white shadow-sm scale-[1.02]" : "text-slate-500 hover:bg-slate-100"
+                    active
+                      ? "bg-royal-600 text-white shadow-sm scale-[1.02]"
+                      : uploadTab
+                        ? "bg-royal-50 text-royal-700 ring-1 ring-royal-200"
+                        : "text-slate-500 hover:bg-slate-100"
                   }`}
                 >
                   <item.icon className="h-5 w-5" />
@@ -380,4 +472,27 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       </div>
     </div>
   );
+}
+
+function readCached<T>(key: string, ttlMs: number): T | null {
+  try {
+    const raw = window.sessionStorage.getItem(key);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as { value: T; at: number };
+    if (Date.now() - parsed.at > ttlMs) {
+      window.sessionStorage.removeItem(key);
+      return null;
+    }
+    return parsed.value;
+  } catch {
+    return null;
+  }
+}
+
+function writeCached<T>(key: string, value: T) {
+  try {
+    window.sessionStorage.setItem(key, JSON.stringify({ value, at: Date.now() }));
+  } catch {
+    // Ignore cache write failures.
+  }
 }

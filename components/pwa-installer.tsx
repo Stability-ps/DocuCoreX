@@ -29,8 +29,12 @@ export function PwaInstaller() {
     }
     if (Date.now() < snoozeUntil || localStorage.getItem("docucorex_install_dismissed") === "true") return;
 
-    const isIos = /iphone|ipad|ipod/i.test(navigator.userAgent);
-    if (isIos) {
+    const userAgent = navigator.userAgent;
+    const isIos = /iphone|ipad|ipod/i.test(userAgent);
+    const isSafari = /safari/i.test(userAgent) && !/crios|fxios|edgios|opios/i.test(userAgent);
+    const isIosSafari = isIos && isSafari;
+
+    if (isIosSafari) {
       setShowIosHint(true);
       setHidden(false);
     }
@@ -61,22 +65,34 @@ export function PwaInstaller() {
     <div className="fixed inset-x-4 bottom-[calc(5.5rem+env(safe-area-inset-bottom))] z-50 rounded-2xl border border-slate-200 bg-white p-4 shadow-xl md:hidden">
       <p className="text-sm font-black text-navy-950">Install DocuCoreX</p>
       <p className="mt-1 text-xs font-semibold leading-5 text-slate-500">
-        {showIosHint ? "On iPhone: Share -> Add to Home Screen" : "Add DocuCoreX to your home screen for a native app experience."}
+        {showIosHint ? "Tap the Share button, then select Add to Home Screen." : "Add DocuCoreX to your home screen for a native app experience."}
       </p>
       <div className="mt-3 grid grid-cols-2 gap-2">
-        <button
-          type="button"
-          className="h-11 rounded-xl bg-royal-600 text-sm font-black text-white disabled:bg-slate-200"
-          disabled={!installPrompt}
-          onClick={async () => {
-            if (!installPrompt) return;
-            await installPrompt.prompt();
-            await installPrompt.userChoice;
-            setHidden(true);
-          }}
-        >
-          Install
-        </button>
+        {showIosHint ? (
+          <button
+            type="button"
+            className="h-11 rounded-xl bg-royal-600 text-sm font-black text-white"
+            onClick={() => {
+              localStorage.setItem("docucorex_install_snooze_until", String(Date.now() + 30 * 24 * 60 * 60 * 1000));
+              setHidden(true);
+            }}
+          >
+            Got it
+          </button>
+        ) : (
+          <button
+            type="button"
+            className="h-11 rounded-xl bg-royal-600 text-sm font-black text-white"
+            onClick={async () => {
+              if (!installPrompt) return;
+              await installPrompt.prompt();
+              await installPrompt.userChoice;
+              setHidden(true);
+            }}
+          >
+            Install
+          </button>
+        )}
         <button
           type="button"
           className="h-11 rounded-xl bg-slate-100 text-sm font-black text-slate-700"
