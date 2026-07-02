@@ -22,6 +22,7 @@ const cardClassName = "rounded-2xl border border-slate-200 bg-white p-5 shadow-s
 const sectionTitleClassName = "text-sm font-semibold text-slate-900";
 
 const currencyOptions = ["ZAR", "USD", "EUR", "GBP"];
+const bankAccountTypeOptions = ["Cheque", "Savings", "Current", "Transmission", "Business"];
 
 // Resize an uploaded logo down to a small thumbnail and return it as a base64 data URL. Keeping
 // logos small avoids needing a dedicated storage bucket/signed-URL pipeline for this feature —
@@ -76,7 +77,6 @@ export function InvoiceCreateForm() {
   const [issuerPhone, setIssuerPhone] = useState("");
   const [issuerWebsite, setIssuerWebsite] = useState("");
   const [issuerAddress, setIssuerAddress] = useState("");
-  const [issuerPostalAddress, setIssuerPostalAddress] = useState("");
   const [logoDataUrl, setLogoDataUrl] = useState<string | null>(null);
   const [logoError, setLogoError] = useState("");
 
@@ -84,6 +84,7 @@ export function InvoiceCreateForm() {
   const [bankName, setBankName] = useState("");
   const [bankAccountHolder, setBankAccountHolder] = useState("");
   const [bankAccountNumber, setBankAccountNumber] = useState("");
+  const [bankAccountType, setBankAccountType] = useState("Cheque");
   const [bankBranchCode, setBankBranchCode] = useState("");
   const [bankSwift, setBankSwift] = useState("");
   const [paymentReference, setPaymentReference] = useState("");
@@ -98,7 +99,6 @@ export function InvoiceCreateForm() {
   const [clientVatNumber, setClientVatNumber] = useState("");
   const [clientRegistrationNumber, setClientRegistrationNumber] = useState("");
   const [clientAddress, setClientAddress] = useState("");
-  const [clientPostalAddress, setClientPostalAddress] = useState("");
   const [attentionTo, setAttentionTo] = useState("");
   const [clientReference, setClientReference] = useState("");
   const [paymentTerms, setPaymentTerms] = useState<InvoicePaymentTerms>("due_on_receipt");
@@ -197,6 +197,8 @@ export function InvoiceCreateForm() {
   }
 
   function buildPayload(finalStatus: InvoiceStatus) {
+    const cleanPaymentInstructions = [bankAccountType ? `Account type: ${bankAccountType}` : "", paymentInstructions.trim()].filter(Boolean).join("\n");
+
     return {
       status: finalStatus,
       currency,
@@ -212,7 +214,7 @@ export function InvoiceCreateForm() {
       clientEmail,
       clientPhone,
       clientAddress,
-      clientPostalAddress,
+      clientPostalAddress: null,
       clientVatNumber,
       clientRegistrationNumber,
       attentionTo,
@@ -223,7 +225,7 @@ export function InvoiceCreateForm() {
       issuerPhone,
       issuerWebsite,
       issuerAddress,
-      issuerPostalAddress,
+      issuerPostalAddress: null,
       issuerVatNumber,
       issuerRegistrationNumber,
       logoDataUrl,
@@ -233,7 +235,7 @@ export function InvoiceCreateForm() {
       bankBranchCode,
       bankSwift,
       paymentReference,
-      paymentInstructions,
+      paymentInstructions: cleanPaymentInstructions,
       title,
       description,
       discountAmount: Number(discountAmount || 0),
@@ -286,7 +288,7 @@ export function InvoiceCreateForm() {
     clientEmail,
     clientPhone,
     clientAddress,
-    clientPostalAddress,
+    clientPostalAddress: null,
     clientVatNumber,
     clientRegistrationNumber,
     attentionTo,
@@ -306,7 +308,7 @@ export function InvoiceCreateForm() {
     bankBranchCode,
     bankSwift,
     paymentReference,
-    paymentInstructions,
+    paymentInstructions: [bankAccountType ? `Account type: ${bankAccountType}` : "", paymentInstructions.trim()].filter(Boolean).join("\n"),
     notesToClient,
     termsAndConditions,
     lineItems,
@@ -363,7 +365,7 @@ export function InvoiceCreateForm() {
                 disabled={isSubmitting}
                 className="inline-flex min-h-9 items-center gap-2 rounded-lg bg-royal-600 px-3.5 py-1.5 text-xs font-semibold text-white transition hover:bg-royal-700 disabled:cursor-wait disabled:bg-slate-300"
               >
-                {isSubmitting ? "Sending…" : "Send invoice"}
+                {isSubmitting ? "Creating…" : "Create invoice"}
               </button>
             </div>
           </div>
@@ -377,7 +379,7 @@ export function InvoiceCreateForm() {
             <p className={sectionTitleClassName}>Your business</p>
             <div className="mt-4 flex flex-col gap-4 sm:flex-row sm:items-start">
               <div className="flex flex-col items-center gap-2">
-                <div className="flex h-16 w-16 items-center justify-center overflow-hidden rounded-lg border border-dashed border-slate-300 bg-slate-50">
+                <div className="flex h-24 w-32 items-center justify-center overflow-hidden rounded-lg border border-dashed border-slate-300 bg-slate-50">
                   {logoDataUrl ? (
                     // eslint-disable-next-line @next/next/no-img-element -- user-uploaded data URL preview, not an optimizable static asset
                     <img src={logoDataUrl} alt="Logo preview" className="h-full w-full object-contain" />
@@ -430,11 +432,8 @@ export function InvoiceCreateForm() {
                   <input className={inputClassName} value={issuerWebsite} onChange={(event) => setIssuerWebsite(event.target.value)} placeholder="https://" />
                 </Field>
                 <div />
-                <Field label="Physical address">
+                <Field label="Physical address" full>
                   <input className={inputClassName} value={issuerAddress} onChange={(event) => setIssuerAddress(event.target.value)} />
-                </Field>
-                <Field label="Postal address">
-                  <input className={inputClassName} value={issuerPostalAddress} onChange={(event) => setIssuerPostalAddress(event.target.value)} />
                 </Field>
               </div>
             </div>
@@ -452,6 +451,15 @@ export function InvoiceCreateForm() {
               </Field>
               <Field label="Account number">
                 <input className={inputClassName} value={bankAccountNumber} onChange={(event) => setBankAccountNumber(event.target.value)} />
+              </Field>
+              <Field label="Account type">
+                <select className={inputClassName} value={bankAccountType} onChange={(event) => setBankAccountType(event.target.value)}>
+                  {bankAccountTypeOptions.map((option) => (
+                    <option key={option} value={option}>
+                      {option}
+                    </option>
+                  ))}
+                </select>
               </Field>
               <Field label="Branch code">
                 <input className={inputClassName} value={bankBranchCode} onChange={(event) => setBankBranchCode(event.target.value)} />
@@ -496,11 +504,8 @@ export function InvoiceCreateForm() {
               <Field label="Company registration number">
                 <input className={inputClassName} value={clientRegistrationNumber} onChange={(event) => setClientRegistrationNumber(event.target.value)} />
               </Field>
-              <Field label="Physical address">
+              <Field label="Physical address" full>
                 <input className={inputClassName} value={clientAddress} onChange={(event) => setClientAddress(event.target.value)} />
-              </Field>
-              <Field label="Postal address">
-                <input className={inputClassName} value={clientPostalAddress} onChange={(event) => setClientPostalAddress(event.target.value)} />
               </Field>
               <Field label="Client reference">
                 <input className={inputClassName} value={clientReference} onChange={(event) => setClientReference(event.target.value)} />
@@ -534,10 +539,10 @@ export function InvoiceCreateForm() {
                 </select>
               </Field>
               <Field label="Invoice date">
-                <input className={inputClassName} type="date" value={invoiceDate} onChange={(event) => setInvoiceDate(event.target.value)} />
+                <input className={inputClassName} type="date" value={invoiceDate} onChange={(event) => { setInvoiceDate(event.target.value); event.currentTarget.blur(); }} />
               </Field>
               <Field label="Due date">
-                <input className={inputClassName} type="date" value={dueDate} onChange={(event) => setDueDate(event.target.value)} />
+                <input className={inputClassName} type="date" value={dueDate} onChange={(event) => { setDueDate(event.target.value); event.currentTarget.blur(); }} />
               </Field>
               <Field label="Currency">
                 <select className={inputClassName} value={currency} onChange={(event) => setCurrency(event.target.value)}>
@@ -661,7 +666,7 @@ export function InvoiceCreateForm() {
               disabled={isSubmitting}
               className="inline-flex min-h-9 items-center gap-2 rounded-lg bg-royal-600 px-3.5 py-1.5 text-xs font-semibold text-white transition hover:bg-royal-700 disabled:cursor-wait disabled:bg-slate-300"
             >
-              {isSubmitting ? "Sending…" : "Send invoice"}
+              {isSubmitting ? "Creating…" : "Create invoice"}
             </button>
           </div>
         </div>

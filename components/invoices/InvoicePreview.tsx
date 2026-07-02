@@ -77,6 +77,9 @@ export function InvoicePreview({ invoice }: { invoice: InvoicePreviewData }) {
   const balanceDue = Math.max(totalAmount - amountPaid, 0);
   const paymentTermsLabel = paymentTermsOptions.find((option) => option.value === invoice.paymentTerms)?.label ?? invoice.paymentTerms;
   const hasBankDetails = invoice.bankName || invoice.bankAccountNumber || invoice.paymentReference;
+  const normalizedClientName = invoice.clientName.trim().toLowerCase();
+  const normalizedClientCompany = invoice.clientCompanyName?.trim().toLowerCase();
+  const shouldShowClientCompany = Boolean(invoice.clientCompanyName && normalizedClientCompany !== normalizedClientName);
 
   return (
     <div className="space-y-5 rounded-2xl border border-slate-200 bg-white p-6 shadow-sm print:border-0 print:shadow-none">
@@ -84,7 +87,7 @@ export function InvoicePreview({ invoice }: { invoice: InvoicePreviewData }) {
         <div className="flex items-start gap-3">
           {invoice.logoDataUrl ? (
             // eslint-disable-next-line @next/next/no-img-element -- user-uploaded data URL, not an optimizable static asset
-            <img src={invoice.logoDataUrl} alt="Business logo" className="h-14 w-14 rounded-lg border border-slate-200 object-contain" />
+            <img src={invoice.logoDataUrl} alt="Business logo" className="max-h-20 w-36 rounded-lg border border-slate-200 object-contain object-left" />
           ) : null}
           <div>
             <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-royal-700">Invoice</p>
@@ -112,7 +115,7 @@ export function InvoicePreview({ invoice }: { invoice: InvoicePreviewData }) {
         <div className="space-y-0.5 rounded-xl border border-slate-100 bg-slate-50/60 p-3.5">
           <p className={fieldLabel}>Billed to</p>
           <p className="font-semibold text-slate-900">{invoice.clientName || "Client name"}</p>
-          {invoice.clientCompanyName ? <p className="text-sm text-slate-600">{invoice.clientCompanyName}</p> : null}
+          {shouldShowClientCompany ? <p className="text-sm text-slate-600">{invoice.clientCompanyName}</p> : null}
           {invoice.attentionTo ? <p className="text-sm text-slate-600">Attn: {invoice.attentionTo}</p> : null}
           {invoice.clientContactPerson ? <p className="text-sm text-slate-600">{invoice.clientContactPerson}</p> : null}
           {invoice.clientEmail ? <p className="text-sm text-slate-600">{invoice.clientEmail}</p> : null}

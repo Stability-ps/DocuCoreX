@@ -83,7 +83,7 @@ textarea {
 @media print {
   @page {
     size: A4;
-    margin: 12mm;
+    margin: 0;
   }
 
   html,
@@ -94,7 +94,8 @@ textarea {
     padding: 0 !important;
     background: #ffffff !important;
     color: #0f172a !important;
-    font-size: 10.5px !important;
+    font-family: var(--font-inter), Inter, Arial, Helvetica, sans-serif !important;
+    font-size: 11px !important;
     line-height: 1.3 !important;
     overflow: visible !important;
     print-color-adjust: exact;
@@ -117,8 +118,9 @@ textarea {
     inset: 0 auto auto 0 !important;
     display: block !important;
     width: 100% !important;
+    min-height: 297mm !important;
     margin: 0 !important;
-    padding: 0 !important;
+    padding: 12mm !important;
     border: 0 !important;
     background: #ffffff !important;
   }
