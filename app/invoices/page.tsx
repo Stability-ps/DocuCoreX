@@ -1,17 +1,12 @@
 import { InvoiceList } from "@/components/invoices/invoice-list";
-import { PageHeader } from "@/components/ui";
 
+// InvoiceList renders its own header (title, subtitle, "New invoice" button) so it stays
+// visible on mobile too — the shared <PageHeader> primitive hides itself below the `md`
+// breakpoint, which doesn't work for a page mobile users rely on constantly.
 export default function InvoicesPage() {
   return (
-    <>
-      <PageHeader
-        eyebrow="Client invoicing"
-        title="Invoices"
-        description="Create client invoices, track line items and totals, and follow each invoice from draft through payment."
-      />
-      <div className="p-4 sm:p-6 lg:p-8">
-        <InvoiceList />
-      </div>
-    </>
+    <div className="p-4 sm:p-6 lg:p-8">
+      <InvoiceList />
+    </div>
   );
 }
