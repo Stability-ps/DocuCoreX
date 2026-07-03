@@ -137,9 +137,41 @@ export type InvoiceItemRecord = {
   createdAt: string;
 };
 
+export type CompanyProfile = {
+  id: string;
+  workspaceId: string;
+  isDefault: boolean;
+  isArchived: boolean;
+  logoDataUrl: string | null;
+  businessName: string;
+  tradingName: string | null;
+  vatNumber: string | null;
+  registrationNumber: string | null;
+  email: string | null;
+  phone: string | null;
+  website: string | null;
+  physicalAddress: string | null;
+  postalAddress: string | null;
+  bankName: string | null;
+  bankAccountHolder: string | null;
+  bankAccountNumber: string | null;
+  bankBranchCode: string | null;
+  bankSwift: string | null;
+  paymentReference: string | null;
+  defaultCurrency: string;
+  defaultVatRate: number;
+  defaultPaymentTerms: InvoicePaymentTerms;
+  defaultNotes: string | null;
+  defaultTerms: string | null;
+  nextInvoiceNumber: number;
+  createdAt: string;
+  updatedAt: string;
+};
+
 export type InvoiceRecord = {
   id: string;
   workspaceId: string;
+  companyId: string | null;
   invoiceNumber: string;
   sequenceNumber: number | null;
   title: string | null;

@@ -1,6 +1,7 @@
 import { documents } from "@/lib/product-data";
 import type {
   AiInsight,
+  CompanyProfile,
   DocumentComment,
   DocumentDownload,
   DocumentRecord,
@@ -28,6 +29,8 @@ type MockStore = {
   invoices: InvoiceRecord[];
   invoiceItems: InvoiceItemRecord[];
   invoiceSequences: Record<string, number>;
+  companies: CompanyProfile[];
+  companyInvoiceSequences: Record<string, number>;
   usageSummary: {
     periodStart: string;
     periodEnd: string;
@@ -316,6 +319,7 @@ const seedInvoices: InvoiceRecord[] = [
   {
     id: "invoice_demo_1",
     workspaceId: "workspace_demo",
+    companyId: "company_demo_1",
     invoiceNumber: "INV-000001",
     sequenceNumber: 1,
     title: "Document processing services",
@@ -416,6 +420,39 @@ const seedInvoiceItems: InvoiceItemRecord[] = [
   },
 ];
 
+const seedCompanies: CompanyProfile[] = [
+  {
+    id: "company_demo_1",
+    workspaceId: "workspace_demo",
+    isDefault: true,
+    isArchived: false,
+    logoDataUrl: null,
+    businessName: "DocuCoreX",
+    tradingName: null,
+    vatNumber: "4980299999",
+    registrationNumber: "2026/000000/07",
+    email: "billing@docucorex.com",
+    phone: "+27 10 500 0000",
+    website: "www.docucorex.com",
+    physicalAddress: "Cape Town, South Africa",
+    postalAddress: null,
+    bankName: "First National Bank",
+    bankAccountHolder: "DocuCoreX",
+    bankAccountNumber: "62812345678",
+    bankBranchCode: "250655",
+    bankSwift: "FIRNZAJJ",
+    paymentReference: "INV",
+    defaultCurrency: "ZAR",
+    defaultVatRate: 15,
+    defaultPaymentTerms: "due_on_receipt",
+    defaultNotes: "Thank you for your business. Please contact billing@docucorex.com if any invoice details need to be updated.",
+    defaultTerms: "Payment is due within the stated terms. Late payments may pause document processing access until the account is settled.",
+    nextInvoiceNumber: 2,
+    createdAt: now,
+    updatedAt: now,
+  },
+];
+
 const store =
   globalMockStore.__docucorexMockStore ??
   (globalMockStore.__docucorexMockStore = {
@@ -432,6 +469,8 @@ const store =
     invoices: [...seedInvoices],
     invoiceItems: [...seedInvoiceItems],
     invoiceSequences: { workspace_demo: 2 },
+    companies: [...seedCompanies],
+    companyInvoiceSequences: { company_demo_1: 2 } as Record<string, number>,
     usageSummary: { ...seedUsageSummary },
   });
 
@@ -448,6 +487,8 @@ export const aiInsights = store.aiInsights;
 export const invoices = store.invoices;
 export const invoiceItems = store.invoiceItems;
 export const invoiceSequences = store.invoiceSequences;
+export const companies = store.companies;
+export const companyInvoiceSequences = store.companyInvoiceSequences;
 export const usageSummary = store.usageSummary;
 
 export function getDocument(id: string) {
