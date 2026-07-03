@@ -1,6 +1,7 @@
 import { getWorkspaceContext } from "@/lib/server-documents";
 import { invoiceItems, invoiceSequences, invoices } from "@/lib/mock-repository";
 import { getCompany, nextCompanyInvoiceSequence } from "@/lib/companies";
+import { createNotification } from "@/lib/notifications";
 import { calculateInvoiceSubtotal, calculateInvoiceVatAmount, calculateLineItemTotal, parseNumericInput } from "@/lib/invoice-utils";
 import type {
   InvoiceItemRecord,
@@ -506,6 +507,15 @@ export async function createInvoice(input: CreateInvoiceInput): Promise<InvoiceW
     invoices.unshift(record);
     invoiceItems.push(...items);
 
+    await createNotification({
+      type: "invoice_created",
+      title: "Invoice created",
+      body: `${record.invoiceNumber} for ${record.clientName} was created${status !== "draft" ? " and issued" : " as a draft"}.`,
+      entityType: "invoice",
+      entityId: record.id,
+      href: `/invoices/${record.id}`,
+    });
+
     return { ...record, items };
   }
 
@@ -598,8 +608,21 @@ export async function createInvoice(input: CreateInvoiceInput): Promise<InvoiceW
     throw new Error(itemsError.message);
   }
 
+  const createdInvoice = mapInvoiceRow(invoiceData as InvoiceRow);
+
+  await createNotification({
+    type: "invoice_created",
+    title: "Invoice created",
+    body: `${createdInvoice.invoiceNumber} for ${createdInvoice.clientName} was created${
+      createdInvoice.status !== "draft" ? " and issued" : " as a draft"
+    }.`,
+    entityType: "invoice",
+    entityId: createdInvoice.id,
+    href: `/invoices/${createdInvoice.id}`,
+  });
+
   return {
-    ...mapInvoiceRow(invoiceData as InvoiceRow),
+    ...createdInvoice,
     items: (insertedItems as InvoiceItemRow[]).map(mapInvoiceItemRow),
   };
 }
@@ -608,6 +631,25 @@ export async function updateInvoiceStatus(id: string, status: InvoiceStatus): Pr
   const nowIso = new Date().toISOString();
   const timestampField = statusTimestampField(status);
   const context = await getWorkspaceContext();
+
+  const notifyStatusChange = (invoice: InvoiceRecord) => {
+    const statusNotification: Partial<Record<InvoiceStatus, { type: Parameters<typeof createNotification>[0]["type"]; body: string }>> = {
+      issued: { type: "invoice_issued", body: `${invoice.invoiceNumber} was issued to ${invoice.clientName}.` },
+      paid: { type: "invoice_paid", body: `${invoice.invoiceNumber} for ${invoice.clientName} was marked as paid.` },
+      overdue: { type: "invoice_overdue", body: `${invoice.invoiceNumber} for ${invoice.clientName} is now overdue.` },
+      cancelled: { type: "invoice_updated", body: `${invoice.invoiceNumber} for ${invoice.clientName} was cancelled.` },
+    };
+    const entry = statusNotification[status];
+    if (!entry) return;
+    void createNotification({
+      type: entry.type,
+      title: "Invoice updated",
+      body: entry.body,
+      entityType: "invoice",
+      entityId: invoice.id,
+      href: `/invoices/${invoice.id}`,
+    });
+  };
 
   if (!context) {
     const invoice = invoices.find((candidate) => candidate.id === id);
@@ -624,6 +666,7 @@ export async function updateInvoiceStatus(id: string, status: InvoiceStatus): Pr
     if (timestampField === "overdueAt") invoice.overdueAt = nowIso;
     if (timestampField === "cancelledAt") invoice.cancelledAt = nowIso;
 
+    notifyStatusChange(invoice);
     return invoice;
   }
 
@@ -646,5 +689,7 @@ export async function updateInvoiceStatus(id: string, status: InvoiceStatus): Pr
     return null;
   }
 
-  return mapInvoiceRow(data as InvoiceRow);
+  const updatedInvoice = mapInvoiceRow(data as InvoiceRow);
+  notifyStatusChange(updatedInvoice);
+  return updatedInvoice;
 }

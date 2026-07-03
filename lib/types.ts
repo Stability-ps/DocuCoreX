@@ -239,3 +239,57 @@ export type InvoiceRecord = {
 };
 
 export type InvoiceWithItems = InvoiceRecord & { items: InvoiceItemRecord[] };
+
+export type NotificationType =
+  | "invoice_created"
+  | "invoice_updated"
+  | "invoice_issued"
+  | "invoice_overdue"
+  | "invoice_paid"
+  | "invoice_email_failed"
+  | "document_upload_completed"
+  | "document_upload_failed"
+  | "document_ocr_completed"
+  | "document_ocr_failed"
+  | "document_converted"
+  | "document_conversion_failed"
+  | "document_export_ready"
+  | "accounting_statement_processed"
+  | "accounting_transactions_extracted"
+  | "accounting_cash_flow_generated"
+  | "accounting_vat_warning"
+  | "accounting_duplicate_transaction"
+  | "accounting_ai_review_completed"
+  | "billing_subscription_renewed"
+  | "billing_subscription_expiring"
+  | "billing_payment_received"
+  | "billing_payment_failed"
+  | "billing_usage_limit_reached"
+  | "team_user_invited"
+  | "team_invitation_accepted"
+  | "team_role_changed"
+  | "team_comment_added"
+  | "team_mention_received"
+  | "security_new_login"
+  | "security_password_changed"
+  | "security_mfa_enabled"
+  | "security_api_key_created"
+  | "security_api_key_revoked"
+  | "system_maintenance_notice"
+  | "system_storage_almost_full"
+  | "system_backup_completed"
+  | "system_service_interruption";
+
+export type NotificationRecord = {
+  id: string;
+  workspaceId: string;
+  userId: string | null;
+  type: NotificationType;
+  title: string;
+  body: string;
+  entityType: string | null;
+  entityId: string | null;
+  href: string | null;
+  readAt: string | null;
+  createdAt: string;
+};

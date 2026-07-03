@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { recordAuditLog } from "@/lib/audit";
 import { appStore, type TeamMemberRecord } from "@/lib/app-state";
+import { createNotification } from "@/lib/notifications";
 
 const roles = ["Owner", "Admin", "Finance", "Auditor", "Viewer"] as const;
 
@@ -26,12 +27,13 @@ export async function POST(request: Request) {
   };
 
   appStore.teamMembers.unshift(member);
-  appStore.notifications.unshift({
-    id: `notification_invite_${Date.now()}`,
+  await createNotification({
+    type: "team_user_invited",
     title: "Team invite created",
     body: `${email} was invited as ${role}.`,
-    read: false,
-    createdAt: new Date().toISOString(),
+    entityType: "invite",
+    entityId: member.id,
+    href: "/settings",
   });
 
   await recordAuditLog({
