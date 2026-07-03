@@ -55,6 +55,12 @@ const dateFilters: { value: string; label: string }[] = [
   { value: "year", label: "This year" },
 ];
 
+function formatShortDate(value: string) {
+  const date = new Date(`${value}T00:00:00`);
+  if (Number.isNaN(date.getTime())) return value;
+  return date.toLocaleDateString("en-ZA", { day: "2-digit", month: "short" });
+}
+
 type SortOption = "due_asc" | "due_desc" | "amount_desc" | "newest";
 
 const sortOptions: { value: SortOption; label: string }[] = [
@@ -117,6 +123,8 @@ export function InvoiceList() {
   const [query, setQuery] = useState("");
   const [statusFilter, setStatusFilter] = useState<InvoiceStatus | "all">("all");
   const [dateFilter, setDateFilter] = useState("all");
+  const [customFrom, setCustomFrom] = useState("");
+  const [customTo, setCustomTo] = useState("");
   const [sort, setSort] = useState<SortOption>("newest");
   const [showFilters, setShowFilters] = useState(false);
   const [showSort, setShowSort] = useState(false);
@@ -194,7 +202,15 @@ export function InvoiceList() {
       result = result.filter((invoice) => invoice.status === statusFilter);
     }
 
-    if (dateFilter !== "all") {
+    if (dateFilter === "custom") {
+      result = result.filter((invoice) => {
+        const invoiceDay = invoice.invoiceDate;
+        if (!invoiceDay) return true;
+        if (customFrom && invoiceDay < customFrom) return false;
+        if (customTo && invoiceDay > customTo) return false;
+        return true;
+      });
+    } else if (dateFilter !== "all") {
       const now = Date.now();
       const cutoffDays = dateFilter === "30" ? 30 : dateFilter === "90" ? 90 : null;
       result = result.filter((invoice) => {
@@ -230,7 +246,7 @@ export function InvoiceList() {
     });
 
     return result;
-  }, [invoices, statusFilter, dateFilter, query, sort]);
+  }, [invoices, statusFilter, dateFilter, customFrom, customTo, query, sort]);
 
   const visibleInvoices = filteredInvoices.slice(0, visibleCount);
 
@@ -481,16 +497,20 @@ export function InvoiceList() {
             aria-label="Filter by date"
           >
             <Calendar className="h-3.5 w-3.5" />
-            Date
+            {dateFilter === "custom" && customFrom && customTo
+              ? `${formatShortDate(customFrom)} – ${formatShortDate(customTo)}`
+              : "Date"}
           </button>
           {showDateFilter ? (
-            <div className="absolute right-0 top-11 z-20 w-44 overflow-hidden rounded-xl border border-slate-200 bg-white p-1.5 shadow-soft">
+            <div className="absolute right-0 top-11 z-20 w-64 overflow-hidden rounded-xl border border-slate-200 bg-white p-1.5 shadow-soft">
               {dateFilters.map((option) => (
                 <button
                   key={option.value}
                   type="button"
                   onClick={() => {
                     setDateFilter(option.value);
+                    setCustomFrom("");
+                    setCustomTo("");
                     setShowDateFilter(false);
                   }}
                   className={`flex w-full items-center rounded-lg px-2.5 py-1.5 text-left text-sm font-medium transition hover:bg-slate-50 ${
@@ -500,6 +520,46 @@ export function InvoiceList() {
                   {option.label}
                 </button>
               ))}
+              <div className="my-1 border-t border-slate-100" />
+              <p className="px-2.5 pb-1 pt-1.5 text-[11px] font-semibold uppercase tracking-wide text-slate-400">
+                Custom range
+              </p>
+              <div className="flex items-center gap-2 px-2.5 pb-2">
+                <label className="flex-1">
+                  <span className="mb-1 block text-[11px] font-medium text-slate-500">From</span>
+                  <input
+                    type="date"
+                    value={customFrom}
+                    max={customTo || undefined}
+                    onChange={(event) => {
+                      const value = event.target.value;
+                      setCustomFrom(value);
+                      if (value && customTo) {
+                        setDateFilter("custom");
+                        setShowDateFilter(false);
+                      }
+                    }}
+                    className="h-9 w-full rounded-lg border border-slate-200 bg-white px-2 text-xs text-slate-700 outline-none transition focus:border-royal-300 focus:ring-2 focus:ring-royal-100"
+                  />
+                </label>
+                <label className="flex-1">
+                  <span className="mb-1 block text-[11px] font-medium text-slate-500">To</span>
+                  <input
+                    type="date"
+                    value={customTo}
+                    min={customFrom || undefined}
+                    onChange={(event) => {
+                      const value = event.target.value;
+                      setCustomTo(value);
+                      if (value && customFrom) {
+                        setDateFilter("custom");
+                        setShowDateFilter(false);
+                      }
+                    }}
+                    className="h-9 w-full rounded-lg border border-slate-200 bg-white px-2 text-xs text-slate-700 outline-none transition focus:border-royal-300 focus:ring-2 focus:ring-royal-100"
+                  />
+                </label>
+              </div>
             </div>
           ) : null}
         </div>
