@@ -243,7 +243,7 @@ export function CompanyProfilesManager() {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ action: "archive" }),
     })));
-    selection.clearSelection();
+    selection.exitSelectionMode();
     await load();
   }
 
@@ -251,7 +251,7 @@ export function CompanyProfilesManager() {
     const ids = selection.selectedIds;
     setCompanies((current) => current.filter((company) => !ids.includes(company.id)));
     await Promise.all(ids.map((id) => fetch(`/api/companies/${id}`, { method: "DELETE" })));
-    selection.clearSelection();
+    selection.exitSelectionMode();
     setBulkDeleteOpen(false);
     await load();
   }
@@ -262,18 +262,29 @@ export function CompanyProfilesManager() {
         <p className="text-sm text-slate-500">
           {companies.length ? `${companies.length} compan${companies.length === 1 ? "y" : "ies"} configured.` : "No company profiles yet."}
         </p>
-        <button
-          onClick={openCreate}
-          className="inline-flex min-h-10 items-center gap-2 rounded-lg bg-royal-600 px-4 py-2 text-sm font-semibold text-white transition hover:bg-royal-700"
-        >
-          <Plus className="h-4 w-4" /> Add company
-        </button>
+        <div className="flex flex-wrap gap-2">
+          {companies.length ? (
+            <button
+              type="button"
+              onClick={() => (selection.isSelectionMode ? selection.exitSelectionMode() : selection.enterSelectionMode())}
+              className="inline-flex min-h-10 items-center rounded-lg border border-slate-200 bg-white px-4 text-sm font-semibold text-slate-700 transition hover:text-royal-700"
+            >
+              {selection.isSelectionMode ? "Cancel Selection" : "Select"}
+            </button>
+          ) : null}
+          <button
+            onClick={openCreate}
+            className="inline-flex min-h-10 items-center gap-2 rounded-lg bg-royal-600 px-4 py-2 text-sm font-semibold text-white transition hover:bg-royal-700"
+          >
+            <Plus className="h-4 w-4" /> Add company
+          </button>
+        </div>
       </div>
 
       {error ? <p className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">{error}</p> : null}
 
-      {selection.hasSelection ? (
-        <BulkActionToolbar count={selection.selectedCount} entity="company" onClear={selection.clearSelection}>
+      {selection.isSelectionMode && selection.hasSelection ? (
+        <BulkActionToolbar count={selection.selectedCount} entity="company" onClear={selection.exitSelectionMode}>
           <button type="button" onClick={() => void bulkArchiveSelected()} className="inline-flex min-h-10 items-center gap-1 rounded-lg border border-slate-200 bg-white px-3 text-xs font-black text-slate-700">
             <Archive className="h-4 w-4" />
             Archive
@@ -304,7 +315,7 @@ export function CompanyProfilesManager() {
         </div>
       ) : (
         <div className="space-y-3">
-          <div className="flex items-center gap-2 rounded-xl border border-slate-200 bg-white px-3 py-2">
+          {selection.isSelectionMode ? <div className="flex items-center gap-2 rounded-xl border border-slate-200 bg-white px-3 py-2">
             <SelectionCheckbox
               checked={selection.allVisibleSelected}
               indeterminate={selection.someVisibleSelected && !selection.allVisibleSelected}
@@ -312,12 +323,13 @@ export function CompanyProfilesManager() {
               onChange={selection.toggleAllVisible}
             />
             <span className="text-xs font-semibold text-slate-500">Select all profiles</span>
-          </div>
+          </div> : null}
           {companies.map((company) => (
             <div
               key={company.id}
               className={`rounded-xl border p-4 sm:p-5 ${selection.selectedSet.has(company.id) ? "border-royal-300 ring-2 ring-royal-100" : company.isArchived ? "border-slate-100 bg-slate-50 opacity-70" : "border-slate-200 bg-white"}`}
               onPointerDown={(event) => {
+                if (event.pointerType !== "touch") return;
                 const timer = window.setTimeout(() => selection.toggleOne(company.id), 450);
                 const clear = () => window.clearTimeout(timer);
                 event.currentTarget.addEventListener("pointerup", clear, { once: true });
@@ -326,13 +338,13 @@ export function CompanyProfilesManager() {
             >
               <div className="flex flex-wrap items-start justify-between gap-3">
                 <div className="flex items-start gap-3">
-                  <div onClick={(event) => event.stopPropagation()}>
+                  {selection.isSelectionMode ? <div onClick={(event) => event.stopPropagation()}>
                     <SelectionCheckbox
                       checked={selection.selectedSet.has(company.id)}
                       label={`Select ${company.businessName}`}
                       onChange={(event) => selection.toggleOne(company.id, { shiftKey: checkboxShiftKey(event) })}
                     />
-                  </div>
+                  </div> : null}
                   <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-lg bg-royal-50 text-sm font-bold text-royal-700">
                     {company.businessName.slice(0, 2).toUpperCase()}
                   </div>
@@ -501,7 +513,7 @@ export function CompanyProfilesManager() {
         </div>
       ) : null}
 
-      <MobileBulkBar count={selection.selectedCount} onClear={selection.clearSelection}>
+      <MobileBulkBar count={selection.isSelectionMode ? selection.selectedCount : 0} onClear={selection.exitSelectionMode}>
         <button type="button" onClick={() => setBulkDeleteOpen(true)} className="min-h-10 rounded-lg bg-rose-600 px-2 text-xs font-black text-white">Delete</button>
         <button type="button" onClick={() => void bulkArchiveSelected()} className="min-h-10 rounded-lg border border-slate-200 bg-white px-2 text-xs font-black text-slate-700">Archive</button>
         <button type="button" onClick={selection.clearSelection} className="min-h-10 rounded-lg border border-slate-200 bg-white px-2 text-xs font-black text-slate-700">Clear</button>

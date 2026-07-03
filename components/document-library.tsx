@@ -302,7 +302,7 @@ export function DocumentLibrary({ initialFilter = "Recent" }: { initialFilter?: 
         throw new Error(data.error ?? "Unable to delete selected documents.");
       }
 
-      selection.clearSelection();
+      selection.exitSelectionMode();
       setBulkDeleteOpen(false);
       setActionMessage(`${ids.length} document${ids.length === 1 ? "" : "s"} deleted successfully.`);
     } catch (error) {
@@ -329,7 +329,7 @@ export function DocumentLibrary({ initialFilter = "Recent" }: { initialFilter?: 
         body: JSON.stringify({ documentIds: ids, action: "archive" }),
       });
       if (!response.ok) throw new Error("Unable to archive selected documents.");
-      selection.clearSelection();
+      selection.exitSelectionMode();
       setActionMessage(`${ids.length} document${ids.length === 1 ? "" : "s"} archived.`);
     } catch (error) {
       setActionError(error instanceof Error ? error.message : "Unable to archive selected documents.");
@@ -354,7 +354,7 @@ export function DocumentLibrary({ initialFilter = "Recent" }: { initialFilter?: 
         body: JSON.stringify({ documentIds: ids, action: "share" }),
       });
       if (!response.ok) throw new Error("Unable to share selected documents.");
-      selection.clearSelection();
+      selection.exitSelectionMode();
       setActionMessage(`${ids.length} document${ids.length === 1 ? "" : "s"} marked shared.`);
     } catch (error) {
       setActionError(error instanceof Error ? error.message : "Unable to share selected documents.");
@@ -583,6 +583,15 @@ export function DocumentLibrary({ initialFilter = "Recent" }: { initialFilter?: 
             <Filter className="h-4 w-4" />
             {status}
           </div>
+          {visibleDocuments.length ? (
+            <button
+              type="button"
+              onClick={() => (selection.isSelectionMode ? selection.exitSelectionMode() : selection.enterSelectionMode())}
+              className="inline-flex min-h-11 items-center justify-center rounded-lg border border-slate-200 bg-white px-4 text-sm font-semibold text-slate-700 shadow-sm hover:text-royal-700"
+            >
+              {selection.isSelectionMode ? "Cancel Selection" : "Select"}
+            </button>
+          ) : null}
         </div>
         {actionError ? <p className="mt-3 text-xs font-semibold text-rose-600">{actionError}</p> : null}
         {!actionError && actionMessage ? <p className="mt-3 text-xs font-semibold text-emerald-700">{actionMessage}</p> : null}
@@ -614,8 +623,8 @@ export function DocumentLibrary({ initialFilter = "Recent" }: { initialFilter?: 
         </div>
       </section>
 
-      {selection.hasSelection ? (
-        <BulkActionToolbar count={selection.selectedCount} entity="document" onClear={selection.clearSelection}>
+      {selection.isSelectionMode && selection.hasSelection ? (
+        <BulkActionToolbar count={selection.selectedCount} entity="document" onClear={selection.exitSelectionMode}>
           <button type="button" onClick={handleBulkDownload} className="inline-flex min-h-10 items-center gap-1 rounded-lg border border-slate-200 bg-white px-3 text-xs font-black text-slate-700">
             <Download className="h-4 w-4" />
             Download
@@ -642,9 +651,10 @@ export function DocumentLibrary({ initialFilter = "Recent" }: { initialFilter?: 
             className={`rounded-xl border bg-white p-3 shadow-sm ${selection.selectedSet.has(document.id) ? "border-royal-300 ring-2 ring-royal-100" : "border-slate-200"}`}
             role="button"
             tabIndex={0}
-            onClick={() => (selection.hasSelection ? selection.toggleOne(document.id) : openDocument(document.id))}
+            onClick={() => (selection.isSelectionMode ? selection.toggleOne(document.id) : openDocument(document.id))}
             onPointerDown={(event) => {
-              const timer = window.setTimeout(() => selection.toggleOne(document.id), 450);
+                if (event.pointerType !== "touch") return;
+                const timer = window.setTimeout(() => selection.toggleOne(document.id), 450);
               const clear = () => window.clearTimeout(timer);
               event.currentTarget.addEventListener("pointerup", clear, { once: true });
               event.currentTarget.addEventListener("pointerleave", clear, { once: true });
@@ -652,19 +662,19 @@ export function DocumentLibrary({ initialFilter = "Recent" }: { initialFilter?: 
             onKeyDown={(event) => {
               if (event.key === "Enter" || event.key === " ") {
                 event.preventDefault();
-                if (selection.hasSelection) selection.toggleOne(document.id);
+                if (selection.isSelectionMode) selection.toggleOne(document.id);
                 else openDocument(document.id);
               }
             }}
           >
             <div className="flex items-start gap-3">
-              <div onClick={(event) => event.stopPropagation()}>
+              {selection.isSelectionMode ? <div onClick={(event) => event.stopPropagation()}>
                 <SelectionCheckbox
                   checked={selection.selectedSet.has(document.id)}
                   label={`Select ${document.name}`}
                   onChange={() => selection.toggleOne(document.id)}
                 />
-              </div>
+              </div> : null}
               <div className="mt-0.5 flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-rose-50 text-rose-600">PDF</div>
               <div className="min-w-0 flex-1">
                 <Link href={`/documents/${document.id}`} className="text-sm font-semibold text-navy-950">
@@ -710,12 +720,14 @@ export function DocumentLibrary({ initialFilter = "Recent" }: { initialFilter?: 
       <section className="hidden overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm lg:block">
         <div className="grid grid-cols-[0.08fr_1.3fr_0.75fr_0.55fr_0.55fr_0.4fr] gap-4 border-b border-slate-100 px-5 py-4 text-xs font-semibold uppercase tracking-[0.14em] text-slate-400 max-lg:hidden">
           <span>
+            {selection.isSelectionMode ? (
             <SelectionCheckbox
               checked={selection.allVisibleSelected}
               indeterminate={selection.someVisibleSelected && !selection.allVisibleSelected}
               label="Select all visible documents"
               onChange={selection.toggleAllVisible}
             />
+            ) : null}
           </span>
           <span>Name</span>
           <span>Type</span>
@@ -728,23 +740,25 @@ export function DocumentLibrary({ initialFilter = "Recent" }: { initialFilter?: 
             <div
               key={document.id}
               className={`grid cursor-pointer gap-4 px-5 py-4 transition hover:bg-royal-50/40 lg:grid-cols-[0.08fr_1.3fr_0.75fr_0.55fr_0.55fr_0.4fr] ${selection.selectedSet.has(document.id) ? "bg-royal-50/70" : ""}`}
-              onClick={() => (selection.hasSelection ? selection.toggleOne(document.id) : openDocument(document.id))}
+              onClick={() => (selection.isSelectionMode ? selection.toggleOne(document.id) : openDocument(document.id))}
               role="button"
               tabIndex={0}
               onKeyDown={(event) => {
                 if (event.key === "Enter" || event.key === " ") {
                   event.preventDefault();
-                  if (selection.hasSelection) selection.toggleOne(document.id);
+                  if (selection.isSelectionMode) selection.toggleOne(document.id);
                   else openDocument(document.id);
                 }
               }}
             >
               <div onClick={(event) => event.stopPropagation()}>
+                {selection.isSelectionMode ? (
                 <SelectionCheckbox
                   checked={selection.selectedSet.has(document.id)}
                   label={`Select ${document.name}`}
                   onChange={(event) => selection.toggleOne(document.id, { shiftKey: checkboxShiftKey(event) })}
                 />
+                ) : null}
               </div>
               <div>
                 <Link href={`/documents/${document.id}`} className="font-semibold text-navy-950 hover:text-royal-700">
@@ -911,7 +925,7 @@ export function DocumentLibrary({ initialFilter = "Recent" }: { initialFilter?: 
         </div>
       ) : null}
 
-      <MobileBulkBar count={selection.selectedCount} onClear={selection.clearSelection}>
+      <MobileBulkBar count={selection.isSelectionMode ? selection.selectedCount : 0} onClear={selection.exitSelectionMode}>
         <button type="button" onClick={() => setBulkDeleteOpen(true)} className="min-h-10 rounded-lg bg-rose-600 px-2 text-xs font-black text-white">
           Delete
         </button>

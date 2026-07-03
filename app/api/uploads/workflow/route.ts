@@ -22,7 +22,7 @@ function stateFromJobs(
 ) {
   const failed = jobs.find((job) => job.status === "failed");
   if (failed) {
-    return { uploadStatus: "uploaded", conversionStatus: "failed", stage: failed.message || "Failed", uploadProgress: 100, conversionProgress: 100 };
+    return { uploadStatus: "uploaded", conversionStatus: "failed", outputReady: false, stage: failed.message || "Failed", uploadProgress: 100, conversionProgress: Math.max(1, Math.min(99, failed.progress || 1)) };
   }
 
   if ((conversion?.status === "output_ready" || conversion?.status === "completed") && conversion.download_path) {
@@ -30,11 +30,11 @@ function stateFromJobs(
   }
 
   if (conversion?.status === "completed" && !conversion.download_path) {
-    return { uploadStatus: "uploaded", conversionStatus: "failed", outputReady: false, stage: "Converted file is missing. Please retry.", uploadProgress: 100, conversionProgress: 100 };
+    return { uploadStatus: "uploaded", conversionStatus: "failed", outputReady: false, stage: "Converted file is missing. Please retry.", uploadProgress: 100, conversionProgress: 1 };
   }
 
   if (conversion?.status === "failed") {
-    return { uploadStatus: "uploaded", conversionStatus: "failed", outputReady: false, stage: "Conversion failed", uploadProgress: 100, conversionProgress: 100 };
+    return { uploadStatus: "uploaded", conversionStatus: "failed", outputReady: false, stage: "Conversion failed", uploadProgress: 100, conversionProgress: 1 };
   }
 
   const conversionJob = jobs.find((job) => job.type === "conversion" && (job.status === "queued" || job.status === "running"));

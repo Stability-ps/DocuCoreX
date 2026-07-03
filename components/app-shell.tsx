@@ -233,7 +233,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         next = data.notifications;
       }
     }
-    notificationSelection.clearSelection();
+    notificationSelection.exitSelectionMode();
     setNotifications(next);
     writeCached(SHELL_NOTIFICATIONS_CACHE_KEY, next);
   }
@@ -266,7 +266,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         next = data.notifications;
       }
     }
-    notificationSelection.clearSelection();
+    notificationSelection.exitSelectionMode();
     setNotifications(next);
     writeCached(SHELL_NOTIFICATIONS_CACHE_KEY, next);
   }
@@ -507,11 +507,16 @@ export function AppShell({ children }: { children: React.ReactNode }) {
               <div className="mb-3 flex items-center justify-between">
                 <p className="font-semibold text-navy-950">Notifications</p>
                 <div className="flex items-center gap-3">
+                  {notifications.length ? (
+                    <button onClick={() => (notificationSelection.isSelectionMode ? notificationSelection.exitSelectionMode() : notificationSelection.enterSelectionMode())} className="text-xs font-semibold text-slate-600 hover:text-royal-700">
+                      {notificationSelection.isSelectionMode ? "Cancel Selection" : "Select"}
+                    </button>
+                  ) : null}
                   <button onClick={markNotificationsRead} className="text-xs font-semibold text-royal-700">Mark all read</button>
                   <button onClick={clearAllNotificationsClick} className="text-xs font-semibold text-slate-400 hover:text-rose-600">Clear all</button>
                 </div>
               </div>
-              {notifications.length ? (
+              {notificationSelection.isSelectionMode && notifications.length ? (
                 <div className="mb-3 flex items-center justify-between rounded-lg bg-slate-50 px-3 py-2">
                   <label className="flex items-center gap-2 text-xs font-semibold text-slate-500">
                     <SelectionCheckbox
@@ -545,11 +550,11 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                         notification.readAt ? "bg-white opacity-70" : "bg-royal-50"
                       }`}
                     >
-                      <SelectionCheckbox
+                      {notificationSelection.isSelectionMode ? <SelectionCheckbox
                         checked={notificationSelection.selectedSet.has(notification.id)}
                         label={`Select notification ${notification.title}`}
                         onChange={(event) => notificationSelection.toggleOne(notification.id, { shiftKey: checkboxShiftKey(event) })}
-                      />
+                      /> : null}
                       <span
                         className={`mt-1.5 h-2 w-2 shrink-0 rounded-full ${notification.readAt ? "bg-transparent" : "bg-royal-600"}`}
                         aria-hidden

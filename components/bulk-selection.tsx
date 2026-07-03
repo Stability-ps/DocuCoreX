@@ -6,6 +6,7 @@ import { X } from "lucide-react";
 
 export function useBulkSelection<T extends { id: string }>(items: T[]) {
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
+  const [isSelectionMode, setIsSelectionMode] = useState(false);
   const lastSelectedIndexRef = useRef<number | null>(null);
   const visibleIds = useMemo(() => items.map((item) => item.id), [items]);
   const selectedSet = useMemo(() => new Set(selectedIds), [selectedIds]);
@@ -20,7 +21,18 @@ export function useBulkSelection<T extends { id: string }>(items: T[]) {
     lastSelectedIndexRef.current = null;
   }, []);
 
+  const enterSelectionMode = useCallback(() => {
+    setIsSelectionMode(true);
+  }, []);
+
+  const exitSelectionMode = useCallback(() => {
+    setIsSelectionMode(false);
+    setSelectedIds([]);
+    lastSelectedIndexRef.current = null;
+  }, []);
+
   const selectAllVisible = useCallback(() => {
+    setIsSelectionMode(true);
     setSelectedIds(visibleIds);
   }, [visibleIds]);
 
@@ -31,6 +43,7 @@ export function useBulkSelection<T extends { id: string }>(items: T[]) {
   const toggleOne = useCallback(
     (id: string, options?: { shiftKey?: boolean }) => {
       const index = visibleIds.indexOf(id);
+      setIsSelectionMode(true);
       setSelectedIds((current) => {
         if (options?.shiftKey && lastSelectedIndexRef.current !== null && index !== -1) {
           const start = Math.min(lastSelectedIndexRef.current, index);
@@ -45,6 +58,7 @@ export function useBulkSelection<T extends { id: string }>(items: T[]) {
   );
 
   return {
+    isSelectionMode,
     selectedIds,
     selectedItems,
     selectedSet,
@@ -53,6 +67,8 @@ export function useBulkSelection<T extends { id: string }>(items: T[]) {
     allVisibleSelected: visibleIds.length > 0 && visibleIds.every((id) => selectedSet.has(id)),
     someVisibleSelected: visibleIds.some((id) => selectedSet.has(id)),
     clearSelection,
+    enterSelectionMode,
+    exitSelectionMode,
     selectAllVisible,
     toggleAllVisible,
     toggleOne,

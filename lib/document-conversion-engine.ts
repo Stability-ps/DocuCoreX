@@ -56,10 +56,6 @@ export async function convertDocumentContent(source: SourceDocument, target: str
   const targetFormat = normalizeConversionTarget(target);
   const sourceType = detectSourceType(source);
 
-  if (targetFormat === "images" || targetFormat === "image") {
-    throw new ConversionError("PDF or document page image export requires a rendering provider. Configure a PDF/image rendering service before using this conversion.", "RENDERER_REQUIRED");
-  }
-
   if (sourceType === "zip" && targetFormat !== "zip") {
     throw new ConversionError("ZIP archives can only be bundled or downloaded as ZIP. Extract files first before converting their contents.", "UNSUPPORTED_ARCHIVE_CONVERSION");
   }
@@ -72,13 +68,26 @@ export async function convertDocumentContent(source: SourceDocument, target: str
     if (targetFormat === "pdf" && isJpeg(source)) {
       return createJpegPdf(source);
     }
-    throw new ConversionError("Image OCR or image conversion needs an OCR/image rendering provider. No readable text was extracted from this image.", "OCR_REQUIRED");
+    if (targetFormat === "pdf") {
+      throw new ConversionError("This image format needs an image rendering provider before it can be converted into a visual PDF. JPG/JPEG image to PDF is available now.", "IMAGE_RENDERER_REQUIRED");
+    }
+    if (targetFormat === "text" || targetFormat === "word" || targetFormat === "excel" || targetFormat === "csv") {
+      throw new ConversionError("This image needs OCR before text or table output can be generated. Configure an OCR provider, then retry.", "OCR_REQUIRED");
+    }
+    throw new ConversionError("This image conversion is not supported by the local provider yet.", "UNSUPPORTED_IMAGE_CONVERSION");
+  }
+
+  if (targetFormat === "images" || targetFormat === "image") {
+    throw new ConversionError("PDF or document page image export requires a rendering provider. Configure a PDF/image rendering service before using this conversion.", "RENDERER_REQUIRED");
   }
 
   const extracted = extractReadableContent(source);
 
   if (!hasReadableContent(extracted)) {
-    throw new ConversionError("We could not extract readable content from this document. It may be encrypted, scanned without OCR, damaged, or an unsupported format.", "NO_READABLE_CONTENT");
+    if (sourceType === "pdf") {
+      throw new ConversionError("No selectable text was found in this PDF. It may be scanned or image-based; configure OCR and retry, or use Accounting Intelligence for supported bank statements.", "PDF_OCR_REQUIRED");
+    }
+    throw new ConversionError("We could not extract readable content from this document. It may be encrypted, damaged, or an unsupported format.", "NO_READABLE_CONTENT");
   }
 
   if (targetFormat === "pdf") {

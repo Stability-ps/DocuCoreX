@@ -51,6 +51,7 @@ type QueueItem = {
   file?: File;
   downloadUrl?: string;
   outputReady?: boolean;
+  targetFormat?: ConversionTarget;
   savedToLibrary?: boolean;
 };
 
@@ -163,7 +164,8 @@ function visibleProgress(item: QueueItem) {
   if (item.conversionStatus === "ready") return 100;
   if (item.conversionStatus === "completed") return 100;
   if (item.conversionStatus === "converting" || item.conversionStatus === "queued") return item.conversionProgress;
-  if (item.uploadStatus === "failed" || item.conversionStatus === "failed") return 100;
+  if (item.uploadStatus === "failed") return item.uploadProgress || 1;
+  if (item.conversionStatus === "failed") return item.conversionProgress || 1;
   return item.uploadProgress;
 }
 
@@ -207,6 +209,7 @@ function mapWorkflowStatus(item: WorkflowItem): QueueItem {
     error: item.conversionStatus === "failed" ? item.stage : undefined,
     outputReady: item.outputReady || Boolean(item.conversion?.outputReady),
     downloadUrl: item.outputReady || item.conversion?.outputReady ? item.conversion?.downloadUrl ?? undefined : undefined,
+    targetFormat: item.conversion?.to as ConversionTarget | undefined,
     savedToLibrary: true,
   };
 }
@@ -466,7 +469,7 @@ export function UploadCenter({ workflow }: { workflow?: string }) {
   async function cancelSelectedItems() {
     const selected = activeItems.filter((item) => selection.selectedSet.has(item.id));
     await Promise.all(selected.map((item) => cancelItem(item)));
-    selection.clearSelection();
+    selection.exitSelectionMode();
     setMessage(`${selected.length} upload${selected.length === 1 ? "" : "s"} cancelled.`);
   }
 
@@ -475,14 +478,14 @@ export function UploadCenter({ workflow }: { workflow?: string }) {
     for (const item of selected) {
       await retryItem(item);
     }
-    selection.clearSelection();
+    selection.exitSelectionMode();
     setMessage(`${selected.length} upload${selected.length === 1 ? "" : "s"} queued for retry.`);
   }
 
   async function removeSelectedItems() {
     const selected = activeItems.filter((item) => selection.selectedSet.has(item.id));
     await Promise.all(selected.map((item) => removeItem(item)));
-    selection.clearSelection();
+    selection.exitSelectionMode();
     setMessage(`${selected.length} item${selected.length === 1 ? "" : "s"} removed from the queue.`);
   }
 
@@ -497,8 +500,9 @@ export function UploadCenter({ workflow }: { workflow?: string }) {
       return;
     }
 
-    if (item.documentId && target) {
-      await startProcessing([item.documentId]);
+    const retryTarget = target ?? item.targetFormat ?? null;
+    if (item.documentId && retryTarget) {
+      await startProcessing([item.documentId], retryTarget);
       return;
     }
 
@@ -787,6 +791,15 @@ export function UploadCenter({ workflow }: { workflow?: string }) {
             <p className="mt-1 text-sm text-slate-500">Active upload and conversion jobs for this workflow only.</p>
           </div>
           <div className="flex gap-2">
+            {activeItems.length ? (
+              <button
+                type="button"
+                onClick={() => (selection.isSelectionMode ? selection.exitSelectionMode() : selection.enterSelectionMode())}
+                className="rounded-full border border-slate-200 bg-white px-4 py-2 text-sm font-semibold text-slate-600 hover:text-royal-700"
+              >
+                {selection.isSelectionMode ? "Cancel Selection" : "Select"}
+              </button>
+            ) : null}
             <button type="button" onClick={() => void refreshWorkflow()} className="rounded-full bg-slate-100 px-4 py-2 text-sm font-semibold text-slate-600 hover:text-royal-700">
               Refresh
             </button>
@@ -810,8 +823,8 @@ export function UploadCenter({ workflow }: { workflow?: string }) {
           </div>
         ) : null}
 
-        {selection.hasSelection ? (
-          <BulkActionToolbar count={selection.selectedCount} entity="upload" onClear={selection.clearSelection}>
+        {selection.isSelectionMode && selection.hasSelection ? (
+          <BulkActionToolbar count={selection.selectedCount} entity="upload" onClear={selection.exitSelectionMode}>
             <button type="button" onClick={() => void retrySelectedItems()} className="inline-flex min-h-10 items-center gap-1 rounded-lg border border-slate-200 bg-white px-3 text-xs font-black text-slate-700">
               <RefreshCcw className="h-4 w-4" />
               Retry
@@ -828,7 +841,7 @@ export function UploadCenter({ workflow }: { workflow?: string }) {
         ) : null}
 
         <div className="space-y-3">
-          {activeItems.length ? (
+          {selection.isSelectionMode && activeItems.length ? (
             <div className="flex items-center gap-2 rounded-xl border border-slate-200 bg-white px-3 py-2">
               <SelectionCheckbox
                 checked={selection.allVisibleSelected}
@@ -844,6 +857,7 @@ export function UploadCenter({ workflow }: { workflow?: string }) {
               key={item.id}
               className={`rounded-2xl border bg-slate-50 p-4 ${selection.selectedSet.has(item.id) ? "border-royal-300 ring-2 ring-royal-100" : "border-slate-200"}`}
               onPointerDown={(event) => {
+                if (event.pointerType !== "touch") return;
                 const timer = window.setTimeout(() => selection.toggleOne(item.id), 450);
                 const clear = () => window.clearTimeout(timer);
                 event.currentTarget.addEventListener("pointerup", clear, { once: true });
@@ -852,13 +866,13 @@ export function UploadCenter({ workflow }: { workflow?: string }) {
             >
               <div className="flex flex-col gap-4 xl:flex-row xl:items-center xl:justify-between">
                 <div className="flex min-w-0 items-start gap-4">
-                  <div onClick={(event) => event.stopPropagation()}>
+                  {selection.isSelectionMode ? <div onClick={(event) => event.stopPropagation()}>
                     <SelectionCheckbox
                       checked={selection.selectedSet.has(item.id)}
                       label={`Select ${item.name}`}
                       onChange={(event) => selection.toggleOne(item.id, { shiftKey: checkboxShiftKey(event) })}
                     />
-                  </div>
+                  </div> : null}
                   <div className="rounded-2xl bg-white p-3 text-royal-600 shadow-sm">
                     <File className="h-5 w-5" />
                   </div>
@@ -973,7 +987,7 @@ export function UploadCenter({ workflow }: { workflow?: string }) {
         </div>
       </section>
 
-      <MobileBulkBar count={selection.selectedCount} onClear={selection.clearSelection}>
+      <MobileBulkBar count={selection.isSelectionMode ? selection.selectedCount : 0} onClear={selection.exitSelectionMode}>
         <button type="button" onClick={() => void removeSelectedItems()} className="min-h-10 rounded-lg bg-rose-600 px-2 text-xs font-black text-white">Delete</button>
         <button type="button" onClick={() => void retrySelectedItems()} className="min-h-10 rounded-lg border border-slate-200 bg-white px-2 text-xs font-black text-slate-700">Retry</button>
         <button type="button" onClick={() => void cancelSelectedItems()} className="min-h-10 rounded-lg border border-slate-200 bg-white px-2 text-xs font-black text-slate-700">Cancel</button>

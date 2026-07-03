@@ -288,7 +288,7 @@ export function InvoiceList() {
           }),
         ),
       );
-      selection.clearSelection();
+      selection.exitSelectionMode();
       setBulkDeleteOpen(false);
       setBulkMessage(`${ids.length} invoice${ids.length === 1 ? "" : "s"} updated.`);
     } catch {
@@ -617,11 +617,23 @@ export function InvoiceList() {
         </div>
       </div>
 
+      <div className="flex justify-end">
+        {visibleInvoices.length ? (
+          <button
+            type="button"
+            onClick={() => (selection.isSelectionMode ? selection.exitSelectionMode() : selection.enterSelectionMode())}
+            className="inline-flex min-h-10 items-center rounded-lg border border-slate-200 bg-white px-4 text-sm font-semibold text-slate-700 shadow-sm hover:text-royal-700"
+          >
+            {selection.isSelectionMode ? "Cancel Selection" : "Select"}
+          </button>
+        ) : null}
+      </div>
+
       {error ? <p className="text-sm font-semibold text-rose-600">{error}</p> : null}
       {!error && bulkMessage ? <p className="text-sm font-semibold text-emerald-700">{bulkMessage}</p> : null}
 
-      {selection.hasSelection ? (
-        <BulkActionToolbar count={selection.selectedCount} entity="invoice" onClear={selection.clearSelection}>
+      {selection.isSelectionMode && selection.hasSelection ? (
+        <BulkActionToolbar count={selection.selectedCount} entity="invoice" onClear={selection.exitSelectionMode}>
           <button type="button" onClick={bulkDownloadPdfs} className="inline-flex min-h-10 items-center gap-1 rounded-lg border border-slate-200 bg-white px-3 text-xs font-black text-slate-700">
             <Download className="h-4 w-4" />
             Download PDFs
@@ -691,7 +703,7 @@ export function InvoiceList() {
         </div>
       ) : (
         <>
-          <div className="hidden items-center gap-2 rounded-xl border border-slate-200 bg-white px-3 py-2 sm:flex">
+          {selection.isSelectionMode ? <div className="hidden items-center gap-2 rounded-xl border border-slate-200 bg-white px-3 py-2 sm:flex">
             <SelectionCheckbox
               checked={selection.allVisibleSelected}
               indeterminate={selection.someVisibleSelected && !selection.allVisibleSelected}
@@ -699,7 +711,7 @@ export function InvoiceList() {
               onChange={selection.toggleAllVisible}
             />
             <span className="text-xs font-semibold text-slate-500">Select all visible invoices</span>
-          </div>
+          </div> : null}
           <div className="space-y-2">
             {visibleInvoices.map((invoice) => {
               const avatar = avatarStyle(invoice.clientName || "?");
@@ -711,20 +723,21 @@ export function InvoiceList() {
                   key={invoice.id}
                   className={`group relative rounded-2xl border bg-white p-3 transition hover:-translate-y-0.5 hover:shadow-md ${selection.selectedSet.has(invoice.id) ? "border-royal-300 ring-2 ring-royal-100" : "border-slate-200"}`}
                   onPointerDown={(event) => {
-                    const timer = window.setTimeout(() => selection.toggleOne(invoice.id), 450);
+                if (event.pointerType !== "touch") return;
+                const timer = window.setTimeout(() => selection.toggleOne(invoice.id), 450);
                     const clear = () => window.clearTimeout(timer);
                     event.currentTarget.addEventListener("pointerup", clear, { once: true });
                     event.currentTarget.addEventListener("pointerleave", clear, { once: true });
                   }}
                 >
                   <div className="flex items-center gap-2.5">
-                    <div onClick={(event) => event.stopPropagation()}>
+                    {selection.isSelectionMode ? <div onClick={(event) => event.stopPropagation()}>
                       <SelectionCheckbox
                         checked={selection.selectedSet.has(invoice.id)}
                         label={`Select invoice ${invoice.invoiceNumber}`}
                         onChange={(event) => selection.toggleOne(invoice.id, { shiftKey: checkboxShiftKey(event) })}
                       />
-                    </div>
+                    </div> : null}
                   <Link href={`/invoices/${invoice.id}`} className="flex min-w-0 flex-1 items-center gap-2.5 pr-9">
                     <span className={`flex h-9 w-9 flex-none items-center justify-center rounded-full text-xs font-bold ${avatar.bg} ${avatar.text}`}>
                       {initialsFor(invoice.clientName || "?")}
@@ -868,7 +881,7 @@ export function InvoiceList() {
         </div>
       ) : null}
 
-      <MobileBulkBar count={selection.selectedCount} onClear={selection.clearSelection}>
+      <MobileBulkBar count={selection.isSelectionMode ? selection.selectedCount : 0} onClear={selection.exitSelectionMode}>
         <button type="button" onClick={() => setBulkDeleteOpen(true)} className="min-h-10 rounded-lg bg-rose-600 px-2 text-xs font-black text-white">
           Delete
         </button>

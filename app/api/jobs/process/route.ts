@@ -220,7 +220,7 @@ export async function POST() {
       }
       await context.supabase
         .from("processing_jobs")
-        .update({ status: "failed", progress: 100, message, error: message, updated_at: new Date().toISOString() })
+        .update({ status: "failed", progress: Math.max(1, Number(job.progress ?? 0)), message, error: message, updated_at: new Date().toISOString() })
         .eq("id", job.id);
       results.push({ jobId: job.id, type: job.type, status: "failed", message });
     }
