@@ -13,8 +13,21 @@ export function useBulkSelection<T extends { id: string }>(items: T[]) {
   const selectedItems = useMemo(() => items.filter((item) => selectedSet.has(item.id)), [items, selectedSet]);
 
   useEffect(() => {
-    setSelectedIds((current) => current.filter((id) => visibleIds.includes(id)));
+    setSelectedIds((current) => {
+      const next = current.filter((id) => visibleIds.includes(id));
+      if (next.length === current.length && next.every((id, index) => id === current[index])) {
+        return current;
+      }
+      return next;
+    });
   }, [visibleIds]);
+
+  useEffect(() => {
+    if (!visibleIds.length) {
+      setIsSelectionMode(false);
+      lastSelectedIndexRef.current = null;
+    }
+  }, [visibleIds.length]);
 
   const clearSelection = useCallback(() => {
     setSelectedIds([]);
@@ -37,7 +50,14 @@ export function useBulkSelection<T extends { id: string }>(items: T[]) {
   }, [visibleIds]);
 
   const toggleAllVisible = useCallback(() => {
-    setSelectedIds((current) => (visibleIds.length && visibleIds.every((id) => current.includes(id)) ? [] : visibleIds));
+    if (!visibleIds.length) {
+      setIsSelectionMode(false);
+      setSelectedIds([]);
+      lastSelectedIndexRef.current = null;
+      return;
+    }
+    setIsSelectionMode(true);
+    setSelectedIds((current) => (visibleIds.every((id) => current.includes(id)) ? [] : visibleIds));
   }, [visibleIds]);
 
   const toggleOne = useCallback(
@@ -148,7 +168,7 @@ export function MobileBulkBar({
 }) {
   if (!count) return null;
   return (
-    <div className="fixed inset-x-3 bottom-3 z-40 rounded-2xl border border-royal-200 bg-white p-3 shadow-xl lg:hidden" style={{ paddingBottom: "calc(0.75rem + env(safe-area-inset-bottom))" }}>
+    <div className="fixed inset-x-3 bottom-[calc(5.25rem+env(safe-area-inset-bottom))] z-50 rounded-2xl border border-royal-200 bg-white p-3 shadow-xl lg:hidden">
       <div className="flex items-center justify-between gap-2">
         <p className="text-sm font-black text-navy-950">Selected: {count}</p>
         <button type="button" onClick={onClear} className="text-xs font-black text-slate-500">

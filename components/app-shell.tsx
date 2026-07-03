@@ -326,6 +326,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                 <Link
                   key={item.title}
                   href={item.href}
+                  onClick={() => setShowNewMenu(false)}
                   className="flex items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-bold text-slate-700 transition hover:bg-royal-50 hover:text-royal-700"
                 >
                   <item.icon className="h-4 w-4 text-slate-400" />
@@ -405,7 +406,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       </aside>
 
       <div className="lg:pl-72">
-        <header className="sticky top-0 z-30 border-b border-slate-200 bg-white/88 pt-[env(safe-area-inset-top)] backdrop-blur-xl">
+        <header className="sticky top-0 z-40 border-b border-slate-200 bg-white/88 pt-[env(safe-area-inset-top)] backdrop-blur-xl">
           {shellError ? (
             <div className="border-b border-amber-200 bg-amber-50 px-4 py-2 text-sm font-bold text-amber-900 sm:px-6 lg:px-8">
               {shellError}{" "}
@@ -592,7 +593,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         </header>
         <main className="pb-[calc(5.75rem+env(safe-area-inset-bottom)+8px)] lg:pb-0">{children}</main>
         <nav
-          className={`fixed inset-x-0 bottom-0 z-40 border-t border-slate-200 bg-white/95 px-2 pb-[calc(0.5rem+env(safe-area-inset-bottom))] pt-2 shadow-[0_-10px_30px_rgba(15,23,42,0.08)] backdrop-blur-xl transition-transform duration-200 lg:hidden ${
+          className={`fixed inset-x-0 bottom-0 z-30 border-t border-slate-200 bg-white/95 px-2 pb-[calc(0.5rem+env(safe-area-inset-bottom))] pt-2 shadow-[0_-10px_30px_rgba(15,23,42,0.08)] backdrop-blur-xl transition-transform duration-200 lg:hidden ${
             showMobileNav ? "translate-y-0" : "translate-y-full"
           }`}
         >
@@ -604,6 +605,12 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                 <Link
                   key={item.href}
                   href={item.href}
+                  onClick={() => {
+                    setShowMobileNav(true);
+                    setShowNewMenu(false);
+                    setShowNotifications(false);
+                    setShowProfile(false);
+                  }}
                   className={`relative flex min-h-14 flex-col items-center justify-center gap-1 rounded-2xl text-[11px] font-semibold transition ${
                     active
                       ? "bg-royal-600 text-white shadow-sm scale-[1.02]"

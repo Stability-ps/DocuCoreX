@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { CheckCircle2, Download, FileOutput, FolderOpen, Play, RefreshCcw, UploadCloud, X } from "lucide-react";
 import { conversionOptions } from "@/lib/product-data";
@@ -538,12 +539,12 @@ export function ConversionWorkflow() {
               Preview
             </button>
             {activeResult.resultDocumentId ? (
-              <a
+              <Link
                 href={`/documents/${activeResult.resultDocumentId}`}
                 className="inline-flex min-h-11 w-full items-center justify-center rounded-lg border border-slate-200 bg-white px-3 text-sm font-semibold text-slate-700 sm:w-auto"
               >
                 Open Document
-              </a>
+              </Link>
             ) : (
               <button
                 type="button"
