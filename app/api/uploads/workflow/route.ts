@@ -25,8 +25,16 @@ function stateFromJobs(
     return { uploadStatus: "uploaded", conversionStatus: "failed", stage: failed.message || "Failed", uploadProgress: 100, conversionProgress: 100 };
   }
 
-  if (conversion?.status === "completed" && conversion.download_path) {
-    return { uploadStatus: "uploaded", conversionStatus: "completed", stage: "Completed", uploadProgress: 100, conversionProgress: 100 };
+  if ((conversion?.status === "output_ready" || conversion?.status === "completed") && conversion.download_path) {
+    return { uploadStatus: "uploaded", conversionStatus: "completed", outputReady: true, stage: "Download ready", uploadProgress: 100, conversionProgress: 100 };
+  }
+
+  if (conversion?.status === "completed" && !conversion.download_path) {
+    return { uploadStatus: "uploaded", conversionStatus: "failed", outputReady: false, stage: "Converted file is missing. Please retry.", uploadProgress: 100, conversionProgress: 100 };
+  }
+
+  if (conversion?.status === "failed") {
+    return { uploadStatus: "uploaded", conversionStatus: "failed", outputReady: false, stage: "Conversion failed", uploadProgress: 100, conversionProgress: 100 };
   }
 
   const conversionJob = jobs.find((job) => job.type === "conversion" && (job.status === "queued" || job.status === "running"));
@@ -34,13 +42,14 @@ function stateFromJobs(
     return {
       uploadStatus: "uploaded",
       conversionStatus: conversionJob.status === "running" ? "converting" : "queued",
+      outputReady: false,
       stage: conversionJob.message || "Converting",
       uploadProgress: 100,
       conversionProgress: conversionJob.progress,
     };
   }
 
-  return { uploadStatus: "uploaded", conversionStatus: "ready", stage: "Ready to convert", uploadProgress: 100, conversionProgress: 0 };
+  return { uploadStatus: "uploaded", conversionStatus: "ready", outputReady: false, stage: "Ready to convert", uploadProgress: 100, conversionProgress: 0 };
 }
 
 export async function GET() {
@@ -85,6 +94,7 @@ export async function GET() {
         documentStatus: document.status,
         uploadStatus: state.uploadStatus,
         conversionStatus: state.conversionStatus,
+        outputReady: state.outputReady,
         stage: state.stage,
         uploadProgress: state.uploadProgress,
         conversionProgress: state.conversionProgress,
@@ -95,7 +105,8 @@ export async function GET() {
               to: latestConversion.to_format,
               status: latestConversion.status,
               downloadPath: latestConversion.download_path,
-              downloadUrl: `/api/download-file/${latestConversion.id}`,
+              outputReady: Boolean(state.outputReady),
+              downloadUrl: state.outputReady ? `/api/download-file/${latestConversion.id}` : null,
             }
           : null,
         jobs,

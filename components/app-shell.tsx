@@ -5,6 +5,7 @@ import { usePathname, useRouter } from "next/navigation";
 import { useEffect, useRef, useState } from "react";
 import { Bell, ChevronDown, Command, CreditCard, Folder, Home, Landmark, LogOut, Plus, Receipt, Search, Settings, ShieldCheck, Upload, UsersRound } from "lucide-react";
 import { BrandLogo } from "@/components/brand";
+import { SelectionCheckbox, checkboxShiftKey, useBulkSelection } from "@/components/bulk-selection";
 import { appNav, newActionItems } from "@/lib/product-data";
 import type { NotificationRecord } from "@/lib/types";
 
@@ -80,6 +81,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   });
   const [shellError, setShellError] = useState("");
   const searchCacheRef = useRef<Map<string, SearchResult[]>>(new Map());
+  const notificationSelection = useBulkSelection(notifications);
 
   useEffect(() => {
     const cachedProfile = readCached<ProfileState>(SHELL_PROFILE_CACHE_KEY, SHELL_CACHE_TTL_MS);
@@ -216,6 +218,26 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     }
   }
 
+  async function markSelectedNotificationsRead() {
+    const ids = notificationSelection.selectedIds;
+    if (!ids.length) return;
+    let next = notifications;
+    for (const id of ids) {
+      const response = await fetch("/api/notifications", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id }),
+      });
+      if (response.ok) {
+        const data = (await response.json()) as { notifications: NotificationRecord[] };
+        next = data.notifications;
+      }
+    }
+    notificationSelection.clearSelection();
+    setNotifications(next);
+    writeCached(SHELL_NOTIFICATIONS_CACHE_KEY, next);
+  }
+
   async function clearAllNotificationsClick() {
     const response = await fetch("/api/notifications", {
       method: "DELETE",
@@ -227,6 +249,26 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       setNotifications(data.notifications);
       writeCached(SHELL_NOTIFICATIONS_CACHE_KEY, data.notifications);
     }
+  }
+
+  async function deleteSelectedNotifications() {
+    const ids = notificationSelection.selectedIds;
+    if (!ids.length) return;
+    let next = notifications;
+    for (const id of ids) {
+      const response = await fetch("/api/notifications", {
+        method: "DELETE",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id }),
+      });
+      if (response.ok) {
+        const data = (await response.json()) as { notifications: NotificationRecord[] };
+        next = data.notifications;
+      }
+    }
+    notificationSelection.clearSelection();
+    setNotifications(next);
+    writeCached(SHELL_NOTIFICATIONS_CACHE_KEY, next);
   }
 
   async function handleNotificationClick(notification: NotificationRecord) {
@@ -469,6 +511,26 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                   <button onClick={clearAllNotificationsClick} className="text-xs font-semibold text-slate-400 hover:text-rose-600">Clear all</button>
                 </div>
               </div>
+              {notifications.length ? (
+                <div className="mb-3 flex items-center justify-between rounded-lg bg-slate-50 px-3 py-2">
+                  <label className="flex items-center gap-2 text-xs font-semibold text-slate-500">
+                    <SelectionCheckbox
+                      checked={notificationSelection.allVisibleSelected}
+                      indeterminate={notificationSelection.someVisibleSelected && !notificationSelection.allVisibleSelected}
+                      label="Select all notifications"
+                      onChange={notificationSelection.toggleAllVisible}
+                    />
+                    Select all
+                  </label>
+                  {notificationSelection.hasSelection ? (
+                    <div className="flex items-center gap-2">
+                      <span className="text-xs font-black text-navy-950">{notificationSelection.selectedCount} selected</span>
+                      <button onClick={() => void markSelectedNotificationsRead()} className="text-xs font-semibold text-royal-700">Mark read</button>
+                      <button onClick={() => void deleteSelectedNotifications()} className="text-xs font-semibold text-rose-600">Delete</button>
+                    </div>
+                  ) : null}
+                </div>
+              ) : null}
               <div className="max-h-96 space-y-1.5 overflow-y-auto">
                 {notifications.length === 0 ? (
                   <div className="py-8 text-center">
@@ -477,23 +539,27 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                   </div>
                 ) : (
                   notifications.map((notification) => (
-                    <button
+                    <div
                       key={notification.id}
-                      onClick={() => handleNotificationClick(notification)}
                       className={`flex w-full items-start gap-2.5 rounded-lg p-3 text-left transition hover:bg-slate-100 ${
                         notification.readAt ? "bg-white opacity-70" : "bg-royal-50"
                       }`}
                     >
+                      <SelectionCheckbox
+                        checked={notificationSelection.selectedSet.has(notification.id)}
+                        label={`Select notification ${notification.title}`}
+                        onChange={(event) => notificationSelection.toggleOne(notification.id, { shiftKey: checkboxShiftKey(event) })}
+                      />
                       <span
                         className={`mt-1.5 h-2 w-2 shrink-0 rounded-full ${notification.readAt ? "bg-transparent" : "bg-royal-600"}`}
                         aria-hidden
                       />
-                      <span className="min-w-0 flex-1">
+                      <button type="button" onClick={() => handleNotificationClick(notification)} className="min-w-0 flex-1 text-left">
                         <span className="block truncate font-semibold text-navy-950">{notification.title}</span>
                         <span className="mt-0.5 block text-sm leading-5 text-slate-600 line-clamp-2">{notification.body}</span>
                         <span className="mt-1 block text-xs text-slate-400">{relativeTime(notification.createdAt)}</span>
-                      </span>
-                    </button>
+                      </button>
+                    </div>
                   ))
                 )}
               </div>

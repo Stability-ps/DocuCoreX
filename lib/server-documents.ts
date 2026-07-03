@@ -341,6 +341,68 @@ export async function deleteDocument(id: string) {
   return !error;
 }
 
+export async function bulkDeleteDocuments(ids: string[]) {
+  const uniqueIds = Array.from(new Set(ids)).filter(Boolean);
+  const context = await getWorkspaceContext();
+
+  if (!uniqueIds.length) {
+    return { deletedIds: [] as string[] };
+  }
+
+  if (!context) {
+    const deletedIds = uniqueIds.filter((id) => deleteDocumentRecord(id));
+    return { deletedIds };
+  }
+
+  const { data: documentRows, error: documentError } = await context.supabase
+    .from("documents")
+    .select("id, storage_path")
+    .eq("workspace_id", context.workspaceId)
+    .in("id", uniqueIds);
+
+  if (documentError) {
+    throw new Error(documentError.message);
+  }
+
+  const foundIds = (documentRows ?? []).map((row) => row.id as string);
+  if (!foundIds.length) {
+    return { deletedIds: [] as string[] };
+  }
+
+  const { data: conversionRows } = await context.supabase
+    .from("conversions")
+    .select("download_path")
+    .in("document_id", foundIds);
+
+  const storagePaths = [
+    ...(documentRows ?? []).map((row) => row.storage_path as string | null),
+    ...(conversionRows ?? []).map((row) => row.download_path as string | null),
+  ].filter((path): path is string => Boolean(path));
+
+  if (storagePaths.length) {
+    await context.supabase.storage.from("documents").remove(Array.from(new Set(storagePaths)));
+  }
+
+  await context.supabase.from("processing_jobs").delete().in("document_id", foundIds);
+  await context.supabase.from("extraction_results").delete().in("document_id", foundIds);
+  await context.supabase.from("document_versions").delete().in("document_id", foundIds);
+  await context.supabase.from("uploads").delete().in("document_id", foundIds);
+  await context.supabase.from("document_shares").delete().in("document_id", foundIds);
+  await context.supabase.from("conversions").delete().in("document_id", foundIds);
+
+  const { error: deleteError } = await context.supabase
+    .from("documents")
+    .delete()
+    .eq("workspace_id", context.workspaceId)
+    .in("id", foundIds);
+
+  if (deleteError) {
+    throw new Error(deleteError.message);
+  }
+
+  return { deletedIds: foundIds };
+}
+
 export async function registerUploads(files: UploadFileInput[]) {
   validateUploadFiles(files);
 

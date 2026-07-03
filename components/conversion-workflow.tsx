@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import { CheckCircle2, Download, FileOutput, Play, RefreshCcw } from "lucide-react";
+import { CheckCircle2, Download, FileOutput, FolderOpen, Play, RefreshCcw, UploadCloud, X } from "lucide-react";
 import { conversionOptions } from "@/lib/product-data";
 import type { DocumentRecord } from "@/lib/types";
 
@@ -20,6 +20,10 @@ type JobsResponse = {
   jobs?: Array<{ id: string; document_id?: string; documentId?: string; type: string; status: string; progress: number; message: string }>;
 };
 
+type DownloadsResponse = {
+  downloads?: Array<{ id: string; status: string; href?: string; label?: string }>;
+};
+
 type LifecycleState = "ready" | "processing" | "completed";
 
 type CompletedResult = {
@@ -35,6 +39,8 @@ type CompletedResult = {
   createdAt: number;
 };
 
+const activeDocumentKey = "docucorex.convert.activeDocumentId";
+
 function normalizeFormat(value: string) {
   const normalized = value.toLowerCase();
   if (normalized === "images") return "image";
@@ -43,10 +49,29 @@ function normalizeFormat(value: string) {
   return normalized;
 }
 
+function documentSourceFormat(document: DocumentRecord) {
+  const lower = `${document.mimeType} ${document.name}`.toLowerCase();
+  if (lower.includes("pdf") || /\.pdf$/i.test(document.name)) return "pdf";
+  if (lower.includes("word") || /\.(docx?|rtf|txt)$/i.test(document.name)) return "word";
+  if (lower.includes("excel") || lower.includes("spreadsheet") || /\.(xlsx?|xls|csv)$/i.test(document.name)) return "excel";
+  if (lower.includes("image") || /\.(png|jpe?g|tiff?|bmp|gif|heic)$/i.test(document.name)) return "image";
+  return "unknown";
+}
+
+function isConvertedDocument(document: DocumentRecord) {
+  return (document.tags ?? []).some((tag) => tag.toLowerCase() === "converted");
+}
+
+function bytes(value: number) {
+  if (value < 1024) return `${value} B`;
+  if (value < 1024 * 1024) return `${(value / 1024).toFixed(1)} KB`;
+  return `${(value / (1024 * 1024)).toFixed(1)} MB`;
+}
+
 export function ConversionWorkflow() {
   const [selectedTarget, setSelectedTarget] = useState("PDF → Excel");
   const [documents, setDocuments] = useState<DocumentRecord[]>([]);
-  const [selectedDocumentId, setSelectedDocumentId] = useState("statement-q2");
+  const [selectedDocumentId, setSelectedDocumentId] = useState("");
   const [lifecycleState, setLifecycleState] = useState<LifecycleState>("ready");
   const [progress, setProgress] = useState(0);
   const [jobLabel, setJobLabel] = useState("Ready");
@@ -56,18 +81,25 @@ export function ConversionWorkflow() {
   const [activeJobDocumentName, setActiveJobDocumentName] = useState("");
   const [activeJobTarget, setActiveJobTarget] = useState("");
   const [librarySavingIds, setLibrarySavingIds] = useState<Record<string, true>>({});
+  const [libraryOpen, setLibraryOpen] = useState(false);
+  const [uploadState, setUploadState] = useState<"idle" | "uploading" | "failed">("idle");
   const lifecycleCardRef = useRef<HTMLDivElement>(null);
 
-  useEffect(() => {
-    async function loadDocuments() {
+  async function loadDocuments(preferredId?: string) {
       const response = await fetch("/api/documents").catch(() => null);
       if (!response?.ok) return;
 
       const data = (await response.json()) as { documents: DocumentRecord[] };
       setDocuments(data.documents);
-      setSelectedDocumentId((current) => data.documents.find((document) => document.id === current)?.id ?? data.documents[0]?.id ?? current);
+    setSelectedDocumentId((current) => {
+      const saved = preferredId ?? (typeof window !== "undefined" ? window.localStorage.getItem(activeDocumentKey) : "") ?? "";
+      const nextId = data.documents.find((document) => document.id === current)?.id ?? data.documents.find((document) => document.id === saved)?.id ?? current;
+      if (nextId && typeof window !== "undefined") window.localStorage.setItem(activeDocumentKey, nextId);
+      return nextId;
+    });
     }
 
+  useEffect(() => {
     void loadDocuments();
   }, []);
 
@@ -75,6 +107,55 @@ export function ConversionWorkflow() {
     () => documents.find((document) => document.id === selectedDocumentId),
     [documents, selectedDocumentId],
   );
+
+  const selectedSourceFormat = useMemo(() => {
+    const [fromLabel] = selectedTarget.split(" → ");
+    return fromLabel ? normalizeFormat(fromLabel) : "";
+  }, [selectedTarget]);
+
+  const compatibleDocuments = useMemo(
+    () =>
+      documents.filter(
+        (document) =>
+          !document.deletedAt &&
+          !isConvertedDocument(document) &&
+          (!selectedSourceFormat || documentSourceFormat(document) === selectedSourceFormat),
+      ),
+    [documents, selectedSourceFormat],
+  );
+
+  useEffect(() => {
+    setSelectedDocumentId((current) => {
+      const saved = typeof window !== "undefined" ? window.localStorage.getItem(activeDocumentKey) : "";
+      const nextId = compatibleDocuments.some((document) => document.id === current)
+        ? current
+        : compatibleDocuments.find((document) => document.id === saved)?.id ?? compatibleDocuments[0]?.id ?? "";
+      if (nextId && typeof window !== "undefined") window.localStorage.setItem(activeDocumentKey, nextId);
+      return nextId;
+    });
+  }, [compatibleDocuments]);
+
+  function selectDocument(id: string) {
+    setSelectedDocumentId(id);
+    if (id) window.localStorage.setItem(activeDocumentKey, id);
+  }
+
+  async function uploadDocument(file?: File | null) {
+    if (!file) return;
+    setUploadState("uploading");
+    setError("");
+    const formData = new FormData();
+    formData.append("file", file, file.name);
+    const response = await fetch("/api/uploads", { method: "POST", body: formData }).catch(() => null);
+    const data = (await response?.json().catch(() => null)) as { accepted?: Array<{ id: string }>; error?: string } | null;
+    if (!response?.ok || !data?.accepted?.[0]?.id) {
+      setUploadState("failed");
+      setError(data?.error ?? "Upload failed.");
+      return;
+    }
+    await loadDocuments(data.accepted[0].id);
+    setUploadState("idle");
+  }
 
   async function findLatestConvertedDocument(sourceDocumentId: string, startedAt: number) {
     const response = await fetch("/api/documents").catch(() => null);
@@ -147,6 +228,25 @@ export function ConversionWorkflow() {
       return;
     }
     window.open(result.downloadHref, "_blank", "noopener,noreferrer");
+  }
+
+  async function downloadResult(result: CompletedResult) {
+    const response = await fetch(result.downloadHref).catch(() => null);
+    if (!response?.ok) {
+      const data = (await response?.json().catch(() => null)) as { error?: string } | null;
+      setError(data?.error ?? "The converted file is not ready to download yet.");
+      return;
+    }
+
+    const blob = await response.blob();
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement("a");
+    anchor.href = url;
+    anchor.download = result.resultDocumentName;
+    document.body.append(anchor);
+    anchor.click();
+    anchor.remove();
+    URL.revokeObjectURL(url);
   }
 
   function resetForAnotherConversion() {
@@ -230,7 +330,20 @@ export function ConversionWorkflow() {
       return;
     }
 
-    const downloadHref = data?.conversion?.downloadUrl ?? `/api/download-file/${conversionId ?? `conversion_${selectedDocumentId}`}`;
+    const downloadsResponse = await fetch(`/api/downloads/${selectedDocumentId}`, { cache: "no-store" }).catch(() => null);
+    const downloadsData = downloadsResponse?.ok ? ((await downloadsResponse.json().catch(() => null)) as DownloadsResponse | null) : null;
+    const readyDownload = downloadsData?.downloads?.find((download) => download.id === conversionId && download.status === "ready" && download.href);
+
+    if (!readyDownload?.href) {
+      setProgress(100);
+      setJobLabel("Conversion failed");
+      setError("The conversion finished without a downloadable output. Please run it again.");
+      setLifecycleState("ready");
+      setIsConverting(false);
+      return;
+    }
+
+    const downloadHref = readyDownload.href;
     const convertedDocument = await findLatestConvertedDocument(selectedDocumentId, startedAt);
     const completedResult: CompletedResult = {
       conversionId: conversionId ?? `conversion_${selectedDocumentId}_${Date.now()}`,
@@ -262,22 +375,50 @@ export function ConversionWorkflow() {
       {lifecycleState === "ready" ? (
         <div ref={lifecycleCardRef} tabIndex={-1} className="mt-4 rounded-xl border border-slate-200 bg-slate-50 p-4 outline-none">
           <p className="text-xs font-black uppercase tracking-[0.08em] text-slate-500">After upload, convert to</p>
-          <label className="mt-3 block">
-            <span className="mb-2 block text-sm font-semibold text-slate-700">Source document</span>
-            <select
-              className="min-h-11 w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm font-semibold text-navy-950 outline-none focus:border-royal-300"
-              onChange={(event) => setSelectedDocumentId(event.target.value)}
-              value={selectedDocumentId}
-              disabled={!documents.length}
-            >
-              {!documents.length ? <option value="">No documents available</option> : null}
-              {documents.map((document) => (
-                <option key={document.id} value={document.id}>
-                  {document.name}
-                </option>
-              ))}
-            </select>
-          </label>
+          <div className="mt-3">
+            {selectedDocument ? (
+              <div className="rounded-xl border border-emerald-200 bg-emerald-50/70 p-4">
+                <div className="flex items-start gap-3">
+                  <CheckCircle2 className="mt-0.5 h-5 w-5 text-emerald-600" />
+                  <div className="min-w-0 flex-1">
+                    <p className="truncate font-semibold text-navy-950">{selectedDocument.name}</p>
+                    <p className="mt-1 text-xs font-semibold text-slate-500">{selectedDocument.mimeType} · {bytes(selectedDocument.sizeBytes)} · Uploaded successfully</p>
+                  </div>
+                </div>
+                <div className="mt-3 flex flex-wrap gap-2">
+                  <label className="inline-flex min-h-10 cursor-pointer items-center rounded-lg bg-white px-3 text-xs font-black text-royal-700 shadow-sm">
+                    Replace Document
+                    <input className="sr-only" type="file" onChange={(event) => void uploadDocument(event.target.files?.[0])} />
+                  </label>
+                  <button type="button" onClick={() => setLibraryOpen(true)} className="inline-flex min-h-10 items-center gap-2 rounded-lg border border-slate-200 bg-white px-3 text-xs font-black text-slate-700">
+                    <FolderOpen className="h-4 w-4" />
+                    Choose from Document Library
+                  </button>
+                </div>
+              </div>
+            ) : (
+              <div
+                onDragOver={(event) => event.preventDefault()}
+                onDrop={(event) => {
+                  event.preventDefault();
+                  void uploadDocument(event.dataTransfer.files?.[0]);
+                }}
+                className="rounded-xl border border-dashed border-royal-200 bg-white p-5 text-center"
+              >
+                <UploadCloud className="mx-auto h-8 w-8 text-royal-600" />
+                <p className="mt-2 font-semibold text-navy-950">Upload document</p>
+                <p className="mt-1 text-sm text-slate-500">Drag & drop or choose a file.</p>
+                <label className="mt-3 inline-flex min-h-10 cursor-pointer items-center rounded-lg bg-royal-600 px-4 text-sm font-semibold text-white">
+                  Choose File
+                  <input className="sr-only" type="file" onChange={(event) => void uploadDocument(event.target.files?.[0])} />
+                </label>
+                <button type="button" onClick={() => setLibraryOpen(true)} className="mt-3 block w-full text-xs font-black text-royal-700">
+                  Choose from Document Library
+                </button>
+              </div>
+            )}
+            {uploadState === "uploading" ? <p className="mt-2 text-xs font-semibold text-royal-700">Uploading...</p> : null}
+          </div>
 
           <div className="mt-4 grid gap-2 sm:grid-cols-2">
             {conversionOptions.map((option) => (
@@ -301,17 +442,19 @@ export function ConversionWorkflow() {
           <div className="mt-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
             <div>
               <p className="text-sm font-semibold text-navy-950">Status: Ready</p>
-              <p className="text-xs text-slate-500">{selectedTarget || "Choose a conversion target"}</p>
+              <p className="text-xs text-slate-500">
+                {!compatibleDocuments.length && selectedTarget ? `Upload or choose a ${selectedSourceFormat.toUpperCase()} source document first.` : selectedTarget || "Choose a conversion target"}
+              </p>
               {error ? <p className="mt-2 text-sm font-semibold text-rose-600">{error}</p> : null}
             </div>
             <button
               type="button"
               onClick={startConversion}
-              disabled={isConverting || !selectedDocumentId || !documents.length || !selectedTarget}
+              disabled={isConverting || !selectedDocumentId || !compatibleDocuments.length || !selectedTarget}
               className="inline-flex min-h-11 items-center justify-center gap-2 rounded-lg bg-royal-600 px-4 py-2 text-sm font-semibold text-white shadow-sm disabled:cursor-wait disabled:bg-slate-300"
             >
               <Play className="h-4 w-4" />
-              {!documents.length ? "Upload first" : !selectedTarget ? "Choose target" : "Convert"}
+              {!compatibleDocuments.length ? "Upload matching source" : !selectedTarget ? "Choose target" : "Convert"}
             </button>
           </div>
         </div>
@@ -379,13 +522,14 @@ export function ConversionWorkflow() {
           </div>
 
           <div className="mt-4 flex flex-wrap gap-2">
-            <a
-              href={activeResult.downloadHref}
+            <button
+              type="button"
+              onClick={() => void downloadResult(activeResult)}
               className="inline-flex min-h-11 w-full items-center justify-center gap-2 rounded-lg bg-navy-950 px-3 text-sm font-semibold text-white sm:w-auto"
             >
               <Download className="h-4 w-4" />
               Download
-            </a>
+            </button>
             <button
               type="button"
               onClick={() => previewResult(activeResult)}
@@ -427,6 +571,41 @@ export function ConversionWorkflow() {
             Convert another file
           </button>
           {error ? <p className="mt-2 text-sm font-semibold text-rose-600">{error}</p> : null}
+        </div>
+      ) : null}
+      {libraryOpen ? (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-navy-950/40 p-4">
+          <div className="max-h-[82vh] w-full max-w-2xl overflow-hidden rounded-2xl bg-white shadow-2xl">
+            <div className="flex items-center justify-between border-b border-slate-100 px-5 py-4">
+              <div>
+                <p className="font-semibold text-navy-950">Document Library</p>
+                <p className="text-xs text-slate-500">Choose an existing source document.</p>
+              </div>
+              <button type="button" onClick={() => setLibraryOpen(false)} className="rounded-lg p-2 text-slate-500 hover:bg-slate-100" aria-label="Close library">
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+            <div className="max-h-[60vh] overflow-auto p-3">
+              {compatibleDocuments.map((document) => (
+                <button
+                  key={document.id}
+                  type="button"
+                  onClick={() => {
+                    selectDocument(document.id);
+                    setLibraryOpen(false);
+                  }}
+                  className="mb-2 flex w-full items-center justify-between gap-3 rounded-xl border border-slate-200 bg-white p-3 text-left hover:border-royal-200 hover:bg-royal-50"
+                >
+                  <span className="min-w-0">
+                    <span className="block truncate text-sm font-semibold text-navy-950">{document.name}</span>
+                    <span className="text-xs font-semibold text-slate-500">{document.mimeType} · {bytes(document.sizeBytes)}</span>
+                  </span>
+                  {selectedDocumentId === document.id ? <CheckCircle2 className="h-5 w-5 text-emerald-500" /> : null}
+                </button>
+              ))}
+              {!compatibleDocuments.length ? <p className="p-4 text-center text-sm font-semibold text-slate-500">No matching documents available yet.</p> : null}
+            </div>
+          </div>
         </div>
       ) : null}
     </section>

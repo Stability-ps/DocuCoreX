@@ -21,6 +21,7 @@ import {
 } from "lucide-react";
 import { formatCurrency } from "@/lib/invoice-utils";
 import type { InvoiceRecord, InvoiceStatus, InvoiceWithItems } from "@/lib/types";
+import { BulkActionToolbar, MobileBulkBar, SelectionCheckbox, checkboxShiftKey, useBulkSelection } from "@/components/bulk-selection";
 
 // Soft filled pills — no outlined badges, per design spec.
 const statusStyles: Record<InvoiceStatus, string> = {
@@ -132,6 +133,8 @@ export function InvoiceList() {
   const [openMenuId, setOpenMenuId] = useState<string | null>(null);
   const [visibleCount, setVisibleCount] = useState(20);
   const [busyId, setBusyId] = useState<string | null>(null);
+  const [bulkDeleteOpen, setBulkDeleteOpen] = useState(false);
+  const [bulkMessage, setBulkMessage] = useState("");
   const containerRef = useRef<HTMLDivElement>(null);
 
   async function load() {
@@ -249,6 +252,7 @@ export function InvoiceList() {
   }, [invoices, statusFilter, dateFilter, customFrom, customTo, query, sort]);
 
   const visibleInvoices = filteredInvoices.slice(0, visibleCount);
+  const selection = useBulkSelection(visibleInvoices);
 
   async function markAsPaid(id: string) {
     setBusyId(id);
@@ -262,6 +266,54 @@ export function InvoiceList() {
     }
     setBusyId(null);
     setOpenMenuId(null);
+  }
+
+  async function bulkUpdateStatus(status: InvoiceStatus) {
+    if (!selection.selectedCount) return;
+    setBusyId("bulk");
+    setBulkMessage("");
+    const ids = selection.selectedIds;
+    const previous = invoices;
+    setInvoices((current) => (current ? current.map((invoice) => (ids.includes(invoice.id) ? { ...invoice, status } : invoice)) : current));
+
+    try {
+      await Promise.all(
+        ids.map((id) =>
+          fetch(`/api/invoices/${id}`, {
+            method: "PATCH",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ status }),
+          }).then((response) => {
+            if (!response.ok) throw new Error("Bulk invoice update failed");
+          }),
+        ),
+      );
+      selection.clearSelection();
+      setBulkDeleteOpen(false);
+      setBulkMessage(`${ids.length} invoice${ids.length === 1 ? "" : "s"} updated.`);
+    } catch {
+      setInvoices(previous);
+      setError("Unable to update selected invoices.");
+    } finally {
+      setBusyId(null);
+    }
+  }
+
+  function bulkDownloadPdfs() {
+    const selected = visibleInvoices.filter((invoice) => selection.selectedSet.has(invoice.id));
+    selected.slice(0, 10).forEach((invoice) => window.open(`/invoices/${invoice.id}`, "_blank", "noopener,noreferrer"));
+    setBulkMessage(selected.length > 10 ? "Opened first 10 invoice PDFs. Narrow the selection for the rest." : `${selected.length} invoice PDF${selected.length === 1 ? "" : "s"} opened.`);
+  }
+
+  function bulkEmailSelected() {
+    const selected = visibleInvoices.filter((invoice) => selection.selectedSet.has(invoice.id) && invoice.clientEmail);
+    if (!selected.length) {
+      setError("Selected invoices do not have client email addresses.");
+      return;
+    }
+    const first = selected[0];
+    emailInvoice(first);
+    setBulkMessage("Email composer opened for the first selected invoice.");
   }
 
   // There's no destructive delete endpoint (and adding one would mean modifying the invoice
@@ -566,6 +618,31 @@ export function InvoiceList() {
       </div>
 
       {error ? <p className="text-sm font-semibold text-rose-600">{error}</p> : null}
+      {!error && bulkMessage ? <p className="text-sm font-semibold text-emerald-700">{bulkMessage}</p> : null}
+
+      {selection.hasSelection ? (
+        <BulkActionToolbar count={selection.selectedCount} entity="invoice" onClear={selection.clearSelection}>
+          <button type="button" onClick={bulkDownloadPdfs} className="inline-flex min-h-10 items-center gap-1 rounded-lg border border-slate-200 bg-white px-3 text-xs font-black text-slate-700">
+            <Download className="h-4 w-4" />
+            Download PDFs
+          </button>
+          <button type="button" onClick={bulkEmailSelected} className="inline-flex min-h-10 items-center gap-1 rounded-lg border border-slate-200 bg-white px-3 text-xs font-black text-slate-700">
+            <Mail className="h-4 w-4" />
+            Email
+          </button>
+          <button type="button" onClick={() => void bulkUpdateStatus("paid")} disabled={busyId === "bulk"} className="inline-flex min-h-10 items-center gap-1 rounded-lg border border-slate-200 bg-white px-3 text-xs font-black text-slate-700 disabled:opacity-50">
+            <CheckCircle2 className="h-4 w-4" />
+            Mark Paid
+          </button>
+          <button type="button" onClick={() => void bulkUpdateStatus("issued")} disabled={busyId === "bulk"} className="inline-flex min-h-10 items-center gap-1 rounded-lg border border-slate-200 bg-white px-3 text-xs font-black text-slate-700 disabled:opacity-50">
+            Mark Issued
+          </button>
+          <button type="button" onClick={() => setBulkDeleteOpen(true)} disabled={busyId === "bulk"} className="inline-flex min-h-10 items-center gap-1 rounded-lg bg-rose-600 px-3 text-xs font-black text-white disabled:opacity-50">
+            <Trash2 className="h-4 w-4" />
+            Delete
+          </button>
+        </BulkActionToolbar>
+      ) : null}
 
       {/* Summary cards — horizontal scroll only on mobile, never vertical */}
       <div className="no-scrollbar -mx-1 mb-1 flex snap-x snap-mandatory flex-nowrap gap-2.5 overflow-x-auto overflow-y-hidden px-1 pb-1 [-webkit-overflow-scrolling:touch] sm:grid sm:grid-cols-4 sm:overflow-visible">
@@ -614,6 +691,15 @@ export function InvoiceList() {
         </div>
       ) : (
         <>
+          <div className="hidden items-center gap-2 rounded-xl border border-slate-200 bg-white px-3 py-2 sm:flex">
+            <SelectionCheckbox
+              checked={selection.allVisibleSelected}
+              indeterminate={selection.someVisibleSelected && !selection.allVisibleSelected}
+              label="Select all visible invoices"
+              onChange={selection.toggleAllVisible}
+            />
+            <span className="text-xs font-semibold text-slate-500">Select all visible invoices</span>
+          </div>
           <div className="space-y-2">
             {visibleInvoices.map((invoice) => {
               const avatar = avatarStyle(invoice.clientName || "?");
@@ -623,9 +709,23 @@ export function InvoiceList() {
               return (
                 <div
                   key={invoice.id}
-                  className="group relative rounded-2xl border border-slate-200 bg-white p-3 transition hover:-translate-y-0.5 hover:shadow-md"
+                  className={`group relative rounded-2xl border bg-white p-3 transition hover:-translate-y-0.5 hover:shadow-md ${selection.selectedSet.has(invoice.id) ? "border-royal-300 ring-2 ring-royal-100" : "border-slate-200"}`}
+                  onPointerDown={(event) => {
+                    const timer = window.setTimeout(() => selection.toggleOne(invoice.id), 450);
+                    const clear = () => window.clearTimeout(timer);
+                    event.currentTarget.addEventListener("pointerup", clear, { once: true });
+                    event.currentTarget.addEventListener("pointerleave", clear, { once: true });
+                  }}
                 >
-                  <Link href={`/invoices/${invoice.id}`} className="flex items-center gap-2.5 pr-9">
+                  <div className="flex items-center gap-2.5">
+                    <div onClick={(event) => event.stopPropagation()}>
+                      <SelectionCheckbox
+                        checked={selection.selectedSet.has(invoice.id)}
+                        label={`Select invoice ${invoice.invoiceNumber}`}
+                        onChange={(event) => selection.toggleOne(invoice.id, { shiftKey: checkboxShiftKey(event) })}
+                      />
+                    </div>
+                  <Link href={`/invoices/${invoice.id}`} className="flex min-w-0 flex-1 items-center gap-2.5 pr-9">
                     <span className={`flex h-9 w-9 flex-none items-center justify-center rounded-full text-xs font-bold ${avatar.bg} ${avatar.text}`}>
                       {initialsFor(invoice.clientName || "?")}
                     </span>
@@ -643,6 +743,7 @@ export function InvoiceList() {
                       </span>
                     </div>
                   </Link>
+                  </div>
 
                   <button
                     type="button"
@@ -747,6 +848,37 @@ export function InvoiceList() {
           ) : null}
         </>
       )}
+
+      {bulkDeleteOpen ? (
+        <div className="fixed inset-0 z-40 flex items-center justify-center bg-navy-950/40 p-4" onClick={() => setBulkDeleteOpen(false)}>
+          <div className="w-full max-w-sm rounded-xl border border-slate-200 bg-white p-5 shadow-xl" onClick={(event) => event.stopPropagation()}>
+            <h3 className="text-base font-semibold text-navy-950">
+              Delete {selection.selectedCount} invoice{selection.selectedCount === 1 ? "" : "s"}?
+            </h3>
+            <p className="mt-2 text-sm text-slate-500">Selected invoices will be marked as cancelled and removed from active workflows.</p>
+            <div className="mt-4 flex gap-2">
+              <button type="button" onClick={() => setBulkDeleteOpen(false)} className="min-h-11 flex-1 rounded-lg bg-slate-100 px-3 text-sm font-semibold text-slate-700">
+                Cancel
+              </button>
+              <button type="button" onClick={() => void bulkUpdateStatus("cancelled")} disabled={busyId === "bulk"} className="min-h-11 flex-1 rounded-lg bg-rose-600 px-3 text-sm font-semibold text-white disabled:opacity-50">
+                Delete {selection.selectedCount}
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      <MobileBulkBar count={selection.selectedCount} onClear={selection.clearSelection}>
+        <button type="button" onClick={() => setBulkDeleteOpen(true)} className="min-h-10 rounded-lg bg-rose-600 px-2 text-xs font-black text-white">
+          Delete
+        </button>
+        <button type="button" onClick={bulkDownloadPdfs} className="min-h-10 rounded-lg border border-slate-200 bg-white px-2 text-xs font-black text-slate-700">
+          PDF
+        </button>
+        <button type="button" onClick={() => void bulkUpdateStatus("paid")} className="min-h-10 rounded-lg border border-slate-200 bg-white px-2 text-xs font-black text-slate-700">
+          Paid
+        </button>
+      </MobileBulkBar>
     </div>
   );
 }

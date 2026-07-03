@@ -126,8 +126,8 @@ function pdfEscape(value: string) {
   return value.replace(/\\/g, "\\\\").replace(/\(/g, "\\(").replace(/\)/g, "\\)");
 }
 
-export function createPdfFile(sourceName: string, lines: string[]): GeneratedFile {
-  const cleanLines = [`DocuCoreX processed document`, `Source: ${sourceName}`, "", ...lines].slice(0, 40);
+export function createPdfFile(_sourceName: string, lines: string[]): GeneratedFile {
+  const cleanLines = lines.filter((line) => line.trim().length).slice(0, 44);
   const stream = [
     "BT",
     "/F1 18 Tf",
@@ -157,14 +157,14 @@ export function createPdfFile(sourceName: string, lines: string[]): GeneratedFil
   });
   body += `trailer\n<< /Size ${objects.length + 1} /Root 1 0 R >>\nstartxref\n${xrefOffset}\n%%EOF`;
   return {
-    fileName: `${baseName(sourceName)}.pdf`,
+    fileName: `${baseName(_sourceName)}.pdf`,
     contentType: "application/pdf",
     content: textEncoder.encode(body),
   };
 }
 
-export function createDocxFile(sourceName: string, lines: string[]): GeneratedFile {
-  const paragraphs = [`DocuCoreX processed document`, `Source: ${sourceName}`, ...lines]
+export function createDocxFile(_sourceName: string, lines: string[]): GeneratedFile {
+  const paragraphs = lines
     .map((line) => `<w:p><w:r><w:t>${xmlEscape(line)}</w:t></w:r></w:p>`)
     .join("");
   const content = createZip([
@@ -188,7 +188,7 @@ export function createDocxFile(sourceName: string, lines: string[]): GeneratedFi
     },
   ]);
   return {
-    fileName: `${baseName(sourceName)}.docx`,
+    fileName: `${baseName(_sourceName)}.docx`,
     contentType: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
     content,
   };

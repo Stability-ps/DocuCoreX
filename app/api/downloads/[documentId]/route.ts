@@ -26,8 +26,8 @@ export async function GET(_request: Request, { params }: { params: Promise<{ doc
       documentId: conversion.document_id,
       label: `${conversion.to_format.toUpperCase()} export`,
       format: conversion.to_format === "excel" ? "xlsx" : conversion.to_format,
-      status: conversion.status === "completed" ? "ready" : conversion.status === "failed" ? "failed" : "processing",
-      href: conversion.download_path ?? `/api/download-file/${conversion.id}`,
+      status: (conversion.status === "output_ready" || conversion.status === "completed") && conversion.download_path ? "ready" : conversion.status === "failed" || (conversion.status === "completed" && !conversion.download_path) ? "failed" : "processing",
+      href: (conversion.status === "output_ready" || conversion.status === "completed") && conversion.download_path ? `/api/download-file/${conversion.id}` : "",
       createdAt: conversion.created_at,
     })),
   });

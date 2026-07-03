@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { Archive, ArchiveRestore, Building2, Copy, Pencil, Plus, Star, Trash2, X } from "lucide-react";
 import type { CompanyProfile } from "@/lib/types";
+import { BulkActionToolbar, MobileBulkBar, SelectionCheckbox, checkboxShiftKey, useBulkSelection } from "@/components/bulk-selection";
 
 const paymentTermsOptions = [
   { value: "due_on_receipt", label: "Due on receipt" },
@@ -98,6 +99,8 @@ export function CompanyProfilesManager() {
   const [editingId, setEditingId] = useState<string | null>(null);
   const [form, setForm] = useState<FormState>(emptyForm);
   const [isSaving, setIsSaving] = useState(false);
+  const [bulkDeleteOpen, setBulkDeleteOpen] = useState(false);
+  const selection = useBulkSelection(companies);
 
   const load = useCallback(async () => {
     setIsLoading(true);
@@ -233,6 +236,26 @@ export function CompanyProfilesManager() {
     await load();
   }
 
+  async function bulkArchiveSelected() {
+    const ids = selection.selectedIds;
+    await Promise.all(ids.map((id) => fetch(`/api/companies/${id}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action: "archive" }),
+    })));
+    selection.clearSelection();
+    await load();
+  }
+
+  async function bulkDeleteSelected() {
+    const ids = selection.selectedIds;
+    setCompanies((current) => current.filter((company) => !ids.includes(company.id)));
+    await Promise.all(ids.map((id) => fetch(`/api/companies/${id}`, { method: "DELETE" })));
+    selection.clearSelection();
+    setBulkDeleteOpen(false);
+    await load();
+  }
+
   return (
     <div className="space-y-6">
       <div className="flex items-center justify-between gap-3">
@@ -248,6 +271,19 @@ export function CompanyProfilesManager() {
       </div>
 
       {error ? <p className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">{error}</p> : null}
+
+      {selection.hasSelection ? (
+        <BulkActionToolbar count={selection.selectedCount} entity="company" onClear={selection.clearSelection}>
+          <button type="button" onClick={() => void bulkArchiveSelected()} className="inline-flex min-h-10 items-center gap-1 rounded-lg border border-slate-200 bg-white px-3 text-xs font-black text-slate-700">
+            <Archive className="h-4 w-4" />
+            Archive
+          </button>
+          <button type="button" onClick={() => setBulkDeleteOpen(true)} className="inline-flex min-h-10 items-center gap-1 rounded-lg bg-rose-600 px-3 text-xs font-black text-white">
+            <Trash2 className="h-4 w-4" />
+            Delete
+          </button>
+        </BulkActionToolbar>
+      ) : null}
 
       {isLoading ? (
         <div className="space-y-3">
@@ -268,13 +304,35 @@ export function CompanyProfilesManager() {
         </div>
       ) : (
         <div className="space-y-3">
+          <div className="flex items-center gap-2 rounded-xl border border-slate-200 bg-white px-3 py-2">
+            <SelectionCheckbox
+              checked={selection.allVisibleSelected}
+              indeterminate={selection.someVisibleSelected && !selection.allVisibleSelected}
+              label="Select all company profiles"
+              onChange={selection.toggleAllVisible}
+            />
+            <span className="text-xs font-semibold text-slate-500">Select all profiles</span>
+          </div>
           {companies.map((company) => (
             <div
               key={company.id}
-              className={`rounded-xl border p-4 sm:p-5 ${company.isArchived ? "border-slate-100 bg-slate-50 opacity-70" : "border-slate-200 bg-white"}`}
+              className={`rounded-xl border p-4 sm:p-5 ${selection.selectedSet.has(company.id) ? "border-royal-300 ring-2 ring-royal-100" : company.isArchived ? "border-slate-100 bg-slate-50 opacity-70" : "border-slate-200 bg-white"}`}
+              onPointerDown={(event) => {
+                const timer = window.setTimeout(() => selection.toggleOne(company.id), 450);
+                const clear = () => window.clearTimeout(timer);
+                event.currentTarget.addEventListener("pointerup", clear, { once: true });
+                event.currentTarget.addEventListener("pointerleave", clear, { once: true });
+              }}
             >
               <div className="flex flex-wrap items-start justify-between gap-3">
                 <div className="flex items-start gap-3">
+                  <div onClick={(event) => event.stopPropagation()}>
+                    <SelectionCheckbox
+                      checked={selection.selectedSet.has(company.id)}
+                      label={`Select ${company.businessName}`}
+                      onChange={(event) => selection.toggleOne(company.id, { shiftKey: checkboxShiftKey(event) })}
+                    />
+                  </div>
                   <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-lg bg-royal-50 text-sm font-bold text-royal-700">
                     {company.businessName.slice(0, 2).toUpperCase()}
                   </div>
@@ -427,6 +485,27 @@ export function CompanyProfilesManager() {
           </div>
         </div>
       ) : null}
+
+      {bulkDeleteOpen ? (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/40 p-4" onClick={() => setBulkDeleteOpen(false)}>
+          <div className="w-full max-w-sm rounded-xl bg-white p-5 shadow-xl" onClick={(event) => event.stopPropagation()}>
+            <h3 className="text-base font-semibold text-slate-900">
+              Delete {selection.selectedCount} company profile{selection.selectedCount === 1 ? "" : "s"}?
+            </h3>
+            <p className="mt-2 text-sm text-slate-500">This cannot be undone.</p>
+            <div className="mt-4 flex gap-2">
+              <button onClick={() => setBulkDeleteOpen(false)} className="min-h-11 flex-1 rounded-lg bg-slate-100 text-sm font-semibold text-slate-700">Cancel</button>
+              <button onClick={() => void bulkDeleteSelected()} className="min-h-11 flex-1 rounded-lg bg-rose-600 text-sm font-semibold text-white">Delete {selection.selectedCount}</button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      <MobileBulkBar count={selection.selectedCount} onClear={selection.clearSelection}>
+        <button type="button" onClick={() => setBulkDeleteOpen(true)} className="min-h-10 rounded-lg bg-rose-600 px-2 text-xs font-black text-white">Delete</button>
+        <button type="button" onClick={() => void bulkArchiveSelected()} className="min-h-10 rounded-lg border border-slate-200 bg-white px-2 text-xs font-black text-slate-700">Archive</button>
+        <button type="button" onClick={selection.clearSelection} className="min-h-10 rounded-lg border border-slate-200 bg-white px-2 text-xs font-black text-slate-700">Clear</button>
+      </MobileBulkBar>
     </div>
   );
 }

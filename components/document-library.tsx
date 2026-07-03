@@ -3,7 +3,8 @@
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Filter, MoreVertical, Search, Share2, Star, Trash2 } from "lucide-react";
+import { Archive, Download, Filter, MoreVertical, Search, Share2, Star, Trash2 } from "lucide-react";
+import { BulkActionToolbar, MobileBulkBar, SelectionCheckbox, checkboxShiftKey, useBulkSelection } from "@/components/bulk-selection";
 import { StatusPill } from "@/components/ui";
 import type { DocumentRecord } from "@/lib/types";
 
@@ -43,6 +44,7 @@ export function DocumentLibrary({ initialFilter = "Recent" }: { initialFilter?: 
   const [renameDocumentId, setRenameDocumentId] = useState<string | null>(null);
   const [renameValue, setRenameValue] = useState("");
   const [deleteDocumentId, setDeleteDocumentId] = useState<string | null>(null);
+  const [bulkDeleteOpen, setBulkDeleteOpen] = useState(false);
   const [moreMenuDocumentId, setMoreMenuDocumentId] = useState<string | null>(null);
 
   const sessionRedirectedRef = useRef(false);
@@ -135,6 +137,7 @@ export function DocumentLibrary({ initialFilter = "Recent" }: { initialFilter?: 
   }, [activeFilter, documents, query]);
 
   const visibleDocuments = useMemo(() => filteredDocuments.slice(0, visibleCount), [filteredDocuments, visibleCount]);
+  const selection = useBulkSelection(visibleDocuments);
 
   useEffect(() => {
     for (const document of visibleDocuments.slice(0, 12)) {
@@ -274,6 +277,96 @@ export function DocumentLibrary({ initialFilter = "Recent" }: { initialFilter?: 
     } finally {
       setBusy(key, false);
     }
+  }
+
+  async function handleBulkDelete() {
+    const ids = selection.selectedIds;
+    if (!ids.length || isBusy("bulk:delete")) return;
+
+    setBusy("bulk:delete", true);
+    setActionMessage("");
+    setActionError("");
+
+    const previousDocuments = documents;
+    setDocuments((current) => current.filter((document) => !ids.includes(document.id)));
+
+    try {
+      const response = await fetchWithSessionHandling("/api/documents/bulk", {
+        method: "DELETE",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ documentIds: ids }),
+      });
+
+      if (!response.ok) {
+        const data = (await response.json().catch(() => ({}))) as { error?: string };
+        throw new Error(data.error ?? "Unable to delete selected documents.");
+      }
+
+      selection.clearSelection();
+      setBulkDeleteOpen(false);
+      setActionMessage(`${ids.length} document${ids.length === 1 ? "" : "s"} deleted successfully.`);
+    } catch (error) {
+      setDocuments(previousDocuments);
+      setActionError(error instanceof Error ? error.message : "Unable to delete selected documents.");
+    } finally {
+      setBusy("bulk:delete", false);
+    }
+  }
+
+  async function handleBulkArchive() {
+    const ids = selection.selectedIds;
+    if (!ids.length || isBusy("bulk:archive")) return;
+
+    setBusy("bulk:archive", true);
+    setActionMessage("");
+    setActionError("");
+    setDocuments((current) => current.map((document) => (ids.includes(document.id) ? { ...document, status: "archived" } : document)));
+
+    try {
+      const response = await fetchWithSessionHandling("/api/documents/bulk", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ documentIds: ids, action: "archive" }),
+      });
+      if (!response.ok) throw new Error("Unable to archive selected documents.");
+      selection.clearSelection();
+      setActionMessage(`${ids.length} document${ids.length === 1 ? "" : "s"} archived.`);
+    } catch (error) {
+      setActionError(error instanceof Error ? error.message : "Unable to archive selected documents.");
+    } finally {
+      setBusy("bulk:archive", false);
+    }
+  }
+
+  async function handleBulkShare() {
+    const ids = selection.selectedIds;
+    if (!ids.length || isBusy("bulk:share")) return;
+
+    setBusy("bulk:share", true);
+    setActionMessage("");
+    setActionError("");
+    setDocuments((current) => current.map((document) => (ids.includes(document.id) ? { ...document, shared: true } : document)));
+
+    try {
+      const response = await fetchWithSessionHandling("/api/documents/bulk", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ documentIds: ids, action: "share" }),
+      });
+      if (!response.ok) throw new Error("Unable to share selected documents.");
+      selection.clearSelection();
+      setActionMessage(`${ids.length} document${ids.length === 1 ? "" : "s"} marked shared.`);
+    } catch (error) {
+      setActionError(error instanceof Error ? error.message : "Unable to share selected documents.");
+    } finally {
+      setBusy("bulk:share", false);
+    }
+  }
+
+  function handleBulkDownload() {
+    const selected = visibleDocuments.filter((document) => selection.selectedSet.has(document.id));
+    selected.slice(0, 10).forEach((document) => window.open(`/api/documents/${document.id}/download`, "_blank", "noopener,noreferrer"));
+    setActionMessage(selected.length > 10 ? "Started first 10 downloads. Use Export for larger sets." : `${selected.length} download${selected.length === 1 ? "" : "s"} started.`);
   }
 
   function openRenameModal(document: DocumentRecord) {
@@ -521,22 +614,57 @@ export function DocumentLibrary({ initialFilter = "Recent" }: { initialFilter?: 
         </div>
       </section>
 
+      {selection.hasSelection ? (
+        <BulkActionToolbar count={selection.selectedCount} entity="document" onClear={selection.clearSelection}>
+          <button type="button" onClick={handleBulkDownload} className="inline-flex min-h-10 items-center gap-1 rounded-lg border border-slate-200 bg-white px-3 text-xs font-black text-slate-700">
+            <Download className="h-4 w-4" />
+            Download
+          </button>
+          <button type="button" onClick={handleBulkShare} disabled={isBusy("bulk:share")} className="inline-flex min-h-10 items-center gap-1 rounded-lg border border-slate-200 bg-white px-3 text-xs font-black text-slate-700 disabled:opacity-50">
+            <Share2 className="h-4 w-4" />
+            Share
+          </button>
+          <button type="button" onClick={handleBulkArchive} disabled={isBusy("bulk:archive")} className="inline-flex min-h-10 items-center gap-1 rounded-lg border border-slate-200 bg-white px-3 text-xs font-black text-slate-700 disabled:opacity-50">
+            <Archive className="h-4 w-4" />
+            Archive
+          </button>
+          <button type="button" onClick={() => setBulkDeleteOpen(true)} disabled={isBusy("bulk:delete")} className="inline-flex min-h-10 items-center gap-1 rounded-lg bg-rose-600 px-3 text-xs font-black text-white disabled:opacity-50">
+            <Trash2 className="h-4 w-4" />
+            Delete
+          </button>
+        </BulkActionToolbar>
+      ) : null}
+
       <section className="space-y-2 lg:hidden">
         {visibleDocuments.map((document) => (
           <article
             key={document.id}
-            className="rounded-xl border border-slate-200 bg-white p-3 shadow-sm"
+            className={`rounded-xl border bg-white p-3 shadow-sm ${selection.selectedSet.has(document.id) ? "border-royal-300 ring-2 ring-royal-100" : "border-slate-200"}`}
             role="button"
             tabIndex={0}
-            onClick={() => openDocument(document.id)}
+            onClick={() => (selection.hasSelection ? selection.toggleOne(document.id) : openDocument(document.id))}
+            onPointerDown={(event) => {
+              const timer = window.setTimeout(() => selection.toggleOne(document.id), 450);
+              const clear = () => window.clearTimeout(timer);
+              event.currentTarget.addEventListener("pointerup", clear, { once: true });
+              event.currentTarget.addEventListener("pointerleave", clear, { once: true });
+            }}
             onKeyDown={(event) => {
               if (event.key === "Enter" || event.key === " ") {
                 event.preventDefault();
-                openDocument(document.id);
+                if (selection.hasSelection) selection.toggleOne(document.id);
+                else openDocument(document.id);
               }
             }}
           >
             <div className="flex items-start gap-3">
+              <div onClick={(event) => event.stopPropagation()}>
+                <SelectionCheckbox
+                  checked={selection.selectedSet.has(document.id)}
+                  label={`Select ${document.name}`}
+                  onChange={() => selection.toggleOne(document.id)}
+                />
+              </div>
               <div className="mt-0.5 flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-rose-50 text-rose-600">PDF</div>
               <div className="min-w-0 flex-1">
                 <Link href={`/documents/${document.id}`} className="text-sm font-semibold text-navy-950">
@@ -580,7 +708,15 @@ export function DocumentLibrary({ initialFilter = "Recent" }: { initialFilter?: 
       </section>
 
       <section className="hidden overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm lg:block">
-        <div className="grid grid-cols-[1.3fr_0.75fr_0.55fr_0.55fr_0.4fr] gap-4 border-b border-slate-100 px-5 py-4 text-xs font-semibold uppercase tracking-[0.14em] text-slate-400 max-lg:hidden">
+        <div className="grid grid-cols-[0.08fr_1.3fr_0.75fr_0.55fr_0.55fr_0.4fr] gap-4 border-b border-slate-100 px-5 py-4 text-xs font-semibold uppercase tracking-[0.14em] text-slate-400 max-lg:hidden">
+          <span>
+            <SelectionCheckbox
+              checked={selection.allVisibleSelected}
+              indeterminate={selection.someVisibleSelected && !selection.allVisibleSelected}
+              label="Select all visible documents"
+              onChange={selection.toggleAllVisible}
+            />
+          </span>
           <span>Name</span>
           <span>Type</span>
           <span>Status</span>
@@ -591,17 +727,25 @@ export function DocumentLibrary({ initialFilter = "Recent" }: { initialFilter?: 
           {visibleDocuments.map((document) => (
             <div
               key={document.id}
-              className="grid cursor-pointer gap-4 px-5 py-4 transition hover:bg-royal-50/40 lg:grid-cols-[1.3fr_0.75fr_0.55fr_0.55fr_0.4fr]"
-              onClick={() => openDocument(document.id)}
+              className={`grid cursor-pointer gap-4 px-5 py-4 transition hover:bg-royal-50/40 lg:grid-cols-[0.08fr_1.3fr_0.75fr_0.55fr_0.55fr_0.4fr] ${selection.selectedSet.has(document.id) ? "bg-royal-50/70" : ""}`}
+              onClick={() => (selection.hasSelection ? selection.toggleOne(document.id) : openDocument(document.id))}
               role="button"
               tabIndex={0}
               onKeyDown={(event) => {
                 if (event.key === "Enter" || event.key === " ") {
                   event.preventDefault();
-                  openDocument(document.id);
+                  if (selection.hasSelection) selection.toggleOne(document.id);
+                  else openDocument(document.id);
                 }
               }}
             >
+              <div onClick={(event) => event.stopPropagation()}>
+                <SelectionCheckbox
+                  checked={selection.selectedSet.has(document.id)}
+                  label={`Select ${document.name}`}
+                  onChange={(event) => selection.toggleOne(document.id, { shiftKey: checkboxShiftKey(event) })}
+                />
+              </div>
               <div>
                 <Link href={`/documents/${document.id}`} className="font-semibold text-navy-950 hover:text-royal-700">
                   {document.name}
@@ -742,6 +886,42 @@ export function DocumentLibrary({ initialFilter = "Recent" }: { initialFilter?: 
           </div>
         </div>
       ) : null}
+
+      {bulkDeleteOpen ? (
+        <div className="fixed inset-0 z-40 flex items-center justify-center bg-navy-950/40 p-4" onClick={() => setBulkDeleteOpen(false)}>
+          <div className="w-full max-w-sm rounded-xl border border-slate-200 bg-white p-5 shadow-xl" onClick={(event) => event.stopPropagation()}>
+            <h3 className="text-base font-semibold text-navy-950">
+              Delete {selection.selectedCount} document{selection.selectedCount === 1 ? "" : "s"}?
+            </h3>
+            <p className="mt-2 text-sm text-slate-500">This deletes the selected document records, related jobs, versions and stored files. This action cannot be undone.</p>
+            <div className="mt-4 flex gap-2">
+              <button type="button" onClick={() => setBulkDeleteOpen(false)} className="min-h-11 flex-1 rounded-lg bg-slate-100 px-3 text-sm font-semibold text-slate-700">
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={() => void handleBulkDelete()}
+                disabled={isBusy("bulk:delete")}
+                className="min-h-11 flex-1 rounded-lg bg-rose-600 px-3 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:bg-rose-300"
+              >
+                Delete {selection.selectedCount}
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      <MobileBulkBar count={selection.selectedCount} onClear={selection.clearSelection}>
+        <button type="button" onClick={() => setBulkDeleteOpen(true)} className="min-h-10 rounded-lg bg-rose-600 px-2 text-xs font-black text-white">
+          Delete
+        </button>
+        <button type="button" onClick={handleBulkDownload} className="min-h-10 rounded-lg border border-slate-200 bg-white px-2 text-xs font-black text-slate-700">
+          Download
+        </button>
+        <button type="button" onClick={handleBulkShare} className="min-h-10 rounded-lg border border-slate-200 bg-white px-2 text-xs font-black text-slate-700">
+          Share
+        </button>
+      </MobileBulkBar>
     </div>
   );
 }

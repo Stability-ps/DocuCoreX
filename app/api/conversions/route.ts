@@ -3,6 +3,7 @@ import { recordAuditLog } from "@/lib/audit";
 import type { ConversionRequest } from "@/lib/types";
 import { createProcessingJob, getDocument, processingJobs } from "@/lib/mock-repository";
 import { getDocumentWithJobs, getWorkspaceContext } from "@/lib/server-documents";
+import { detectSourceType, normalizeConversionTarget } from "@/lib/document-conversion-engine";
 
 export async function POST(request: Request) {
   const body = (await request.json().catch(() => null)) as ConversionRequest | null;
@@ -18,6 +19,17 @@ export async function POST(request: Request) {
 
     if (!document) {
       return NextResponse.json({ error: "Document not found" }, { status: 404 });
+    }
+
+    const requestedSource = normalizeRequestedSource(body.from);
+    const actualSource = normalizeDetectedSource(detectSourceType({ name: document.name, mimeType: document.mimeType }));
+    if (requestedSource !== actualSource) {
+      return NextResponse.json(
+        {
+          error: `Selected file is ${formatLabel(actualSource)}, but this conversion expects ${formatLabel(requestedSource)}. Choose a matching source document or conversion type.`,
+        },
+        { status: 400 },
+      );
     }
 
     const job = createProcessingJob(body.documentId, "conversion", `Convert ${body.from} to ${body.to}`);
@@ -46,6 +58,17 @@ export async function POST(request: Request) {
 
   if (!existing) {
     return NextResponse.json({ error: "Document not found" }, { status: 404 });
+  }
+
+  const requestedSource = normalizeRequestedSource(body.from);
+  const actualSource = normalizeDetectedSource(detectSourceType({ name: existing.document.name, mimeType: existing.document.mimeType }));
+  if (requestedSource !== actualSource) {
+    return NextResponse.json(
+      {
+        error: `Selected file is ${formatLabel(actualSource)}, but this conversion expects ${formatLabel(requestedSource)}. Choose a matching source document or conversion type.`,
+      },
+      { status: 400 },
+    );
   }
 
   const { data: conversion, error: conversionError } = await context.supabase
@@ -108,4 +131,26 @@ export async function POST(request: Request) {
         : null,
     },
   });
+}
+
+function normalizeRequestedSource(value: ConversionRequest["from"]) {
+  const normalized = normalizeConversionTarget(value);
+  if (normalized === "text") return "word";
+  if (normalized === "csv") return "excel";
+  return normalized;
+}
+
+function normalizeDetectedSource(value: string) {
+  if (value === "text") return "word";
+  if (value === "csv") return "excel";
+  return value;
+}
+
+function formatLabel(value: string) {
+  if (value === "pdf") return "PDF";
+  if (value === "word") return "Word/Text";
+  if (value === "excel") return "Excel/CSV";
+  if (value === "image") return "Image";
+  if (value === "zip") return "ZIP";
+  return value.toUpperCase();
 }

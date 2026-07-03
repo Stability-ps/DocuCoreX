@@ -78,8 +78,8 @@ export type ExtractionResult = {
 
 export type ConversionRequest = {
   documentId: string;
-  from: "pdf" | "word" | "excel" | "image";
-  to: "pdf" | "word" | "excel" | "image";
+  from: "pdf" | "word" | "excel" | "image" | "text" | "csv" | "powerpoint";
+  to: "pdf" | "word" | "excel" | "image" | "images" | "text" | "csv" | "html" | "zip";
 };
 
 export type DocumentComment = {

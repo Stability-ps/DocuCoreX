@@ -120,7 +120,29 @@ export async function POST() {
       if (job.type === "conversion") {
         const conversion = await getNextQueuedConversion(context, document.id);
         const toFormat = conversion?.to_format ?? getTargetFormat(job.message);
-        const converted = await providers.conversion.run(document, { toFormat });
+        if (conversion) {
+          await context.supabase
+            .from("conversions")
+            .update({ status: "running", updated_at: new Date().toISOString() })
+            .eq("id", conversion.id);
+        }
+        const { data: sourceFile, error: sourceError } = await context.supabase.storage.from("documents").download(document.storagePath);
+        if (sourceError || !sourceFile) {
+          throw new Error(sourceError?.message ?? "Original file could not be downloaded for conversion.");
+        }
+
+        await context.supabase
+          .from("processing_jobs")
+          .update({ status: "running", progress: 55, message: "Extracting document content", updated_at: new Date().toISOString() })
+          .eq("id", job.id);
+
+        const converted = await providers.conversion.run(
+          { ...document, sourceContent: new Uint8Array(await sourceFile.arrayBuffer()) } as DocumentRecord & { sourceContent: Uint8Array },
+          { toFormat },
+        );
+
+        validateConvertedFile(converted);
+
         const upload = await context.supabase.storage
           .from("documents")
           .upload(converted.downloadPath, new Blob([Buffer.from(converted.content)], { type: converted.contentType }), {
@@ -193,6 +215,9 @@ export async function POST() {
       results.push({ jobId: job.id, type: job.type, status: "completed" });
     } catch (error) {
       const message = error instanceof Error ? error.message : "Job failed";
+      if (job.type === "conversion") {
+        await failQueuedConversion(context, document.id, message);
+      }
       await context.supabase
         .from("processing_jobs")
         .update({ status: "failed", progress: 100, message, error: message, updated_at: new Date().toISOString() })
@@ -250,22 +275,31 @@ async function processDemoJobs(providers: ReturnType<typeof createWorkflowAdapte
     }
 
     if (job.type === "conversion") {
-      const converted = await providers.conversion.run(document, { toFormat: getTargetFormat(job.message) });
-      documentDownloads.unshift({
-        id: converted.id,
-        documentId: document.id,
-        label: converted.fileName,
-        format: getDownloadFormat(converted.fileName),
-        status: "ready",
-        href: `/api/download-file/${converted.id}`,
-        createdAt: new Date().toISOString(),
-      });
-      await recordAuditLog({
-        action: "conversion_completed",
-        entityType: "conversion",
-        entityId: converted.id,
-        metadata: { documentId: document.id, provider: providers.conversion.name },
-      });
+      try {
+        const sourceContent = new TextEncoder().encode(`Demo document content for ${document.name}`);
+        const converted = await providers.conversion.run({ ...document, sourceContent } as DocumentRecord & { sourceContent: Uint8Array }, { toFormat: getTargetFormat(job.message) });
+        documentDownloads.unshift({
+          id: converted.id,
+          documentId: document.id,
+          label: converted.fileName,
+          format: getDownloadFormat(converted.fileName),
+          status: "ready",
+          href: `/api/download-file/${converted.id}`,
+          createdAt: new Date().toISOString(),
+        });
+        await recordAuditLog({
+          action: "conversion_completed",
+          entityType: "conversion",
+          entityId: converted.id,
+          metadata: { documentId: document.id, provider: providers.conversion.name },
+        });
+      } catch (conversionError) {
+        job.status = "failed";
+        job.progress = 100;
+        job.message = conversionError instanceof Error ? conversionError.message : "Conversion failed";
+        results.push({ jobId: job.id, type: job.type, status: "failed", message: job.message });
+        continue;
+      }
     }
 
     job.status = "completed";
@@ -317,6 +351,20 @@ async function getNextQueuedConversion(context: NonNullable<Awaited<ReturnType<t
   return data;
 }
 
+async function failQueuedConversion(context: NonNullable<Awaited<ReturnType<typeof getWorkspaceContext>>>, documentId: string, message: string) {
+  await context.supabase
+    .from("conversions")
+    .update({ status: "failed", updated_at: new Date().toISOString() })
+    .eq("document_id", documentId)
+    .in("status", ["queued", "running", "completed"]);
+  await recordAuditLog({
+    action: "document_conversion_failed",
+    entityType: "document",
+    entityId: documentId,
+    metadata: { reason: message },
+  });
+}
+
 function getTargetFormat(message: string) {
   const match = message.match(/\bto\s+([a-z0-9]+)/i);
   return match?.[1]?.toLowerCase() ?? "excel";
@@ -342,4 +390,28 @@ function getDownloadFormat(fileName: string) {
     return extension;
   }
   return "txt";
+}
+
+function validateConvertedFile(file: { content?: Uint8Array; downloadPath?: string; fileName?: string }) {
+  if (!file.downloadPath?.trim()) {
+    throw new Error("Conversion failed because no output file path was produced.");
+  }
+
+  if (!file.content?.byteLength) {
+    throw new Error("Conversion failed because the output file was empty.");
+  }
+
+  const sample = new TextDecoder("utf-8", { fatal: false }).decode(file.content.slice(0, Math.min(file.content.byteLength, 4096)));
+  const metadataOnlyMarkers = [
+    "DocuCoreX processed document",
+    "Original Filename",
+    "Original filename",
+    "Original MIME type",
+    "Detected type:",
+    "Generated by DocuCoreX local conversion provider",
+  ];
+
+  if (metadataOnlyMarkers.some((marker) => sample.includes(marker))) {
+    throw new Error("Conversion failed because no readable document content was extracted.");
+  }
 }

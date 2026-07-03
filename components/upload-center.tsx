@@ -24,6 +24,7 @@ import {
   X,
   XCircle,
 } from "lucide-react";
+import { BulkActionToolbar, MobileBulkBar, SelectionCheckbox, checkboxShiftKey, useBulkSelection } from "@/components/bulk-selection";
 
 type ConversionTarget = "pdf" | "word" | "excel" | "images" | "zip";
 type UploadStatus = "queued" | "uploading" | "uploaded" | "failed" | "cancelled" | "paused";
@@ -49,6 +50,7 @@ type QueueItem = {
   error?: string;
   file?: File;
   downloadUrl?: string;
+  outputReady?: boolean;
   savedToLibrary?: boolean;
 };
 
@@ -60,9 +62,10 @@ type WorkflowItem = {
   uploadStatus: UploadStatus;
   conversionStatus: ConversionStatus;
   stage: string;
+  outputReady?: boolean;
   uploadProgress: number;
   conversionProgress: number;
-  conversion?: { id: string; to: string; status: string; downloadUrl: string } | null;
+  conversion?: { id: string; to: string; status: string; outputReady?: boolean; downloadUrl?: string | null } | null;
 };
 
 const storageKey = "docucorex.uploadQueue.v2";
@@ -99,8 +102,8 @@ const conversionTargets: Array<{
   disabledReason?: string;
 }> = [
   { id: "pdf", title: "PDF", icon: FileText, description: "Convert Office files, text files and images into a generated PDF." },
-  { id: "word", title: "Word", icon: FileType2, description: "Extract available text and metadata into an editable DOCX file." },
-  { id: "excel", title: "Excel", icon: FileSpreadsheet, description: "Extract document metadata and table-like data into XLSX." },
+  { id: "word", title: "Word", icon: FileType2, description: "Extract readable document text into an editable DOCX file." },
+  { id: "excel", title: "Excel", icon: FileSpreadsheet, description: "Extract readable text and table-like content into XLSX worksheets." },
   {
     id: "images",
     title: "Images",
@@ -201,7 +204,9 @@ function mapWorkflowStatus(item: WorkflowItem): QueueItem {
     startedAt: Date.now(),
     updatedAt: Date.now(),
     elapsedSeconds: 0,
-    downloadUrl: item.conversion?.status === "completed" ? item.conversion.downloadUrl : undefined,
+    error: item.conversionStatus === "failed" ? item.stage : undefined,
+    outputReady: item.outputReady || Boolean(item.conversion?.outputReady),
+    downloadUrl: item.outputReady || item.conversion?.outputReady ? item.conversion?.downloadUrl ?? undefined : undefined,
     savedToLibrary: true,
   };
 }
@@ -217,8 +222,9 @@ export function UploadCenter({ workflow }: { workflow?: string }) {
   const requestsRef = useRef<Record<string, XMLHttpRequest>>({});
 
   const activeItems = items.filter((item) => item.uploadStatus !== "cancelled" && item.conversionStatus !== "cancelled");
+  const selection = useBulkSelection(activeItems);
   const readyToConvertItems = activeItems.filter((item) => item.documentId && item.uploadStatus === "uploaded" && (item.conversionStatus === "none" || item.conversionStatus === "ready"));
-  const completedConversions = activeItems.filter((item) => item.conversionId && item.conversionStatus === "completed");
+  const completedConversions = activeItems.filter((item) => item.conversionId && item.conversionStatus === "completed" && item.outputReady && item.downloadUrl);
   const latestReadyItem = readyToConvertItems[0] ?? null;
   const shouldRecommendAccounting = useMemo(() => {
     if (!latestReadyItem) return false;
@@ -344,6 +350,7 @@ export function UploadCenter({ workflow }: { workflow?: string }) {
                 ...currentItem,
                 uploadStatus: "uploading",
                 conversionStatus: "none",
+                outputReady: false,
                 stage: "Uploading",
                 uploadProgress,
                 speedBps,
@@ -386,6 +393,7 @@ export function UploadCenter({ workflow }: { workflow?: string }) {
                 size: accepted.size,
                 uploadStatus: "uploaded",
                 conversionStatus: "ready",
+                outputReady: false,
                 stage: "Ready to convert",
                 uploadProgress: 100,
                 conversionProgress: 0,
@@ -455,6 +463,29 @@ export function UploadCenter({ workflow }: { workflow?: string }) {
     await cancelItem(item);
   }
 
+  async function cancelSelectedItems() {
+    const selected = activeItems.filter((item) => selection.selectedSet.has(item.id));
+    await Promise.all(selected.map((item) => cancelItem(item)));
+    selection.clearSelection();
+    setMessage(`${selected.length} upload${selected.length === 1 ? "" : "s"} cancelled.`);
+  }
+
+  async function retrySelectedItems() {
+    const selected = activeItems.filter((item) => selection.selectedSet.has(item.id));
+    for (const item of selected) {
+      await retryItem(item);
+    }
+    selection.clearSelection();
+    setMessage(`${selected.length} upload${selected.length === 1 ? "" : "s"} queued for retry.`);
+  }
+
+  async function removeSelectedItems() {
+    const selected = activeItems.filter((item) => selection.selectedSet.has(item.id));
+    await Promise.all(selected.map((item) => removeItem(item)));
+    selection.clearSelection();
+    setMessage(`${selected.length} item${selected.length === 1 ? "" : "s"} removed from the queue.`);
+  }
+
   async function retryItem(item: QueueItem) {
     if (item.file) {
       setItems((current) =>
@@ -499,7 +530,7 @@ export function UploadCenter({ workflow }: { workflow?: string }) {
     setItems((current) =>
       current.map((item) =>
         item.documentId && documentIds.includes(item.documentId)
-          ? { ...item, conversionStatus: "queued", stage: "Queued", conversionProgress: 0, error: undefined }
+          ? { ...item, conversionStatus: "queued", outputReady: false, downloadUrl: undefined, stage: "Queued", conversionProgress: 0, error: undefined }
           : item,
       ),
     );
@@ -553,6 +584,30 @@ export function UploadCenter({ workflow }: { workflow?: string }) {
     anchor.href = url;
     anchor.download = "docucorex-converted-results.zip";
     anchor.click();
+    URL.revokeObjectURL(url);
+  }
+
+  async function downloadItem(item: QueueItem) {
+    if (!item.downloadUrl || !item.outputReady) {
+      setMessage("The converted file is not ready to download yet.");
+      return;
+    }
+
+    const response = await fetch(item.downloadUrl).catch(() => null);
+    if (!response?.ok) {
+      const data = (await response?.json().catch(() => null)) as { error?: string } | null;
+      setMessage(data?.error ?? "The converted file is not ready to download yet.");
+      return;
+    }
+
+    const blob = await response.blob();
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement("a");
+    anchor.href = url;
+    anchor.download = item.downloadUrl.split("/").pop() ?? `${item.name}-converted`;
+    document.body.append(anchor);
+    anchor.click();
+    anchor.remove();
     URL.revokeObjectURL(url);
   }
 
@@ -755,11 +810,55 @@ export function UploadCenter({ workflow }: { workflow?: string }) {
           </div>
         ) : null}
 
+        {selection.hasSelection ? (
+          <BulkActionToolbar count={selection.selectedCount} entity="upload" onClear={selection.clearSelection}>
+            <button type="button" onClick={() => void retrySelectedItems()} className="inline-flex min-h-10 items-center gap-1 rounded-lg border border-slate-200 bg-white px-3 text-xs font-black text-slate-700">
+              <RefreshCcw className="h-4 w-4" />
+              Retry
+            </button>
+            <button type="button" onClick={() => void cancelSelectedItems()} className="inline-flex min-h-10 items-center gap-1 rounded-lg border border-slate-200 bg-white px-3 text-xs font-black text-slate-700">
+              <X className="h-4 w-4" />
+              Cancel
+            </button>
+            <button type="button" onClick={() => void removeSelectedItems()} className="inline-flex min-h-10 items-center gap-1 rounded-lg bg-rose-600 px-3 text-xs font-black text-white">
+              <Trash2 className="h-4 w-4" />
+              Delete
+            </button>
+          </BulkActionToolbar>
+        ) : null}
+
         <div className="space-y-3">
+          {activeItems.length ? (
+            <div className="flex items-center gap-2 rounded-xl border border-slate-200 bg-white px-3 py-2">
+              <SelectionCheckbox
+                checked={selection.allVisibleSelected}
+                indeterminate={selection.someVisibleSelected && !selection.allVisibleSelected}
+                label="Select all uploads"
+                onChange={selection.toggleAllVisible}
+              />
+              <span className="text-xs font-semibold text-slate-500">Select all active queue items</span>
+            </div>
+          ) : null}
           {activeItems.map((item) => (
-            <article key={item.id} className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
+            <article
+              key={item.id}
+              className={`rounded-2xl border bg-slate-50 p-4 ${selection.selectedSet.has(item.id) ? "border-royal-300 ring-2 ring-royal-100" : "border-slate-200"}`}
+              onPointerDown={(event) => {
+                const timer = window.setTimeout(() => selection.toggleOne(item.id), 450);
+                const clear = () => window.clearTimeout(timer);
+                event.currentTarget.addEventListener("pointerup", clear, { once: true });
+                event.currentTarget.addEventListener("pointerleave", clear, { once: true });
+              }}
+            >
               <div className="flex flex-col gap-4 xl:flex-row xl:items-center xl:justify-between">
                 <div className="flex min-w-0 items-start gap-4">
+                  <div onClick={(event) => event.stopPropagation()}>
+                    <SelectionCheckbox
+                      checked={selection.selectedSet.has(item.id)}
+                      label={`Select ${item.name}`}
+                      onChange={(event) => selection.toggleOne(item.id, { shiftKey: checkboxShiftKey(event) })}
+                    />
+                  </div>
                   <div className="rounded-2xl bg-white p-3 text-royal-600 shadow-sm">
                     <File className="h-5 w-5" />
                   </div>
@@ -846,10 +945,10 @@ export function UploadCenter({ workflow }: { workflow?: string }) {
                   >
                     <Trash2 className="h-4 w-4" />
                   </button>
-                  {item.downloadUrl ? (
-                    <a href={item.downloadUrl} className="inline-flex items-center gap-2 rounded-xl bg-white px-3 py-2 text-xs font-semibold text-slate-600 shadow-sm hover:text-royal-700">
+                  {item.downloadUrl && item.outputReady ? (
+                    <button type="button" onClick={() => void downloadItem(item)} className="inline-flex items-center gap-2 rounded-xl bg-white px-3 py-2 text-xs font-semibold text-slate-600 shadow-sm hover:text-royal-700">
                       <Download className="h-4 w-4" /> Download
-                    </a>
+                    </button>
                   ) : null}
                   {item.documentId ? (
                     <Link href={`/documents/${item.documentId}?tab=preview`} className="inline-flex items-center gap-2 rounded-xl bg-white px-3 py-2 text-xs font-semibold text-slate-600 shadow-sm hover:text-royal-700">
@@ -873,6 +972,12 @@ export function UploadCenter({ workflow }: { workflow?: string }) {
           ))}
         </div>
       </section>
+
+      <MobileBulkBar count={selection.selectedCount} onClear={selection.clearSelection}>
+        <button type="button" onClick={() => void removeSelectedItems()} className="min-h-10 rounded-lg bg-rose-600 px-2 text-xs font-black text-white">Delete</button>
+        <button type="button" onClick={() => void retrySelectedItems()} className="min-h-10 rounded-lg border border-slate-200 bg-white px-2 text-xs font-black text-slate-700">Retry</button>
+        <button type="button" onClick={() => void cancelSelectedItems()} className="min-h-10 rounded-lg border border-slate-200 bg-white px-2 text-xs font-black text-slate-700">Cancel</button>
+      </MobileBulkBar>
     </div>
   );
 }
