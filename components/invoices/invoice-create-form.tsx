@@ -1,8 +1,9 @@
 "use client";
 
 import { useRouter } from "next/navigation";
-import { useEffect, useRef, useState } from "react";
-import { ImagePlus, X } from "lucide-react";
+import Link from "next/link";
+import { useEffect, useMemo, useState } from "react";
+import { ImagePlus } from "lucide-react";
 import { InvoiceLineItemsEditor } from "@/components/invoices/InvoiceLineItemsEditor";
 import { InvoicePreview } from "@/components/invoices/InvoicePreview";
 import {
@@ -13,6 +14,7 @@ import {
   formatCurrency,
   paymentTermsOptions,
 } from "@/lib/invoice-utils";
+import type { CompanyProfile } from "@/lib/types";
 import type { InvoiceLineItemDraft, InvoicePaymentTerms, InvoiceRecord, InvoiceStatus } from "@/lib/types";
 
 const inputClassName =
@@ -22,37 +24,11 @@ const cardClassName = "rounded-2xl border border-slate-200 bg-white p-5 shadow-s
 const sectionTitleClassName = "text-sm font-semibold text-slate-900";
 
 const currencyOptions = ["ZAR", "USD", "EUR", "GBP"];
-const bankAccountTypeOptions = ["Cheque", "Savings", "Current", "Transmission", "Business"];
 
-// Resize an uploaded logo down to a small thumbnail and return it as a base64 data URL. Keeping
-// logos small avoids needing a dedicated storage bucket/signed-URL pipeline for this feature —
-// the data URL is stored directly on the invoice row.
-function resizeImageToDataUrl(file: File, maxDimension = 240): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onerror = () => reject(new Error("Unable to read the selected image."));
-    reader.onload = () => {
-      const image = new Image();
-      image.onerror = () => reject(new Error("Unable to load the selected image."));
-      image.onload = () => {
-        const scale = Math.min(1, maxDimension / Math.max(image.width, image.height));
-        const canvas = document.createElement("canvas");
-        canvas.width = Math.round(image.width * scale);
-        canvas.height = Math.round(image.height * scale);
-        const context = canvas.getContext("2d");
-
-        if (!context) {
-          reject(new Error("Unable to process the selected image."));
-          return;
-        }
-
-        context.drawImage(image, 0, 0, canvas.width, canvas.height);
-        resolve(canvas.toDataURL("image/png", 0.9));
-      };
-      image.src = reader.result as string;
-    };
-    reader.readAsDataURL(file);
-  });
+function maskAccountNumber(value: string) {
+  if (!value) return "";
+  const last4 = value.slice(-4);
+  return `••••${last4}`;
 }
 
 function Field({ label, children, full = false }: { label: string; children: React.ReactNode; full?: boolean }) {
@@ -66,9 +42,15 @@ function Field({ label, children, full = false }: { label: string; children: Rea
 
 export function InvoiceCreateForm() {
   const router = useRouter();
-  const fileInputRef = useRef<HTMLInputElement>(null);
 
-  // Business (issuer)
+  // Company profiles (the source of the issuer/bank snapshot for this invoice)
+  const [companies, setCompanies] = useState<CompanyProfile[]>([]);
+  const [isLoadingCompanies, setIsLoadingCompanies] = useState(true);
+  const [selectedCompanyId, setSelectedCompanyId] = useState<string | null>(null);
+  const [isChangingCompany, setIsChangingCompany] = useState(false);
+
+  // Business (issuer) — populated from the selected company profile, kept as local state
+  // only so the existing buildPayload()/previewData wiring below doesn't need to change.
   const [issuerName, setIssuerName] = useState("");
   const [issuerTradingName, setIssuerTradingName] = useState("");
   const [issuerVatNumber, setIssuerVatNumber] = useState("");
@@ -78,13 +60,11 @@ export function InvoiceCreateForm() {
   const [issuerWebsite, setIssuerWebsite] = useState("");
   const [issuerAddress, setIssuerAddress] = useState("");
   const [logoDataUrl, setLogoDataUrl] = useState<string | null>(null);
-  const [logoError, setLogoError] = useState("");
 
   // Payment information
   const [bankName, setBankName] = useState("");
   const [bankAccountHolder, setBankAccountHolder] = useState("");
   const [bankAccountNumber, setBankAccountNumber] = useState("");
-  const [bankAccountType, setBankAccountType] = useState("Cheque");
   const [bankBranchCode, setBankBranchCode] = useState("");
   const [bankSwift, setBankSwift] = useState("");
   const [paymentReference, setPaymentReference] = useState("");
@@ -141,36 +121,55 @@ export function InvoiceCreateForm() {
   const blendedVatRate = amountAfterDiscount > 0 ? (vatAmount / amountAfterDiscount) * 100 : 0;
 
   useEffect(() => {
-    async function loadDefaultIssuer() {
-      const response = await fetch("/api/profile");
-      if (!response.ok) return;
-      const data = (await response.json().catch(() => ({}))) as { profile?: { company?: string } };
-      if (data.profile?.company) {
-        setIssuerName((current) => current || data.profile!.company!);
+    async function loadCompanies() {
+      setIsLoadingCompanies(true);
+      try {
+        const response = await fetch("/api/companies");
+        if (!response.ok) return;
+        const data = (await response.json()) as { companies: CompanyProfile[] };
+        setCompanies(data.companies);
+        const active = data.companies.filter((company) => !company.isArchived);
+        const defaultCompany = active.find((company) => company.isDefault) ?? active[0] ?? null;
+        if (defaultCompany) {
+          applyCompany(defaultCompany);
+        }
+      } finally {
+        setIsLoadingCompanies(false);
       }
     }
 
-    void loadDefaultIssuer();
+    void loadCompanies();
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- run once on mount
   }, []);
 
-  async function handleLogoChange(event: React.ChangeEvent<HTMLInputElement>) {
-    const file = event.target.files?.[0];
-    event.target.value = "";
-
-    if (!file) return;
-
-    if (!file.type.startsWith("image/")) {
-      setLogoError("Please choose an image file.");
-      return;
-    }
-
-    try {
-      setLogoError("");
-      setLogoDataUrl(await resizeImageToDataUrl(file));
-    } catch (resizeError) {
-      setLogoError(resizeError instanceof Error ? resizeError.message : "Unable to process the selected image.");
-    }
+  function applyCompany(company: CompanyProfile) {
+    setSelectedCompanyId(company.id);
+    setIssuerName(company.businessName);
+    setIssuerTradingName(company.tradingName ?? "");
+    setIssuerVatNumber(company.vatNumber ?? "");
+    setIssuerRegistrationNumber(company.registrationNumber ?? "");
+    setIssuerEmail(company.email ?? "");
+    setIssuerPhone(company.phone ?? "");
+    setIssuerWebsite(company.website ?? "");
+    setIssuerAddress(company.physicalAddress ?? "");
+    setLogoDataUrl(company.logoDataUrl);
+    setBankName(company.bankName ?? "");
+    setBankAccountHolder(company.bankAccountHolder ?? "");
+    setBankAccountNumber(company.bankAccountNumber ?? "");
+    setBankBranchCode(company.bankBranchCode ?? "");
+    setBankSwift(company.bankSwift ?? "");
+    setPaymentReference(company.paymentReference ?? "");
+    setCurrency(company.defaultCurrency || "ZAR");
+    setPaymentTerms(company.defaultPaymentTerms);
+    setNotesToClient(company.defaultNotes || "Thank you for your business.");
+    setTermsAndConditions(company.defaultTerms ?? "");
+    setIsChangingCompany(false);
   }
+
+  const selectedCompany = useMemo(
+    () => companies.find((company) => company.id === selectedCompanyId) ?? null,
+    [companies, selectedCompanyId],
+  );
 
   function validate(): boolean {
     setError("");
@@ -197,9 +196,10 @@ export function InvoiceCreateForm() {
   }
 
   function buildPayload(finalStatus: InvoiceStatus) {
-    const cleanPaymentInstructions = [bankAccountType ? `Account type: ${bankAccountType}` : "", paymentInstructions.trim()].filter(Boolean).join("\n");
+    const cleanPaymentInstructions = paymentInstructions.trim();
 
     return {
+      companyId: selectedCompanyId,
       status: finalStatus,
       currency,
       invoiceDate,
@@ -308,7 +308,7 @@ export function InvoiceCreateForm() {
     bankBranchCode,
     bankSwift,
     paymentReference,
-    paymentInstructions: [bankAccountType ? `Account type: ${bankAccountType}` : "", paymentInstructions.trim()].filter(Boolean).join("\n"),
+    paymentInstructions: paymentInstructions.trim(),
     notesToClient,
     termsAndConditions,
     lineItems,
@@ -374,109 +374,93 @@ export function InvoiceCreateForm() {
         </div>
       ) : (
         <div className="space-y-4">
-          {/* 1. Your business */}
+          {/* 1. Your business (from selected company profile) */}
           <section className={cardClassName}>
-            <p className={sectionTitleClassName}>Your business</p>
-            <div className="mt-4 flex flex-col gap-4 sm:flex-row sm:items-start">
-              <div className="flex flex-col items-center gap-2">
-                <div className="flex h-24 w-32 items-center justify-center overflow-hidden rounded-lg border border-dashed border-slate-300 bg-slate-50">
-                  {logoDataUrl ? (
-                    // eslint-disable-next-line @next/next/no-img-element -- user-uploaded data URL preview, not an optimizable static asset
-                    <img src={logoDataUrl} alt="Logo preview" className="h-full w-full object-contain" />
-                  ) : (
-                    <ImagePlus className="h-5 w-5 text-slate-300" />
-                  )}
-                </div>
-                <div className="flex items-center gap-1.5">
-                  <button
-                    type="button"
-                    onClick={() => fileInputRef.current?.click()}
-                    className="rounded-lg border border-slate-200 bg-white px-2.5 py-1 text-[11px] font-semibold text-slate-700 transition hover:border-royal-300"
-                  >
-                    {logoDataUrl ? "Change logo" : "Upload logo"}
-                  </button>
-                  {logoDataUrl ? (
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <p className={sectionTitleClassName}>Your business</p>
+              {companies.length > 1 && !isChangingCompany ? (
+                <button
+                  type="button"
+                  onClick={() => setIsChangingCompany(true)}
+                  className="text-xs font-semibold text-royal-700 hover:underline"
+                >
+                  Change company
+                </button>
+              ) : null}
+            </div>
+
+            {isLoadingCompanies ? (
+              <div className="mt-4 h-20 animate-pulse rounded-lg bg-slate-100" />
+            ) : companies.length === 0 ? (
+              <div className="mt-4 rounded-lg border border-dashed border-slate-300 bg-slate-50 p-5 text-center">
+                <ImagePlus className="mx-auto mb-2 h-6 w-6 text-slate-300" />
+                <p className="text-sm font-semibold text-slate-700">Set up your business profile to create professional invoices.</p>
+                <Link
+                  href="/settings/companies?create=1"
+                  className="mt-3 inline-flex min-h-9 items-center gap-2 rounded-lg bg-royal-600 px-3.5 py-1.5 text-xs font-semibold text-white transition hover:bg-royal-700"
+                >
+                  Create company profile
+                </Link>
+              </div>
+            ) : isChangingCompany ? (
+              <div className="mt-4 space-y-2">
+                {companies
+                  .filter((company) => !company.isArchived)
+                  .map((company) => (
                     <button
+                      key={company.id}
                       type="button"
-                      onClick={() => setLogoDataUrl(null)}
-                      className="rounded-lg p-1 text-slate-400 transition hover:bg-rose-50 hover:text-rose-600"
-                      aria-label="Remove logo"
+                      onClick={() => applyCompany(company)}
+                      className={`flex w-full items-center justify-between rounded-lg border px-3 py-2 text-left text-sm transition ${
+                        company.id === selectedCompanyId ? "border-royal-400 bg-royal-50" : "border-slate-200 hover:border-royal-200"
+                      }`}
                     >
-                      <X className="h-3.5 w-3.5" />
+                      <span className="font-semibold text-slate-800">{company.businessName}</span>
+                      {company.isDefault ? <span className="text-[11px] font-semibold text-amber-600">Default</span> : null}
                     </button>
-                  ) : null}
-                </div>
-                <input ref={fileInputRef} type="file" accept="image/*" className="hidden" onChange={handleLogoChange} />
-                {logoError ? <p className="text-[11px] font-semibold text-rose-600">{logoError}</p> : null}
-              </div>
-              <div className="grid flex-1 gap-3 sm:grid-cols-2">
-                <Field label="Business name">
-                  <input className={inputClassName} value={issuerName} onChange={(event) => setIssuerName(event.target.value)} placeholder="Your company name" />
-                </Field>
-                <Field label="Trading name (optional)">
-                  <input className={inputClassName} value={issuerTradingName} onChange={(event) => setIssuerTradingName(event.target.value)} />
-                </Field>
-                <Field label="VAT registration number">
-                  <input className={inputClassName} value={issuerVatNumber} onChange={(event) => setIssuerVatNumber(event.target.value)} />
-                </Field>
-                <Field label="Company registration number">
-                  <input className={inputClassName} value={issuerRegistrationNumber} onChange={(event) => setIssuerRegistrationNumber(event.target.value)} />
-                </Field>
-                <Field label="Business email">
-                  <input className={inputClassName} type="email" value={issuerEmail} onChange={(event) => setIssuerEmail(event.target.value)} />
-                </Field>
-                <Field label="Phone number">
-                  <input className={inputClassName} value={issuerPhone} onChange={(event) => setIssuerPhone(event.target.value)} />
-                </Field>
-                <Field label="Website">
-                  <input className={inputClassName} value={issuerWebsite} onChange={(event) => setIssuerWebsite(event.target.value)} placeholder="https://" />
-                </Field>
-                <div />
-                <Field label="Physical address" full>
-                  <input className={inputClassName} value={issuerAddress} onChange={(event) => setIssuerAddress(event.target.value)} />
-                </Field>
-              </div>
-            </div>
-          </section>
-
-          {/* 2. Payment information */}
-          <section className={cardClassName}>
-            <p className={sectionTitleClassName}>Payment information</p>
-            <div className="mt-4 grid gap-3 sm:grid-cols-2">
-              <Field label="Bank name">
-                <input className={inputClassName} value={bankName} onChange={(event) => setBankName(event.target.value)} />
-              </Field>
-              <Field label="Account holder">
-                <input className={inputClassName} value={bankAccountHolder} onChange={(event) => setBankAccountHolder(event.target.value)} />
-              </Field>
-              <Field label="Account number">
-                <input className={inputClassName} value={bankAccountNumber} onChange={(event) => setBankAccountNumber(event.target.value)} />
-              </Field>
-              <Field label="Account type">
-                <select className={inputClassName} value={bankAccountType} onChange={(event) => setBankAccountType(event.target.value)}>
-                  {bankAccountTypeOptions.map((option) => (
-                    <option key={option} value={option}>
-                      {option}
-                    </option>
                   ))}
-                </select>
-              </Field>
-              <Field label="Branch code">
-                <input className={inputClassName} value={bankBranchCode} onChange={(event) => setBankBranchCode(event.target.value)} />
-              </Field>
-              <Field label="SWIFT / BIC (optional)">
-                <input className={inputClassName} value={bankSwift} onChange={(event) => setBankSwift(event.target.value)} />
-              </Field>
-              <Field label="Payment reference">
-                <input className={inputClassName} value={paymentReference} onChange={(event) => setPaymentReference(event.target.value)} />
-              </Field>
-              <Field label="Payment instructions (optional)" full>
-                <textarea className={`${inputClassName} min-h-16`} value={paymentInstructions} onChange={(event) => setPaymentInstructions(event.target.value)} />
-              </Field>
-            </div>
+                <button
+                  type="button"
+                  onClick={() => setIsChangingCompany(false)}
+                  className="text-xs font-semibold text-slate-500 hover:underline"
+                >
+                  Cancel
+                </button>
+              </div>
+            ) : (
+              <div className="mt-4 flex flex-wrap items-start justify-between gap-4">
+                <div className="flex items-start gap-3">
+                  <div className="flex h-14 w-14 shrink-0 items-center justify-center overflow-hidden rounded-lg border border-slate-200 bg-slate-50">
+                    {logoDataUrl ? (
+                      // eslint-disable-next-line @next/next/no-img-element -- user-uploaded data URL preview, not an optimizable static asset
+                      <img src={logoDataUrl} alt="Logo" className="h-full w-full object-contain" />
+                    ) : (
+                      <ImagePlus className="h-5 w-5 text-slate-300" />
+                    )}
+                  </div>
+                  <div>
+                    <p className="text-base font-semibold text-slate-900">{issuerName || selectedCompany?.businessName}</p>
+                    <p className="mt-0.5 text-xs text-slate-500">
+                      {[issuerVatNumber ? `VAT: ${issuerVatNumber}` : null, issuerEmail, issuerPhone].filter(Boolean).join(" • ")}
+                    </p>
+                    {bankName || bankAccountNumber ? (
+                      <p className="mt-0.5 text-xs text-slate-400">
+                        {bankName} {maskAccountNumber(bankAccountNumber)}
+                      </p>
+                    ) : null}
+                  </div>
+                </div>
+                <Link
+                  href="/settings/companies"
+                  className="inline-flex min-h-8 items-center gap-1 rounded-lg border border-slate-200 px-3 py-1 text-xs font-semibold text-slate-600 transition hover:border-royal-300"
+                >
+                  Edit Company Profile
+                </Link>
+              </div>
+            )}
           </section>
 
-          {/* 3. Client details */}
+          {/* 2. Client details */}
           <section className={cardClassName}>
             <p className={sectionTitleClassName}>Client details</p>
             <div className="mt-4 grid gap-3 sm:grid-cols-2">

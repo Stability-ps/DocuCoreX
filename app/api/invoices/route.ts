@@ -7,6 +7,7 @@ const validStatuses: InvoiceStatus[] = ["draft", "issued", "paid", "overdue", "c
 const validPaymentTerms: InvoicePaymentTerms[] = ["due_on_receipt", "7_days", "14_days", "30_days", "60_days", "90_days"];
 
 type CreateInvoiceBody = {
+  companyId?: string;
   title?: string;
   description?: string;
   status?: string;
@@ -86,6 +87,7 @@ export async function POST(request: Request) {
 
   try {
     const invoice = await createInvoice({
+      companyId: body.companyId,
       title: body.title,
       description: body.description,
       status,

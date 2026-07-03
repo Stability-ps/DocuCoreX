@@ -7,6 +7,7 @@ import {
   AlertTriangle,
   ArrowRight,
   Bot,
+  Building2,
   CheckCircle2,
   Copy,
   CreditCard,
@@ -39,6 +40,7 @@ type Section =
   | "security"
   | "audit-logs"
   | "team"
+  | "companies"
   | "storage"
   | "ocr-ai"
   | "integrations"
@@ -112,6 +114,10 @@ const NAV_GROUPS: Array<{
   {
     label: "Collaboration",
     items: [{ id: "team", label: "Team & Permissions", icon: Users }],
+  },
+  {
+    label: "Invoicing",
+    items: [{ id: "companies", label: "Company Profiles", icon: Building2 }],
   },
   {
     label: "Platform",
@@ -461,6 +467,7 @@ export function SettingsConsole({ initialSection = "overview" }: { initialSectio
           {section === "security" && <SecuritySection />}
           {section === "audit-logs" && <AuditLogsSection auditLogs={shared.auditLogs} />}
           {section === "team" && <TeamSection />}
+          {section === "companies" && <CompaniesSection />}
           {section === "storage" && <StorageSection />}
           {section === "ocr-ai" && <OcrAiSection />}
           {section === "integrations" && <IntegrationsSection />}
@@ -909,6 +916,31 @@ function TeamSection() {
         <div className="mt-5">
           <Link href="/team" className="inline-flex items-center gap-2 rounded-lg bg-blue-600 px-4 py-2 text-sm font-semibold text-white transition hover:bg-blue-700">
             Open Team settings <ArrowRight className="h-4 w-4" />
+          </Link>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ─── Companies ────────────────────────────────────────────────────────────────
+
+function CompaniesSection() {
+  return (
+    <div className="space-y-8">
+      <SectionHeader title="Company Profiles" description="Manage the businesses you invoice from — logo, banking details, and invoice defaults." />
+      <div className="rounded-xl border border-slate-100 p-6 text-center">
+        <Building2 className="mx-auto mb-3 h-8 w-8 text-slate-300" />
+        <p className="text-sm font-semibold text-slate-700">Manage your company profiles</p>
+        <p className="mt-1 text-sm text-slate-500">
+          Add multiple businesses, set banking details once, and choose a default company profile used when creating invoices.
+        </p>
+        <div className="mt-5">
+          <Link
+            href="/settings/companies"
+            className="inline-flex items-center gap-2 rounded-lg bg-blue-600 px-4 py-2 text-sm font-semibold text-white transition hover:bg-blue-700"
+          >
+            Open Company Profiles <ArrowRight className="h-4 w-4" />
           </Link>
         </div>
       </div>

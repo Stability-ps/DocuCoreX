@@ -1,5 +1,6 @@
 import { getWorkspaceContext } from "@/lib/server-documents";
 import { invoiceItems, invoiceSequences, invoices } from "@/lib/mock-repository";
+import { getCompany, nextCompanyInvoiceSequence } from "@/lib/companies";
 import { calculateInvoiceSubtotal, calculateInvoiceVatAmount, calculateLineItemTotal, parseNumericInput } from "@/lib/invoice-utils";
 import type {
   InvoiceItemRecord,
@@ -35,6 +36,7 @@ export {
 type InvoiceRow = {
   id: string;
   workspace_id: string;
+  company_id: string | null;
   invoice_number: string;
   sequence_number: number | null;
   title: string | null;
@@ -112,6 +114,7 @@ function mapInvoiceRow(row: InvoiceRow): InvoiceRecord {
   return {
     id: row.id,
     workspaceId: row.workspace_id,
+    companyId: row.company_id,
     invoiceNumber: row.invoice_number,
     sequenceNumber: row.sequence_number,
     title: row.title,
@@ -222,6 +225,7 @@ function formatInvoiceNumber(sequenceNumber: number): string {
 // ---------------------------------------------------------------------------
 
 export type CreateInvoiceInput = {
+  companyId?: string | null;
   title?: string | null;
   description?: string | null;
   status?: InvoiceStatus;
@@ -358,6 +362,20 @@ export async function createInvoice(input: CreateInvoiceInput): Promise<InvoiceW
     throw new Error("Client name is required.");
   }
 
+  // When a company profile is selected, it is the single source of truth for the
+  // issuer/bank snapshot fields — this is what lets editing a company profile later
+  // never change historical invoices, while every new invoice picks up the latest
+  // profile automatically (see supabase/migrations/009_company_profiles.sql).
+  const company = input.companyId ? await getCompany(input.companyId) : null;
+
+  if (input.companyId && !company) {
+    throw new Error("Selected company profile was not found.");
+  }
+
+  if (company?.isArchived) {
+    throw new Error("Selected company profile is archived. Choose an active company profile.");
+  }
+
   const status: InvoiceStatus = input.status ?? "draft";
   const discountAmount = Number.isFinite(input.discountAmount) ? Number(input.discountAmount) : 0;
   const shippingAmount = Number.isFinite(input.shippingAmount) ? Number(input.shippingAmount) : 0;
@@ -372,13 +390,37 @@ export async function createInvoice(input: CreateInvoiceInput): Promise<InvoiceW
   // Blended effective rate, kept only as a display convenience for legacy summaries.
   const taxRate = amountAfterDiscount > 0 ? Number(((taxAmount / amountAfterDiscount) * 100).toFixed(2)) : 0;
 
-  const sequenceNumber = await nextInvoiceSequence();
+  // Every company profile has its own independent invoice sequence; invoices with no
+  // selected company (legacy path) fall back to the workspace-level sequence.
+  const sequenceNumber = company ? await nextCompanyInvoiceSequence(company.id) : await nextInvoiceSequence();
   const invoiceNumber = formatInvoiceNumber(sequenceNumber);
   const nowIso = new Date().toISOString();
   const invoiceDate = input.invoiceDate || nowIso.slice(0, 10);
-  const paymentTerms = input.paymentTerms ?? "due_on_receipt";
-  const currency = input.currency || "ZAR";
+  const paymentTerms = input.paymentTerms ?? (company?.defaultPaymentTerms as InvoicePaymentTerms | undefined) ?? "due_on_receipt";
+  const currency = input.currency || company?.defaultCurrency || "ZAR";
+  const notesToClient = input.notesToClient?.trim() || company?.defaultNotes || null;
+  const termsAndConditions = input.termsAndConditions?.trim() || company?.defaultTerms || null;
   const timestampField = statusTimestampField(status);
+
+  // Issuer/bank snapshot: always taken from the company profile when one is selected
+  // (a client can never override the business's own identity/banking details), and
+  // falls back to the manually-entered fields only for the legacy no-company path.
+  const issuerName = company ? company.businessName : input.issuerName?.trim() || null;
+  const issuerTradingName = company ? company.tradingName : input.issuerTradingName?.trim() || null;
+  const issuerEmail = company ? company.email : input.issuerEmail?.trim() || null;
+  const issuerPhone = company ? company.phone : input.issuerPhone?.trim() || null;
+  const issuerWebsite = company ? company.website : input.issuerWebsite?.trim() || null;
+  const issuerAddress = company ? company.physicalAddress : input.issuerAddress?.trim() || null;
+  const issuerPostalAddress = company ? company.postalAddress : input.issuerPostalAddress?.trim() || null;
+  const issuerVatNumber = company ? company.vatNumber : input.issuerVatNumber?.trim() || null;
+  const issuerRegistrationNumber = company ? company.registrationNumber : input.issuerRegistrationNumber?.trim() || null;
+  const logoDataUrl = company ? company.logoDataUrl : input.logoDataUrl || null;
+  const bankName = company ? company.bankName : input.bankName?.trim() || null;
+  const bankAccountHolder = company ? company.bankAccountHolder : input.bankAccountHolder?.trim() || null;
+  const bankAccountNumber = company ? company.bankAccountNumber : input.bankAccountNumber?.trim() || null;
+  const bankBranchCode = company ? company.bankBranchCode : input.bankBranchCode?.trim() || null;
+  const bankSwift = company ? company.bankSwift : input.bankSwift?.trim() || null;
+  const paymentReference = company ? company.paymentReference || invoiceNumber : input.paymentReference?.trim() || null;
 
   const context = await getWorkspaceContext();
 
@@ -387,6 +429,7 @@ export async function createInvoice(input: CreateInvoiceInput): Promise<InvoiceW
     const record: InvoiceRecord = {
       id: invoiceId,
       workspaceId: "workspace_demo",
+      companyId: company?.id ?? null,
       invoiceNumber,
       sequenceNumber,
       title: input.title?.trim() || null,
@@ -410,26 +453,26 @@ export async function createInvoice(input: CreateInvoiceInput): Promise<InvoiceW
       attentionTo: input.attentionTo?.trim() || null,
       purchaseOrderNumber: input.purchaseOrderNumber?.trim() || null,
       clientReference: input.clientReference?.trim() || null,
-      issuerName: input.issuerName?.trim() || null,
-      issuerTradingName: input.issuerTradingName?.trim() || null,
-      issuerEmail: input.issuerEmail?.trim() || null,
-      issuerPhone: input.issuerPhone?.trim() || null,
-      issuerWebsite: input.issuerWebsite?.trim() || null,
-      issuerAddress: input.issuerAddress?.trim() || null,
-      issuerPostalAddress: input.issuerPostalAddress?.trim() || null,
-      issuerVatNumber: input.issuerVatNumber?.trim() || null,
-      issuerRegistrationNumber: input.issuerRegistrationNumber?.trim() || null,
-      logoDataUrl: input.logoDataUrl || null,
-      bankName: input.bankName?.trim() || null,
-      bankAccountHolder: input.bankAccountHolder?.trim() || null,
-      bankAccountNumber: input.bankAccountNumber?.trim() || null,
-      bankBranchCode: input.bankBranchCode?.trim() || null,
-      bankSwift: input.bankSwift?.trim() || null,
-      paymentReference: input.paymentReference?.trim() || null,
+      issuerName,
+      issuerTradingName,
+      issuerEmail,
+      issuerPhone,
+      issuerWebsite,
+      issuerAddress,
+      issuerPostalAddress,
+      issuerVatNumber,
+      issuerRegistrationNumber,
+      logoDataUrl,
+      bankName,
+      bankAccountHolder,
+      bankAccountNumber,
+      bankBranchCode,
+      bankSwift,
+      paymentReference,
       paymentInstructions: input.paymentInstructions?.trim() || null,
       bankDetails: input.bankDetails?.trim() || null,
-      notesToClient: input.notesToClient?.trim() || null,
-      termsAndConditions: input.termsAndConditions?.trim() || null,
+      notesToClient,
+      termsAndConditions,
       subtotal,
       discountAmount,
       shippingAmount,
@@ -470,6 +513,7 @@ export async function createInvoice(input: CreateInvoiceInput): Promise<InvoiceW
     .from("invoices")
     .insert({
       workspace_id: context.workspaceId,
+      company_id: company?.id ?? null,
       invoice_number: invoiceNumber,
       sequence_number: sequenceNumber,
       title: input.title?.trim() || null,
@@ -493,26 +537,26 @@ export async function createInvoice(input: CreateInvoiceInput): Promise<InvoiceW
       attention_to: input.attentionTo?.trim() || null,
       purchase_order_number: input.purchaseOrderNumber?.trim() || null,
       client_reference: input.clientReference?.trim() || null,
-      issuer_name: input.issuerName?.trim() || null,
-      issuer_trading_name: input.issuerTradingName?.trim() || null,
-      issuer_email: input.issuerEmail?.trim() || null,
-      issuer_phone: input.issuerPhone?.trim() || null,
-      issuer_website: input.issuerWebsite?.trim() || null,
-      issuer_address: input.issuerAddress?.trim() || null,
-      issuer_postal_address: input.issuerPostalAddress?.trim() || null,
-      issuer_vat_number: input.issuerVatNumber?.trim() || null,
-      issuer_registration_number: input.issuerRegistrationNumber?.trim() || null,
-      logo_data_url: input.logoDataUrl || null,
-      bank_name: input.bankName?.trim() || null,
-      bank_account_holder: input.bankAccountHolder?.trim() || null,
-      bank_account_number: input.bankAccountNumber?.trim() || null,
-      bank_branch_code: input.bankBranchCode?.trim() || null,
-      bank_swift: input.bankSwift?.trim() || null,
-      payment_reference: input.paymentReference?.trim() || null,
+      issuer_name: issuerName,
+      issuer_trading_name: issuerTradingName,
+      issuer_email: issuerEmail,
+      issuer_phone: issuerPhone,
+      issuer_website: issuerWebsite,
+      issuer_address: issuerAddress,
+      issuer_postal_address: issuerPostalAddress,
+      issuer_vat_number: issuerVatNumber,
+      issuer_registration_number: issuerRegistrationNumber,
+      logo_data_url: logoDataUrl,
+      bank_name: bankName,
+      bank_account_holder: bankAccountHolder,
+      bank_account_number: bankAccountNumber,
+      bank_branch_code: bankBranchCode,
+      bank_swift: bankSwift,
+      payment_reference: paymentReference,
       payment_instructions: input.paymentInstructions?.trim() || null,
       bank_details: input.bankDetails?.trim() || null,
-      notes_to_client: input.notesToClient?.trim() || null,
-      terms_and_conditions: input.termsAndConditions?.trim() || null,
+      notes_to_client: notesToClient,
+      terms_and_conditions: termsAndConditions,
       subtotal,
       discount_amount: discountAmount,
       shipping_amount: shippingAmount,
