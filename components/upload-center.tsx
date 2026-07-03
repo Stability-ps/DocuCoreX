@@ -24,7 +24,7 @@ import {
   X,
   XCircle,
 } from "lucide-react";
-import { BulkActionToolbar, MobileBulkBar, SelectionCheckbox, checkboxShiftKey, useBulkSelection } from "@/components/bulk-selection";
+import { BulkActionToolbar, MobileBulkBar, SelectionCheckbox, armMobileLongPressSelection, checkboxShiftKey, useBulkSelection } from "@/components/bulk-selection";
 
 type ConversionTarget = "pdf" | "word" | "excel" | "images" | "zip";
 type UploadStatus = "queued" | "uploading" | "uploaded" | "failed" | "cancelled" | "paused";
@@ -856,13 +856,7 @@ export function UploadCenter({ workflow }: { workflow?: string }) {
             <article
               key={item.id}
               className={`rounded-2xl border bg-slate-50 p-4 ${selection.selectedSet.has(item.id) ? "border-royal-300 ring-2 ring-royal-100" : "border-slate-200"}`}
-              onPointerDown={(event) => {
-                if (event.pointerType !== "touch") return;
-                const timer = window.setTimeout(() => selection.toggleOne(item.id), 450);
-                const clear = () => window.clearTimeout(timer);
-                event.currentTarget.addEventListener("pointerup", clear, { once: true });
-                event.currentTarget.addEventListener("pointerleave", clear, { once: true });
-              }}
+              onPointerDown={(event) => armMobileLongPressSelection(event, () => selection.toggleOne(item.id))}
             >
               <div className="flex flex-col gap-4 xl:flex-row xl:items-center xl:justify-between">
                 <div className="flex min-w-0 items-start gap-4">

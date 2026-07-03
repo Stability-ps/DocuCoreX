@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { Archive, ArchiveRestore, Building2, Copy, Pencil, Plus, Star, Trash2, X } from "lucide-react";
 import type { CompanyProfile } from "@/lib/types";
-import { BulkActionToolbar, MobileBulkBar, SelectionCheckbox, checkboxShiftKey, useBulkSelection } from "@/components/bulk-selection";
+import { BulkActionToolbar, MobileBulkBar, SelectionCheckbox, armMobileLongPressSelection, checkboxShiftKey, useBulkSelection } from "@/components/bulk-selection";
 
 const paymentTermsOptions = [
   { value: "due_on_receipt", label: "Due on receipt" },
@@ -328,13 +328,7 @@ export function CompanyProfilesManager() {
             <div
               key={company.id}
               className={`rounded-xl border p-4 sm:p-5 ${selection.selectedSet.has(company.id) ? "border-royal-300 ring-2 ring-royal-100" : company.isArchived ? "border-slate-100 bg-slate-50 opacity-70" : "border-slate-200 bg-white"}`}
-              onPointerDown={(event) => {
-                if (event.pointerType !== "touch") return;
-                const timer = window.setTimeout(() => selection.toggleOne(company.id), 450);
-                const clear = () => window.clearTimeout(timer);
-                event.currentTarget.addEventListener("pointerup", clear, { once: true });
-                event.currentTarget.addEventListener("pointerleave", clear, { once: true });
-              }}
+              onPointerDown={(event) => armMobileLongPressSelection(event, () => selection.toggleOne(company.id))}
             >
               <div className="flex flex-wrap items-start justify-between gap-3">
                 <div className="flex items-start gap-3">

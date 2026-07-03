@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { ChangeEvent, ReactNode } from "react";
+import type { ChangeEvent, PointerEvent, ReactNode } from "react";
 import { X } from "lucide-react";
 
 export function useBulkSelection<T extends { id: string }>(items: T[]) {
@@ -137,7 +137,7 @@ export function BulkActionToolbar({
   onClear: () => void;
 }) {
   return (
-    <div className="sticky top-2 z-20 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-royal-200 bg-royal-50 px-4 py-3 shadow-sm">
+    <div className="sticky top-2 z-20 hidden flex-wrap items-center justify-between gap-3 rounded-xl border border-royal-200 bg-royal-50 px-4 py-3 shadow-sm lg:flex">
       <p className="text-sm font-black text-navy-950">
         {count} {entity}
         {count === 1 ? "" : "s"} selected
@@ -182,4 +182,49 @@ export function MobileBulkBar({
 
 export function checkboxShiftKey(event: ChangeEvent<HTMLInputElement>) {
   return Boolean((event.nativeEvent as MouseEvent | undefined)?.shiftKey);
+}
+
+export function armMobileLongPressSelection(
+  event: PointerEvent<HTMLElement>,
+  onSelect: () => void,
+  options: { delayMs?: number; moveTolerancePx?: number } = {},
+) {
+  if (event.pointerType !== "touch") return;
+  const source = event.target instanceof HTMLElement ? event.target : null;
+  if (source?.closest("a,button,input,select,textarea,label") && source !== event.currentTarget) return;
+
+  const target = event.currentTarget;
+  const startX = event.clientX;
+  const startY = event.clientY;
+  const delayMs = options.delayMs ?? 700;
+  const moveTolerancePx = options.moveTolerancePx ?? 8;
+  let cancelled = false;
+
+  const cleanup = () => {
+    window.clearTimeout(timer);
+    target.removeEventListener("pointermove", handleMove);
+    target.removeEventListener("pointerup", cancel);
+    target.removeEventListener("pointercancel", cancel);
+    target.removeEventListener("pointerleave", cancel);
+  };
+
+  const cancel = () => {
+    cancelled = true;
+    cleanup();
+  };
+
+  const handleMove = (moveEvent: globalThis.PointerEvent) => {
+    const moved = Math.hypot(moveEvent.clientX - startX, moveEvent.clientY - startY);
+    if (moved > moveTolerancePx) cancel();
+  };
+
+  const timer = window.setTimeout(() => {
+    cleanup();
+    if (!cancelled) onSelect();
+  }, delayMs);
+
+  target.addEventListener("pointermove", handleMove, { passive: true });
+  target.addEventListener("pointerup", cancel, { once: true });
+  target.addEventListener("pointercancel", cancel, { once: true });
+  target.addEventListener("pointerleave", cancel, { once: true });
 }

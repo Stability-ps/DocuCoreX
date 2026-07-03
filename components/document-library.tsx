@@ -4,7 +4,7 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Archive, Download, Filter, MoreVertical, Search, Share2, Star, Trash2 } from "lucide-react";
-import { BulkActionToolbar, MobileBulkBar, SelectionCheckbox, checkboxShiftKey, useBulkSelection } from "@/components/bulk-selection";
+import { BulkActionToolbar, MobileBulkBar, SelectionCheckbox, armMobileLongPressSelection, checkboxShiftKey, useBulkSelection } from "@/components/bulk-selection";
 import { StatusPill } from "@/components/ui";
 import type { DocumentRecord } from "@/lib/types";
 
@@ -652,13 +652,7 @@ export function DocumentLibrary({ initialFilter = "Recent" }: { initialFilter?: 
             role="button"
             tabIndex={0}
             onClick={() => (selection.isSelectionMode ? selection.toggleOne(document.id) : openDocument(document.id))}
-            onPointerDown={(event) => {
-                if (event.pointerType !== "touch") return;
-                const timer = window.setTimeout(() => selection.toggleOne(document.id), 450);
-              const clear = () => window.clearTimeout(timer);
-              event.currentTarget.addEventListener("pointerup", clear, { once: true });
-              event.currentTarget.addEventListener("pointerleave", clear, { once: true });
-            }}
+            onPointerDown={(event) => armMobileLongPressSelection(event, () => selection.toggleOne(document.id))}
             onKeyDown={(event) => {
               if (event.key === "Enter" || event.key === " ") {
                 event.preventDefault();

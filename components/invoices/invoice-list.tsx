@@ -21,7 +21,7 @@ import {
 } from "lucide-react";
 import { formatCurrency } from "@/lib/invoice-utils";
 import type { InvoiceRecord, InvoiceStatus, InvoiceWithItems } from "@/lib/types";
-import { BulkActionToolbar, MobileBulkBar, SelectionCheckbox, checkboxShiftKey, useBulkSelection } from "@/components/bulk-selection";
+import { BulkActionToolbar, MobileBulkBar, SelectionCheckbox, armMobileLongPressSelection, checkboxShiftKey, useBulkSelection } from "@/components/bulk-selection";
 
 // Soft filled pills — no outlined badges, per design spec.
 const statusStyles: Record<InvoiceStatus, string> = {
@@ -722,13 +722,7 @@ export function InvoiceList() {
                 <div
                   key={invoice.id}
                   className={`group relative rounded-2xl border bg-white p-3 transition hover:-translate-y-0.5 hover:shadow-md ${selection.selectedSet.has(invoice.id) ? "border-royal-300 ring-2 ring-royal-100" : "border-slate-200"}`}
-                  onPointerDown={(event) => {
-                if (event.pointerType !== "touch") return;
-                const timer = window.setTimeout(() => selection.toggleOne(invoice.id), 450);
-                    const clear = () => window.clearTimeout(timer);
-                    event.currentTarget.addEventListener("pointerup", clear, { once: true });
-                    event.currentTarget.addEventListener("pointerleave", clear, { once: true });
-                  }}
+                  onPointerDown={(event) => armMobileLongPressSelection(event, () => selection.toggleOne(invoice.id))}
                 >
                   <div className="flex items-center gap-2.5">
                     {selection.isSelectionMode ? <div onClick={(event) => event.stopPropagation()}>
