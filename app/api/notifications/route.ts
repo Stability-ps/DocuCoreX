@@ -1,21 +1,37 @@
 import { NextResponse } from "next/server";
-import { appStore } from "@/lib/app-state";
+import {
+  clearAllNotifications,
+  deleteNotification,
+  listNotifications,
+  markAllNotificationsRead,
+  markNotificationRead,
+} from "@/lib/notifications";
 
 export async function GET() {
-  return NextResponse.json({ notifications: appStore.notifications });
+  const notifications = await listNotifications();
+  return NextResponse.json({ notifications });
 }
 
 export async function PATCH(request: Request) {
-  const body = (await request.json().catch(() => ({}))) as { id?: string; read?: boolean; allRead?: boolean };
+  const body = (await request.json().catch(() => ({}))) as { id?: string; allRead?: boolean };
 
-  if (body.allRead) {
-    appStore.notifications.forEach((notification) => {
-      notification.read = true;
-    });
-  } else if (body.id) {
-    const notification = appStore.notifications.find((item) => item.id === body.id);
-    if (notification) notification.read = body.read ?? true;
-  }
+  const notifications = body.allRead
+    ? await markAllNotificationsRead()
+    : body.id
+      ? await markNotificationRead(body.id)
+      : await listNotifications();
 
-  return NextResponse.json({ notifications: appStore.notifications });
+  return NextResponse.json({ notifications });
+}
+
+export async function DELETE(request: Request) {
+  const body = (await request.json().catch(() => ({}))) as { id?: string; clearAll?: boolean };
+
+  const notifications = body.clearAll
+    ? await clearAllNotifications()
+    : body.id
+      ? await deleteNotification(body.id)
+      : await listNotifications();
+
+  return NextResponse.json({ notifications });
 }

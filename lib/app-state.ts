@@ -1,11 +1,3 @@
-export type NotificationRecord = {
-  id: string;
-  title: string;
-  body: string;
-  read: boolean;
-  createdAt: string;
-};
-
 export type TeamMemberRecord = {
   id: string;
   name: string;
@@ -48,7 +40,6 @@ export type UserSettingsRecord = {
 };
 
 type AppStore = {
-  notifications: NotificationRecord[];
   teamMembers: TeamMemberRecord[];
   integrations: IntegrationRecord[];
   automationPipelines: AutomationPipelineRecord[];
@@ -62,22 +53,6 @@ const globalStore = globalThis as typeof globalThis & { __docucorexAppStore?: Ap
 export const appStore =
   globalStore.__docucorexAppStore ??
   (globalStore.__docucorexAppStore = {
-    notifications: [
-      {
-        id: "notification_upload",
-        title: "Upload pipeline ready",
-        body: "Documents can now be registered, queued and opened from the library.",
-        read: false,
-        createdAt: now,
-      },
-      {
-        id: "notification_ocr",
-        title: "OCR provider mode",
-        body: "Mock OCR is active until a production OCR provider is configured.",
-        read: false,
-        createdAt: now,
-      },
-    ],
     teamMembers: [
       { id: "patric", name: "Patric", email: "patric@docucorex.local", role: "Owner", status: "Active" },
       { id: "finance", name: "Finance Team", email: "finance@docucorex.local", role: "Finance", status: "Active" },

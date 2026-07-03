@@ -6,7 +6,7 @@ import { useEffect, useRef, useState } from "react";
 import { Bell, ChevronDown, Command, CreditCard, Folder, Home, Landmark, LogOut, Plus, Receipt, Search, Settings, ShieldCheck, Upload, UsersRound } from "lucide-react";
 import { BrandLogo } from "@/components/brand";
 import { appNav, newActionItems } from "@/lib/product-data";
-import type { NotificationRecord } from "@/lib/app-state";
+import type { NotificationRecord } from "@/lib/types";
 
 type ProfileState = { fullName?: string; full_name?: string; email?: string; company?: string; role?: string } | null;
 type SearchResult = { id: string; name: string; type: string; detail: string };
@@ -47,6 +47,20 @@ function profileInitials(profile: ProfileState) {
   }
 
   return "DU";
+}
+
+function relativeTime(iso: string) {
+  const diffMs = Date.now() - new Date(iso).getTime();
+  const diffMin = Math.round(diffMs / 60_000);
+  if (diffMin < 1) return "Just now";
+  if (diffMin < 60) return `${diffMin} min ago`;
+  const diffHours = Math.round(diffMin / 60);
+  if (diffHours < 24) return `${diffHours}h ago`;
+  const diffDays = Math.round(diffHours / 24);
+  if (diffDays === 1) return "Yesterday";
+  if (diffDays < 7) return `${diffDays}d ago`;
+  if (diffDays < 14) return "Last week";
+  return new Date(iso).toLocaleDateString();
 }
 
 export function AppShell({ children }: { children: React.ReactNode }) {
@@ -192,20 +206,56 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     if (response.ok) {
       const data = (await response.json()) as { notifications: NotificationRecord[] };
       setNotifications(data.notifications);
+      writeCached(SHELL_NOTIFICATIONS_CACHE_KEY, data.notifications);
     }
+  }
+
+  async function clearAllNotificationsClick() {
+    const response = await fetch("/api/notifications", {
+      method: "DELETE",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ clearAll: true }),
+    });
+    if (response.ok) {
+      const data = (await response.json()) as { notifications: NotificationRecord[] };
+      setNotifications(data.notifications);
+      writeCached(SHELL_NOTIFICATIONS_CACHE_KEY, data.notifications);
+    }
+  }
+
+  async function handleNotificationClick(notification: NotificationRecord) {
+    setShowNotifications(false);
+    if (!notification.readAt) {
+      const response = await fetch("/api/notifications", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id: notification.id }),
+      });
+      if (response.ok) {
+        const data = (await response.json()) as { notifications: NotificationRecord[] };
+        setNotifications(data.notifications);
+        writeCached(SHELL_NOTIFICATIONS_CACHE_KEY, data.notifications);
+      }
+    }
+    if (notification.href) router.push(notification.href);
   }
 
   function signOut() {
     window.location.assign("/auth/signout");
   }
 
-  const unreadCount = notifications.filter((notification) => !notification.read).length;
+  const unreadCount = notifications.filter((notification) => !notification.readAt).length;
   const isActive = (href: string) => pathname === href || (href !== "/" && pathname.startsWith(`${href}/`));
   const isExactActive = (href: string) => pathname === href;
   const currentPageTitle =
     mobileTabs.find((item) => isActive(item.href))?.title ??
     appNav.find((item) => isActive(item.href) || item.children?.some((child) => isActive(child.href)))?.title ??
     "DocuCoreX";
+  // Some pages (e.g. Invoices) render their own large page title in the content area to stay
+  // usable on mobile — showing the shell's small breadcrumb-style title there too would just
+  // duplicate it, so we suppress it for those routes only.
+  const pagesWithOwnMobileTitle = ["/invoices"];
+  const showMobileTitle = !pagesWithOwnMobileTitle.some((prefix) => pathname === prefix || pathname.startsWith(`${prefix}/`));
 
   return (
     <div className="min-h-screen overflow-x-hidden bg-slate-50 text-navy-950">
@@ -317,12 +367,14 @@ export function AppShell({ children }: { children: React.ReactNode }) {
               </Link>
             </div>
           ) : null}
-          <div className="flex h-16 items-center justify-between gap-3 px-4 lg:hidden">
+          <div className="flex h-14 items-center justify-between gap-3 px-4 lg:hidden">
             <div className="flex min-w-0 items-center gap-3">
               <BrandLogo compact />
-              <div className="min-w-0">
-                <p className="truncate text-sm font-semibold text-navy-950">{currentPageTitle}</p>
-              </div>
+              {showMobileTitle ? (
+                <div className="min-w-0">
+                  <p className="truncate text-sm font-semibold text-navy-950">{currentPageTitle}</p>
+                </div>
+              ) : null}
             </div>
             <div className="flex items-center gap-2">
               <button
@@ -403,15 +455,38 @@ export function AppShell({ children }: { children: React.ReactNode }) {
             <div className="absolute right-4 top-16 z-50 w-[min(420px,calc(100vw-2rem))] rounded-xl border border-slate-200 bg-white p-4 shadow-soft lg:right-20 lg:top-20">
               <div className="mb-3 flex items-center justify-between">
                 <p className="font-semibold text-navy-950">Notifications</p>
-                <button onClick={markNotificationsRead} className="text-xs font-semibold text-royal-700">Mark all read</button>
+                <div className="flex items-center gap-3">
+                  <button onClick={markNotificationsRead} className="text-xs font-semibold text-royal-700">Mark all read</button>
+                  <button onClick={clearAllNotificationsClick} className="text-xs font-semibold text-slate-400 hover:text-rose-600">Clear all</button>
+                </div>
               </div>
-              <div className="space-y-2">
-                {notifications.map((notification) => (
-                  <div key={notification.id} className={`rounded-lg p-3 ${notification.read ? "bg-slate-50" : "bg-royal-50"}`}>
-                    <p className="font-semibold text-navy-950">{notification.title}</p>
-                    <p className="mt-1 text-sm leading-5 text-slate-600">{notification.body}</p>
+              <div className="max-h-96 space-y-1.5 overflow-y-auto">
+                {notifications.length === 0 ? (
+                  <div className="py-8 text-center">
+                    <p className="text-sm font-semibold text-navy-950">You&apos;re all caught up.</p>
+                    <p className="mt-1 text-xs text-slate-500">No notifications yet.</p>
                   </div>
-                ))}
+                ) : (
+                  notifications.map((notification) => (
+                    <button
+                      key={notification.id}
+                      onClick={() => handleNotificationClick(notification)}
+                      className={`flex w-full items-start gap-2.5 rounded-lg p-3 text-left transition hover:bg-slate-100 ${
+                        notification.readAt ? "bg-white opacity-70" : "bg-royal-50"
+                      }`}
+                    >
+                      <span
+                        className={`mt-1.5 h-2 w-2 shrink-0 rounded-full ${notification.readAt ? "bg-transparent" : "bg-royal-600"}`}
+                        aria-hidden
+                      />
+                      <span className="min-w-0 flex-1">
+                        <span className="block truncate font-semibold text-navy-950">{notification.title}</span>
+                        <span className="mt-0.5 block text-sm leading-5 text-slate-600 line-clamp-2">{notification.body}</span>
+                        <span className="mt-1 block text-xs text-slate-400">{relativeTime(notification.createdAt)}</span>
+                      </span>
+                    </button>
+                  ))
+                )}
               </div>
             </div>
           ) : null}

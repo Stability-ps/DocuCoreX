@@ -9,6 +9,7 @@ import type {
   ExtractionResult,
   InvoiceItemRecord,
   InvoiceRecord,
+  NotificationRecord,
   OcrResult,
   ProcessingJob,
 } from "@/lib/types";
@@ -31,6 +32,7 @@ type MockStore = {
   invoiceSequences: Record<string, number>;
   companies: CompanyProfile[];
   companyInvoiceSequences: Record<string, number>;
+  notifications: NotificationRecord[];
   usageSummary: {
     periodStart: string;
     periodEnd: string;
@@ -453,6 +455,35 @@ const seedCompanies: CompanyProfile[] = [
   },
 ];
 
+const seedNotifications: NotificationRecord[] = [
+  {
+    id: "notification_upload",
+    workspaceId: "workspace_demo",
+    userId: null,
+    type: "document_upload_completed",
+    title: "Upload pipeline ready",
+    body: "Documents can now be registered, queued and opened from the library.",
+    entityType: "system",
+    entityId: null,
+    href: "/documents",
+    readAt: null,
+    createdAt: now,
+  },
+  {
+    id: "notification_ocr",
+    workspaceId: "workspace_demo",
+    userId: null,
+    type: "system_maintenance_notice",
+    title: "OCR provider mode",
+    body: "Mock OCR is active until a production OCR provider is configured.",
+    entityType: "system",
+    entityId: null,
+    href: "/settings",
+    readAt: null,
+    createdAt: now,
+  },
+];
+
 const store =
   globalMockStore.__docucorexMockStore ??
   (globalMockStore.__docucorexMockStore = {
@@ -471,6 +502,7 @@ const store =
     invoiceSequences: { workspace_demo: 2 },
     companies: [...seedCompanies],
     companyInvoiceSequences: { company_demo_1: 2 } as Record<string, number>,
+    notifications: [...seedNotifications],
     usageSummary: { ...seedUsageSummary },
   });
 
@@ -489,6 +521,7 @@ export const invoiceItems = store.invoiceItems;
 export const invoiceSequences = store.invoiceSequences;
 export const companies = store.companies;
 export const companyInvoiceSequences = store.companyInvoiceSequences;
+export const notifications = store.notifications;
 export const usageSummary = store.usageSummary;
 
 export function getDocument(id: string) {
