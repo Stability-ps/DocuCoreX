@@ -22,6 +22,11 @@ function LoginContent() {
   const [callbackError, setCallbackError] = useState("");
 
   useEffect(() => {
+    const requestedMode = searchParams.get("mode");
+    if (requestedMode === "signup" || requestedMode === "forgot" || requestedMode === "signin") {
+      setMode(requestedMode);
+    }
+
     const error = searchParams.get("error");
     if (error) {
       const errorMessages: Record<string, string> = {

@@ -137,6 +137,12 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   }, []);
 
   useEffect(() => {
+    setShowNewMenu(false);
+    setShowProfile(false);
+    setShowNotifications(false);
+  }, [pathname]);
+
+  useEffect(() => {
     const normalized = query.trim().toLowerCase();
 
     if (!normalized) {
@@ -278,7 +284,6 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                 <Link
                   key={item.title}
                   href={item.href}
-                  onClick={() => setShowNewMenu(false)}
                   className="flex items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-bold text-slate-700 transition hover:bg-royal-50 hover:text-royal-700"
                 >
                   <item.icon className="h-4 w-4 text-slate-400" />
@@ -426,9 +431,11 @@ export function AppShell({ children }: { children: React.ReactNode }) {
             </div>
             <div className="flex items-center gap-2">
               <button
+                type="button"
                 onClick={() => setShowNotifications((value) => !value)}
                 className="relative rounded-lg border border-slate-200 bg-white p-3 text-slate-600 shadow-sm transition hover:text-royal-700"
                 title="Notifications"
+                aria-label="Notifications"
               >
                 <Bell className="h-5 w-5" />
                 {unreadCount ? <span className="absolute -right-1 -top-1 rounded-full bg-rose-500 px-1.5 text-[10px] font-semibold text-white">{unreadCount}</span> : null}
@@ -443,9 +450,11 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                 <LogOut className="h-5 w-5" />
               </button>
               <button
+                type="button"
                 onClick={() => setShowProfile((value) => !value)}
                 className="flex h-11 min-w-11 items-center justify-center rounded-lg bg-navy-950 px-2 text-sm font-semibold text-white"
                 title="Account menu"
+                aria-label="Account menu"
               >
                 {profileInitials(profile)}
               </button>
@@ -495,8 +504,8 @@ export function AppShell({ children }: { children: React.ReactNode }) {
               <p className="font-semibold text-navy-950">{profileName(profile) || "Account"}</p>
               <p className="text-sm text-slate-500">{profile?.company ?? ""}</p>
               <div className="mt-4 grid gap-2">
+                <Link href="/documents" onClick={() => setShowProfile(false)} className="flex items-center gap-2 rounded-lg bg-slate-50 px-3 py-2 text-sm font-semibold text-slate-700 hover:text-royal-700"><Folder className="h-4 w-4" /> Documents</Link>
                 <Link href="/settings" onClick={() => setShowProfile(false)} className="rounded-lg bg-slate-50 px-3 py-2 text-sm font-semibold text-slate-700 hover:text-royal-700">Profile</Link>
-                <Link href="/documents" onClick={() => setShowProfile(false)} className="flex items-center gap-2 rounded-lg bg-slate-50 px-3 py-2 text-sm font-semibold text-slate-700 hover:text-royal-700 lg:hidden"><Folder className="h-4 w-4" /> Documents</Link>
                 <Link href="/billing" onClick={() => setShowProfile(false)} className="flex items-center gap-2 rounded-lg bg-slate-50 px-3 py-2 text-sm font-semibold text-slate-700 hover:text-royal-700"><CreditCard className="h-4 w-4" /> Billing & Subscription</Link>
                 <Link href="/team" onClick={() => setShowProfile(false)} className="flex items-center gap-2 rounded-lg bg-slate-50 px-3 py-2 text-sm font-semibold text-slate-700 hover:text-royal-700"><UsersRound className="h-4 w-4" /> Team</Link>
                 <button
