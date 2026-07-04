@@ -93,7 +93,7 @@ export async function POST(request: Request) {
       type: "conversion",
       status: "queued",
       progress: 0,
-      message: `Convert ${body.from} to ${body.to}`,
+      message: conversionJobMessage(body.from, body.to, conversion.id),
     })
     .select("id, document_id, type, status, progress, message, created_at, updated_at")
     .single();
@@ -153,4 +153,8 @@ function formatLabel(value: string) {
   if (value === "image") return "Image";
   if (value === "zip") return "ZIP";
   return value.toUpperCase();
+}
+
+function conversionJobMessage(from: string, to: string, conversionId: string) {
+  return `Convert ${from} to ${to} · conversion:${conversionId}`;
 }

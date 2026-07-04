@@ -41,5 +41,14 @@ export async function GET() {
     return NextResponse.json({ error: error.message }, { status: 500 });
   }
 
-  return NextResponse.json({ jobs: data });
+  return NextResponse.json({
+    jobs: (data ?? []).map((job) => ({
+      ...job,
+      message: typeof job.message === "string" ? displayJobMessage(job.message) : job.message,
+    })),
+  });
+}
+
+function displayJobMessage(message: string) {
+  return message.replace(/\s+·\s+conversion:[0-9a-f-]{36}\b/i, "");
 }

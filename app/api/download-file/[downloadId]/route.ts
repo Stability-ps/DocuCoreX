@@ -40,9 +40,16 @@ export async function GET(request: Request, { params }: { params: Promise<{ down
   }
 
   const format = data.to_format === "excel" ? "xlsx" : data.to_format === "word" ? "docx" : data.to_format;
-  const isOutputReady = (data.status === "output_ready" || data.status === "completed") && Boolean(data.download_path);
+  const isOutputReady = data.status === "output_ready" && Boolean(data.download_path);
 
   if (!isOutputReady) {
+    console.warn("docucorex.conversion.download_not_ready", {
+      conversionId: data.id,
+      status: data.status,
+      hasDownloadPath: Boolean(data.download_path),
+      supabaseBucket: "documents",
+      supabasePath: data.download_path,
+    });
     return downloadError(request, "This conversion is still being prepared. Please wait for Download ready, then try again.", 409);
   }
 
@@ -51,12 +58,27 @@ export async function GET(request: Request, { params }: { params: Promise<{ down
 
     if (fileError || !fileData) {
       await supabase.from("conversions").update({ status: "failed", updated_at: new Date().toISOString() }).eq("id", data.id);
+      console.error("docucorex.conversion.download_storage_failed", {
+        conversionId: data.id,
+        supabaseBucket: "documents",
+        supabasePath: data.download_path,
+        message: fileError?.message ?? "Missing converted file",
+      });
       return downloadError(request, fileError?.message ?? "The converted file is missing. Please run the conversion again.", 404);
     }
 
+    console.info("docucorex.conversion.download_ready", {
+      conversionId: data.id,
+      supabaseBucket: "documents",
+      supabasePath: data.download_path,
+      bytes: fileData.size,
+      contentType: fileData.type,
+    });
+
+    const fileName = data.download_path.split("/").pop() || `${downloadId}.${format}`;
     return new NextResponse(fileData, {
       headers: {
-        "content-disposition": `attachment; filename="${downloadId}.${format}"`,
+        "content-disposition": `attachment; filename="${sanitizeFileName(fileName)}"`,
         "content-type": fileData.type || mimeByFormat[format as keyof typeof mimeByFormat] || "application/octet-stream",
       },
     });
@@ -124,4 +146,8 @@ function downloadError(request: Request, message: string, status: number) {
 
 function escapeHtml(value: string) {
   return value.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+}
+
+function sanitizeFileName(value: string) {
+  return value.replace(/[\r\n"]/g, "_");
 }

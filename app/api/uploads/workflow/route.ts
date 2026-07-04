@@ -22,10 +22,10 @@ function stateFromJobs(
 ) {
   const failed = jobs.find((job) => job.status === "failed");
   if (failed) {
-    return { uploadStatus: "uploaded", conversionStatus: "failed", outputReady: false, stage: failed.message || "Failed", uploadProgress: 100, conversionProgress: Math.max(1, Math.min(99, failed.progress || 1)) };
+    return { uploadStatus: "uploaded", conversionStatus: "failed", outputReady: false, stage: displayJobMessage(failed.message) || "Failed", uploadProgress: 100, conversionProgress: Math.max(1, Math.min(99, failed.progress || 1)) };
   }
 
-  if ((conversion?.status === "output_ready" || conversion?.status === "completed") && conversion.download_path) {
+  if (conversion?.status === "output_ready" && conversion.download_path) {
     return { uploadStatus: "uploaded", conversionStatus: "completed", outputReady: true, stage: "Download ready", uploadProgress: 100, conversionProgress: 100 };
   }
 
@@ -43,7 +43,7 @@ function stateFromJobs(
       uploadStatus: "uploaded",
       conversionStatus: conversionJob.status === "running" ? "converting" : "queued",
       outputReady: false,
-      stage: conversionJob.message || "Converting",
+      stage: displayJobMessage(conversionJob.message) || "Converting",
       uploadProgress: 100,
       conversionProgress: conversionJob.progress,
     };
@@ -109,7 +109,7 @@ export async function GET() {
               downloadUrl: state.outputReady ? `/api/download-file/${latestConversion.id}` : null,
             }
           : null,
-        jobs,
+        jobs: jobs.map((job) => ({ ...job, message: displayJobMessage(job.message) })),
         createdAt: document.created_at,
         updatedAt: document.updated_at,
       };
@@ -134,6 +134,7 @@ export async function POST(request: Request) {
   if (!body.target || !supportedTargets.has(body.target)) {
     return NextResponse.json({ error: "Choose a supported conversion target." }, { status: 400 });
   }
+  const target = body.target;
 
   const context = await getWorkspaceContext();
 
@@ -161,7 +162,7 @@ export async function POST(request: Request) {
   const conversions = documents.map((document) => ({
     document_id: document.id,
     from_format: getSourceFormat(document.mime_type, document.name),
-    to_format: body.target as ConversionTarget,
+    to_format: target,
     status: "queued" as const,
   }));
 
@@ -174,6 +175,8 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: conversionError.message }, { status: 500 });
   }
 
+  const conversionByDocument = new Map((insertedConversions ?? []).map((conversion) => [conversion.document_id, conversion.id]));
+
   const { data: jobs, error: jobError } = await context.supabase
     .from("processing_jobs")
     .insert(
@@ -182,7 +185,7 @@ export async function POST(request: Request) {
         type: "conversion",
         status: "queued",
         progress: 0,
-        message: `Convert ${getSourceFormat(document.mime_type, document.name)} to ${body.target}`,
+        message: conversionJobMessage(getSourceFormat(document.mime_type, document.name), target, conversionByDocument.get(document.id) ?? ""),
       })),
     )
     .select("id, document_id, type, status, progress, message, created_at, updated_at");
@@ -203,6 +206,14 @@ export async function POST(request: Request) {
   );
 
   return NextResponse.json({ conversions: insertedConversions ?? [], jobs: jobs ?? [] });
+}
+
+function conversionJobMessage(from: string, to: string, conversionId: string) {
+  return conversionId ? `Convert ${from} to ${to} · conversion:${conversionId}` : `Convert ${from} to ${to}`;
+}
+
+function displayJobMessage(message: string) {
+  return message.replace(/\s+·\s+conversion:[0-9a-f-]{36}\b/i, "");
 }
 
 export async function DELETE(request: Request) {

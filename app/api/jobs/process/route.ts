@@ -140,17 +140,21 @@ export async function POST(request: Request) {
       }
 
       if (job.type === "conversion") {
-        const conversion = await getNextQueuedConversion(context, document.id);
+        const conversionId = getConversionIdFromMessage(job.message);
+        const conversion = await getNextQueuedConversion(context, document.id, conversionId);
+        if (!conversion) {
+          throw new Error("Conversion record is missing or no longer queued. Please start the conversion again.");
+        }
         const toFormat = conversion?.to_format ?? getTargetFormat(job.message);
         const conversionLogBase = {
           jobId: job.id,
-          conversionId: conversion?.id ?? null,
+          conversionId: conversion.id,
           documentId: document.id,
           fileName: document.name,
           mimeType: document.mimeType,
           sizeBytes: document.sizeBytes,
           storagePath: document.storagePath,
-          fromFormat: conversion?.from_format ?? "unknown",
+          fromFormat: conversion.from_format ?? "unknown",
           toFormat,
           provider: providers.conversion.name,
           engine: "docucorex-local-content-conversion",
@@ -159,12 +163,10 @@ export async function POST(request: Request) {
 
         console.info("docucorex.conversion.started", conversionLogBase);
 
-        if (conversion) {
-          await context.supabase
-            .from("conversions")
-            .update({ status: "running", updated_at: new Date().toISOString() })
-            .eq("id", conversion.id);
-        }
+        await context.supabase
+          .from("conversions")
+          .update({ status: "running", updated_at: new Date().toISOString() })
+          .eq("id", conversion.id);
         const { data: sourceFile, error: sourceError } = await context.supabase.storage.from("documents").download(document.storagePath);
         if (sourceError || !sourceFile) {
           throw new Error(sourceError?.message ?? "Original file could not be downloaded for conversion.");
@@ -181,6 +183,14 @@ export async function POST(request: Request) {
         );
 
         validateConvertedFile(converted, toFormat, document);
+        console.info("docucorex.conversion.output_generated", {
+          ...conversionLogBase,
+          outputFileName: converted.fileName,
+          outputBytes: converted.content.byteLength,
+          outputContentType: converted.contentType,
+          supabaseBucket: "documents",
+          supabasePath: converted.downloadPath,
+        });
 
         const upload = await context.supabase.storage
           .from("documents")
@@ -190,17 +200,38 @@ export async function POST(request: Request) {
           });
 
         if (upload.error) {
-          throw new Error(upload.error.message);
+          console.error("docucorex.conversion.storage_upload_failed", {
+            ...conversionLogBase,
+            supabaseBucket: "documents",
+            supabasePath: converted.downloadPath,
+            message: upload.error.message,
+          });
+          throw new Error(`Converted file upload failed: ${upload.error.message}`);
         }
+
+        console.info("docucorex.conversion.storage_uploaded", {
+          ...conversionLogBase,
+          supabaseBucket: "documents",
+          supabasePath: converted.downloadPath,
+          outputBytes: converted.content.byteLength,
+        });
 
         const uploadedArtifacts = await uploadConversionArtifacts(context, document.id, converted.artifacts ?? []);
 
-        if (conversion) {
-          await context.supabase
-            .from("conversions")
-            .update({ status: "output_ready", download_path: converted.downloadPath, updated_at: new Date().toISOString() })
-            .eq("id", conversion.id);
+        const { error: conversionUpdateError } = await context.supabase
+          .from("conversions")
+          .update({ status: "output_ready", download_path: converted.downloadPath, updated_at: new Date().toISOString() })
+          .eq("id", conversion.id);
+
+        if (conversionUpdateError) {
+          throw new Error(`Converted file was uploaded, but the download record could not be saved: ${conversionUpdateError.message}`);
         }
+
+        console.info("docucorex.conversion.output_record_saved", {
+          ...conversionLogBase,
+          savedDownloadPath: converted.downloadPath,
+          savedStatus: "output_ready",
+        });
 
         await addConvertedVersion(context, document.id, converted.downloadPath, converted.fileName);
 
@@ -222,9 +253,17 @@ export async function POST(request: Request) {
         await recordAuditLog({
           action: "conversion_completed",
           entityType: "conversion",
-          entityId: conversion?.id ?? null,
+          entityId: conversion.id,
           metadata: { documentId: document.id, provider: providers.conversion.name, toFormat, downloadPath: converted.downloadPath },
         });
+
+        await context.supabase
+          .from("processing_jobs")
+          .update({ status: "output_ready", progress: 100, message: "Download ready", updated_at: new Date().toISOString() })
+          .eq("id", job.id);
+
+        results.push({ jobId: job.id, type: job.type, status: "output_ready", conversionId: conversion.id, downloadPath: converted.downloadPath });
+        continue;
       }
 
       await context.supabase
@@ -245,7 +284,7 @@ export async function POST(request: Request) {
           message,
           exitCode: 1,
         });
-        await failQueuedConversion(context, document.id, message);
+        await failQueuedConversion(context, document.id, message, getConversionIdFromMessage(job.message));
       }
       await context.supabase
         .from("processing_jobs")
@@ -402,31 +441,44 @@ function mapSupabaseDocument(row: unknown): DocumentRecord | null {
   };
 }
 
-async function getNextQueuedConversion(context: NonNullable<Awaited<ReturnType<typeof getWorkspaceContext>>>, documentId: string) {
-  const { data } = await context.supabase
+async function getNextQueuedConversion(context: NonNullable<Awaited<ReturnType<typeof getWorkspaceContext>>>, documentId: string, conversionId?: string | null) {
+  let query = context.supabase
     .from("conversions")
-    .select("id, from_format, to_format")
+    .select("id, from_format, to_format, status, download_path")
     .eq("document_id", documentId)
-    .in("status", ["queued", "running"])
-    .order("created_at", { ascending: true })
-    .limit(1)
-    .maybeSingle();
+    .in("status", ["queued", "running"]);
+
+  if (conversionId) {
+    query = query.eq("id", conversionId);
+  }
+
+  const { data } = await query.order("created_at", { ascending: true }).limit(1).maybeSingle();
 
   return data;
 }
 
-async function failQueuedConversion(context: NonNullable<Awaited<ReturnType<typeof getWorkspaceContext>>>, documentId: string, message: string) {
-  await context.supabase
+async function failQueuedConversion(context: NonNullable<Awaited<ReturnType<typeof getWorkspaceContext>>>, documentId: string, message: string, conversionId?: string | null) {
+  let query = context.supabase
     .from("conversions")
     .update({ status: "failed", updated_at: new Date().toISOString() })
     .eq("document_id", documentId)
     .in("status", ["queued", "running", "completed"]);
+
+  if (conversionId) {
+    query = query.eq("id", conversionId);
+  }
+
+  await query;
   await recordAuditLog({
     action: "document_conversion_failed",
     entityType: "document",
     entityId: documentId,
     metadata: { reason: message },
   });
+}
+
+function getConversionIdFromMessage(message: string) {
+  return message.match(/\bconversion:([0-9a-f-]{36})\b/i)?.[1] ?? null;
 }
 
 async function addConvertedVersion(

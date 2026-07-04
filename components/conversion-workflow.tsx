@@ -336,7 +336,7 @@ export function ConversionWorkflow() {
     const readyDownload = downloadsData?.downloads?.find((download) => download.id === conversionId && download.status === "ready" && download.href);
 
     if (!readyDownload?.href) {
-      setProgress(100);
+      setProgress(76);
       setJobLabel("Conversion failed");
       setError("The conversion finished without a downloadable output. Please run it again.");
       setLifecycleState("ready");
