@@ -26,7 +26,12 @@ Create a Render Web Service:
 - Docker context: `.`
 - Health check path: `/api/conversion-worker/health`
 
-Do not set Root Directory to `workers/conversion_worker`. The worker Dockerfile builds the existing DocuCoreX Next.js job processor, so the Docker build context must include `package.json`, `pnpm-lock.yaml`, `app/`, `lib/`, and `components/` from the repository root.
+Preferred: do not set Root Directory to `workers/conversion_worker`. The worker Dockerfile builds the existing DocuCoreX Next.js job processor, so the Docker build context should include `package.json`, `pnpm-lock.yaml`, `app/`, `lib/`, and `components/` from the repository root.
+
+Compatibility: if Render is already configured with Root Directory `workers/conversion_worker`, the Dockerfile can still build by cloning the full repository during the image build. This requires the GitHub repo to be accessible from Render. The default build args are:
+
+- `DOCUCOREX_REPO_URL=https://github.com/Stability-ps/DocuCoreX.git`
+- `DOCUCOREX_GIT_REF=main`
 
 Required environment variables:
 
