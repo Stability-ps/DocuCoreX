@@ -14,6 +14,10 @@ type ConversionResponse = {
     to: string;
     status: string;
     downloadUrl?: string | null;
+    job?: {
+      id: string;
+      status: string;
+    } | null;
   };
 };
 
@@ -26,6 +30,12 @@ type DownloadsResponse = {
 };
 
 type LifecycleState = "ready" | "processing" | "completed";
+
+type ConversionDebugState = {
+  conversionId: string;
+  jobId: string;
+  status: string;
+};
 
 type CompletedResult = {
   conversionId: string;
@@ -84,6 +94,7 @@ export function ConversionWorkflow() {
   const [librarySavingIds, setLibrarySavingIds] = useState<Record<string, true>>({});
   const [libraryOpen, setLibraryOpen] = useState(false);
   const [uploadState, setUploadState] = useState<"idle" | "uploading" | "failed">("idle");
+  const [conversionDebug, setConversionDebug] = useState<ConversionDebugState | null>(null);
   const lifecycleCardRef = useRef<HTMLDivElement>(null);
 
   async function loadDocuments(preferredId?: string) {
@@ -254,6 +265,7 @@ export function ConversionWorkflow() {
     setSelectedTarget("");
     setLifecycleState("ready");
     setActiveResult(null);
+    setConversionDebug(null);
     setActiveJobDocumentName("");
     setActiveJobTarget("");
     setProgress(0);
@@ -274,6 +286,7 @@ export function ConversionWorkflow() {
     setError("");
     setLifecycleState("processing");
     setActiveResult(null);
+    setConversionDebug(null);
     setActiveJobDocumentName(selectedDocument?.name ?? "Selected document");
     setActiveJobTarget(selectedTarget);
     setIsConverting(true);
@@ -303,6 +316,14 @@ export function ConversionWorkflow() {
 
     const data = (await response.json().catch(() => null)) as ConversionResponse | null;
     const conversionId = data?.conversion?.id;
+    const createdJobId = data?.conversion?.job?.id ?? "";
+    if (conversionId) {
+      setConversionDebug({
+        conversionId,
+        jobId: createdJobId || "pending",
+        status: data?.conversion?.status ?? "queued",
+      });
+    }
     setJobLabel("Job queued");
     setProgress(34);
 
@@ -319,12 +340,29 @@ export function ConversionWorkflow() {
     setProgress(76);
     const jobsResponse = await fetch("/api/jobs").catch(() => null);
     const jobsData = jobsResponse?.ok ? ((await jobsResponse.json().catch(() => null)) as JobsResponse | null) : null;
-    const matchingJob = jobsData?.jobs?.find(
-      (job) => job.type === "conversion" && (job.documentId === selectedDocumentId || job.document_id === selectedDocumentId),
-    );
+    const matchingJob =
+      jobsData?.jobs?.find((job) => createdJobId && job.id === createdJobId) ??
+      jobsData?.jobs?.find(
+        (job) => job.type === "conversion" && (job.documentId === selectedDocumentId || job.document_id === selectedDocumentId),
+      );
+
+    if (conversionId) {
+      setConversionDebug({
+        conversionId,
+        jobId: matchingJob?.id ?? (createdJobId || "pending"),
+        status: matchingJob?.status ?? data?.conversion?.status ?? "queued",
+      });
+    }
 
     if (matchingJob?.status === "failed") {
       setJobLabel("Conversion failed");
+      if (conversionId) {
+        setConversionDebug({
+          conversionId,
+          jobId: matchingJob?.id ?? (createdJobId || "pending"),
+          status: "failed",
+        });
+      }
       setError(matchingJob.message || "Conversion failed.");
       setLifecycleState("ready");
       setIsConverting(false);
@@ -338,6 +376,13 @@ export function ConversionWorkflow() {
     if (!readyDownload?.href) {
       setProgress(76);
       setJobLabel("Conversion failed");
+      if (conversionId) {
+        setConversionDebug({
+          conversionId,
+          jobId: matchingJob?.id ?? (createdJobId || "pending"),
+          status: "missing_output",
+        });
+      }
       setError("The conversion finished without a downloadable output. Please run it again.");
       setLifecycleState("ready");
       setIsConverting(false);
@@ -363,6 +408,13 @@ export function ConversionWorkflow() {
     setIsConverting(false);
     setLifecycleState("completed");
     setJobLabel("Completed");
+    if (conversionId) {
+      setConversionDebug({
+        conversionId,
+        jobId: matchingJob?.id ?? (createdJobId || "pending"),
+        status: "output_ready",
+      });
+    }
     setSelectedTarget("");
     setActiveResult(completedResult);
     focusLifecycleCard();
@@ -372,6 +424,33 @@ export function ConversionWorkflow() {
     <section className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm sm:p-6">
       <h2 className="text-lg font-semibold text-navy-950">Conversion Job</h2>
       <p className="mt-1 text-sm leading-6 text-slate-500">Ready to convert, processing, and completed results all update in this same card.</p>
+
+      {conversionDebug ? (
+        <div className="mt-4 rounded-xl border border-amber-200 bg-amber-50 p-3 text-xs text-amber-950">
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+            <div className="min-w-0 space-y-1">
+              <p className="font-black uppercase tracking-[0.08em] text-amber-700">Temporary conversion debug</p>
+              <p className="break-all font-mono">
+                <span className="font-sans font-bold">conversion_id:</span> {conversionDebug.conversionId}
+              </p>
+              <p className="break-all font-mono">
+                <span className="font-sans font-bold">job_id:</span> {conversionDebug.jobId}
+              </p>
+              <p className="font-mono">
+                <span className="font-sans font-bold">current status:</span> {conversionDebug.status}
+              </p>
+            </div>
+            <a
+              href={`/api/conversions/${conversionDebug.conversionId}/debug`}
+              target="_blank"
+              rel="noreferrer"
+              className="inline-flex min-h-10 shrink-0 items-center justify-center rounded-lg bg-amber-600 px-3 text-sm font-bold text-white shadow-sm hover:bg-amber-700"
+            >
+              Debug
+            </a>
+          </div>
+        </div>
+      ) : null}
 
       {lifecycleState === "ready" ? (
         <div ref={lifecycleCardRef} tabIndex={-1} className="mt-4 rounded-xl border border-slate-200 bg-slate-50 p-4 outline-none">
