@@ -226,6 +226,7 @@ export function UploadCenter({ workflow }: { workflow?: string }) {
 
   const activeItems = items.filter((item) => item.uploadStatus !== "cancelled" && item.conversionStatus !== "cancelled");
   const selection = useBulkSelection(activeItems);
+  const { exitSelectionMode } = selection;
   const readyToConvertItems = activeItems.filter((item) => item.documentId && item.uploadStatus === "uploaded" && (item.conversionStatus === "none" || item.conversionStatus === "ready"));
   const completedConversions = activeItems.filter((item) => item.conversionId && item.conversionStatus === "completed" && item.outputReady && item.downloadUrl);
   const latestReadyItem = readyToConvertItems[0] ?? null;
@@ -296,9 +297,10 @@ export function UploadCenter({ workflow }: { workflow?: string }) {
   useEffect(() => {
     if (isProcessing && readyToConvertItems.length === 0 && activeItems.some((item) => item.conversionStatus === "completed" || item.conversionStatus === "failed")) {
       setIsProcessing(false);
+      exitSelectionMode();
       setMessage("Processing completed");
     }
-  }, [activeItems, isProcessing, readyToConvertItems.length]);
+  }, [activeItems, exitSelectionMode, isProcessing, readyToConvertItems.length]);
 
   function isSupported(file: File) {
     const lower = file.name.toLowerCase();
@@ -556,6 +558,7 @@ export function UploadCenter({ workflow }: { workflow?: string }) {
       await fetch("/api/jobs/process", { method: "POST" }).catch(() => null);
       await refreshWorkflow();
     }
+    exitSelectionMode();
   }
 
   async function saveToLibrary(item: QueueItem) {
@@ -958,17 +961,22 @@ export function UploadCenter({ workflow }: { workflow?: string }) {
                       <Download className="h-4 w-4" /> Download
                     </button>
                   ) : null}
-                  {item.documentId ? (
+                  {item.outputReady && item.documentId ? (
                     <Link href={`/documents/${item.documentId}?tab=preview`} className="inline-flex items-center gap-2 rounded-xl bg-white px-3 py-2 text-xs font-semibold text-slate-600 shadow-sm hover:text-royal-700">
-                      <Eye className="h-4 w-4" /> Preview
+                      <Eye className="h-4 w-4" /> Review
                     </Link>
                   ) : null}
-                  {item.documentId ? (
+                  {item.outputReady && item.documentId ? (
                     <Link href={`/documents/${item.documentId}`} className="inline-flex items-center gap-2 rounded-xl bg-white px-3 py-2 text-xs font-semibold text-slate-600 shadow-sm hover:text-royal-700">
                       <FileText className="h-4 w-4" /> Open Document
                     </Link>
                   ) : null}
-                  {item.documentId ? (
+                  {item.outputReady && item.downloadUrl ? (
+                    <button type="button" onClick={() => void downloadItem(item)} className="inline-flex items-center gap-2 rounded-xl bg-white px-3 py-2 text-xs font-semibold text-slate-600 shadow-sm hover:text-royal-700">
+                      <Download className="h-4 w-4" /> Export
+                    </button>
+                  ) : null}
+                  {item.outputReady && item.documentId ? (
                     <button type="button" onClick={() => void saveToLibrary(item)} className="inline-flex items-center gap-2 rounded-xl bg-white px-3 py-2 text-xs font-semibold text-slate-600 shadow-sm hover:text-royal-700">
                       <Save className="h-4 w-4" /> Save to Library
                     </button>

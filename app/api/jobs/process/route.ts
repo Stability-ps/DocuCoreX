@@ -120,6 +120,23 @@ export async function POST() {
       if (job.type === "conversion") {
         const conversion = await getNextQueuedConversion(context, document.id);
         const toFormat = conversion?.to_format ?? getTargetFormat(job.message);
+        const conversionLogBase = {
+          jobId: job.id,
+          conversionId: conversion?.id ?? null,
+          documentId: document.id,
+          fileName: document.name,
+          mimeType: document.mimeType,
+          sizeBytes: document.sizeBytes,
+          storagePath: document.storagePath,
+          fromFormat: conversion?.from_format ?? "unknown",
+          toFormat,
+          provider: providers.conversion.name,
+          engine: "docucorex-local-content-conversion",
+          command: "in-process conversion provider",
+        };
+
+        console.info("docucorex.conversion.started", conversionLogBase);
+
         if (conversion) {
           await context.supabase
             .from("conversions")
@@ -141,7 +158,7 @@ export async function POST() {
           { toFormat },
         );
 
-        validateConvertedFile(converted);
+        validateConvertedFile(converted, toFormat, document);
 
         const upload = await context.supabase.storage
           .from("documents")
@@ -157,47 +174,25 @@ export async function POST() {
         if (conversion) {
           await context.supabase
             .from("conversions")
-            .update({ status: "completed", download_path: converted.downloadPath, updated_at: new Date().toISOString() })
+            .update({ status: "output_ready", download_path: converted.downloadPath, updated_at: new Date().toISOString() })
             .eq("id", conversion.id);
         }
 
-        const { data: convertedDocument } = await context.supabase
+        await addConvertedVersion(context, document.id, converted.downloadPath, converted.fileName);
+
+        await context.supabase
           .from("documents")
-          .insert({
-            workspace_id: context.workspaceId,
-            owner_id: context.userId,
-            name: converted.fileName,
-            mime_type: converted.contentType,
-            size_bytes: converted.content.length,
-            page_count: 1,
-            status: "ready",
-            detected_type: document.detectedType,
-            storage_path: converted.downloadPath,
-            tags: ["Converted", toFormat],
-          })
-          .select("id")
-          .single();
+          .update({ status: "ready", updated_at: new Date().toISOString() })
+          .eq("id", document.id);
 
-        if (convertedDocument?.id) {
-          await context.supabase.from("document_versions").insert({
-            document_id: convertedDocument.id,
-            version_number: 1,
-            storage_path: converted.downloadPath,
-            change_note: `Converted from ${document.name}`,
-            created_by: context.userId,
-          });
-
-          await context.supabase.from("uploads").insert({
-            workspace_id: context.workspaceId,
-            document_id: convertedDocument.id,
-            file_name: converted.fileName,
-            mime_type: converted.contentType,
-            size_bytes: converted.content.length,
-            storage_path: converted.downloadPath,
-            status: "completed",
-            created_by: context.userId,
-          });
-        }
+        console.info("docucorex.conversion.completed", {
+          ...conversionLogBase,
+          downloadPath: converted.downloadPath,
+          outputBytes: converted.content.byteLength,
+          contentType: converted.contentType,
+          exitCode: 0,
+          stderr: "",
+        });
 
         await recordAuditLog({
           action: "conversion_completed",
@@ -216,6 +211,15 @@ export async function POST() {
     } catch (error) {
       const message = error instanceof Error ? error.message : "Job failed";
       if (job.type === "conversion") {
+        console.error("docucorex.conversion.failed", {
+          jobId: job.id,
+          documentId: document.id,
+          fileName: document.name,
+          mimeType: document.mimeType,
+          sizeBytes: document.sizeBytes,
+          message,
+          exitCode: 1,
+        });
         await failQueuedConversion(context, document.id, message);
       }
       await context.supabase
@@ -341,7 +345,7 @@ function mapSupabaseDocument(row: unknown): DocumentRecord | null {
 async function getNextQueuedConversion(context: NonNullable<Awaited<ReturnType<typeof getWorkspaceContext>>>, documentId: string) {
   const { data } = await context.supabase
     .from("conversions")
-    .select("id, to_format")
+    .select("id, from_format, to_format")
     .eq("document_id", documentId)
     .in("status", ["queued", "running"])
     .order("created_at", { ascending: true })
@@ -365,6 +369,29 @@ async function failQueuedConversion(context: NonNullable<Awaited<ReturnType<type
   });
 }
 
+async function addConvertedVersion(
+  context: NonNullable<Awaited<ReturnType<typeof getWorkspaceContext>>>,
+  documentId: string,
+  storagePath: string,
+  fileName: string,
+) {
+  const { data: latestVersion } = await context.supabase
+    .from("document_versions")
+    .select("version_number")
+    .eq("document_id", documentId)
+    .order("version_number", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+
+  await context.supabase.from("document_versions").insert({
+    document_id: documentId,
+    version_number: Number(latestVersion?.version_number ?? 1) + 1,
+    storage_path: storagePath,
+    change_note: `Converted output: ${fileName}`,
+    created_by: context.userId,
+  });
+}
+
 function getTargetFormat(message: string) {
   const match = message.match(/\bto\s+([a-z0-9]+)/i);
   return match?.[1]?.toLowerCase() ?? "excel";
@@ -380,7 +407,7 @@ function getRunningMessage(type: ProcessingJob["type"]) {
 function getCompletedMessage(type: ProcessingJob["type"]) {
   if (type === "ocr") return "OCR completed";
   if (type === "extraction") return "Extraction completed";
-  if (type === "conversion") return "Conversion completed";
+  if (type === "conversion") return "Download ready";
   return "Completed";
 }
 
@@ -392,7 +419,11 @@ function getDownloadFormat(fileName: string) {
   return "txt";
 }
 
-function validateConvertedFile(file: { content?: Uint8Array; downloadPath?: string; fileName?: string }) {
+function validateConvertedFile(
+  file: { content?: Uint8Array; downloadPath?: string; fileName?: string; contentType?: string },
+  targetFormat = "unknown",
+  source?: Pick<DocumentRecord, "name" | "mimeType">,
+) {
   if (!file.downloadPath?.trim()) {
     throw new Error("Conversion failed because no output file path was produced.");
   }
@@ -414,4 +445,50 @@ function validateConvertedFile(file: { content?: Uint8Array; downloadPath?: stri
   if (metadataOnlyMarkers.some((marker) => sample.includes(marker))) {
     throw new Error("Conversion failed because no readable document content was extracted.");
   }
+
+  if (targetFormat === "pdf") {
+    if (!startsWithPdfHeader(file.content)) {
+      throw new Error("Conversion failed because the output is not a valid PDF file.");
+    }
+
+    const pageCount = countPdfPages(file.content);
+    if (pageCount < 1) {
+      throw new Error("Conversion failed because the output PDF has no pages.");
+    }
+
+    if (source && isOfficeSource(source) && looksLikeGeneratedTextDumpPdf(file.content)) {
+      throw new Error("Conversion failed because Office files must be rendered by a real PDF conversion engine, not exported as a text-only PDF.");
+    }
+  }
+
+  if ((targetFormat === "excel" || targetFormat === "xlsx") && !startsWithZipHeader(file.content)) {
+    throw new Error("Conversion failed because the output is not a valid Excel workbook.");
+  }
+
+  if ((targetFormat === "word" || targetFormat === "docx") && !startsWithZipHeader(file.content)) {
+    throw new Error("Conversion failed because the output is not a valid Word document.");
+  }
+}
+
+function startsWithPdfHeader(bytes: Uint8Array) {
+  return bytes[0] === 0x25 && bytes[1] === 0x50 && bytes[2] === 0x44 && bytes[3] === 0x46;
+}
+
+function startsWithZipHeader(bytes: Uint8Array) {
+  return bytes[0] === 0x50 && bytes[1] === 0x4b;
+}
+
+function countPdfPages(bytes: Uint8Array) {
+  const text = new TextDecoder("latin1", { fatal: false }).decode(bytes);
+  return Array.from(text.matchAll(/\/Type\s*\/Page\b/g)).length;
+}
+
+function isOfficeSource(source: Pick<DocumentRecord, "name" | "mimeType">) {
+  const value = `${source.name} ${source.mimeType}`.toLowerCase();
+  return /(\.docx?|\.xlsx?|\.pptx?|word|spreadsheet|excel|powerpoint|presentation)/.test(value);
+}
+
+function looksLikeGeneratedTextDumpPdf(bytes: Uint8Array) {
+  const text = new TextDecoder("latin1", { fatal: false }).decode(bytes.slice(0, Math.min(bytes.byteLength, 20000)));
+  return text.includes("/BaseFont /Helvetica") && text.includes("/F1 18 Tf") && text.includes("/F1 10 Tf");
 }

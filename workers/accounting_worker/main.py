@@ -33,6 +33,10 @@ WORKER_PARSER_VERSION = "fnb_business_v1"
 WORKER_BUILD_FALLBACK = "local-dev"
 DEFAULT_AI_MODEL = "gpt-4o-mini"
 AI_CLASSIFICATION_CACHE: dict[str, dict[str, Any]] = {}
+ACCOUNTING_REPORT_DISCLAIMER = (
+    "Draft management report generated from bank-statement data only. "
+    "This is not a final IFRS or Companies Act financial statement and requires accountant review."
+)
 MONEY_TOKEN = re.compile(
     r"(?<![A-Za-z0-9])(?P<negative>-)?(?:R\s*)?(?P<bracket>\()?(?P<amount>(?:\d{1,3}(?:,\d{3})+|\d+)\.\d{2})(?:\))?\s*(?P<suffix>Cr|CR|Dr|DR)?(?!\d)",
     re.IGNORECASE,
@@ -1882,6 +1886,10 @@ def build_workbook(metadata: dict[str, Any], transactions: list[ParsedTransactio
     dashboard["A1"].font = Font(bold=True, size=14, color="FFFFFF")
     dashboard["A1"].fill = HEADER_FILL
     dashboard["A1"].alignment = Alignment(horizontal="center")
+    dashboard.merge_cells("A2:K2")
+    dashboard["A2"] = ACCOUNTING_REPORT_DISCLAIMER
+    dashboard["A2"].font = Font(italic=True, size=9, color="475569")
+    dashboard["A2"].alignment = Alignment(wrap_text=True)
     dashboard_rows = [
         ("Period covered", f"{metadata.get('statement_period_start') or '-'} to {metadata.get('statement_period_end') or '-'}"),
         ("Opening bank balance", opening),
@@ -2045,6 +2053,7 @@ def build_workbook(metadata: dict[str, Any], transactions: list[ParsedTransactio
     assumptions = workbook.create_sheet("Assumptions")
     assumptions_rows = [
         ("Area", "Assumption / Note"),
+        ("Report limitation", ACCOUNTING_REPORT_DISCLAIMER),
         ("Important limitation", "This workbook is prepared from bank statements only. It is a cashbook-based reconstruction, not a full accounting system TB."),
         ("VAT rule applied", "Potential VAT is calculated at 15/115 of VAT-inclusive amounts only where the bank description suggests taxable revenue or claimable input VAT."),
         ("Invoice matching", "User confirmed invoices will be handled separately. The VAT schedule therefore flags document status for invoice matching."),
@@ -2311,6 +2320,10 @@ def build_combined_workbook(runs: list[dict[str, Any]], transactions_by_run: dic
     dashboard["A1"].font = Font(bold=True, size=14, color="FFFFFF")
     dashboard["A1"].fill = HEADER_FILL
     dashboard["A1"].alignment = Alignment(horizontal="center")
+    dashboard.merge_cells("A2:H2")
+    dashboard["A2"] = ACCOUNTING_REPORT_DISCLAIMER
+    dashboard["A2"].font = Font(italic=True, size=9, color="475569")
+    dashboard["A2"].alignment = Alignment(wrap_text=True)
     dashboard_rows = [
         ("Company name", company_name),
         ("Bank", bank),
@@ -2432,6 +2445,7 @@ def build_combined_workbook(runs: list[dict[str, Any]], transactions_by_run: dic
     assumptions = workbook.create_sheet("Assumptions")
     assumptions_rows = [
         ("Area", "Assumption / Note"),
+        ("Report limitation", ACCOUNTING_REPORT_DISCLAIMER),
         ("Batch processing", "Statements are sorted by statement period start date before combining."),
         ("Duplicate removal", "Potential duplicates are removed by matching date, merchant pattern, amount and running balance."),
         ("Account rule", "Default batch generation only combines the same company, bank and account number."),

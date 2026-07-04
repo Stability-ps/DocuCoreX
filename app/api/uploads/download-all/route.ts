@@ -19,7 +19,7 @@ export async function POST(request: Request) {
     .from("conversions")
     .select("id, to_format, download_path, documents!inner(workspace_id,name,status,deleted_at)")
     .in("id", body.conversionIds)
-    .eq("status", "completed");
+    .in("status", ["output_ready", "completed"]);
 
   if (error) {
     return NextResponse.json({ error: error.message }, { status: 500 });

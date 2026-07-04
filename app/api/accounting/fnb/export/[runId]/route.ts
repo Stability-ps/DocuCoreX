@@ -24,6 +24,9 @@ const sectionNames: Record<ExportSection, string> = {
   "trial-balance": "trial-balance",
 };
 
+const reportDisclaimer =
+  "Draft management report generated from bank-statement data only. This is not a final IFRS or Companies Act financial statement and requires accountant review.";
+
 function csvCell(value: unknown) {
   const text = value === null || value === undefined ? "" : String(value);
   return /[",\n]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
@@ -105,6 +108,8 @@ function csvForSection(detail: AccountingRunDetail, section: ExportSection) {
 
   if (section === "summary") {
     return csv([
+      ["Disclaimer", reportDisclaimer],
+      [],
       ["Metric", "Value"],
       ["Company", detail.run.companyName ?? ""],
       ["Account number", detail.run.accountNumber ?? ""],
@@ -122,6 +127,8 @@ function csvForSection(detail: AccountingRunDetail, section: ExportSection) {
 
   if (section === "bank-reconciliation") {
     return csv([
+      ["Disclaimer", reportDisclaimer],
+      [],
       ["Bank Reconciliation", "Amount"],
       ["Opening Balance", money(detail.run.openingBalance)],
       ["+ Receipts", totalCredits],

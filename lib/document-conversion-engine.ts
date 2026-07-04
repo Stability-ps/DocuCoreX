@@ -1,4 +1,8 @@
 import { inflateRawSync } from "node:zlib";
+import { execFileSync, spawnSync } from "node:child_process";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { extname, join } from "node:path";
 import type { GeneratedFile } from "@/lib/file-output";
 import { createDocxFile, createPdfFile, createTextFile, createXlsxFile, createZip } from "@/lib/file-output";
 
@@ -21,7 +25,7 @@ export type SourceDocument = {
 };
 
 type ExtractedContent = {
-  kind: "text" | "csv" | "docx" | "xlsx" | "pdf" | "image";
+  kind: "text" | "csv" | "docx" | "xlsx" | "pdf" | "image" | "powerpoint";
   text: string;
   rows: string[][];
   sourceType: string;
@@ -45,6 +49,7 @@ export function detectSourceType(source: Pick<SourceDocument, "name" | "mimeType
   if (lower.includes("pdf") || /\.pdf$/i.test(source.name)) return "pdf";
   if (lower.includes("word") || /\.(docx?|rtf)$/i.test(source.name)) return "word";
   if (lower.includes("excel") || lower.includes("spreadsheet") || /\.(xlsx?|xls)$/i.test(source.name)) return "excel";
+  if (lower.includes("powerpoint") || lower.includes("presentation") || /\.(pptx?|ppsx?)$/i.test(source.name)) return "powerpoint";
   if (lower.includes("csv") || /\.csv$/i.test(source.name)) return "csv";
   if (lower.includes("text") || /\.txt$/i.test(source.name)) return "text";
   if (lower.includes("image") || /\.(png|jpe?g|tiff?|bmp|gif|heic)$/i.test(source.name)) return "image";
@@ -62,6 +67,10 @@ export async function convertDocumentContent(source: SourceDocument, target: str
 
   if (targetFormat === "zip") {
     return createConvertedZip(source);
+  }
+
+  if (targetFormat === "pdf" && isOfficeSource(sourceType)) {
+    return convertOfficeDocumentToPdf(source);
   }
 
   if (sourceType === "image") {
@@ -91,6 +100,9 @@ export async function convertDocumentContent(source: SourceDocument, target: str
   }
 
   if (targetFormat === "pdf") {
+    if (isOfficeSource(sourceType)) {
+      throw new ConversionError("Office to PDF conversion engine unavailable. LibreOffice headless is required for layout-preserving PDF output.", "CONVERSION_ENGINE_UNAVAILABLE");
+    }
     return createPdfFile(source.name, contentLines(extracted));
   }
 
@@ -142,12 +154,109 @@ function extractReadableContent(source: SourceDocument): ExtractedContent {
   }
 
   if (sourceType === "pdf") {
-    const text = extractPdfText(source.content);
+    const pdfInfo = inspectPdf(source.content, source.name);
+    const extraction = extractPdfText(source.content, source.name);
+    console.info("docucorex.pdf.extraction", {
+      fileName: source.name,
+      sizeBytes: source.content.byteLength,
+      pageCount: pdfInfo.pageCount,
+      pageCharacters: extraction.pageCharacters,
+      totalCharacters: extraction.text.length,
+    });
+    if (!normalizeText(extraction.text)) {
+      if (!hasOcrEngine()) {
+        throw new ConversionError("OCR engine not installed. This PDF appears to be scanned or image-based, and no selectable text could be extracted.", "OCR_ENGINE_UNAVAILABLE");
+      }
+      throw new ConversionError("OCR fallback is not wired into this conversion worker yet. Configure OCRmyPDF/Tesseract, then retry.", "OCR_FALLBACK_REQUIRED");
+    }
+    const text = extraction.text;
     return { kind: "pdf", text, rows: textRows(text), sourceType };
   }
 
   const text = normalizeText(decoder.decode(source.content));
   return { kind: "text", text, rows: textRows(text), sourceType };
+}
+
+function isOfficeSource(sourceType: string) {
+  return sourceType === "word" || sourceType === "excel" || sourceType === "powerpoint";
+}
+
+function convertOfficeDocumentToPdf(source: SourceDocument): GeneratedFile {
+  const soffice = findExecutable("LIBREOFFICE_PATH", [
+    "soffice",
+    "libreoffice",
+    "/Applications/LibreOffice.app/Contents/MacOS/soffice",
+    "/Users/patric/.cache/codex-runtimes/codex-primary-runtime/dependencies/bin/soffice",
+    "/Users/patric/.cache/codex-runtimes/codex-primary-runtime/dependencies/native/libreoffice-headless/libreoffice/LibreOfficeDev.app/Contents/MacOS/soffice",
+  ]);
+
+  if (!soffice) {
+    throw new ConversionError("Conversion engine unavailable. LibreOffice headless is required for DOCX, XLSX and PPTX to PDF conversion.", "CONVERSION_ENGINE_UNAVAILABLE");
+  }
+
+  const tempDir = mkdtempSync(join(tmpdir(), "docucorex-convert-"));
+  const extension = extname(source.name) || extensionForSourceType(detectSourceType(source));
+  const inputPath = join(tempDir, `${baseName(source.name)}${extension}`);
+
+  try {
+    writeFileSync(inputPath, source.content);
+    const result = spawnSync(
+      soffice,
+      ["--headless", "--norestore", "--nodefault", "--nolockcheck", "--nofirststartwizard", "--convert-to", "pdf", "--outdir", tempDir, inputPath],
+      {
+        cwd: tempDir,
+        env: conversionProcessEnv(),
+        encoding: "utf8",
+        timeout: 120_000,
+      },
+    );
+
+    if (result.error || result.status !== 0) {
+      const reason = result.error?.message || result.stderr || result.stdout || `LibreOffice exited with status ${result.status}`;
+      throw new ConversionError(`Conversion engine unavailable. LibreOffice could not render this file: ${reason.trim()}`, "CONVERSION_ENGINE_UNAVAILABLE");
+    }
+
+    const outputPath = join(tempDir, `${baseName(source.name)}.pdf`);
+    if (!existsSync(outputPath)) {
+      throw new ConversionError("Conversion engine failed to produce a PDF output file.", "CONVERSION_OUTPUT_MISSING");
+    }
+
+    const content = new Uint8Array(readFileSync(outputPath));
+    const pdfInfo = inspectPdf(content, `${baseName(source.name)}.pdf`);
+    if (pdfInfo.pageCount < 1) {
+      throw new ConversionError("Conversion engine produced a PDF with no pages.", "INVALID_CONVERTED_PDF");
+    }
+
+    return {
+      fileName: `${baseName(source.name)}.pdf`,
+      contentType: "application/pdf",
+      content,
+    };
+  } finally {
+    rmSync(tempDir, { recursive: true, force: true });
+  }
+}
+
+function extensionForSourceType(sourceType: string) {
+  if (sourceType === "word") return ".docx";
+  if (sourceType === "excel") return ".xlsx";
+  if (sourceType === "powerpoint") return ".pptx";
+  return ".bin";
+}
+
+function conversionProcessEnv() {
+  const popplerLib = "/Users/patric/.cache/codex-runtimes/codex-primary-runtime/dependencies/native/poppler/poppler/lib";
+  return {
+    ...process.env,
+    PATH: [
+      "/Users/patric/.cache/codex-runtimes/codex-primary-runtime/dependencies/bin",
+      process.env.PATH ?? "",
+    ].filter(Boolean).join(":"),
+    DYLD_FALLBACK_LIBRARY_PATH: [
+      popplerLib,
+      process.env.DYLD_FALLBACK_LIBRARY_PATH ?? "",
+    ].filter(Boolean).join(":"),
+  };
 }
 
 function hasReadableContent(content: ExtractedContent) {
@@ -278,7 +387,106 @@ function extractXlsxRows(bytes: Uint8Array) {
   return rows;
 }
 
-function extractPdfText(bytes: Uint8Array) {
+function inspectPdf(bytes: Uint8Array, fileName: string) {
+  if (!bytes.byteLength) {
+    throw new ConversionError("The PDF file is empty.", "EMPTY_PDF");
+  }
+
+  if (!startsWithPdfHeader(bytes)) {
+    throw new ConversionError("The uploaded file does not appear to be a valid PDF.", "INVALID_PDF_HEADER");
+  }
+
+  const tempDir = mkdtempSync(join(tmpdir(), "docucorex-pdf-"));
+  const pdfPath = join(tempDir, `${baseName(fileName)}.pdf`);
+
+  try {
+    writeFileSync(pdfPath, bytes);
+    const pdfinfo = findExecutable("PDFINFO_PATH", [
+      "pdfinfo",
+      "/Users/patric/.cache/codex-runtimes/codex-primary-runtime/dependencies/bin/pdfinfo",
+    ]);
+
+    let pageCount = 0;
+    if (pdfinfo) {
+      try {
+        const output = execFileSync(pdfinfo, [pdfPath], { encoding: "utf8", timeout: 30_000 });
+        pageCount = Number(output.match(/^Pages:\s+(\d+)/m)?.[1] ?? 0);
+      } catch {
+        pageCount = 0;
+      }
+    }
+
+    if (!pageCount) {
+      pageCount = countPdfPagesFromBytes(bytes);
+    }
+
+    if (pageCount < 1) {
+      throw new ConversionError("The PDF has no readable pages.", "PDF_HAS_NO_PAGES");
+    }
+
+    return { pageCount };
+  } finally {
+    rmSync(tempDir, { recursive: true, force: true });
+  }
+}
+
+function extractPdfText(bytes: Uint8Array, fileName: string) {
+  const tempDir = mkdtempSync(join(tmpdir(), "docucorex-pdf-text-"));
+  const pdfPath = join(tempDir, `${baseName(fileName)}.pdf`);
+
+  try {
+    writeFileSync(pdfPath, bytes);
+    const python = findExecutable("PYTHON_PATH", [
+      "/Users/patric/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3",
+      "python3",
+      "python",
+    ]);
+
+    if (python) {
+      const script = `
+import json
+import sys
+
+path = sys.argv[1]
+pages = []
+try:
+    import pdfplumber
+    with pdfplumber.open(path) as pdf:
+        for page in pdf.pages:
+            pages.append(page.extract_text() or "")
+except Exception:
+    try:
+        from pypdf import PdfReader
+        reader = PdfReader(path)
+        pages = [(page.extract_text() or "") for page in reader.pages]
+    except Exception as exc:
+        print(json.dumps({"error": str(exc), "pages": []}))
+        sys.exit(0)
+
+print(json.dumps({"pages": pages}))
+`;
+      const result = spawnSync(python, ["-c", script, pdfPath], { encoding: "utf8", timeout: 60_000 });
+      if (result.status === 0 && result.stdout) {
+        try {
+          const parsed = JSON.parse(result.stdout) as { pages?: string[] };
+          const pages = Array.isArray(parsed.pages) ? parsed.pages.map((page) => normalizeText(page)) : [];
+          return {
+            text: normalizeText(pages.join("\n\n")),
+            pageCharacters: pages.map((page) => page.length),
+          };
+        } catch {
+          // Fall through to the lightweight parser.
+        }
+      }
+    }
+
+    return extractPdfTextWithLightweightParser(bytes);
+  } finally {
+    rmSync(tempDir, { recursive: true, force: true });
+  }
+}
+
+function extractPdfTextWithLightweightParser(bytes: Uint8Array) {
   const raw = decoder.decode(bytes);
   const pieces: string[] = [];
 
@@ -292,7 +500,17 @@ function extractPdfText(bytes: Uint8Array) {
     }
   }
 
-  return normalizeText(pieces.join("\n"));
+  const text = normalizeText(pieces.join("\n"));
+  return { text, pageCharacters: text ? [text.length] : [] };
+}
+
+function startsWithPdfHeader(bytes: Uint8Array) {
+  return bytes[0] === 0x25 && bytes[1] === 0x50 && bytes[2] === 0x44 && bytes[3] === 0x46;
+}
+
+function countPdfPagesFromBytes(bytes: Uint8Array) {
+  const raw = decoder.decode(bytes);
+  return Array.from(raw.matchAll(/\/Type\s*\/Page\b/g)).length;
 }
 
 function unescapePdfString(value: string) {
@@ -428,6 +646,29 @@ function latin1Bytes(value: string) {
 
 function htmlEscape(value: string) {
   return value.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+}
+
+function findExecutable(envName: string, candidates: string[]) {
+  const explicit = process.env[envName]?.trim();
+  const allCandidates = explicit ? [explicit, ...candidates] : candidates;
+
+  for (const candidate of allCandidates) {
+    if (!candidate) continue;
+    if (candidate.includes("/")) {
+      if (existsSync(candidate)) return candidate;
+      continue;
+    }
+
+    const result = spawnSync("which", [candidate], { encoding: "utf8" });
+    const found = result.status === 0 ? result.stdout.trim().split(/\r?\n/)[0] : "";
+    if (found) return found;
+  }
+
+  return null;
+}
+
+function hasOcrEngine() {
+  return Boolean(findExecutable("OCRMYPDF_PATH", ["ocrmypdf"]) || findExecutable("TESSERACT_PATH", ["tesseract"]));
 }
 
 function baseName(name: string) {
