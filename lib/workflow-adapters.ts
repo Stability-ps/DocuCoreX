@@ -34,6 +34,7 @@ export interface ConversionProvider {
     fileName: string;
     contentType: string;
     content: Uint8Array;
+    artifacts?: Array<{ fileName: string; contentType: string; content: Uint8Array }>;
     message: string;
   }>;
 }
@@ -109,6 +110,7 @@ export class MockConversionProvider implements ConversionProvider {
     fileName: string;
     contentType: string;
     content: Uint8Array;
+    artifacts?: Array<{ fileName: string; contentType: string; content: Uint8Array }>;
     message: string;
   }> {
     const content = documentContent(document);
@@ -128,6 +130,7 @@ export class MockConversionProvider implements ConversionProvider {
       fileName: generated.fileName,
       contentType: generated.contentType,
       content: generated.content,
+      artifacts: generated.artifacts,
       message: `Conversion to ${options.toFormat} completed from extracted document content`,
     };
   }

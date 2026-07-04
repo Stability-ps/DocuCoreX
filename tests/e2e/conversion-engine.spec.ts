@@ -1,6 +1,9 @@
 import { expect, test } from "@playwright/test";
+import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { createDocxFile, createPdfFile, createXlsxFile } from "@/lib/file-output";
-import { convertDocumentContent, ConversionError } from "@/lib/document-conversion-engine";
+import { convertDocumentContent, ConversionError, verifyOcrRuntime } from "@/lib/document-conversion-engine";
 
 const encoder = new TextEncoder();
 const decoder = new TextDecoder("latin1");
@@ -184,16 +187,73 @@ test.describe("Document conversion engine", () => {
   });
 
   test("scanned PDF fails with OCR unavailable instead of fake success", async () => {
-    await expect(
-      convertDocumentContent(
+    const restore = withEnv({
+      OCRMYPDF_PATH: "/definitely/missing/ocrmypdf",
+      TESSERACT_PATH: "/definitely/missing/tesseract",
+      GHOSTSCRIPT_PATH: "/definitely/missing/gs",
+      QPDF_PATH: "/definitely/missing/qpdf",
+    });
+    try {
+      await expect(
+        convertDocumentContent(
+          {
+            name: "scanned.pdf",
+            mimeType: "application/pdf",
+            content: createBlankPdf(),
+          },
+          "text",
+        ),
+      ).rejects.toThrow(/OCR worker|OCR engine|OCR fallback/);
+    } finally {
+      restore();
+    }
+  });
+
+  test("scanned PDF runs OCR and retries text extraction when OCR dependencies are available", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "docucorex-ocr-test-"));
+    const searchablePdf = createPdfFile("searchable.pdf", ["OCR extracted invoice text", "Total due 123.45"]);
+    const searchablePath = join(tempDir, "searchable.pdf");
+    writeFileSync(searchablePath, searchablePdf.content);
+
+    const fakeOcr = join(tempDir, "ocrmypdf");
+    writeExecutable(
+      fakeOcr,
+      `#!/bin/sh
+if [ "$1" = "--version" ]; then echo "ocrmypdf 16.0.0"; exit 0; fi
+last=""
+for arg in "$@"; do last="$arg"; done
+cp "${searchablePath}" "$last"
+`,
+    );
+    const fakeTesseract = writeVersionBinary(tempDir, "tesseract", "tesseract 5.3.0");
+    const fakeGs = writeVersionBinary(tempDir, "gs", "10.0.0");
+    const fakeQpdf = writeVersionBinary(tempDir, "qpdf", "qpdf version 11.0.0");
+
+    const restore = withEnv({
+      OCRMYPDF_PATH: fakeOcr,
+      TESSERACT_PATH: fakeTesseract,
+      GHOSTSCRIPT_PATH: fakeGs,
+      QPDF_PATH: fakeQpdf,
+    });
+
+    try {
+      expect(verifyOcrRuntime().ok).toBe(true);
+      const output = await convertDocumentContent(
         {
           name: "scanned.pdf",
           mimeType: "application/pdf",
           content: createBlankPdf(),
         },
         "text",
-      ),
-    ).rejects.toThrow(/OCR engine|OCR fallback/);
+      );
+      const body = new TextDecoder().decode(output.content);
+      expect(body).toContain("OCR extracted invoice text");
+      expect(output.artifacts?.[0]?.fileName).toBe("scanned-searchable.pdf");
+      expect(startsWithPdf(output.artifacts?.[0]?.content ?? new Uint8Array())).toBe(true);
+    } finally {
+      restore();
+      rmSync(tempDir, { recursive: true, force: true });
+    }
   });
 
   test("extracts simple text-based PDF content before creating Word, text, CSV and HTML", async () => {
@@ -310,4 +370,36 @@ startxref
 
 function createMinimalPptx() {
   return encoder.encode("PK\u0003\u0004minimal-pptx-placeholder");
+}
+
+function withEnv(values: Record<string, string>) {
+  const previous = new Map<string, string | undefined>();
+  for (const [key, value] of Object.entries(values)) {
+    previous.set(key, process.env[key]);
+    process.env[key] = value;
+  }
+  return () => {
+    for (const [key, value] of previous) {
+      if (value === undefined) {
+        delete process.env[key];
+      } else {
+        process.env[key] = value;
+      }
+    }
+  };
+}
+
+function writeExecutable(path: string, body: string) {
+  writeFileSync(path, body);
+  chmodSync(path, 0o755);
+  return path;
+}
+
+function writeVersionBinary(directory: string, name: string, version: string) {
+  return writeExecutable(
+    join(directory, name),
+    `#!/bin/sh
+echo "${version}"
+`,
+  );
 }

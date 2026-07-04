@@ -11,7 +11,18 @@ import { getWorkspaceContext } from "@/lib/server-documents";
 import type { DocumentRecord, ProcessingJob } from "@/lib/types";
 import { createWorkflowAdapters } from "@/lib/workflow-adapters";
 
-export async function POST() {
+export async function POST(request: Request) {
+  const proxied = await proxyToConversionWorker(request);
+  if (proxied) return proxied;
+
+  if (process.env.CONVERSION_WORKER_MODE === "true") {
+    const configuredSecret = process.env.CONVERSION_WORKER_SECRET?.trim();
+    const providedSecret = request.headers.get("x-docucorex-worker-secret")?.trim();
+    if (configuredSecret && providedSecret !== configuredSecret) {
+      return NextResponse.json({ error: "Unauthorized worker request" }, { status: 401 });
+    }
+  }
+
   const context = await getWorkspaceContext().catch(() => null);
   const providers = createWorkflowAdapters();
 
@@ -171,6 +182,8 @@ export async function POST() {
           throw new Error(upload.error.message);
         }
 
+        const uploadedArtifacts = await uploadConversionArtifacts(context, document.id, converted.artifacts ?? []);
+
         if (conversion) {
           await context.supabase
             .from("conversions")
@@ -192,6 +205,7 @@ export async function POST() {
           contentType: converted.contentType,
           exitCode: 0,
           stderr: "",
+          artifacts: uploadedArtifacts,
         });
 
         await recordAuditLog({
@@ -234,7 +248,38 @@ export async function POST() {
 }
 
 export async function GET() {
-  return POST();
+  return POST(new Request("http://localhost/api/jobs/process", { method: "POST" }));
+}
+
+async function proxyToConversionWorker(request: Request) {
+  const workerUrl = process.env.CONVERSION_WORKER_URL?.trim();
+  if (!workerUrl || process.env.CONVERSION_WORKER_MODE === "true") return null;
+
+  const target = new URL("/api/jobs/process", workerUrl);
+  const response = await fetch(target, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      ...(process.env.CONVERSION_WORKER_SECRET ? { "x-docucorex-worker-secret": process.env.CONVERSION_WORKER_SECRET } : {}),
+      cookie: request.headers.get("cookie") ?? "",
+    },
+    cache: "no-store",
+  }).catch((error) => {
+    console.error("docucorex.conversion_worker.proxy_failed", { message: error instanceof Error ? error.message : String(error), workerUrl });
+    return null;
+  });
+
+  if (!response) {
+    return NextResponse.json({ error: "Conversion worker is unavailable. Please try again shortly." }, { status: 503 });
+  }
+
+  const body = await response.text();
+  return new NextResponse(body, {
+    status: response.status,
+    headers: {
+      "content-type": response.headers.get("content-type") ?? "application/json",
+    },
+  });
 }
 
 async function processDemoJobs(providers: ReturnType<typeof createWorkflowAdapters>) {
@@ -390,6 +435,32 @@ async function addConvertedVersion(
     change_note: `Converted output: ${fileName}`,
     created_by: context.userId,
   });
+}
+
+async function uploadConversionArtifacts(
+  context: NonNullable<Awaited<ReturnType<typeof getWorkspaceContext>>>,
+  documentId: string,
+  artifacts: Array<{ fileName: string; contentType: string; content: Uint8Array }>,
+) {
+  const uploaded: Array<{ fileName: string; storagePath: string; contentType: string; bytes: number }> = [];
+
+  for (const artifact of artifacts) {
+    const storagePath = `${context.workspaceId}/conversions/${documentId}/artifacts/${Date.now()}-${artifact.fileName}`;
+    const upload = await context.supabase.storage.from("documents").upload(
+      storagePath,
+      new Blob([Buffer.from(artifact.content)], { type: artifact.contentType }),
+      { contentType: artifact.contentType, upsert: true },
+    );
+
+    if (upload.error) {
+      throw new Error(`OCR artifact upload failed: ${upload.error.message}`);
+    }
+
+    await addConvertedVersion(context, documentId, storagePath, artifact.fileName);
+    uploaded.push({ fileName: artifact.fileName, storagePath, contentType: artifact.contentType, bytes: artifact.content.byteLength });
+  }
+
+  return uploaded;
 }
 
 function getTargetFormat(message: string) {

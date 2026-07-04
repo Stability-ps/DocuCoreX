@@ -4,6 +4,7 @@ export type GeneratedFile = {
   fileName: string;
   contentType: string;
   content: Uint8Array;
+  artifacts?: GeneratedFile[];
 };
 
 type ZipEntry = {

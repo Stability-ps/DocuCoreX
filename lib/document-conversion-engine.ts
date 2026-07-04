@@ -24,11 +24,18 @@ export type SourceDocument = {
   content: Uint8Array;
 };
 
+export type OcrRuntimeCheck = {
+  ok: boolean;
+  dependencies: Record<"ocrmypdf" | "tesseract" | "ghostscript" | "qpdf", { ok: boolean; version?: string; error?: string }>;
+  message?: string;
+};
+
 type ExtractedContent = {
   kind: "text" | "csv" | "docx" | "xlsx" | "pdf" | "image" | "powerpoint";
   text: string;
   rows: string[][];
   sourceType: string;
+  artifacts?: GeneratedFile[];
 };
 
 const decoder = new TextDecoder("utf-8", { fatal: false });
@@ -100,6 +107,13 @@ export async function convertDocumentContent(source: SourceDocument, target: str
   }
 
   if (targetFormat === "pdf") {
+    if (sourceType === "pdf") {
+      return extracted.artifacts?.[0] ?? {
+        fileName: `${baseName(source.name)}.pdf`,
+        contentType: "application/pdf",
+        content: source.content,
+      };
+    }
     if (isOfficeSource(sourceType)) {
       throw new ConversionError("Office to PDF conversion engine unavailable. LibreOffice headless is required for layout-preserving PDF output.", "CONVERSION_ENGINE_UNAVAILABLE");
     }
@@ -107,23 +121,23 @@ export async function convertDocumentContent(source: SourceDocument, target: str
   }
 
   if (targetFormat === "word") {
-    return createDocxFile(source.name, contentLines(extracted));
+    return withArtifacts(createDocxFile(source.name, contentLines(extracted)), extracted.artifacts);
   }
 
   if (targetFormat === "excel") {
-    return createXlsxFile(source.name, workbookRows(extracted));
+    return withArtifacts(createXlsxFile(source.name, workbookRows(extracted)), extracted.artifacts);
   }
 
   if (targetFormat === "csv") {
-    return createCsvFile(source.name, workbookRows(extracted));
+    return withArtifacts(createCsvFile(source.name, workbookRows(extracted)), extracted.artifacts);
   }
 
   if (targetFormat === "text") {
-    return createTextFile(source.name, contentLines(extracted));
+    return withArtifacts(createTextFile(source.name, contentLines(extracted)), extracted.artifacts);
   }
 
   if (targetFormat === "html") {
-    return createHtmlFile(source.name, extracted);
+    return withArtifacts(createHtmlFile(source.name, extracted), extracted.artifacts);
   }
 
   throw new ConversionError(`Conversion to ${targetFormat} is not implemented.`, "UNSUPPORTED_CONVERSION");
@@ -164,10 +178,20 @@ function extractReadableContent(source: SourceDocument): ExtractedContent {
       totalCharacters: extraction.text.length,
     });
     if (!normalizeText(extraction.text)) {
-      if (!hasOcrEngine()) {
-        throw new ConversionError("OCR engine not installed. This PDF appears to be scanned or image-based, and no selectable text could be extracted.", "OCR_ENGINE_UNAVAILABLE");
+      const ocrPdf = createSearchablePdfWithOcr(source);
+      const ocrInfo = inspectPdf(ocrPdf.content, ocrPdf.fileName);
+      const ocrExtraction = extractPdfText(ocrPdf.content, ocrPdf.fileName);
+      console.info("docucorex.pdf.ocr_extraction", {
+        fileName: source.name,
+        ocrFileName: ocrPdf.fileName,
+        pageCount: ocrInfo.pageCount,
+        pageCharacters: ocrExtraction.pageCharacters,
+        totalCharacters: ocrExtraction.text.length,
+      });
+      if (!normalizeText(ocrExtraction.text)) {
+        throw new ConversionError("OCR completed, but no readable text could be extracted from the searchable PDF.", "OCR_NO_TEXT_EXTRACTED");
       }
-      throw new ConversionError("OCR fallback is not wired into this conversion worker yet. Configure OCRmyPDF/Tesseract, then retry.", "OCR_FALLBACK_REQUIRED");
+      return { kind: "pdf", text: ocrExtraction.text, rows: textRows(ocrExtraction.text), sourceType, artifacts: [ocrPdf] };
     }
     const text = extraction.text;
     return { kind: "pdf", text, rows: textRows(text), sourceType };
@@ -175,6 +199,13 @@ function extractReadableContent(source: SourceDocument): ExtractedContent {
 
   const text = normalizeText(decoder.decode(source.content));
   return { kind: "text", text, rows: textRows(text), sourceType };
+}
+
+function withArtifacts(file: GeneratedFile, artifacts?: GeneratedFile[]) {
+  if (artifacts?.length) {
+    file.artifacts = artifacts;
+  }
+  return file;
 }
 
 function isOfficeSource(sourceType: string) {
@@ -430,6 +461,79 @@ function inspectPdf(bytes: Uint8Array, fileName: string) {
   }
 }
 
+export function verifyOcrRuntime(): OcrRuntimeCheck {
+  const dependencies = {
+    ocrmypdf: checkBinary("OCRMYPDF_PATH", ["ocrmypdf"], ["--version"]),
+    tesseract: checkBinary("TESSERACT_PATH", ["tesseract"], ["--version"]),
+    ghostscript: checkBinary("GHOSTSCRIPT_PATH", ["gs"], ["--version"]),
+    qpdf: checkBinary("QPDF_PATH", ["qpdf"], ["--version"]),
+  };
+  const missing = Object.entries(dependencies)
+    .filter(([, status]) => !status.ok)
+    .map(([name]) => name);
+  return {
+    ok: missing.length === 0,
+    dependencies,
+    message: missing.length ? `OCR worker dependencies missing or unavailable: ${missing.join(", ")}` : undefined,
+  };
+}
+
+function createSearchablePdfWithOcr(source: SourceDocument): GeneratedFile {
+  const runtime = verifyOcrRuntime();
+  if (!runtime.ok) {
+    throw new ConversionError(
+      `${runtime.message}. Install OCRmyPDF, Tesseract OCR, Ghostscript, qpdf and English language data in the conversion worker.`,
+      "OCR_ENGINE_UNAVAILABLE",
+    );
+  }
+
+  const ocrmypdf = findExecutable("OCRMYPDF_PATH", ["ocrmypdf"]);
+  if (!ocrmypdf) {
+    throw new ConversionError("OCR engine unavailable. OCRmyPDF is required.", "OCR_ENGINE_UNAVAILABLE");
+  }
+
+  const tempDir = mkdtempSync(join(tmpdir(), "docucorex-ocr-"));
+  const inputPath = join(tempDir, `${baseName(source.name)}.pdf`);
+  const outputPath = join(tempDir, `${baseName(source.name)}-searchable.pdf`);
+
+  try {
+    writeFileSync(inputPath, source.content);
+    const result = spawnSync(
+      ocrmypdf,
+      ["--skip-text", "--language", "eng", "--output-type", "pdf", "--jobs", "1", inputPath, outputPath],
+      {
+        cwd: tempDir,
+        env: conversionProcessEnv(),
+        encoding: "utf8",
+        timeout: 180_000,
+      },
+    );
+
+    if (result.error || result.status !== 0) {
+      const reason = result.error?.message || result.stderr || result.stdout || `OCRmyPDF exited with status ${result.status}`;
+      throw new ConversionError(`OCR engine failed while creating a searchable PDF: ${reason.trim()}`, "OCR_ENGINE_FAILED");
+    }
+
+    if (!existsSync(outputPath)) {
+      throw new ConversionError("OCR engine completed but did not produce a searchable PDF.", "OCR_OUTPUT_MISSING");
+    }
+
+    const content = new Uint8Array(readFileSync(outputPath));
+    const pdfInfo = inspectPdf(content, `${baseName(source.name)}-searchable.pdf`);
+    if (pdfInfo.pageCount < 1) {
+      throw new ConversionError("OCR engine produced a searchable PDF with no pages.", "OCR_INVALID_OUTPUT");
+    }
+
+    return {
+      fileName: `${baseName(source.name)}-searchable.pdf`,
+      contentType: "application/pdf",
+      content,
+    };
+  } finally {
+    rmSync(tempDir, { recursive: true, force: true });
+  }
+}
+
 function extractPdfText(bytes: Uint8Array, fileName: string) {
   const tempDir = mkdtempSync(join(tmpdir(), "docucorex-pdf-text-"));
   const pdfPath = join(tempDir, `${baseName(fileName)}.pdf`);
@@ -668,7 +772,22 @@ function findExecutable(envName: string, candidates: string[]) {
 }
 
 function hasOcrEngine() {
-  return Boolean(findExecutable("OCRMYPDF_PATH", ["ocrmypdf"]) || findExecutable("TESSERACT_PATH", ["tesseract"]));
+  return verifyOcrRuntime().ok;
+}
+
+function checkBinary(envName: string, candidates: string[], args: string[]) {
+  const executable = findExecutable(envName, candidates);
+  if (!executable) {
+    return { ok: false, error: "not found" };
+  }
+  const result = spawnSync(executable, args, { encoding: "utf8", timeout: 15_000, env: conversionProcessEnv() });
+  if (result.error || result.status !== 0) {
+    return {
+      ok: false,
+      error: result.error?.message || result.stderr?.trim() || result.stdout?.trim() || `exited with status ${result.status}`,
+    };
+  }
+  return { ok: true, version: (result.stdout || result.stderr || "").trim().split(/\r?\n/)[0] };
 }
 
 function baseName(name: string) {
