@@ -1,3 +1,8 @@
+# Build context must be the repository root, not workers/conversion_worker.
+# Render settings:
+# - Root Directory: empty / repository root
+# - Dockerfile Path: workers/conversion_worker/Dockerfile
+# - Docker Context: .
 FROM node:22-bookworm-slim AS base
 
 ENV NODE_ENV=production \

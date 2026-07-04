@@ -1,0 +1,19 @@
+services:
+  - type: web
+    name: docucorex-conversion-worker
+    runtime: docker
+    plan: starter
+    dockerContext: .
+    dockerfilePath: ./workers/conversion_worker/Dockerfile
+    healthCheckPath: /api/conversion-worker/health
+    envVars:
+      - key: CONVERSION_WORKER_MODE
+        value: "true"
+      - key: CONVERSION_WORKER_SECRET
+        sync: false
+      - key: NEXT_PUBLIC_SUPABASE_URL
+        sync: false
+      - key: NEXT_PUBLIC_SUPABASE_ANON_KEY
+        sync: false
+      - key: SUPABASE_SERVICE_ROLE_KEY
+        sync: false

@@ -21,9 +21,12 @@ If any required dependency is missing, the worker exits during startup.
 Create a Render Web Service:
 
 - Runtime: Docker
+- Root Directory: leave empty / repository root
 - Dockerfile path: `workers/conversion_worker/Dockerfile`
-- Docker context: repository root
+- Docker context: `.`
 - Health check path: `/api/conversion-worker/health`
+
+Do not set Root Directory to `workers/conversion_worker`. The worker Dockerfile builds the existing DocuCoreX Next.js job processor, so the Docker build context must include `package.json`, `pnpm-lock.yaml`, `app/`, `lib/`, and `components/` from the repository root.
 
 Required environment variables:
 
