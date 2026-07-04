@@ -5,7 +5,17 @@ missing=""
 
 check() {
   name="$1"
+  executable="$2"
   shift
+  resolved_path="$(command -v "$executable" || true)"
+  if [ -z "$resolved_path" ]; then
+    missing="$missing $name"
+    echo "Missing OCR dependency: $name ($executable is not on PATH)" >&2
+    return
+  fi
+
+  echo "$name path: $resolved_path"
+
   if ! "$@" >/tmp/docucorex-"$name".version 2>/tmp/docucorex-"$name".error; then
     missing="$missing $name"
     echo "Missing or broken OCR dependency: $name" >&2

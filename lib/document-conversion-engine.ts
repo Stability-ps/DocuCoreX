@@ -26,7 +26,7 @@ export type SourceDocument = {
 
 export type OcrRuntimeCheck = {
   ok: boolean;
-  dependencies: Record<"ocrmypdf" | "tesseract" | "ghostscript" | "qpdf", { ok: boolean; version?: string; error?: string }>;
+  dependencies: Record<"ocrmypdf" | "tesseract" | "ghostscript" | "qpdf", { ok: boolean; path?: string; version?: string; error?: string }>;
   message?: string;
 };
 
@@ -753,19 +753,23 @@ function htmlEscape(value: string) {
 }
 
 function findExecutable(envName: string, candidates: string[]) {
+  return resolveExecutable(envName, candidates)?.path ?? null;
+}
+
+function resolveExecutable(envName: string, candidates: string[]) {
   const explicit = process.env[envName]?.trim();
   const allCandidates = explicit ? [explicit, ...candidates] : candidates;
 
   for (const candidate of allCandidates) {
     if (!candidate) continue;
     if (candidate.includes("/")) {
-      if (existsSync(candidate)) return candidate;
+      if (existsSync(candidate)) return { path: candidate, source: explicit === candidate ? envName : "candidate" };
       continue;
     }
 
-    const result = spawnSync("which", [candidate], { encoding: "utf8" });
+    const result = spawnSync("which", [candidate], { encoding: "utf8", env: conversionProcessEnv() });
     const found = result.status === 0 ? result.stdout.trim().split(/\r?\n/)[0] : "";
-    if (found) return found;
+    if (found) return { path: found, source: "PATH" };
   }
 
   return null;
@@ -776,7 +780,8 @@ function hasOcrEngine() {
 }
 
 function checkBinary(envName: string, candidates: string[], args: string[]) {
-  const executable = findExecutable(envName, candidates);
+  const resolved = resolveExecutable(envName, candidates);
+  const executable = resolved?.path ?? null;
   if (!executable) {
     return { ok: false, error: "not found" };
   }
@@ -784,10 +789,11 @@ function checkBinary(envName: string, candidates: string[], args: string[]) {
   if (result.error || result.status !== 0) {
     return {
       ok: false,
+      path: executable,
       error: result.error?.message || result.stderr?.trim() || result.stdout?.trim() || `exited with status ${result.status}`,
     };
   }
-  return { ok: true, version: (result.stdout || result.stderr || "").trim().split(/\r?\n/)[0] };
+  return { ok: true, path: executable, version: (result.stdout || result.stderr || "").trim().split(/\r?\n/)[0] };
 }
 
 function baseName(name: string) {

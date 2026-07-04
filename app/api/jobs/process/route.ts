@@ -15,6 +15,17 @@ export async function POST(request: Request) {
   const proxied = await proxyToConversionWorker(request);
   if (proxied) return proxied;
 
+  if (isHostedFrontendWithoutWorker()) {
+    return NextResponse.json(
+      {
+        error:
+          "Conversion worker is not configured for this deployment. Set CONVERSION_WORKER_URL to the Render worker URL and redeploy.",
+        requiredEnv: ["CONVERSION_WORKER_URL"],
+      },
+      { status: 503 },
+    );
+  }
+
   if (process.env.CONVERSION_WORKER_MODE === "true") {
     const configuredSecret = process.env.CONVERSION_WORKER_SECRET?.trim();
     const providedSecret = request.headers.get("x-docucorex-worker-secret")?.trim();
@@ -280,6 +291,10 @@ async function proxyToConversionWorker(request: Request) {
       "content-type": response.headers.get("content-type") ?? "application/json",
     },
   });
+}
+
+function isHostedFrontendWithoutWorker() {
+  return process.env.VERCEL === "1" && process.env.CONVERSION_WORKER_MODE !== "true" && !process.env.CONVERSION_WORKER_URL?.trim();
 }
 
 async function processDemoJobs(providers: ReturnType<typeof createWorkflowAdapters>) {
