@@ -205,6 +205,22 @@ export async function POST(request: Request) {
     ),
   );
 
+  console.info("docucorex.conversion.batch_created", {
+    conversions: (insertedConversions ?? []).map((conversion) => ({
+      conversionId: conversion.id,
+      documentId: conversion.document_id,
+      from: conversion.from_format,
+      to: conversion.to_format,
+      status: conversion.status,
+    })),
+    jobs: (jobs ?? []).map((job) => ({
+      jobId: job.id,
+      documentId: job.document_id,
+      message: displayJobMessage(job.message),
+      conversionId: getConversionIdFromMessage(job.message),
+    })),
+  });
+
   return NextResponse.json({ conversions: insertedConversions ?? [], jobs: jobs ?? [] });
 }
 
@@ -214,6 +230,10 @@ function conversionJobMessage(from: string, to: string, conversionId: string) {
 
 function displayJobMessage(message: string) {
   return message.replace(/\s+·\s+conversion:[0-9a-f-]{36}\b/i, "");
+}
+
+function getConversionIdFromMessage(message: string) {
+  return message.match(/\bconversion:([0-9a-f-]{36})\b/i)?.[1] ?? null;
 }
 
 export async function DELETE(request: Request) {

@@ -43,6 +43,12 @@ export async function GET(_request: Request, { params }: { params: Promise<{ doc
       }
 
       const missingOutput = conversion.status === "output_ready" && (!conversion.download_path || !signedUrlReady);
+      if (missingOutput) {
+        await context.supabase
+          .from("conversions")
+          .update({ status: "failed", updated_at: new Date().toISOString() })
+          .eq("id", conversion.id);
+      }
       return {
         id: conversion.id,
         documentId: conversion.document_id,

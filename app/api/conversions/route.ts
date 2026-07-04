@@ -109,6 +109,15 @@ export async function POST(request: Request) {
     metadata: { documentId: body.documentId, from: body.from, to: body.to },
   });
 
+  console.info("docucorex.conversion.row_created", {
+    conversionId: conversion.id,
+    jobId: job?.id ?? null,
+    documentId: body.documentId,
+    from: body.from,
+    to: body.to,
+    status: conversion.status,
+  });
+
   return NextResponse.json({
     conversion: {
       id: conversion.id,

@@ -233,6 +233,23 @@ export async function POST(request: Request) {
           savedStatus: "output_ready",
         });
 
+        const signedUrlCheck = await context.supabase.storage.from("documents").createSignedUrl(converted.downloadPath, 60);
+        console.info("docucorex.conversion.signed_url_after_save", {
+          ...conversionLogBase,
+          supabaseBucket: "documents",
+          supabasePath: converted.downloadPath,
+          signedUrlSuccess: Boolean(signedUrlCheck.data?.signedUrl),
+          error: signedUrlCheck.error?.message ?? null,
+        });
+        if (signedUrlCheck.error || !signedUrlCheck.data?.signedUrl) {
+          const reason = signedUrlCheck.error?.message ?? "Signed URL could not be generated for converted output.";
+          await context.supabase
+            .from("conversions")
+            .update({ status: "failed", updated_at: new Date().toISOString() })
+            .eq("id", conversion.id);
+          throw new Error(`Converted file was uploaded, but download access could not be verified: ${reason}`);
+        }
+
         await addConvertedVersion(context, document.id, converted.downloadPath, converted.fileName);
 
         await context.supabase
@@ -306,6 +323,11 @@ async function proxyToConversionWorker(request: Request) {
   if (!workerUrl || process.env.CONVERSION_WORKER_MODE === "true") return null;
 
   const target = new URL("/api/jobs/process", workerUrl);
+  console.info("docucorex.conversion_worker.proxy_start", {
+    workerHost: target.host,
+    targetPath: target.pathname,
+    hasSecret: Boolean(process.env.CONVERSION_WORKER_SECRET),
+  });
   const response = await fetch(target, {
     method: "POST",
     headers: {
@@ -324,6 +346,12 @@ async function proxyToConversionWorker(request: Request) {
   }
 
   const body = await response.text();
+  console.info("docucorex.conversion_worker.proxy_response", {
+    workerHost: target.host,
+    status: response.status,
+    ok: response.ok,
+    bodyPreview: body.slice(0, 1000),
+  });
   return new NextResponse(body, {
     status: response.status,
     headers: {
