@@ -3,7 +3,7 @@ import { getWorkspaceContext } from "@/lib/server-documents";
 
 export async function GET(_request: Request, { params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
-  const context = await getWorkspaceContext();
+  const context = await getWorkspaceContext().catch(() => null);
 
   if (!context) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
