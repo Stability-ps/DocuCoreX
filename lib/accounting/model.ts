@@ -166,7 +166,7 @@ function reviewReason(t: AccountingTransaction): string {
   if (t.vatTreatment === "review") return "VAT treatment unresolved";
   if (t.reviewStatus === "needs_review" || t.reviewStatus === "in_review") return "Flagged for review";
   if (accountType(t.accountCategory) === "suspense") return "Account unresolved";
-  if (t.confidence < 80) return `Low confidence (${t.confidence}%)`;
+  if (t.confidence < 80) return "Requires verification";
   return "";
 }
 

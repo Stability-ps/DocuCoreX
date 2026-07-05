@@ -2,15 +2,8 @@ import { createZip } from "@/lib/file-output";
 import type { AccountingRunDetail, AccountingTransaction } from "@/lib/accounting/types";
 import {
   computeProfitLoss,
-  computeCashFlow,
-  computeFinancialRatios,
-  detectVatAnomalies,
   detectDuplicates,
-  detectUnusualTransactions,
   detectDirectorTransactions,
-  computeSarsRisk,
-  computeForecast,
-  buildAuditSummary,
   accountType,
   type AccountType,
 } from "@/lib/accounting/analytics";
@@ -42,28 +35,20 @@ const M = (v: number | null | undefined): Cell => ({ v: Number(v ?? 0), num: tru
 const MT = (v: number | null | undefined): Cell => ({ v: Number(v ?? 0), num: true, fmt: "money", style: "total" });
 const MW = (v: number | null | undefined): Cell => ({ v: Number(v ?? 0), num: true, fmt: "money", style: "warn" });
 const INT = (v: number | null | undefined): Cell => ({ v: Number(v ?? 0), num: true, fmt: "int" });
-const PCT = (v: number): Cell => ({ v, num: true, fmt: "percent" });
 
 export type ExportSectionId =
   | "cover"
   | "summary"
   | "transactions"
-  | "review-items"
   | "review-queue"
   | "vat"
   | "general-ledger"
   | "trial-balance"
-  | "bank-reconciliation"
   | "profit-loss"
   | "balance-sheet"
   | "cash-flow"
-  | "financial-statements"
-  | "ai-intelligence"
-  | "forecasting"
-  | "exception-report"
-  | "assumptions"
-  | "data-quality"
-  | "extraction-log";
+  | "bank-reconciliation"
+  | "assumptions";
 
 export type ExportSection = {
   id: ExportSectionId;
@@ -74,14 +59,11 @@ export type ExportSection = {
   filter?: boolean;
 };
 
-// The canonical core accounting pack — the ONLY sheets in the full workbook, in
-// order. Financial Ratios and Forecasting are only built when reliable, so they
-// are dropped automatically if absent. Shared by the export route and the modal.
+// The professional accounting pack — the ONLY sheets in the full workbook, in
+// order. Shared by the export route and the modal so they never drift.
 export const FULL_PACK_SECTIONS: ExportSectionId[] = [
   "cover",
   "summary",
-  "data-quality",
-  "extraction-log",
   "transactions",
   "review-queue",
   "vat",
@@ -91,10 +73,6 @@ export const FULL_PACK_SECTIONS: ExportSectionId[] = [
   "balance-sheet",
   "cash-flow",
   "bank-reconciliation",
-  "financial-statements",
-  "forecasting",
-  "ai-intelligence",
-  "exception-report",
   "assumptions",
 ];
 
@@ -102,7 +80,7 @@ export const FULL_PACK_SECTIONS: ExportSectionId[] = [
 export const EXPORT_MENU: Array<{ key: string; label: string; section: ExportSectionId | "all" }> = [
   { key: "all", label: "Full Accounting Pack", section: "all" },
   { key: "transactions", label: "Transactions", section: "transactions" },
-  { key: "review-queue", label: "Review Queue", section: "review-queue" },
+  { key: "summary", label: "Executive Summary", section: "summary" },
   { key: "vat", label: "VAT Working Paper", section: "vat" },
   { key: "general-ledger", label: "General Ledger", section: "general-ledger" },
   { key: "trial-balance", label: "Trial Balance", section: "trial-balance" },
@@ -110,16 +88,13 @@ export const EXPORT_MENU: Array<{ key: string; label: string; section: ExportSec
   { key: "balance-sheet", label: "Balance Sheet", section: "balance-sheet" },
   { key: "cash-flow", label: "Cash Flow", section: "cash-flow" },
   { key: "bank-reconciliation", label: "Bank Reconciliation", section: "bank-reconciliation" },
-  { key: "ai-intelligence", label: "AI Accountant Notes", section: "ai-intelligence" },
-  { key: "exception-report", label: "Audit Exceptions", section: "exception-report" },
-  { key: "data-quality", label: "Data Quality Report", section: "data-quality" },
-  { key: "extraction-log", label: "Extraction Log", section: "extraction-log" },
+  { key: "review-queue", label: "Review Queue", section: "review-queue" },
 ];
 
 const VAT_RATE = 15 / 115;
 
 const DISCLAIMER =
-  "Draft management report generated from bank-statement data only. This is not a final IFRS or Companies Act financial statement and requires accountant review. No figures are fabricated — modules without sufficient source data are marked accordingly.";
+  "Draft management report prepared from bank-statement data only. This is not a final IFRS or Companies Act financial statement and requires accountant review. No figures are fabricated — sections without sufficient underlying data are marked accordingly.";
 
 // ─── Company name resolution (fixes the hardcoded / address title) ───────────
 
@@ -236,44 +211,19 @@ function accountGroups(transactions: AccountingTransaction[]) {
   return Array.from(groups, ([account, v]) => ({ account, ...v })).sort((a, b) => a.account.localeCompare(b.account));
 }
 
-const VAT_LABELS: Record<string, string> = {
-  standard: "Standard (15%)",
-  zero_rated: "Zero-rated",
-  exempt: "Exempt",
-  out_of_scope: "Out of scope",
-  review: "Review required",
-};
-
-function reviewReason(t: AccountingTransaction): string {
-  if (t.vatTreatment === "review") return "VAT treatment unresolved";
-  if (t.reviewStatus === "needs_review" || t.reviewStatus === "in_review") return "Flagged for review";
-  if (t.accountCategory === "Review Required" || t.accountCategory === "Uncategorised Expense") return "Category unresolved";
-  if (t.confidence < 80) return `Low confidence (${t.confidence}%)`;
-  return "";
-}
-
 // ─── Section builders ───────────────────────────────────────────────────────
 
 export function buildExportSections(detail: AccountingRunDetail, resolvedCompany: string): ExportSection[] {
   const meta = buildStatementMetadata(detail, resolvedCompany);
   const txns = detail.transactions;
-  const reviews = txns.filter(isReviewItem);
-  const totals = { debit: meta.totalPayments, credit: meta.totalReceipts, bankCharges: meta.bankCharges };
   const run = detail.run;
 
   // ONE canonical accounting model — every ledger-based sheet consumes this.
   const model = buildAccountingModel(detail);
 
   const pl = computeProfitLoss(txns, run);
-  const cashFlow = computeCashFlow(txns, run);
-  const ratios = computeFinancialRatios(txns, run, totals);
-  const forecast = computeForecast(txns, run, totals);
-  const vatAnomalies = detectVatAnomalies(txns);
   const duplicates = detectDuplicates(txns);
-  const unusuals = detectUnusualTransactions(txns);
   const directors = detectDirectorTransactions(txns);
-  const risk = computeSarsRisk(txns, vatAnomalies, duplicates, unusuals, directors);
-  const audit = buildAuditSummary(txns, run, duplicates, unusuals, vatAnomalies, risk);
 
   const sections: ExportSection[] = [];
 
@@ -281,9 +231,13 @@ export function buildExportSections(detail: AccountingRunDetail, resolvedCompany
   // derived statement must be watermarked as unreliable — never silently shown.
   const unreliableBanner: Cell[] | null = meta.reconciled
     ? null
-    : [WARN("UNRELIABLE — statement does not reconcile (extraction incomplete). Do not use for filing. See Data Quality & Reconciliation Issues.")];
+    : [WARN("REVIEW REQUIRED — the statement does not reconcile, so figures may be incomplete. Do not use for filing until resolved. See Executive Summary.")];
 
-  // Cover — canonical header + reconciliation banner
+  // Status badge: Complete / Review Required / Unable to Verify.
+  const dataQualityStatus = meta.reconciled ? "Complete" : meta.closingBalance === 0 && meta.openingBalance === 0 ? "Unable to Verify" : "Review Required";
+  const statusCell = dataQualityStatus === "Complete" ? GOOD(dataQualityStatus) : WARN(dataQualityStatus);
+
+  // Cover
   sections.push({
     id: "cover",
     label: "Cover",
@@ -292,8 +246,8 @@ export function buildExportSections(detail: AccountingRunDetail, resolvedCompany
       [TITLE(meta.title)],
       [],
       meta.reconciled
-        ? [GOOD("Status: Balanced — opening + receipts − payments = closing")]
-        : [WARN(`REVIEW REQUIRED — reconciliation difference of R${Math.abs(meta.reconciliationDifference).toFixed(2)}. See Reconciliation Issues.`)],
+        ? [GOOD("Status: Complete — the statement reconciles.")]
+        : [WARN(`Status: Review Required — reconciliation difference of R${Math.abs(meta.reconciliationDifference).toFixed(2)}. See Executive Summary.`)],
       [],
       [B("Company / account holder"), S(meta.company || "Not detected")],
       [B("Bank"), S(meta.bank)],
@@ -303,44 +257,50 @@ export function buildExportSections(detail: AccountingRunDetail, resolvedCompany
       [B("Closing balance"), M(meta.closingBalance)],
       [B("Total receipts"), M(meta.totalReceipts)],
       [B("Total payments"), M(meta.totalPayments)],
-      [B("Transactions"), INT(meta.transactionCount)],
-      [B("Review items"), INT(meta.reviewCount)],
-      [B("Extraction confidence"), S(`${meta.confidence}%`)],
-      [B("Generated"), S(new Date().toISOString().slice(0, 10))],
+      [B("Transactions processed"), INT(meta.transactionCount)],
+      [B("Items requiring review"), INT(meta.reviewCount)],
+      [B("Prepared"), S(new Date().toISOString().slice(0, 10))],
       [],
       [MUTE(DISCLAIMER)],
     ],
   });
 
-  // Summary — same canonical metadata as the Cover
+  // Executive Summary — the accountant's dashboard (includes data quality).
   sections.push({
     id: "summary",
-    label: "Bank Statement Summary",
+    label: "Executive Summary",
     sheet: "Summary",
-    headerRow: 1,
+    headerRow: 3,
     rows: [
+      [TITLE("Executive Summary")],
+      [],
       [HDR("Metric"), HDR("Value")],
       [S("Company"), S(meta.company)],
+      [S("Statement period"), S(meta.statementPeriod)],
+      [S("Bank"), S(meta.bank)],
       [S("Account number"), S(meta.accountNumber)],
-      [S("Statement period start"), S(meta.periodStart)],
-      [S("Statement period end"), S(meta.periodEnd)],
+      [S("Transactions processed"), INT(meta.transactionCount)],
+      [S("Reconciliation status"), meta.reconciled ? GOOD("Reconciled") : WARN("Review Required")],
+      [],
+      [B("Income (receipts)"), MT(meta.totalReceipts)],
+      [B("Expenses (payments)"), MT(meta.totalPayments)],
+      [B("Net cash movement"), meta.totalReceipts - meta.totalPayments >= 0 ? MT(meta.totalReceipts - meta.totalPayments) : MW(meta.totalReceipts - meta.totalPayments)],
       [S("Opening balance"), M(meta.openingBalance)],
-      [S("Total receipts"), M(meta.totalReceipts)],
-      [S("Total payments"), M(meta.totalPayments)],
       [S("Closing balance"), M(meta.closingBalance)],
-      [S("Net movement"), M(meta.totalReceipts - meta.totalPayments)],
-      [S("Expected closing (recon)"), M(meta.expectedClosing)],
-      [S("Reconciliation difference"), meta.reconciled ? M(0) : MW(meta.reconciliationDifference)],
-      [S("Transactions extracted"), INT(meta.transactionCount)],
-      [S("Review items"), INT(meta.reviewCount)],
       [S("Bank charges"), M(meta.bankCharges)],
-      [S("Est. Output VAT"), M(meta.estOutputVat)],
-      [S("Est. Input VAT"), M(meta.estInputVat)],
+      [],
+      [HDR("VAT summary"), HDR("Amount")],
+      [S("Output VAT"), M(meta.estOutputVat)],
+      [S("Input VAT"), M(meta.estInputVat)],
       [S("Net VAT position"), M(meta.netVat)],
+      [],
+      [B("Items requiring review"), meta.reviewCount === 0 ? GOOD("0") : WARN(String(meta.reviewCount))],
+      [B("Data quality status"), statusCell],
+      ...(meta.reconciled ? [] : [[MUTE(`Reconciliation difference of R${Math.abs(meta.reconciliationDifference).toFixed(2)} — resolve before relying on the financial statements.`)]]),
     ],
   });
 
-  // Transactions
+  // Transactions — the master working paper (no engine/AI columns).
   sections.push({
     id: "transactions",
     label: "Transactions",
@@ -348,45 +308,21 @@ export function buildExportSections(detail: AccountingRunDetail, resolvedCompany
     headerRow: 1,
     filter: true,
     rows: [
-      [HDR("Date"), HDR("Description"), HDR("Money In"), HDR("Money Out"), HDR("Balance"), HDR("Account"), HDR("VAT Treatment"), HDR("Review"), HDR("Confidence"), HDR("Notes")],
-      ...txns.map((t) => [
-        S(t.transactionDate ?? ""),
+      [HDR("Date"), HDR("Reference"), HDR("Description"), HDR("Debit"), HDR("Credit"), HDR("Balance"), HDR("Category"), HDR("GL Account"), HDR("VAT Code"), HDR("Review Status"), HDR("Notes")],
+      ...model.transactions.map((t) => [
+        S(t.date),
+        S(t.reference),
         S(t.description),
-        M(t.creditAmount ?? 0),
-        M(t.debitAmount ?? 0),
-        M(t.runningBalance ?? 0),
-        S(t.accountCategory),
-        S(VAT_LABELS[t.vatTreatment] ?? t.vatTreatment),
-        S(t.reviewStatus),
-        INT(t.confidence),
+        M(t.debit),
+        M(t.credit),
+        t.balance != null ? M(t.balance) : S(""),
+        S(t.category),
+        S(t.account.number),
+        t.vatCode === "REV" ? WARN(t.vatCode) : S(t.vatCode),
+        t.reviewReason ? WARN(t.reviewStatus) : S(t.reviewStatus),
         S(t.notes),
       ]),
-      [B("Totals"), S(""), MT(meta.totalReceipts), MT(meta.totalPayments), S(""), S(""), S(""), S(""), S(""), S("")],
-    ],
-  });
-
-  // Review Items
-  sections.push({
-    id: "review-items",
-    label: "Review Items",
-    sheet: "Review Items",
-    headerRow: 1,
-    filter: reviews.length > 0,
-    rows: [
-      [HDR("Date"), HDR("Description"), HDR("Money In"), HDR("Money Out"), HDR("Account"), HDR("VAT Treatment"), HDR("Review Status"), HDR("Reason"), HDR("Confidence")],
-      ...(reviews.length
-        ? reviews.map((t) => [
-            S(t.transactionDate ?? ""),
-            S(t.description),
-            M(t.creditAmount ?? 0),
-            M(t.debitAmount ?? 0),
-            S(t.accountCategory),
-            S(VAT_LABELS[t.vatTreatment] ?? t.vatTreatment),
-            WARN(t.reviewStatus),
-            S(reviewReason(t)),
-            INT(t.confidence),
-          ])
-        : [[GOOD("No items require review.")]]),
+      [B("Totals"), S(""), S(""), MT(meta.totalPayments), MT(meta.totalReceipts), S(""), S(""), S(""), S(""), S(""), S("")],
     ],
   });
 
@@ -423,32 +359,29 @@ export function buildExportSections(detail: AccountingRunDetail, resolvedCompany
       [HDR("Estimated VAT201"), HDR("Output VAT"), HDR("Input VAT"), HDR("Declared Bank VAT"), HDR("Net VAT"), HDR("Review Items"), HDR("Missing Invoices")],
       [S("Totals"), M(v201.outputVat), M(totalInputVat), M(declaredBankVat), M(totalNetVat), INT(v201.reviewItems), INT(v201.missingInvoices)],
       [],
-      [HDR("Date"), HDR("Reference"), HDR("Description"), HDR("Debit"), HDR("Credit"), HDR("GL Account"), HDR("Account No"), HDR("VAT Code"), HDR("VAT Treatment"), HDR("Output VAT"), HDR("Input VAT"), HDR("Net VAT"), HDR("Claim Status"), HDR("SARS Box"), HDR("Confidence"), HDR("Source"), HDR("Review Status"), HDR("Review Reason"), HDR("Document Status")],
+      [HDR("Date"), HDR("Reference"), HDR("Description"), HDR("Debit"), HDR("Credit"), HDR("Category"), HDR("GL Account"), HDR("VAT Code"), HDR("VAT %"), HDR("Input VAT"), HDR("Output VAT"), HDR("Net VAT"), HDR("VAT201 Box"), HDR("Claim Status"), HDR("Review Status"), HDR("Notes")],
       ...model.transactions.map((t) => [
         S(t.date),
         S(t.reference),
         S(t.description),
         M(t.debit),
         M(t.credit),
-        S(t.account.name),
+        S(t.category),
         S(t.account.number),
         t.vatCode === "REV" ? WARN(t.vatCode) : t.vatCode === "STD" ? S(t.vatCode) : MUTE(t.vatCode),
-        S(t.vatTreatmentLabel),
-        M(t.outputVat),
+        S(t.vatCode === "STD" ? "15%" : t.vatCode === "ZR" ? "0%" : "—"),
         M(t.inputVat),
+        M(t.outputVat),
         t.netVat < 0 ? MW(t.netVat) : M(t.netVat),
-        S(claimStatusOf(t)),
         S(t.sarsBox),
-        INT(t.confidence),
-        S(t.source),
-        S(t.reviewStatus),
-        S(t.reviewReason || "—"),
-        t.supportedByInvoice ? GOOD("Invoice on file") : S("No document"),
+        S(claimStatusOf(t)),
+        t.reviewReason ? WARN(t.reviewStatus) : S(t.reviewStatus),
+        S(t.notes),
       ]),
       ...(supplementaryBankVat > 0.005
-        ? [[B("Declared bank VAT (fees not itemised)"), S(""), S(""), S(""), S(""), S("5000 Bank Charges"), S("5000"), S("STD"), S("Standard 15%"), M(0), M(supplementaryBankVat), M(-supplementaryBankVat), S("Input VAT"), S("14/15 (Input VAT)"), S(""), S("Rule"), S("needs_review"), S("From statement fee summary"), S("Statement summary")]]
+        ? [[B("Declared bank VAT (fees not itemised)"), S(""), S(""), S(""), S(""), S("Bank Charges"), S("5000"), S("STD"), S("15%"), M(supplementaryBankVat), M(0), M(-supplementaryBankVat), S("14/15 (Input VAT)"), S("Input VAT"), WARN("needs_review"), S("From statement fee summary")]]
         : []),
-      [B("Totals"), S(""), S(""), MT(meta.totalPayments), MT(meta.totalReceipts), S(""), S(""), S(""), S(""), MT(v201.outputVat), MT(totalInputVat), MT(totalNetVat), S(""), S(""), S(""), S(""), S(""), S(""), S("")],
+      [B("Totals"), S(""), S(""), MT(meta.totalPayments), MT(meta.totalReceipts), S(""), S(""), S(""), S(""), MT(totalInputVat), MT(v201.outputVat), MT(totalNetVat), S(""), S(""), S(""), S("")],
       [],
       [TITLE("Estimated SARS VAT201")],
       [HDR("VAT201 Box"), HDR("Description"), HDR("Amount")],
@@ -473,34 +406,36 @@ export function buildExportSections(detail: AccountingRunDetail, resolvedCompany
   }
   const tg = (type: AccountType) => typeGroups.get(type) ?? { debit: 0, credit: 0 };
 
-  // General Ledger — double-entry journal postings from the one model.
+  // General Ledger — a professional running-balance ledger of the account
+  // postings (bank account is the contra to every line).
+  let glBalance = meta.openingBalance;
   sections.push({
     id: "general-ledger",
     label: "General Ledger",
     sheet: "General Ledger",
-    headerRow: 1,
+    headerRow: 2,
     filter: true,
     rows: [
-      [HDR("Date"), HDR("Journal No"), HDR("Reference"), HDR("Description"), HDR("Account No"), HDR("Account"), HDR("Debit"), HDR("Credit"), HDR("Source"), HDR("Review Status"), HDR("Page")],
-      ...model.journals.map((j) => [
-        S(j.date),
-        S(j.journalNo),
-        S(j.reference),
-        S(j.description),
-        S(j.accountNumber),
-        S(j.account),
-        j.debit > 0 ? M(j.debit) : S(""),
-        j.credit > 0 ? M(j.credit) : S(""),
-        S(j.source),
-        S(j.reviewStatus),
-        j.sourcePage != null ? INT(j.sourcePage) : S(""),
-      ]),
-      [B("Totals"), S(""), S(""), S(""), S(""), S(""), MT(model.trialBalance.totalDebit), MT(model.trialBalance.totalCredit), S(""), S(""), S("")],
+      [S("Opening balance"), S(""), S(""), S(""), S(""), S(""), M(meta.openingBalance), S("")],
+      [HDR("Date"), HDR("Reference"), HDR("Description"), HDR("Account"), HDR("Debit"), HDR("Credit"), HDR("Running Balance"), HDR("Review Status")],
+      ...model.transactions.map((t) => {
+        glBalance += t.credit - t.debit;
+        return [
+          S(t.date),
+          S(t.reference),
+          S(t.description),
+          S(t.account.name),
+          t.debit > 0 ? M(t.debit) : S(""),
+          t.credit > 0 ? M(t.credit) : S(""),
+          M(glBalance),
+          t.reviewReason ? WARN(t.reviewStatus) : S(t.reviewStatus),
+        ];
+      }),
+      [B("Totals"), S(""), S(""), S(""), MT(meta.totalPayments), MT(meta.totalReceipts), MT(meta.closingBalance), S("")],
     ],
   });
 
-  // Trial Balance — from the ledger. Double-entry balances by construction; when
-  // the statement does not reconcile the whole TB is marked INVALID (not hidden).
+  // Trial Balance — from the ledger accounts, with a variance and status.
   const tb = model.trialBalance;
   sections.push({
     id: "trial-balance",
@@ -510,13 +445,12 @@ export function buildExportSections(detail: AccountingRunDetail, resolvedCompany
     filter: true,
     rows: [
       meta.reconciled
-        ? [MUTE("Trial balance from the general ledger (double-entry). Requires accountant review.")]
-        : [WARN("INVALID / REVIEW REQUIRED — the statement does not reconcile, so the underlying data is incomplete. Do not rely on this trial balance until extraction is resolved.")],
+        ? [MUTE("Trial balance derived from the general ledger. Requires accountant review.")]
+        : [WARN("REVIEW REQUIRED — the statement does not reconcile, so the underlying data is incomplete. Do not rely on this trial balance until resolved.")],
       [],
-      [HDR("Account No"), HDR("Account"), HDR("Debit"), HDR("Credit")],
-      ...tb.rows.map((r) => [S(r.number), S(r.name), M(r.debit), M(r.credit)]),
-      [B("Totals"), S(""), MT(tb.totalDebit), MT(tb.totalCredit)],
-      [S("Balanced"), meta.reconciled ? (tb.balanced ? GOOD("Yes") : WARN("No")) : WARN("Invalid — extraction does not reconcile"), S(""), S("")],
+      [HDR("Account"), HDR("Debit"), HDR("Credit"), HDR("Variance"), HDR("Status")],
+      ...tb.rows.map((r) => [S(r.name), M(r.debit), M(r.credit), M(0), meta.reconciled ? GOOD("OK") : WARN("Review")]),
+      [B("Totals"), MT(tb.totalDebit), MT(tb.totalCredit), M(tb.totalDebit - tb.totalCredit), meta.reconciled ? (tb.balanced ? GOOD("Balanced") : WARN("Out of balance")) : WARN("REVIEW REQUIRED")],
     ],
   });
 
@@ -540,7 +474,7 @@ export function buildExportSections(detail: AccountingRunDetail, resolvedCompany
     ],
   });
 
-  // (Reconciliation detail is surfaced on the Data Quality Report and Bank
+  // (Reconciliation detail is surfaced on the Executive Summary and Bank
   // Reconciliation sheets — no separate sheet.)
 
   // Profit & Loss
@@ -621,7 +555,6 @@ export function buildExportSections(detail: AccountingRunDetail, resolvedCompany
   const netMovement = cashSections.reduce((s, [, amt]) => s + amt, 0);
   const expectedClose = (meta.openingBalance ?? 0) + netMovement;
   const cashReconciled = Math.abs(expectedClose - (meta.closingBalance ?? expectedClose)) < 0.02;
-  void cashFlow;
   sections.push({
     id: "cash-flow",
     label: "Cash Flow",
@@ -640,225 +573,95 @@ export function buildExportSections(detail: AccountingRunDetail, resolvedCompany
       [B("+ Net movement"), MT(netMovement)],
       [B("= Expected closing"), MT(expectedClose)],
       [B("Statement closing balance"), M(meta.closingBalance)],
-      [B("Reconciled"), cashReconciled ? GOOD("Yes — cash flow ties to the bank balance") : WARN("No — extraction incomplete; see Data Quality")],
+      [B("Reconciled"), cashReconciled ? GOOD("Yes — cash flow ties to the bank balance") : WARN("No — review required; see Executive Summary")],
     ],
   });
 
-  // Financial Ratios — only when the statement reconciles (otherwise unreliable).
-  if (meta.reconciled) {
-    sections.push({
-      id: "financial-statements",
-      label: "Financial Ratios",
-      sheet: "Financial Ratios",
-      headerRow: 4,
-      rows: [
-        [TITLE("Financial Ratios")],
-        [MUTE(ratios.note)],
-        [],
-        [HDR("Ratio"), HDR("Value")],
-        [S("Expense ratio"), ratios.expenseRatio !== null ? PCT(ratios.expenseRatio) : S("—")],
-        [S("Net cash margin"), ratios.netCashMargin !== null ? PCT(ratios.netCashMargin / 100) : S("—")],
-        [S("Cash coverage"), S(ratios.cashCoverageRatio !== null ? `${ratios.cashCoverageRatio.toFixed(2)}x` : "—")],
-        [S("Avg monthly income"), M(ratios.avgMonthlyIncome ?? 0)],
-        [S("Avg monthly expenses"), M(ratios.avgMonthlyExpenses ?? 0)],
-        [S("Net monthly cash flow"), M(ratios.netMonthlyCashFlow ?? 0)],
-        [S("Bank charges ratio"), ratios.bankChargesRatio !== null ? PCT(ratios.bankChargesRatio / 100) : S("—")],
-        [S("Period (months)"), INT(ratios.periodMonths)],
-      ],
-    });
-  }
+  // Review Queue — the accountant's action list: exception flags at the top, then
+  // every transaction needing attention. No engine/AI columns.
+  const exceptions: Cell[][] = [];
+  if (!meta.reconciled) exceptions.push([WARN("Reconciliation"), MW(meta.reconciliationDifference), S("Statement does not reconcile — figures may be incomplete")]);
+  if (duplicates.length) exceptions.push([WARN("Possible duplicate"), INT(duplicates.length), S("Potential duplicate payment groups")]);
+  if (v201.missingInvoices) exceptions.push([WARN("Missing invoice"), INT(v201.missingInvoices), S("Standard-rated payments without a tax invoice")]);
+  if (directors.length) exceptions.push([WARN("Related party"), INT(directors.length), S("Director or related-party movements to confirm")]);
+  const largeCount = model.transactions.filter((t) => (t.debit || t.credit) >= 25000).length;
+  if (largeCount) exceptions.push([WARN("Large transaction"), INT(largeCount), S("Transactions of R25,000 or more")]);
 
-  // AI Accountant Notes — SARS risk + AI transaction intelligence in one place.
-  sections.push({
-    id: "ai-intelligence",
-    label: "AI Accountant Notes",
-    sheet: "AI Accountant Notes",
-    rows: [
-      [TITLE("AI Accountant Notes")],
-      [B("Internal SARS risk score"), S(`${risk.score}/100 (${risk.level})`)],
-      [MUTE(risk.summary)],
-      [],
-      [HDR("Risk factor"), HDR("Score"), HDR("Max"), HDR("Detail")],
-      ...risk.factors.map((f) => [S(f.name), INT(f.score), INT(f.maxScore), S(f.detail)]),
-      [],
-      [B(`Duplicate groups: ${duplicates.length}`), B(`Unusual: ${unusuals.length}`), B(`Director-linked: ${directors.length}`)],
-      [],
-      [HDR("Potential duplicate payments"), HDR("Amount"), HDR("Count"), HDR("Confidence")],
-      ...(duplicates.length
-        ? duplicates.map((d) => [S(d.transactions[0]?.description ?? ""), M(d.amount), INT(d.transactions.length), S(`${d.confidence}%`)])
-        : [[GOOD("No duplicate payments detected.")]]),
-      [],
-      [HDR("Unusual transactions"), HDR("Amount"), HDR("Reason")],
-      ...(unusuals.length
-        ? unusuals.map((u) => [S(u.transaction.description), M(u.transaction.debitAmount ?? u.transaction.creditAmount ?? 0), S(u.reason)])
-        : [[GOOD("No unusual transactions detected.")]]),
-      [],
-      [HDR("Director / related-party"), HDR("Amount"), HDR("Matched")],
-      ...(directors.length
-        ? directors.map((d) => [S(d.transaction.description), M(d.transaction.debitAmount ?? d.transaction.creditAmount ?? 0), S(d.matchedKeyword)])
-        : [[GOOD("No director-linked transactions detected.")]]),
-    ],
-  });
-
-  // Forecasting — only reliable with 3+ statement periods.
-  if (forecast.periodMonths >= 3) {
-    sections.push({
-      id: "forecasting",
-      label: "Forecasting",
-      sheet: "Forecasting",
-      headerRow: 8,
-      rows: [
-        [TITLE("Cash Flow Forecast")],
-        [MUTE(forecast.note)],
-        [],
-        [B("Monthly avg income"), M(forecast.monthlyAvgIncome)],
-        [B("Monthly avg expenses"), M(forecast.monthlyAvgExpenses)],
-        [B("Monthly net flow"), M(forecast.monthlyNetFlow)],
-        [],
-        [HDR("Month"), HDR("Projected Income"), HDR("Projected Expenses"), HDR("Net Flow"), HDR("Closing Balance")],
-        ...forecast.projections.map((p) => [S(p.label), M(p.projectedIncome), M(p.projectedExpenses), M(p.projectedNetFlow), M(p.projectedClosingBalance)]),
-      ],
-    });
-  }
-
-  // (Audit findings are merged into the Audit Exceptions sheet below; per-
-  // transaction classification/source lives on the Review Queue and GL/VAT.)
-
-  // Review Queue — everything needing an accountant decision.
+  const rowReason = (t: (typeof model.transactions)[number]): string => {
+    const reasons: string[] = [];
+    if (t.reviewReason) reasons.push(t.reviewReason);
+    if ((t.debit || t.credit) >= 25000) reasons.push("Large transaction");
+    if (t.vatCode === "STD" && t.debit > 0 && !t.supportedByInvoice) reasons.push("Missing invoice");
+    return reasons.join("; ") || "Requires review";
+  };
   const reviewQueue = model.transactions.filter(
-    (t) => t.reviewReason || t.reviewStatus === "needs_review" || t.reviewStatus === "in_review" || t.source === "AI",
+    (t) => t.reviewReason || t.reviewStatus === "needs_review" || t.reviewStatus === "in_review" || (t.debit || t.credit) >= 25000,
   );
   sections.push({
     id: "review-queue",
     label: "Review Queue",
     sheet: "Review Queue",
-    headerRow: 1,
+    headerRow: 4,
     filter: reviewQueue.length > 0,
     rows: [
-      [HDR("Date"), HDR("Description"), HDR("Amount"), HDR("Category"), HDR("VAT Code"), HDR("Confidence"), HDR("Source"), HDR("Review Reason")],
+      [TITLE("Review Queue")],
+      [MUTE("Items requiring accountant attention before finalising.")],
+      [HDR("Flag"), HDR("Count / Amount"), HDR("Detail")],
+      ...(exceptions.length ? exceptions : [[GOOD("No exceptions detected."), S(""), S("")]]),
+      [],
+      [HDR("Date"), HDR("Reference"), HDR("Description"), HDR("Amount"), HDR("Category"), HDR("VAT Code"), HDR("Review Reason")],
       ...(reviewQueue.length
         ? reviewQueue.map((t) => [
             S(t.date),
+            S(t.reference),
             S(t.description),
             M(t.debit || t.credit),
             S(t.category),
-            S(t.vatCode),
-            WARN(`${t.confidence}%`),
-            S(t.source),
-            S(t.reviewReason || "AI suggestion — approve or correct"),
+            t.vatCode === "REV" ? WARN(t.vatCode) : S(t.vatCode),
+            WARN(rowReason(t)),
           ])
-        : [[GOOD("Nothing to review — all transactions are rule-classified with resolved VAT.")]]),
+        : [[GOOD("Nothing to review — all transactions are categorised with resolved VAT."), S(""), S(""), S(""), S(""), S(""), S("")]]),
     ],
   });
 
-  // Exception Report — accountant risk flags in one place.
-  const exceptions: Cell[][] = [];
-  if (!meta.reconciled) exceptions.push([WARN("Reconciliation"), MW(meta.reconciliationDifference), S("Statement does not reconcile — extraction incomplete")]);
-  if (duplicates.length) exceptions.push([WARN("Duplicate payments"), INT(duplicates.length), S("Potential duplicate payment groups")]);
-  if (v201.missingInvoices) exceptions.push([WARN("Missing invoices"), INT(v201.missingInvoices), S("Standard-rated payments without a tax invoice")]);
-  if (v201.lowConfidence) exceptions.push([WARN("Low confidence"), INT(v201.lowConfidence), S("Transactions below 70% confidence")]);
-  if (directors.length) exceptions.push([WARN("Director / related-party"), INT(directors.length), S("Director or related-party movements to confirm")]);
-  const largeCount = model.transactions.filter((t) => (t.debit || t.credit) >= 25000).length;
-  if (largeCount) exceptions.push([WARN("Large transactions"), INT(largeCount), S("Transactions of R25,000 or more")]);
-  // Audit Exceptions — merges the exception flags and the audit findings.
-  sections.push({
-    id: "exception-report",
-    label: "Audit Exceptions",
-    sheet: "Audit Exceptions",
-    headerRow: 2,
-    rows: [
-      [TITLE("Audit Exceptions")],
-      [HDR("Exception"), HDR("Count / Amount"), HDR("Detail")],
-      ...(exceptions.length ? exceptions : [[GOOD("No exceptions detected."), S(""), S("")]]),
-      [],
-      [B(`Internal risk score: ${audit.riskScore.score}/100 (${audit.riskScore.level})`), S(""), S("")],
-      [HDR("Audit finding"), HDR("Severity"), HDR("Detail")],
-      ...(audit.findings.length
-        ? audit.findings.map((f) => [
-            S(f.title),
-            f.severity === "high" || f.severity === "critical" ? WARN(f.severity) : S(f.severity),
-            S(f.detail),
-          ])
-        : [[GOOD("No audit findings."), S(""), S("")]]),
-    ],
-  });
-
-  // (Lead Schedules require a full GL beyond a single bank statement — omitted.)
-
-  // Assumptions / Limitations
+  // Notes & Assumptions — the single closing worksheet: accounting notes,
+  // outstanding review items, reconciliation comments and a source appendix.
+  const uncategorised = txns.filter((t) => /uncategori|review required|operating expenses/i.test(t.accountCategory)).length;
+  const withoutInvoice = txns.filter((t) => (t.debitAmount ?? 0) > 5000 && !t.supportedByInvoice && !t.bankCharge).length;
   sections.push({
     id: "assumptions",
-    label: "Assumptions & Limitations",
-    sheet: "Assumptions",
-    headerRow: 4,
+    label: "Notes & Assumptions",
+    sheet: "Notes & Assumptions",
+    headerRow: 3,
     rows: [
-      [TITLE("Assumptions & Limitations")],
+      [TITLE("Notes & Assumptions")],
       [MUTE(DISCLAIMER)],
+      [HDR("Basis of preparation"), HDR("Note")],
+      [S("Profit & Loss"), MUTE("Cash basis. Excludes accruals, depreciation, prepayments and capital items.")],
+      [S("Balance Sheet"), MUTE("Cash position plus movements observed on the statement. Not a complete IFRS balance sheet.")],
+      [S("Cash Flow"), MUTE("Direct method. Operating, tax, financing and owner movements shown separately.")],
+      [S("VAT"), MUTE("15% inclusive on standard-rated lines. Verify against valid tax invoices and SARS VAT201.")],
+      [S("Trial Balance"), MUTE("Derived from the general ledger. Requires accountant review before posting.")],
       [],
-      [HDR("Module"), HDR("Status"), HDR("Notes")],
-      [S("Profit & Loss"), S("Cash basis"), MUTE("Excludes accruals, depreciation, prepayments and capital items.")],
-      [S("Balance Sheet"), S("Partial"), MUTE("Cash position only. Full statement needs GL, assets, liabilities, equity.")],
-      [S("Cash Flow"), S("Direct method"), MUTE("Investing/financing activities not separately classified.")],
-      [S("VAT"), S("Estimated"), MUTE("15% inclusive on standard-rated lines. Verify against tax invoices and VAT201.")],
-      [S("SARS Risk"), S("Advisory"), MUTE("Internal 0–100 score. Not a SARS assessment or tax advice.")],
-      [S("Forecasting"), S(forecast.periodMonths <= 1 ? "Single period" : "Multi-period"), MUTE("Assumes consistent patterns; process more statements to improve.")],
-      [S("Trial Balance"), S("Indicative"), MUTE("Not double-entry; bank contra account not represented.")],
-      [S("Reconciliation"), meta.reconciled ? S("Balanced") : S("Review required"), MUTE(meta.reconciled ? "Opening + receipts − payments = closing." : "See Reconciliation Issues sheet.")],
-    ],
-  });
-
-  // Data Quality Report — the extraction "hard gate".
-  const uncategorised = txns.filter(
-    (t) => /uncategori|review required|operating expenses/i.test(t.accountCategory),
-  ).length;
-  const lowConfidence = txns.filter((t) => t.confidence < 70).length;
-  const withoutInvoice = txns.filter((t) => (t.debitAmount ?? 0) > 5000 && !t.supportedByInvoice && !t.bankCharge).length;
-  const extractionOk = meta.reconciled;
-  sections.push({
-    id: "data-quality",
-    label: "Data Quality Report",
-    sheet: "Data Quality",
-    headerRow: 5,
-    rows: [
-      [TITLE("Data Quality Report")],
-      extractionOk
-        ? [GOOD("Extraction status: COMPLETE — statement reconciles.")]
-        : [WARN("Extraction status: REVIEW REQUIRED — statement does not reconcile. Figures may be incomplete; do not rely on the financial statements until resolved.")],
+      [HDR("Outstanding review items"), HDR("Count")],
+      [S("Items requiring review"), meta.reviewCount === 0 ? GOOD("0") : WARN(String(meta.reviewCount))],
+      [S("Uncategorised"), uncategorised === 0 ? GOOD("0") : WARN(String(uncategorised))],
+      [S("Payments over R5,000 without an invoice"), withoutInvoice === 0 ? GOOD("0") : WARN(String(withoutInvoice))],
       [],
-      [MUTE("This report flags data-quality issues so misleading statements are never presented as final.")],
-      [HDR("Check"), HDR("Result"), HDR("Detail")],
-      [S("Reconciliation"), meta.reconciled ? GOOD("Pass") : WARN("Fail"), meta.reconciled ? S("Balanced") : MW(meta.reconciliationDifference)],
-      [S("Review items"), meta.reviewCount === 0 ? GOOD("0") : WARN(String(meta.reviewCount)), S("Transactions needing accountant review")],
-      [S("Uncategorised"), uncategorised === 0 ? GOOD("0") : WARN(String(uncategorised)), S("Assign accounts before posting")],
-      [S("Low confidence (<70%)"), lowConfidence === 0 ? GOOD("0") : WARN(String(lowConfidence)), S("Verify amounts and descriptions")],
-      [S("Payments >R5k without invoice"), withoutInvoice === 0 ? GOOD("0") : WARN(String(withoutInvoice)), S("Attach supporting documents")],
-      [S("Extraction confidence"), S(`${meta.confidence}%`), S("Overall parser confidence")],
-      [S("Transactions extracted"), INT(meta.transactionCount), S("Rows captured from the statement")],
-    ],
-  });
-
-  // Extraction Log — provenance of every figure.
-  sections.push({
-    id: "extraction-log",
-    label: "Extraction Log",
-    sheet: "Extraction Log",
-    headerRow: 1,
-    rows: [
-      [HDR("Field"), HDR("Value")],
-      [S("Bank"), S(run.bank)],
+      [HDR("Reconciliation"), HDR("Result")],
+      [S("Opening + receipts − payments = closing"), meta.reconciled ? GOOD("Reconciled") : WARN("Review Required")],
+      ...(meta.reconciled ? [] : [[S("Difference"), MW(meta.reconciliationDifference)]]),
+      [],
+      [HDR("Statement details"), HDR("Value")],
+      [S("Bank"), S(meta.bank)],
       [S("Statement type"), S(run.statementType)],
-      [S("Extraction provider"), S(run.extractionProvider)],
-      [S("Parser profile"), S(run.parserProfile ?? "—")],
-      [S("Parser version"), S(run.parserVersion ?? "—")],
-      [S("Processing status"), S(run.status)],
-      [S("Extraction confidence"), S(`${meta.confidence}%`)],
-      [S("Company (as extracted)"), S(meta.company || "Not detected")],
-      [S("Account number (as extracted)"), S(meta.accountNumber || "Not detected")],
+      [S("Company (as read)"), S(meta.company || "Not detected")],
+      [S("Account number (as read)"), S(meta.accountNumber || "Not detected")],
       [S("Statement period"), S(meta.statementPeriod)],
       [S("Opening balance"), M(meta.openingBalance)],
       [S("Closing balance"), M(meta.closingBalance)],
-      [S("Reconciliation difference"), meta.reconciled ? M(0) : MW(meta.reconciliationDifference)],
-      [S("Generated"), S(new Date().toISOString())],
+      [S("Transactions processed"), INT(meta.transactionCount)],
+      [S("Prepared"), S(new Date().toISOString().slice(0, 10))],
     ],
   });
 

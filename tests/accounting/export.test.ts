@@ -32,10 +32,14 @@ test("company name resolution falls back statement -> workspace -> generic", () 
   assert.match(src, /"Bank Statement Accounting Pack"/, "generic fallback title must exist");
 });
 
-test("VAT schedule includes all required columns", () => {
+test("VAT working paper includes all required columns (no engine columns)", () => {
   const src = read("lib/accounting/export.ts");
-  for (const col of ["Output VAT", "Input VAT", "Net VAT", "Claim Status", "VAT Treatment", "Document Status", "Review Reason", "Confidence"]) {
-    assert.match(src, new RegExp(`HDR\\("${col}"\\)`), `VAT schedule must have a "${col}" column`);
+  for (const col of ["Output VAT", "Input VAT", "Net VAT", "Claim Status", "VAT Code", "VAT %", "VAT201 Box", "Category"]) {
+    assert.match(src, new RegExp(`HDR\\("${col}"\\)`), `VAT working paper must have a "${col}" column`);
+  }
+  // Engine/AI columns must be gone.
+  for (const gone of ["Confidence", "Source", "VAT Treatment"]) {
+    assert.doesNotMatch(src, new RegExp(`HDR\\("${gone}"\\)`), `"${gone}" column must be removed`);
   }
 });
 
@@ -70,20 +74,18 @@ test("workbook styles apply a red-negative number format", () => {
 test("full pack includes every core accounting section", () => {
   const src = read("lib/accounting/export.ts");
   const required = [
+    "cover",
+    "summary",
     "transactions",
     "review-queue",
     "vat",
     "general-ledger",
     "trial-balance",
-    "bank-reconciliation",
     "profit-loss",
     "balance-sheet",
     "cash-flow",
-    "ai-intelligence",
-    "exception-report",
+    "bank-reconciliation",
     "assumptions",
-    "data-quality",
-    "extraction-log",
   ];
   for (const id of required) {
     assert.match(src, new RegExp(`id:\\s*"${id}"`), `export must build the "${id}" section`);
@@ -92,16 +94,16 @@ test("full pack includes every core accounting section", () => {
 
 test("removed/merged sheets are no longer generated", () => {
   const src = read("lib/accounting/export.ts");
-  for (const gone of ["chart-of-accounts", "vat201", "ai-categorisation", "lead-schedules", "tax-vat", "reconciliation-issues", "audit-tools"]) {
+  for (const gone of ["chart-of-accounts", "vat201", "ai-categorisation", "lead-schedules", "tax-vat", "reconciliation-issues", "audit-tools", "ai-intelligence", "exception-report", "data-quality", "extraction-log", "financial-statements", "forecasting", "review-items"]) {
     assert.doesNotMatch(src, new RegExp(`id:\\s*"${gone}"`), `"${gone}" sheet must be removed/merged`);
   }
 });
 
-test("data quality report is a hard extraction gate", () => {
+test("extraction is a hard gate — statements are watermarked when unreconciled", () => {
   const src = read("lib/accounting/export.ts");
-  assert.match(src, /Extraction status: COMPLETE/);
-  assert.match(src, /Extraction status: REVIEW REQUIRED/);
-  assert.match(src, /const extractionOk = meta\.reconciled/);
+  assert.match(src, /REVIEW REQUIRED/);
+  assert.match(src, /unreliableBanner/, "reports must carry a review-required watermark");
+  assert.match(src, /meta\.reconciled/);
 });
 
 test("export route serves the full pack and every individual export", () => {

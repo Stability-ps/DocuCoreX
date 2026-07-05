@@ -1412,18 +1412,15 @@ type ExportOption = { label: string; section: string; detail: string };
 // sync with the export engine's EXPORT_MENU.
 const EXPORT_OPTIONS: ExportOption[] = [
   { label: "Transactions", section: "transactions", detail: "Full transaction listing" },
-  { label: "Review Queue", section: "review-queue", detail: "Rows requiring accountant review" },
+  { label: "Executive Summary", section: "summary", detail: "Dashboard of the statement" },
   { label: "VAT Working Paper", section: "vat", detail: "VAT per line + VAT201 boxes" },
-  { label: "General Ledger", section: "general-ledger", detail: "Double-entry journal postings" },
+  { label: "General Ledger", section: "general-ledger", detail: "Running-balance ledger" },
   { label: "Trial Balance", section: "trial-balance", detail: "Debit and credit balances" },
   { label: "Profit & Loss", section: "profit-loss", detail: "Recognised revenue and expenses" },
-  { label: "Balance Sheet", section: "balance-sheet", detail: "Cash and detected balances" },
+  { label: "Balance Sheet", section: "balance-sheet", detail: "Cash and confirmed balances" },
   { label: "Cash Flow", section: "cash-flow", detail: "Cash movements by activity" },
   { label: "Bank Reconciliation", section: "bank-reconciliation", detail: "Opening → closing balance check" },
-  { label: "AI Accountant Notes", section: "ai-intelligence", detail: "Risk score, duplicates, related-party" },
-  { label: "Audit Exceptions", section: "exception-report", detail: "Exceptions and audit findings" },
-  { label: "Data Quality Report", section: "data-quality", detail: "Extraction validation status" },
-  { label: "Extraction Log", section: "extraction-log", detail: "Provenance of the figures" },
+  { label: "Review Queue", section: "review-queue", detail: "Items requiring attention" },
 ];
 const FULL_PACK_OPTION: ExportOption = {
   label: "Full Accounting Pack",

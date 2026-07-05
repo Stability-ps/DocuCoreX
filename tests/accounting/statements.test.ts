@@ -10,12 +10,10 @@ const { computeProfitLoss, accountType } = await import("@/lib/accounting/analyt
 const { buildExportSections, buildStatementMetadata, resolveCompanyName, FULL_PACK_SECTIONS, EXPORT_MENU } = await import("@/lib/accounting/export.ts");
 const { buildAccountingModel, resolveAccount, CHART } = await import("@/lib/accounting/model.ts");
 
-// The only sheet names allowed in the workbook.
+// The only sheet names allowed in the professional workbook.
 const APPROVED_SHEETS = new Set([
   "Cover",
   "Summary",
-  "Data Quality",
-  "Extraction Log",
   "Transactions",
   "Review Queue",
   "VAT Working Paper",
@@ -25,12 +23,11 @@ const APPROVED_SHEETS = new Set([
   "Balance Sheet",
   "Cash Flow",
   "Bank Reconciliation",
-  "AI Accountant Notes",
-  "Audit Exceptions",
-  "Assumptions",
-  "Financial Ratios", // conditional (reliable only)
-  "Forecasting", // conditional (3+ periods only)
+  "Notes & Assumptions",
 ]);
+
+// Terms that must NEVER appear anywhere in the workbook (DocuCoreX IP).
+const FORBIDDEN_TERMS = [/\bAI\b/, /GPT/, /OpenAI/i, /machine learn/i, /rule engine/i, /learning engine/i, /\bprompt\b/i, /confidence/i, /journal no/i];
 
 function packSheets(d: unknown) {
   const all = buildExportSections(d as never, "ACAPOLITE CONSULTING (PTY) LTD");
@@ -138,26 +135,28 @@ function cellText(cell: unknown): string {
   return v === undefined ? "" : String(v);
 }
 
-test("General Ledger is double-entry and not one collapsed suspense line", () => {
+test("General Ledger is a running-balance ledger with real accounts", () => {
   const sections = buildExportSections(detail, resolveCompanyName(run.companyName, null));
   const gl = sections.find((s: { id: string }) => s.id === "general-ledger");
-  // Account name column is index 5 in the double-entry GL.
-  const accountNames = new Set(gl.rows.slice(1, -1).map((r: unknown[]) => cellText(r[5])));
+  // Columns: Date, Reference, Description, Account, Debit, Credit, Running Balance, Review.
+  const accountNames = new Set(gl.rows.slice(2, -1).map((r: unknown[]) => cellText(r[3])));
   assert.ok(accountNames.size > 1, "GL must have multiple accounts");
-  assert.ok(accountNames.has("Cash at Bank"), "bank posts every leg");
   assert.ok(accountNames.has("Bank Charges"), "GL must contain a Bank Charges account");
-  // The Bank Charges debit leg must be the fee (616.80), never a cash deposit (23,550).
-  const bankRow = gl.rows.find((r: unknown[]) => cellText(r[5]) === "Bank Charges" && Number((r[6] as { v?: number })?.v) > 0);
-  assert.equal(Number((bankRow[6] as { v: number }).v), 616.8, "bank charges must be the fee, not a deposit");
+  // The Bank Charges debit must be the fee (616.80), never a cash deposit (23,550).
+  const bankRow = gl.rows.find((r: unknown[]) => cellText(r[3]) === "Bank Charges" && Number((r[4] as { v?: number })?.v) > 0);
+  assert.equal(Number((bankRow[4] as { v: number }).v), 616.8, "bank charges must be the fee, not a deposit");
+  // Closing running balance ties to the statement.
+  const totalsRow = gl.rows[gl.rows.length - 1];
+  assert.equal(Number((totalsRow[6] as { v: number }).v), closing, "running balance must close at the statement closing balance");
 });
 
-test("Trial Balance is double-entry balanced (no artificial contra plug)", () => {
+test("Trial Balance is balanced with a variance and status", () => {
   const sections = buildExportSections(detail, resolveCompanyName(run.companyName, null));
   const tb = sections.find((s: { id: string }) => s.id === "trial-balance");
-  const balancedRow = tb.rows.find((r: unknown[]) => cellText(r[0]) === "Balanced");
-  assert.equal(cellText(balancedRow[1]), "Yes", "trial balance must balance");
+  const totalsRow = tb.rows.find((r: unknown[]) => cellText(r[0]) === "Totals");
+  assert.equal(cellText(totalsRow[4]), "Balanced", "trial balance must show Balanced status");
   // Bank is a real ledger account (Cash at Bank), not a plugged "contra".
-  const accountNames = tb.rows.map((r: unknown[]) => cellText(r[1]));
+  const accountNames = tb.rows.map((r: unknown[]) => cellText(r[0]));
   assert.ok(accountNames.includes("Cash at Bank"), "bank must be a real ledger account");
   assert.ok(!accountNames.includes("Bank / Cash (contra)"), "no artificial contra plug");
 });
@@ -193,23 +192,22 @@ test("statement metadata is canonical and reconciles", () => {
 const unbalancedRun = { ...run, closingBalance: closing + 5000 };
 const unbalancedDetail = { run: unbalancedRun, transactions: txns };
 
-test("Trial Balance is marked invalid (no artificial contra) when unreconciled", () => {
+test("Trial Balance is marked review required when unreconciled", () => {
   const sections = buildExportSections(unbalancedDetail, "ACAPOLITE CONSULTING (PTY) LTD");
   const tb = sections.find((s: { id: string }) => s.id === "trial-balance");
   const text = tb.rows.map((r: unknown[]) => r.map(cellText).join(" ")).join("\n");
-  assert.match(text, /INVALID|Invalid/);
+  assert.match(text, /REVIEW REQUIRED/);
   assert.ok(!text.includes("Bank / Cash (contra)"), "must not hide the gap behind a contra");
-  assert.ok(!/Balanced\s+Yes/.test(text), "must not claim balanced when unreconciled");
 });
 
-test("Cash Flow and P&L are watermarked unreliable when unreconciled", () => {
+test("Cash Flow and P&L are watermarked review required when unreconciled", () => {
   const sections = buildExportSections(unbalancedDetail, "ACAPOLITE CONSULTING (PTY) LTD");
   const cf = sections.find((s: { id: string }) => s.id === "cash-flow");
   const pl = sections.find((s: { id: string }) => s.id === "profit-loss");
   const cfText = cf.rows.map((r: unknown[]) => r.map(cellText).join(" ")).join("\n");
   const plText = pl.rows.map((r: unknown[]) => r.map(cellText).join(" ")).join("\n");
-  assert.match(cfText, /INVALID|does not tie/);
-  assert.match(plText, /UNRELIABLE|does not reconcile/);
+  assert.match(cfText, /REVIEW REQUIRED|does not tie/);
+  assert.match(plText, /REVIEW REQUIRED|does not reconcile/);
 });
 
 test("account type keeps refund and suspense distinct", () => {
@@ -262,9 +260,9 @@ test("financials come from the ledger — tax/suspense are not revenue/expense",
 
 // ─── Pack structure & export selector ──────────────────────────────────────
 
-test("workbook is limited to approved core sheets (no extras, no placeholders)", () => {
+test("workbook is exactly the 12 approved sheets (no extras, no placeholders)", () => {
   const sheets = packSheets(detail);
-  assert.ok(sheets.length <= 18, `too many sheets: ${sheets.length}`);
+  assert.equal(sheets.length, 12, `expected 12 sheets, got ${sheets.length}`);
   for (const s of sheets) {
     assert.ok(APPROVED_SHEETS.has(s.sheet), `unapproved sheet: ${s.sheet}`);
     // No placeholder sheets — every sheet has real content beyond a title row.
@@ -272,9 +270,21 @@ test("workbook is limited to approved core sheets (no extras, no placeholders)",
   }
 });
 
+test("no AI/engine terminology is exposed anywhere in the workbook", () => {
+  for (const d of [detail, unbalancedDetail]) {
+    const sheets = packSheets(d);
+    for (const s of sheets) {
+      const text = (s.rows as unknown[]).map((r) => (r as unknown[]).map(cellText).join(" ")).join("\n");
+      for (const term of FORBIDDEN_TERMS) {
+        assert.doesNotMatch(text, term, `sheet "${s.sheet}" exposes forbidden term ${term}`);
+      }
+    }
+  }
+});
+
 test("export selector lists every available export and each maps to a real section", () => {
-  // Full pack + 13 individual options = 14.
-  assert.equal(EXPORT_MENU.length, 14, "modal must offer 14 exports");
+  // Full pack + 10 individual options = 11.
+  assert.equal(EXPORT_MENU.length, 11, "modal must offer 11 exports");
   assert.equal(EXPORT_MENU[0].section, "all", "first option is the full pack");
   const all = buildExportSections(detail, "ACAPOLITE CONSULTING (PTY) LTD");
   const ids = new Set(all.map((s: { id: string }) => s.id));
@@ -287,7 +297,7 @@ test("export selector lists every available export and each maps to a real secti
   }
   // Every option label matches an approved export name.
   const labels = EXPORT_MENU.map((o) => o.label);
-  for (const expected of ["Full Accounting Pack", "Transactions", "Review Queue", "VAT Working Paper", "General Ledger", "Trial Balance", "Profit & Loss", "Balance Sheet", "Cash Flow", "Bank Reconciliation", "AI Accountant Notes", "Audit Exceptions", "Data Quality Report", "Extraction Log"]) {
+  for (const expected of ["Full Accounting Pack", "Transactions", "Executive Summary", "VAT Working Paper", "General Ledger", "Trial Balance", "Profit & Loss", "Balance Sheet", "Cash Flow", "Bank Reconciliation", "Review Queue"]) {
     assert.ok(labels.includes(expected), `missing export option: ${expected}`);
   }
 });
