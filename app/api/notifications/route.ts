@@ -5,6 +5,7 @@ import {
   listNotifications,
   markAllNotificationsRead,
   markNotificationRead,
+  markNotificationsRead,
 } from "@/lib/notifications";
 
 export async function GET() {
@@ -13,13 +14,15 @@ export async function GET() {
 }
 
 export async function PATCH(request: Request) {
-  const body = (await request.json().catch(() => ({}))) as { id?: string; allRead?: boolean };
+  const body = (await request.json().catch(() => ({}))) as { id?: string; ids?: string[]; allRead?: boolean };
 
   const notifications = body.allRead
     ? await markAllNotificationsRead()
-    : body.id
-      ? await markNotificationRead(body.id)
-      : await listNotifications();
+    : Array.isArray(body.ids) && body.ids.length > 0
+      ? await markNotificationsRead(body.ids)
+      : body.id
+        ? await markNotificationRead(body.id)
+        : await listNotifications();
 
   return NextResponse.json({ notifications });
 }

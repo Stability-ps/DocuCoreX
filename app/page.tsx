@@ -238,7 +238,7 @@ export default function Home() {
                 <ArrowRight className="h-5 w-5" />
               </a>
               <a
-                href="/dashboard"
+                href="#demo"
                 className="inline-flex items-center justify-center gap-2 rounded-full border border-slate-200 bg-white px-6 py-3.5 text-base font-bold text-navy-900 shadow-sm transition hover:-translate-y-0.5 hover:border-royal-200 hover:text-royal-700"
               >
                 Watch Demo
@@ -540,10 +540,10 @@ export default function Home() {
             </div>
           </div>
           <div className="flex flex-wrap gap-3 text-sm font-bold text-blue-100">
-            <a href="/dashboard" className="hover:text-white">Features</a>
-            <a href="/documents" className="hover:text-white">Solutions</a>
-            <a href="/convert" className="hover:text-white">Developers</a>
-            <a href="/settings" className="hover:text-white">Pricing</a>
+            <a href="#features" className="hover:text-white">Features</a>
+            <a href="#solutions" className="hover:text-white">Solutions</a>
+            <a href="#developers" className="hover:text-white">Developers</a>
+            <a href="#pricing" className="hover:text-white">Pricing</a>
             <a href="mailto:hello@docucorex.com" className="hover:text-white">hello@docucorex.com</a>
           </div>
         </div>

@@ -1,9 +1,21 @@
-import { NextResponse } from "next/server";
+import { NextRequest, NextResponse } from "next/server";
 import { recordAuditLog } from "@/lib/audit";
 import { getWorkspaceContext, registerUploads } from "@/lib/server-documents";
 import { createWorkspaceBucketPath } from "@/lib/supabase-server-adapter";
+import { checkRateLimit } from "@/lib/rate-limit";
 
-export async function POST(request: Request) {
+const MAX_UPLOAD_SIZE_BYTES = 200 * 1024 * 1024; // 200 MB
+
+export async function POST(request: NextRequest) {
+  const ip = request.headers.get("x-forwarded-for")?.split(",")[0]?.trim() ?? "unknown";
+  const rate = checkRateLimit(`upload:${ip}`, { limit: 30, windowMs: 60 * 1000 });
+  if (!rate.ok) {
+    return NextResponse.json(
+      { error: "Upload rate limit exceeded. Try again in a moment." },
+      { status: 429, headers: { "Retry-After": String(Math.ceil(rate.retryAfterMs / 1000)) } },
+    );
+  }
+
   const contentType = request.headers.get("content-type") ?? "";
 
   if (contentType.includes("multipart/form-data")) {
@@ -18,6 +30,12 @@ export async function POST(request: Request) {
       const files = [];
 
       for (const file of uploadedFiles) {
+        if (file.size > MAX_UPLOAD_SIZE_BYTES) {
+          return NextResponse.json(
+            { error: `${file.name} exceeds the 200 MB upload limit` },
+            { status: 413 },
+          );
+        }
         const storagePath = context ? await createWorkspaceBucketPath(context.workspaceId, file.name) : undefined;
 
         if (context && storagePath) {
@@ -56,6 +74,14 @@ export async function POST(request: Request) {
   };
 
   const files = body.files ?? [];
+
+  const oversized = files.find((f) => (f.size ?? 0) > MAX_UPLOAD_SIZE_BYTES);
+  if (oversized) {
+    return NextResponse.json(
+      { error: `${oversized.name} exceeds the 200 MB upload limit` },
+      { status: 413 },
+    );
+  }
 
   try {
     const result = await registerUploads(files);

@@ -425,7 +425,7 @@ export function ConversionWorkflow() {
       <h2 className="text-lg font-semibold text-navy-950">Conversion Job</h2>
       <p className="mt-1 text-sm leading-6 text-slate-500">Ready to convert, processing, and completed results all update in this same card.</p>
 
-      {conversionDebug ? (
+      {conversionDebug && process.env.NODE_ENV !== "production" ? (
         <div className="mt-4 rounded-xl border border-amber-200 bg-amber-50 p-3 text-xs text-amber-950">
           <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
             <div className="min-w-0 space-y-1">

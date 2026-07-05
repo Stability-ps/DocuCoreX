@@ -3,8 +3,18 @@ import { ensureUserWorkspace } from "@/lib/workspace-bootstrap";
 import { NextRequest, NextResponse } from "next/server";
 import type { CookieOptions } from "@supabase/ssr";
 import { dedupeCookies, setSupabaseAuthCookie } from "@/lib/auth-cookies";
+import { checkRateLimit } from "@/lib/rate-limit";
 
 export async function POST(request: NextRequest) {
+  const ip = request.headers.get("x-forwarded-for")?.split(",")[0]?.trim() ?? "unknown";
+  const rate = checkRateLimit(`signin:${ip}`, { limit: 10, windowMs: 15 * 60 * 1000 });
+  if (!rate.ok) {
+    return NextResponse.json(
+      { error: "Too many sign-in attempts. Try again later." },
+      { status: 429, headers: { "Retry-After": String(Math.ceil(rate.retryAfterMs / 1000)) } },
+    );
+  }
+
   const { email, password } = await request.json();
 
   if (!email || !password) {

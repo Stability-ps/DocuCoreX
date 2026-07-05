@@ -80,11 +80,10 @@ export const appNav: NavGroup[] = [
   },
   {
     title: "Convert Files",
-    href: "/convert",
+    href: "/upload",
     icon: RefreshCcw,
     children: [
       { title: "OCR", href: "/convert/ocr", icon: ScanText },
-      { title: "Convert Files", href: "/convert", icon: RefreshCcw },
       { title: "Extraction", href: "/convert/extraction", icon: FileSearch },
       { title: "Summaries", href: "/convert/summaries", icon: WandSparkles },
       { title: "Compare", href: "/convert/compare", icon: Columns3 },
@@ -125,7 +124,7 @@ export const dashboardStats = [
 
 export const quickActions = [
   { label: "Upload Document", href: "/upload", icon: CloudUpload, description: "PDF, Office, images and ZIP" },
-  { label: "Convert File", href: "/convert", icon: RefreshCcw, description: "PDF, Word, Excel and images" },
+  { label: "Convert File", href: "/upload", icon: RefreshCcw, description: "PDF, Word, Excel and images" },
   { label: "Edit PDF", href: "/documents", icon: Edit3, description: "Open a document workspace" },
   { label: "OCR Scan", href: "/convert/ocr", icon: ScanText, description: "Extract text and layout" },
   { label: "AI Analysis", href: "/convert/summaries", icon: Bot, description: "Ask document questions" },

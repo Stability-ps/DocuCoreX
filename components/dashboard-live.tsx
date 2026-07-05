@@ -161,7 +161,7 @@ export function DashboardLive() {
     }
 
     if (jobs.some((job) => job.type === "conversion" && ["queued", "running"].includes(job.status))) {
-      items.push({ id: "conversion", title: "Continue Conversion", href: "/convert", icon: RefreshCcw });
+      items.push({ id: "conversion", title: "Continue Conversion", href: "/upload", icon: RefreshCcw });
     }
 
     if (recentDocuments[0]) {

@@ -3,8 +3,18 @@ import { ensureUserWorkspace } from "@/lib/workspace-bootstrap";
 import { NextRequest, NextResponse } from "next/server";
 import type { CookieOptions } from "@supabase/ssr";
 import { dedupeCookies, setSupabaseAuthCookie } from "@/lib/auth-cookies";
+import { checkRateLimit } from "@/lib/rate-limit";
 
 export async function POST(request: NextRequest) {
+  const ip = request.headers.get("x-forwarded-for")?.split(",")[0]?.trim() ?? "unknown";
+  const rate = checkRateLimit(`signup:${ip}`, { limit: 5, windowMs: 60 * 60 * 1000 });
+  if (!rate.ok) {
+    return NextResponse.json(
+      { error: "Too many sign-up attempts from this address. Try again later." },
+      { status: 429, headers: { "Retry-After": String(Math.ceil(rate.retryAfterMs / 1000)) } },
+    );
+  }
+
   const { email, password, fullName } = await request.json();
 
   const normalizedName = typeof fullName === "string" ? fullName.trim().replace(/\s+/g, " ") : "";

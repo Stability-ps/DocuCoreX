@@ -29,6 +29,7 @@ import type {
 } from "@/lib/accounting/types";
 
 type AccountingTab = "transactions" | "review" | "difference" | "summary" | "bank-rec" | "vat" | "general-ledger" | "trial-balance";
+type AccountingModule = "bank-statements" | "financial-statements" | "tax-vat" | "ai-intelligence" | "forecasting" | "audit-tools";
 type UploadQueueStatus = "Queued" | "Uploading" | "Uploaded" | "Processing" | "Completed" | "Review Required" | "Failed";
 type UploadQueueItem = {
   id: string;
@@ -77,6 +78,19 @@ const tabs: Array<{ id: AccountingTab; label: string }> = [
   { id: "vat", label: "VAT" },
   { id: "general-ledger", label: "General Ledger" },
   { id: "trial-balance", label: "Trial Balance" },
+];
+
+const accountingModules: Array<{
+  id: AccountingModule;
+  label: string;
+  status: "live" | "in-development" | "planned";
+}> = [
+  { id: "bank-statements", label: "Bank Statements", status: "live" },
+  { id: "financial-statements", label: "Financial Statements", status: "in-development" },
+  { id: "tax-vat", label: "Tax & VAT", status: "in-development" },
+  { id: "ai-intelligence", label: "AI Intelligence", status: "in-development" },
+  { id: "forecasting", label: "Forecasting", status: "planned" },
+  { id: "audit-tools", label: "Audit Tools", status: "planned" },
 ];
 
 const supportedBanks = [
@@ -334,6 +348,7 @@ export function AccountingIntelligence() {
   const [overrideType, setOverrideType] = useState<CombineOverrideType>("account");
   const [overrideText, setOverrideText] = useState("");
   const [uploadCollapsed, setUploadCollapsed] = useState(false);
+  const [activeModule, setActiveModule] = useState<AccountingModule>("bank-statements");
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
   const [deleteTargetIds, setDeleteTargetIds] = useState<string[]>([]);
   const selectedRun = useMemo(() => runs.find((run) => run.id === selectedRunId) ?? null, [runs, selectedRunId]);
@@ -764,6 +779,39 @@ export function AccountingIntelligence() {
         </label>
       </header>
 
+      {/* Module navigation */}
+      <div className="-mx-4 overflow-x-auto sm:-mx-6 lg:-mx-8">
+        <div className="flex min-w-max gap-1 border-b border-slate-200 px-4 sm:px-6 lg:px-8">
+          {accountingModules.map((mod) => (
+            <button
+              key={mod.id}
+              type="button"
+              onClick={() => setActiveModule(mod.id)}
+              className={`flex items-center gap-2 whitespace-nowrap border-b-2 px-4 py-3 text-sm font-semibold transition ${
+                activeModule === mod.id
+                  ? "border-royal-600 text-royal-700"
+                  : "border-transparent text-slate-500 hover:text-navy-950"
+              }`}
+            >
+              {mod.label}
+              {mod.status !== "live" ? (
+                <span className={`rounded-full px-1.5 py-0.5 text-[10px] font-black ${
+                  mod.status === "in-development" ? "bg-amber-50 text-amber-700" : "bg-slate-100 text-slate-500"
+                }`}>
+                  {mod.status === "in-development" ? "Dev" : "Soon"}
+                </span>
+              ) : null}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {activeModule !== "bank-statements" ? (
+        <AccountingModulePanel moduleId={activeModule as Exclude<AccountingModule, "bank-statements">} />
+      ) : null}
+
+      {activeModule === "bank-statements" ? (
+      <>
       <section
         onDragOver={(event) => event.preventDefault()}
         onDrop={(event) => {
@@ -1137,7 +1185,14 @@ export function AccountingIntelligence() {
                     </div>
                   </div>
                   <div id="accounting-review-table">
-                    <TransactionTable transactions={filteredRows} patchTransaction={patchTransaction} affectedTransactionIds={affectedTransactionIds} />
+                    <TransactionTable
+                      transactions={filteredRows}
+                      patchTransaction={patchTransaction}
+                      affectedTransactionIds={affectedTransactionIds}
+                      emptyLabel={activeTab === "review" ? "All items reviewed" : undefined}
+                      emptyDescription={activeTab === "review" ? "No transactions are pending review for this statement." : undefined}
+                      emptyVariant={activeTab === "review" ? "success" : "default"}
+                    />
                   </div>
                 </>
               ) : null}
@@ -1170,6 +1225,8 @@ export function AccountingIntelligence() {
           )}
         </section>
       </div>
+      </>
+      ) : null}
       {overrideDialogOpen ? (
         <div className="fixed inset-0 z-[70] flex items-end bg-slate-950/40 p-3 sm:items-center sm:justify-center">
           <div className="w-full max-w-lg rounded-2xl border border-slate-200 bg-white p-5 shadow-2xl">
@@ -1501,18 +1558,16 @@ function DifferenceInspector({
         </div>
         <div className="mt-4 flex flex-wrap gap-2">
           <button type="button" onClick={onAcceptSuggestion} className="min-h-10 rounded-lg bg-royal-600 px-4 text-sm font-black text-white">
-            Accept Suggestion
+            Mark Row as Reviewed
           </button>
           <button type="button" onClick={onReviewTransactions} className="min-h-10 rounded-lg border border-slate-200 bg-white px-4 text-sm font-black text-slate-700">
             Edit Transaction
           </button>
-          <button type="button" disabled title="Manual insert flow is coming next." className="min-h-10 cursor-not-allowed rounded-lg border border-slate-200 bg-slate-50 px-4 text-sm font-black text-slate-400">
+          <button type="button" disabled title="Manual insert is coming in a future release." className="min-h-10 cursor-not-allowed rounded-lg border border-slate-200 bg-slate-50 px-4 text-sm font-black text-slate-400">
             Insert Missing Transaction
           </button>
-          <button type="button" onClick={onAcceptSuggestion} className="min-h-10 rounded-lg border border-slate-200 bg-white px-4 text-sm font-black text-slate-700">
-            Mark as Correct
-          </button>
         </div>
+        <p className="mt-2 text-xs font-semibold text-slate-400">Marking a row as reviewed does not change transaction amounts. Use Edit Transaction to correct values.</p>
       </div>
 
       <BankRecPanel run={run} totals={totals} expectedClosing={expectedClosing} difference={difference} />
@@ -1537,130 +1592,6 @@ function TransactionSnapshot({ title, transaction }: { title: string; transactio
       ) : (
         <p className="mt-3 text-sm font-semibold text-slate-500">No transaction selected.</p>
       )}
-    </div>
-  );
-}
-
-function MobileTransactionCards({
-  transactions,
-  patchTransaction,
-  reviewMode,
-  affectedTransactionIds,
-}: {
-  transactions: AccountingTransaction[];
-  patchTransaction: (transaction: AccountingTransaction, patch: AccountingTransactionPatch) => Promise<void>;
-  reviewMode: boolean;
-  affectedTransactionIds?: Set<string>;
-}) {
-  if (!transactions.length) {
-    return (
-      <div className="rounded-lg border border-slate-200 bg-slate-50 p-6 text-center md:hidden">
-        <FileSpreadsheet className="mx-auto h-7 w-7 text-royal-500" />
-        <p className="mt-3 font-semibold text-navy-950">No transactions</p>
-        <p className="mt-1 text-sm text-slate-500">Process a statement or adjust search.</p>
-      </div>
-    );
-  }
-
-  return (
-    <div className="space-y-3 md:hidden">
-      {transactions.map((transaction) => {
-        const amount = transaction.creditAmount ?? transaction.debitAmount;
-        const isCredit = Boolean(transaction.creditAmount);
-        const isAffected = affectedTransactionIds?.has(transaction.id) ?? false;
-        return (
-          <article
-            id={`transaction-${transaction.id}`}
-            key={transaction.id}
-            className={`rounded-xl border p-4 shadow-sm ${isAffected ? "border-amber-300 bg-amber-50/60" : "border-slate-200 bg-white"}`}
-          >
-            {isAffected ? (
-              <div className="mb-3 inline-flex items-center gap-1.5 rounded-full bg-white px-2.5 py-1 text-xs font-black text-amber-700 ring-1 ring-amber-200">
-                <AlertTriangle className="h-3.5 w-3.5" />
-                Balance mismatch
-              </div>
-            ) : null}
-            <div className="flex items-start justify-between gap-3">
-              <div className="min-w-0">
-                <p className="text-xs font-black text-slate-500">{transaction.transactionDate || "-"}</p>
-                <p className="mt-1 line-clamp-2 text-sm font-black leading-5 text-navy-950">{transaction.description}</p>
-              </div>
-              <p className={`shrink-0 text-right text-sm font-black ${isCredit ? "text-emerald-700" : "text-rose-700"}`}>{money(amount ?? null)}</p>
-            </div>
-            <div className="mt-3 grid grid-cols-2 gap-2 text-xs">
-              <div className="rounded-lg bg-slate-50 p-2">
-                <p className="font-semibold text-slate-400">Category</p>
-                <p className="mt-1 font-black text-navy-950">{transaction.accountCategory}</p>
-              </div>
-              <div className="rounded-lg bg-slate-50 p-2">
-                <p className="font-semibold text-slate-400">VAT</p>
-                <p className="mt-1 font-black text-navy-950">{transaction.vatTreatment}</p>
-              </div>
-              <div className="rounded-lg bg-slate-50 p-2">
-                <p className="font-semibold text-slate-400">Confidence</p>
-                <p className="mt-1 font-black text-navy-950">{Math.round(transaction.confidence)}%</p>
-              </div>
-              <div className="rounded-lg bg-slate-50 p-2">
-                <p className="font-semibold text-slate-400">Review</p>
-                <p className="mt-1 font-black text-navy-950">{transaction.reviewStatus === "approved" ? "Approved" : "Review"}</p>
-              </div>
-            </div>
-            {reviewMode ? (
-              <div className="mt-3 grid grid-cols-3 gap-2">
-                <button
-                  type="button"
-                  onClick={() => void patchTransaction(transaction, { reviewStatus: "approved" })}
-                  className="h-11 rounded-xl bg-emerald-50 text-xs font-black text-emerald-700"
-                >
-                  Approve
-                </button>
-                <button
-                  type="button"
-                  onClick={() => void patchTransaction(transaction, { reviewStatus: "needs_review" })}
-                  className="h-11 rounded-xl bg-rose-50 text-xs font-black text-rose-700"
-                >
-                  Reject
-                </button>
-                <button
-                  type="button"
-                  onClick={() => void patchTransaction(transaction, { notes: transaction.notes || "AI explanation requested." })}
-                  className="h-11 rounded-xl bg-royal-50 text-xs font-black text-royal-700"
-                >
-                  AI Reason
-                </button>
-              </div>
-            ) : (
-              <details className="mt-3 rounded-lg bg-slate-50 p-3">
-                <summary className="cursor-pointer text-xs font-black text-royal-700">View More</summary>
-                <div className="mt-3 space-y-2">
-                  <select
-                    value={transaction.accountCategory}
-                    onChange={(event) => void patchTransaction(transaction, { accountCategory: event.target.value })}
-                    className="h-11 w-full rounded-lg border border-slate-200 bg-white px-3 text-base font-semibold"
-                  >
-                    {categories.map((category) => (
-                      <option key={category} value={category}>
-                        {category}
-                      </option>
-                    ))}
-                  </select>
-                  <select
-                    value={transaction.vatTreatment}
-                    onChange={(event) => void patchTransaction(transaction, { vatTreatment: event.target.value as VatTreatment })}
-                    className="h-11 w-full rounded-lg border border-slate-200 bg-white px-3 text-base font-semibold"
-                  >
-                    {vatTreatments.map((treatment) => (
-                      <option key={treatment.value} value={treatment.value}>
-                        {treatment.label}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-              </details>
-            )}
-          </article>
-        );
-      })}
     </div>
   );
 }
@@ -1897,10 +1828,16 @@ function TransactionTable({
   transactions,
   patchTransaction,
   affectedTransactionIds,
+  emptyLabel,
+  emptyDescription,
+  emptyVariant,
 }: {
   transactions: AccountingTransaction[];
   patchTransaction: (transaction: AccountingTransaction, patch: AccountingTransactionPatch) => Promise<void>;
   affectedTransactionIds?: Set<string>;
+  emptyLabel?: string;
+  emptyDescription?: string;
+  emptyVariant?: "default" | "success";
 }) {
   const [mobileOffsets, setMobileOffsets] = useState<Record<string, number>>({});
   const [dismissedTransactionIds, setDismissedTransactionIds] = useState<Record<string, true>>({});
@@ -1924,11 +1861,16 @@ function TransactionTable({
   const desktopBottomSpacer = Math.max(0, (transactions.length - desktopEnd) * desktopRowHeight);
 
   if (!transactions.length) {
+    const isSuccess = emptyVariant === "success";
     return (
-      <div className="rounded-lg border border-slate-200 bg-slate-50 p-8 text-center">
-        <FileSpreadsheet className="mx-auto h-8 w-8 text-royal-500" />
-        <p className="mt-3 font-semibold text-navy-950">No transactions in this view</p>
-        <p className="mt-1 text-sm text-slate-500">Process a statement or adjust the search filter.</p>
+      <div className={`rounded-lg border p-8 text-center ${isSuccess ? "border-emerald-200 bg-emerald-50/40" : "border-slate-200 bg-slate-50"}`}>
+        {isSuccess ? (
+          <CheckCircle2 className="mx-auto h-8 w-8 text-emerald-500" />
+        ) : (
+          <FileSpreadsheet className="mx-auto h-8 w-8 text-royal-500" />
+        )}
+        <p className="mt-3 font-semibold text-navy-950">{emptyLabel ?? "No transactions in this view"}</p>
+        <p className="mt-1 text-sm text-slate-500">{emptyDescription ?? "Process a statement or adjust the search filter."}</p>
       </div>
     );
   }
@@ -2111,6 +2053,7 @@ function TransactionTable({
                   <p className="truncate font-semibold text-navy-950">{transaction.description}</p>
                 </div>
                 {isAffected ? <p className="text-[10px] font-black text-amber-700">Balance mismatch · possible missing bank charge</p> : null}
+                {transaction.notes ? <p className="truncate text-[10px] font-semibold text-royal-700">{transaction.notes}</p> : null}
                 <p className="text-[10px] font-bold text-slate-400">{Math.round(transaction.confidence)}% confidence</p>
               </td>
               <td className="whitespace-nowrap px-3 py-2 font-semibold text-emerald-700">{money(transaction.creditAmount)}</td>
@@ -2234,27 +2177,75 @@ function BankRecPanel({
 }
 
 function VatPanel({ rows }: { rows: Array<{ vatTreatment: VatTreatment; debit: number; credit: number; count: number }> }) {
+  const VAT_RATE = 15 / 115;
+  const standardRows = rows.filter((row) => row.vatTreatment === "standard");
+  const outputVat = standardRows.reduce((sum, row) => sum + row.credit * VAT_RATE, 0);
+  const inputVat = standardRows.reduce((sum, row) => sum + row.debit * VAT_RATE, 0);
+  const netVat = outputVat - inputVat;
+  const totalCount = rows.reduce((sum, row) => sum + row.count, 0);
+  const totalCredit = rows.reduce((sum, row) => sum + row.credit, 0);
+  const totalDebit = rows.reduce((sum, row) => sum + row.debit, 0);
+  const totalEstVat = standardRows.reduce((sum, row) => sum + (row.credit + row.debit) * VAT_RATE, 0);
   return (
-    <SimpleTable
-      title="VAT schedule"
-      headers={["VAT treatment", "Transactions", "Money in", "Money out"]}
-      rows={rows.map((row) => [vatTreatments.find((item) => item.value === row.vatTreatment)?.label ?? row.vatTreatment, plainNumber(row.count), money(row.credit), money(row.debit)])}
-    />
+    <div className="space-y-4">
+      <div className="grid gap-3 sm:grid-cols-3">
+        {[
+          { label: "Est. Output VAT", value: money(outputVat), tone: "text-emerald-700" },
+          { label: "Est. Input VAT", value: money(inputVat), tone: "text-rose-700" },
+          { label: "Net VAT Position", value: money(netVat), tone: netVat >= 0 ? "text-emerald-700" : "text-rose-700" },
+        ].map((metric) => (
+          <div key={metric.label} className="rounded-lg border border-slate-200 bg-white p-3">
+            <p className="text-xs font-black uppercase tracking-[0.08em] text-slate-400">{metric.label}</p>
+            <p className={`mt-1 text-lg font-black ${metric.tone}`}>{metric.value}</p>
+          </div>
+        ))}
+      </div>
+      <SimpleTable
+        title="VAT schedule"
+        headers={["VAT treatment", "Transactions", "Money in", "Money out", "Est. VAT (15%)"]}
+        rows={[
+          ...rows.map((row) => [
+            vatTreatments.find((item) => item.value === row.vatTreatment)?.label ?? row.vatTreatment,
+            plainNumber(row.count),
+            money(row.credit),
+            money(row.debit),
+            row.vatTreatment === "standard" ? money((row.credit + row.debit) * VAT_RATE) : "—",
+          ]),
+          ["Totals", plainNumber(totalCount), money(totalCredit), money(totalDebit), money(totalEstVat)],
+        ]}
+      />
+      <p className="text-xs font-semibold text-slate-400">VAT estimated at 15% inclusive (15/115) on standard-rated transactions only. Verify against SARS VAT201 returns before filing.</p>
+    </div>
   );
 }
 
 function GeneralLedgerPanel({ rows }: { rows: Array<{ account: string; debit: number; credit: number; count: number }> }) {
+  const sorted = [...rows].sort((a, b) => Math.abs(b.credit - b.debit) - Math.abs(a.credit - a.debit));
+  const totals = sorted.reduce((sum, row) => ({ count: sum.count + row.count, debit: sum.debit + row.debit, credit: sum.credit + row.credit }), { count: 0, debit: 0, credit: 0 });
   return (
-    <SimpleTable
-      title="General ledger summary"
-      headers={["Account", "Transactions", "Debits", "Credits", "Net movement"]}
-      rows={rows.map((row) => [row.account, plainNumber(row.count), money(row.debit), money(row.credit), money(row.credit - row.debit)])}
-    />
+    <div className="space-y-3">
+      <p className="text-xs font-semibold text-slate-400">
+        Shows AI-assigned categories for all transactions including unreviewed. Approve transactions on the Review tab to confirm assignments. The exported GL uses a &ldquo;Review Required Suspense&rdquo; account for unapproved rows.
+      </p>
+      <SimpleTable
+        title="General ledger summary"
+        headers={["Account", "Transactions", "Debits", "Credits", "Net movement"]}
+        rows={[
+          ...sorted.map((row) => [row.account, plainNumber(row.count), money(row.debit), money(row.credit), money(row.credit - row.debit)]),
+          ["Totals", plainNumber(totals.count), money(totals.debit), money(totals.credit), money(totals.credit - totals.debit)],
+        ]}
+      />
+    </div>
   );
 }
 
 function TrialBalancePanel({ rows }: { rows: Array<{ account: string; debit: number; credit: number; count: number }> }) {
-  const totals = rows.reduce(
+  const sorted = [...rows].sort((a, b) => {
+    const aBal = Math.abs(a.debit - a.credit);
+    const bBal = Math.abs(b.debit - b.credit);
+    return bBal - aBal;
+  });
+  const totals = sorted.reduce(
     (sum, row) => {
       const balance = row.debit - row.credit;
       sum.debit += balance > 0 ? balance : 0;
@@ -2263,12 +2254,25 @@ function TrialBalancePanel({ rows }: { rows: Array<{ account: string; debit: num
     },
     { debit: 0, credit: 0 },
   );
-  const body = rows.map((row) => {
+  const imbalance = Math.abs(totals.debit - totals.credit);
+  const body = sorted.map((row) => {
     const balance = row.debit - row.credit;
-    return [row.account, money(row.debit), money(row.credit), balance > 0 ? money(balance) : "-", balance < 0 ? money(Math.abs(balance)) : "-"];
+    return [row.account, money(row.debit), money(row.credit), balance > 0 ? money(balance) : "—", balance < 0 ? money(Math.abs(balance)) : "—"];
   });
-  body.push(["Totals", "-", "-", money(totals.debit), money(totals.credit)]);
-  return <SimpleTable title="Trial balance" headers={["Account", "Total Debits", "Total Credits", "Debit Balance", "Credit Balance"]} rows={body} />;
+  body.push(["Totals", "—", "—", money(totals.debit), money(totals.credit)]);
+  return (
+    <div className="space-y-3">
+      <p className="text-xs font-semibold text-slate-400">
+        Derived from AI-assigned transaction categories. This is not a full double-entry trial balance — the bank account itself is not represented as a contra entry.
+      </p>
+      {imbalance > 0.01 ? (
+        <div className="rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-xs font-semibold text-amber-800">
+          Debit and credit balance totals differ by {money(imbalance)} — the bank account line is excluded as a contra entry. This is expected for bank statement data.
+        </div>
+      ) : null}
+      <SimpleTable title="Trial balance" headers={["Account", "Total Debits", "Total Credits", "Dr Balance", "Cr Balance"]} rows={body} />
+    </div>
+  );
 }
 
 function KeyValuePanel({ title, rows }: { title: string; rows: Array<[string, string]> }) {
@@ -2330,6 +2334,226 @@ function EmptyWorkspace() {
         </div>
         <p className="mt-4 text-lg font-semibold text-navy-950">Select or upload an FNB statement</p>
         <p className="mx-auto mt-2 max-w-md text-sm font-medium text-slate-500">The accounting workspace appears once a statement run exists.</p>
+      </div>
+    </div>
+  );
+}
+
+type ModuleFeature = {
+  title: string;
+  description: string;
+  status: "live" | "in-development" | "planned";
+  liveLabel?: string;
+};
+
+const moduleContent: Record<
+  Exclude<AccountingModule, "bank-statements">,
+  { summary: string; features: ModuleFeature[] }
+> = {
+  "financial-statements": {
+    summary:
+      "Generate financial statements directly from extracted bank statement data. Trial Balance is live now inside Bank Statements.",
+    features: [
+      {
+        title: "Trial Balance",
+        description: "Debit and credit balances by account category derived from bank data",
+        status: "live",
+        liveLabel: "Available in Bank Statements → Trial Balance tab",
+      },
+      {
+        title: "Profit & Loss Statement",
+        description: "Income vs expense summary for the selected statement period",
+        status: "in-development",
+      },
+      {
+        title: "Balance Sheet",
+        description: "Point-in-time snapshot of assets, liabilities and equity",
+        status: "in-development",
+      },
+      {
+        title: "Cash Flow Statement",
+        description: "Operating, investing and financing cash flow movements",
+        status: "in-development",
+      },
+    ],
+  },
+  "tax-vat": {
+    summary:
+      "Identify VAT anomalies, validate treatment consistency and assess SARS risk exposure from your transaction data.",
+    features: [
+      {
+        title: "VAT Schedule",
+        description: "Full VAT treatment schedule by transaction type",
+        status: "live",
+        liveLabel: "Available in Bank Statements → VAT tab",
+      },
+      {
+        title: "VAT Anomaly Detection",
+        description: "Flag transactions with inconsistent, missing or conflicting VAT treatment",
+        status: "in-development",
+      },
+      {
+        title: "Input / Output VAT Summary",
+        description: "Net VAT position for filing periods with supporting schedules",
+        status: "in-development",
+      },
+      {
+        title: "SARS Risk Scoring",
+        description: "AI-driven risk assessment based on transaction patterns and VAT exposure",
+        status: "planned",
+      },
+    ],
+  },
+  "ai-intelligence": {
+    summary:
+      "AI-powered transaction intelligence surfaces anomalies, duplicates and director activity across your bank data.",
+    features: [
+      {
+        title: "Expense Categorisation",
+        description: "AI assigns account categories to every extracted transaction automatically",
+        status: "live",
+        liveLabel: "Active in Bank Statements — edit categories inline",
+      },
+      {
+        title: "Duplicate Payment Detection",
+        description: "Flag transactions with matching amounts and similar descriptions in the same period",
+        status: "in-development",
+      },
+      {
+        title: "Unusual Transaction Alerts",
+        description: "Identify statistical outliers by amount, frequency or counterparty pattern",
+        status: "in-development",
+      },
+      {
+        title: "Director Loan Account Analysis",
+        description: "Track and classify director-linked transactions with running balance",
+        status: "planned",
+      },
+    ],
+  },
+  forecasting: {
+    summary:
+      "Forward-looking financial intelligence built on your historical bank statement and accounting data.",
+    features: [
+      {
+        title: "Cash Flow Forecasting",
+        description: "Project future cash positions from historical inflow and outflow patterns",
+        status: "planned",
+      },
+      {
+        title: "Monthly Management Accounts",
+        description: "Automated draft management accounts generated from processed bank data",
+        status: "planned",
+      },
+      {
+        title: "Financial Ratio Analysis",
+        description: "Liquidity, solvency and profitability ratios with period-on-period comparison",
+        status: "planned",
+      },
+      {
+        title: "Budget vs Actual",
+        description: "Compare extracted actuals against imported budget figures",
+        status: "planned",
+      },
+    ],
+  },
+  "audit-tools": {
+    summary:
+      "Purpose-built tools for auditors, accountants and tax practitioners working with bank statement data.",
+    features: [
+      {
+        title: "AI Accountant Notes",
+        description: "AI-generated narrative notes summarising statement activity and anomalies",
+        status: "in-development",
+      },
+      {
+        title: "Audit Trail Insights",
+        description: "Full processing history, confidence scoring log and change tracking",
+        status: "in-development",
+      },
+      {
+        title: "Audit Preparation Pack",
+        description: "Generate an auditor-ready document package with supporting schedules",
+        status: "planned",
+      },
+      {
+        title: "Working Paper Support",
+        description: "Structured working papers exportable to Excel with sign-off fields",
+        status: "planned",
+      },
+    ],
+  },
+};
+
+const featureStatusConfig: Record<
+  "live" | "in-development" | "planned",
+  { label: string; badge: string; card: string; note: string }
+> = {
+  live: {
+    label: "Live",
+    badge: "border-emerald-200 bg-emerald-50 text-emerald-700",
+    card: "border-emerald-200 bg-emerald-50/30",
+    note: "text-emerald-700",
+  },
+  "in-development": {
+    label: "In Development",
+    badge: "border-amber-200 bg-amber-50 text-amber-700",
+    card: "border-amber-100 bg-white",
+    note: "text-amber-700",
+  },
+  planned: {
+    label: "Planned",
+    badge: "border-slate-200 bg-slate-100 text-slate-500",
+    card: "border-slate-200 bg-slate-50",
+    note: "text-slate-400",
+  },
+};
+
+function AccountingModulePanel({
+  moduleId,
+}: {
+  moduleId: Exclude<AccountingModule, "bank-statements">;
+}) {
+  const mod = accountingModules.find((m) => m.id === moduleId)!;
+  const content = moduleContent[moduleId];
+  const modStatus = featureStatusConfig[mod.status];
+
+  return (
+    <div className="space-y-5">
+      <div className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+          <div>
+            <span className={`inline-flex items-center rounded-full border px-3 py-1 text-xs font-black ${modStatus.badge}`}>
+              {modStatus.label}
+            </span>
+            <h2 className="mt-3 text-xl font-semibold text-navy-950">{mod.label}</h2>
+            <p className="mt-1 max-w-2xl text-sm font-semibold leading-6 text-slate-500">{content.summary}</p>
+          </div>
+        </div>
+      </div>
+
+      <div className="grid gap-4 sm:grid-cols-2">
+        {content.features.map((feature) => {
+          const cfg = featureStatusConfig[feature.status];
+          return (
+            <div key={feature.title} className={`rounded-xl border p-4 ${cfg.card}`}>
+              <div className="flex items-start justify-between gap-3">
+                <h3 className="font-semibold text-navy-950">{feature.title}</h3>
+                <span className={`shrink-0 rounded-full border px-2 py-0.5 text-[10px] font-black ${cfg.badge}`}>
+                  {cfg.label}
+                </span>
+              </div>
+              <p className="mt-1 text-sm leading-5 text-slate-500">{feature.description}</p>
+              {feature.liveLabel ? (
+                <p className={`mt-3 text-xs font-semibold ${cfg.note}`}>{feature.liveLabel}</p>
+              ) : feature.status === "in-development" ? (
+                <p className={`mt-3 text-xs font-semibold ${cfg.note}`}>Coming in a future release</p>
+              ) : (
+                <p className={`mt-3 text-xs font-semibold ${cfg.note}`}>On the roadmap</p>
+              )}
+            </div>
+          );
+        })}
       </div>
     </div>
   );

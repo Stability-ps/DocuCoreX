@@ -31,9 +31,7 @@ export function DocumentLibrary({ initialFilter = "Recent" }: { initialFilter?: 
 
   const [documents, setDocuments] = useState<DocumentRecord[]>([]);
   const [query, setQuery] = useState("");
-  const [activeFilter, setActiveFilter] = useState<FilterChip>(
-    FILTER_CHIPS.includes(initialFilter as FilterChip) ? (initialFilter as FilterChip) : "Recent",
-  );
+  const [activeFilter, setActiveFilter] = useState<string>(initialFilter ?? "Recent");
   const [status, setStatus] = useState("Loading library…");
   const [actionMessage, setActionMessage] = useState("");
   const [actionError, setActionError] = useState("");
@@ -118,13 +116,19 @@ export function DocumentLibrary({ initialFilter = "Recent" }: { initialFilter?: 
 
       const matchesQuery = !normalizedQuery || searchable.includes(normalizedQuery);
       const matchesFilter =
-        activeFilter === "All Documents"
-          ? !document.deletedAt
-          : activeFilter === "Recent"
-            ? !document.deletedAt
-            : activeFilter === "Processing"
-              ? !document.deletedAt && ["uploaded", "queued", "processing"].includes(document.status)
-              : !document.deletedAt && ((document.tags ?? []).some((tag) => tag.toLowerCase() === "converted") || document.status === "ready");
+        activeFilter === "Trash"
+          ? !!document.deletedAt
+          : activeFilter === "Starred"
+            ? !document.deletedAt && Boolean(document.starred)
+            : activeFilter === "Shared"
+              ? !document.deletedAt && Boolean(document.shared)
+              : activeFilter === "Archived"
+                ? document.status === "archived"
+                : activeFilter === "All Documents" || activeFilter === "Recent"
+                  ? !document.deletedAt
+                  : activeFilter === "Processing"
+                    ? !document.deletedAt && ["uploaded", "queued", "processing"].includes(document.status)
+                    : !document.deletedAt && ((document.tags ?? []).some((tag) => tag.toLowerCase() === "converted") || document.status === "ready");
 
       return matchesQuery && matchesFilter;
     });
@@ -652,7 +656,7 @@ export function DocumentLibrary({ initialFilter = "Recent" }: { initialFilter?: 
             role="button"
             tabIndex={0}
             onClick={() => (selection.isSelectionMode ? selection.toggleOne(document.id) : openDocument(document.id))}
-            onPointerDown={(event) => armMobileLongPressSelection(event, () => selection.toggleOne(document.id))}
+            onPointerDown={(event) => armMobileLongPressSelection(event, () => selection.toggleOne(document.id), { moveTolerancePx: 12 })}
             onKeyDown={(event) => {
               if (event.key === "Enter" || event.key === " ") {
                 event.preventDefault();

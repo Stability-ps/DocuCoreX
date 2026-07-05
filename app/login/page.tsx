@@ -352,11 +352,7 @@ function LoginContent() {
               ) : null}
 
               {mode !== "forgot" ? (
-                <div className="flex items-center justify-between gap-3 text-sm">
-                  <label className="flex items-center gap-2 font-bold text-slate-600">
-                    <input type="checkbox" className="h-4 w-4 rounded border-slate-300 accent-royal-600" />
-                    Remember this device
-                  </label>
+                <div className="flex items-center justify-end gap-3 text-sm">
                   <button type="button" onClick={() => setMode("forgot")} className="font-semibold text-royal-700">
                     Forgot password?
                   </button>

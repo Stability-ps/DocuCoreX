@@ -250,7 +250,8 @@ export async function listDocuments() {
     .from("documents")
     .select("*")
     .eq("workspace_id", context.workspaceId)
-    .order("updated_at", { ascending: false });
+    .order("updated_at", { ascending: false })
+    .limit(500);
 
   if (error) {
     throw new Error(error.message);

@@ -221,21 +221,17 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   async function markSelectedNotificationsRead() {
     const ids = notificationSelection.selectedIds;
     if (!ids.length) return;
-    let next = notifications;
-    for (const id of ids) {
-      const response = await fetch("/api/notifications", {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ id }),
-      });
-      if (response.ok) {
-        const data = (await response.json()) as { notifications: NotificationRecord[] };
-        next = data.notifications;
-      }
+    const response = await fetch("/api/notifications", {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ids }),
+    });
+    if (response.ok) {
+      const data = (await response.json()) as { notifications: NotificationRecord[] };
+      notificationSelection.exitSelectionMode();
+      setNotifications(data.notifications);
+      writeCached(SHELL_NOTIFICATIONS_CACHE_KEY, data.notifications);
     }
-    notificationSelection.exitSelectionMode();
-    setNotifications(next);
-    writeCached(SHELL_NOTIFICATIONS_CACHE_KEY, next);
   }
 
   async function clearAllNotificationsClick() {

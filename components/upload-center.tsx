@@ -4,8 +4,6 @@ import Link from "next/link";
 import { useCallback, useEffect, useMemo, useRef, useState, type DragEvent } from "react";
 import {
   Archive,
-  CheckCircle2,
-  Clock3,
   Download,
   Eye,
   File,
@@ -22,7 +20,6 @@ import {
   Trash2,
   UploadCloud,
   X,
-  XCircle,
 } from "lucide-react";
 import { BulkActionToolbar, MobileBulkBar, SelectionCheckbox, armMobileLongPressSelection, checkboxShiftKey, useBulkSelection } from "@/components/bulk-selection";
 
@@ -554,10 +551,8 @@ export function UploadCenter({ workflow }: { workflow?: string }) {
       return;
     }
 
-    for (let i = 0; i < 8; i += 1) {
-      await fetch("/api/jobs/process", { method: "POST" }).catch(() => null);
-      await refreshWorkflow();
-    }
+    await fetch("/api/jobs/process", { method: "POST" }).catch(() => null);
+    await refreshWorkflow();
     exitSelectionMode();
   }
 
@@ -855,137 +850,149 @@ export function UploadCenter({ workflow }: { workflow?: string }) {
               <span className="text-xs font-semibold text-slate-500">Select all active queue items</span>
             </div>
           ) : null}
-          {activeItems.map((item) => (
-            <article
-              key={item.id}
-              className={`rounded-2xl border bg-slate-50 p-4 ${selection.selectedSet.has(item.id) ? "border-royal-300 ring-2 ring-royal-100" : "border-slate-200"}`}
-              onPointerDown={(event) => armMobileLongPressSelection(event, () => selection.toggleOne(item.id))}
-            >
-              <div className="flex flex-col gap-4 xl:flex-row xl:items-center xl:justify-between">
-                <div className="flex min-w-0 items-start gap-4">
-                  {selection.isSelectionMode ? <div onClick={(event) => event.stopPropagation()}>
-                    <SelectionCheckbox
-                      checked={selection.selectedSet.has(item.id)}
-                      label={`Select ${item.name}`}
-                      onChange={(event) => selection.toggleOne(item.id, { shiftKey: checkboxShiftKey(event) })}
-                    />
-                  </div> : null}
-                  <div className="rounded-2xl bg-white p-3 text-royal-600 shadow-sm">
+          {activeItems.map((item) => {
+            const itemCompleted = item.conversionStatus === "completed" && item.outputReady;
+            const itemFailed = item.uploadStatus === "failed" || item.conversionStatus === "failed";
+            const itemConverting = item.conversionStatus === "queued" || item.conversionStatus === "converting";
+            const itemUploading = item.uploadStatus === "uploading";
+            const itemPaused = item.uploadStatus === "paused";
+
+            return (
+              <article
+                key={item.id}
+                className={`rounded-2xl border p-4 transition ${
+                  itemCompleted
+                    ? "border-emerald-200 bg-emerald-50/40"
+                    : selection.selectedSet.has(item.id)
+                      ? "border-royal-300 bg-slate-50 ring-2 ring-royal-100"
+                      : "border-slate-200 bg-slate-50"
+                }`}
+                onPointerDown={(event) => armMobileLongPressSelection(event, () => selection.toggleOne(item.id), { moveTolerancePx: 12 })}
+              >
+                {/* File info row */}
+                <div className="flex min-w-0 items-start gap-3">
+                  {selection.isSelectionMode ? (
+                    <div onClick={(event) => event.stopPropagation()} className="shrink-0 pt-0.5">
+                      <SelectionCheckbox
+                        checked={selection.selectedSet.has(item.id)}
+                        label={`Select ${item.name}`}
+                        onChange={(event) => selection.toggleOne(item.id, { shiftKey: checkboxShiftKey(event) })}
+                      />
+                    </div>
+                  ) : null}
+                  <div className="shrink-0 rounded-xl bg-white p-2.5 text-royal-600 shadow-sm">
                     <File className="h-5 w-5" />
                   </div>
-                  <div className="min-w-0">
-                    <p className="truncate font-semibold text-navy-950">{item.name}</p>
-                    <p className="mt-1 text-sm text-slate-500">
+                  <div className="min-w-0 flex-1">
+                    <div className="flex min-w-0 items-start justify-between gap-2">
+                      <p className="min-w-0 truncate font-semibold text-navy-950">{item.name}</p>
+                      <span className={`ml-2 shrink-0 rounded-full border px-2.5 py-0.5 text-xs font-semibold ${statusTone(item.uploadStatus === "uploaded" ? (item.conversionStatus === "none" ? "ready" : item.conversionStatus) : item.uploadStatus)}`}>
+                        {primaryStatus(item)}
+                      </span>
+                    </div>
+                    <p className="mt-0.5 truncate text-xs text-slate-500">
                       {formatBytes(item.size)} • {item.mimeType || "application/octet-stream"}
                     </p>
-                    {item.error ? <p className="mt-1 text-sm font-bold text-rose-600">{item.error}</p> : null}
-                  </div>
-                </div>
-                <div className="grid gap-2 sm:grid-cols-2 xl:min-w-[420px] xl:grid-cols-2">
-                  <div className={`rounded-full border px-3 py-2 text-center text-xs font-semibold ${statusTone(item.uploadStatus === "uploaded" ? item.conversionStatus === "none" ? "ready" : item.conversionStatus : item.uploadStatus)}`}>
-                    {primaryStatus(item)}
-                  </div>
-                  <div className="rounded-full bg-white px-3 py-2 text-center text-xs font-semibold text-slate-600">{secondaryStatus(item)}</div>
-                  {item.uploadStatus === "uploading" ? (
-                    <>
-                      <div className="rounded-full bg-white px-3 py-2 text-center text-xs font-semibold text-slate-600">{formatBytes(item.speedBps)}/s</div>
-                      <div className="rounded-full bg-white px-3 py-2 text-center text-xs font-semibold text-slate-600">ETA {formatTime(item.etaSeconds)}</div>
-                    </>
-                  ) : null}
-                </div>
-              </div>
-
-              <div className="mt-4 grid gap-3 lg:grid-cols-[1fr_auto] lg:items-center">
-                <div>
-                  <div className="flex items-center justify-between text-xs font-semibold text-slate-500">
-                    <span>{item.uploadStatus === "uploading" ? `Elapsed ${formatTime(item.elapsedSeconds)}` : item.stage}</span>
-                    <span>{visibleProgress(item)}%</span>
-                  </div>
-                  <div className="mt-2 h-2 overflow-hidden rounded-full bg-white">
-                    <div className="h-full rounded-full bg-royal-600 transition-all" style={{ width: `${visibleProgress(item)}%` }} />
+                    {item.error ? <p className="mt-1 text-xs font-semibold text-rose-600">{item.error}</p> : null}
                   </div>
                 </div>
 
-                <div className="flex flex-wrap items-center gap-2">
-                  <button
-                    type="button"
-                    onClick={() => pauseItem(item)}
-                    disabled={item.uploadStatus !== "uploading"}
-                    className="rounded-xl bg-white p-2 text-slate-500 shadow-sm hover:text-royal-700 disabled:cursor-not-allowed disabled:opacity-35"
-                    title="Pause upload"
-                    aria-label={`Pause ${item.name}`}
-                  >
-                    <Pause className="h-4 w-4" />
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => resumeItem(item)}
-                    disabled={item.uploadStatus !== "paused"}
-                    className="rounded-xl bg-white p-2 text-slate-500 shadow-sm hover:text-royal-700 disabled:cursor-not-allowed disabled:opacity-35"
-                    title="Resume upload from the beginning"
-                    aria-label={`Resume ${item.name}`}
-                  >
-                    <Play className="h-4 w-4" />
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => void retryItem(item)}
-                    disabled={item.uploadStatus !== "failed" && item.conversionStatus !== "failed"}
-                    className="rounded-xl bg-white p-2 text-slate-500 shadow-sm hover:text-royal-700 disabled:cursor-not-allowed disabled:opacity-35"
-                    title="Retry"
-                    aria-label={`Retry ${item.name}`}
-                  >
-                    <RefreshCcw className="h-4 w-4" />
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => void cancelItem(item)}
-                    disabled={item.conversionStatus === "completed"}
-                    className="rounded-xl bg-white p-2 text-slate-500 shadow-sm hover:text-rose-600 disabled:cursor-not-allowed disabled:opacity-35"
-                    title="Cancel"
-                    aria-label={`Cancel ${item.name}`}
-                  >
-                    <X className="h-4 w-4" />
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => void removeItem(item)}
-                    className="rounded-xl bg-white p-2 text-slate-500 shadow-sm hover:text-rose-600"
-                    title="Remove from queue"
-                    aria-label={`Remove ${item.name}`}
-                  >
-                    <Trash2 className="h-4 w-4" />
-                  </button>
-                  {item.downloadUrl && item.outputReady ? (
-                    <button type="button" onClick={() => void downloadItem(item)} className="inline-flex items-center gap-2 rounded-xl bg-white px-3 py-2 text-xs font-semibold text-slate-600 shadow-sm hover:text-royal-700">
-                      <Download className="h-4 w-4" /> Download
+                {/* Progress bar */}
+                {itemUploading || itemConverting ? (
+                  <div className="mt-3">
+                    <div className="mb-1.5 flex items-center justify-between text-xs text-slate-500">
+                      <span className="font-semibold">
+                        {itemUploading
+                          ? (item.speedBps ? `${formatBytes(item.speedBps)}/s · ETA ${formatTime(item.etaSeconds)}` : "Uploading…")
+                          : item.stage}
+                      </span>
+                      <span className="tabular-nums">{visibleProgress(item)}%</span>
+                    </div>
+                    <div className="h-1.5 overflow-hidden rounded-full bg-white">
+                      <div className="progress-stripe h-full rounded-full bg-royal-600 transition-all" style={{ width: `${visibleProgress(item)}%` }} />
+                    </div>
+                  </div>
+                ) : itemCompleted ? (
+                  <div className="mt-3 flex items-center gap-2">
+                    <div className="h-1.5 flex-1 overflow-hidden rounded-full bg-emerald-100">
+                      <div className="h-full w-full rounded-full bg-emerald-500" />
+                    </div>
+                    <span className="text-xs font-semibold text-emerald-700">Download ready</span>
+                  </div>
+                ) : itemFailed ? (
+                  <div className="mt-3 h-1.5 overflow-hidden rounded-full bg-rose-100">
+                    <div className="h-full rounded-full bg-rose-400" style={{ width: `${visibleProgress(item)}%` }} />
+                  </div>
+                ) : null}
+
+                {/* Context-sensitive action buttons */}
+                {itemCompleted ? (
+                  <div className="mt-3 flex flex-wrap gap-2">
+                    <button type="button" onClick={() => void downloadItem(item)} className="inline-flex items-center gap-1.5 rounded-lg bg-navy-950 px-3 py-2 text-xs font-semibold text-white hover:bg-navy-800">
+                      <Download className="h-3.5 w-3.5" /> Download
                     </button>
-                  ) : null}
-                  {item.outputReady && item.documentId ? (
-                    <Link href={`/documents/${item.documentId}?tab=preview`} className="inline-flex items-center gap-2 rounded-xl bg-white px-3 py-2 text-xs font-semibold text-slate-600 shadow-sm hover:text-royal-700">
-                      <Eye className="h-4 w-4" /> Review
-                    </Link>
-                  ) : null}
-                  {item.outputReady && item.documentId ? (
-                    <Link href={`/documents/${item.documentId}`} className="inline-flex items-center gap-2 rounded-xl bg-white px-3 py-2 text-xs font-semibold text-slate-600 shadow-sm hover:text-royal-700">
-                      <FileText className="h-4 w-4" /> Open Document
-                    </Link>
-                  ) : null}
-                  {item.outputReady && item.downloadUrl ? (
-                    <button type="button" onClick={() => void downloadItem(item)} className="inline-flex items-center gap-2 rounded-xl bg-white px-3 py-2 text-xs font-semibold text-slate-600 shadow-sm hover:text-royal-700">
-                      <Download className="h-4 w-4" /> Export
+                    {item.documentId ? (
+                      <Link href={`/documents/${item.documentId}?tab=preview`} className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-700 hover:text-royal-700">
+                        <Eye className="h-3.5 w-3.5" /> Review
+                      </Link>
+                    ) : null}
+                    {item.documentId ? (
+                      <Link href={`/documents/${item.documentId}`} className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-700 hover:text-royal-700">
+                        <FileText className="h-3.5 w-3.5" /> Open
+                      </Link>
+                    ) : null}
+                    {item.documentId ? (
+                      <button type="button" onClick={() => void saveToLibrary(item)} className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-700 hover:text-royal-700">
+                        <Save className="h-3.5 w-3.5" /> Save to Library
+                      </button>
+                    ) : null}
+                    <button type="button" onClick={() => void removeItem(item)} className="inline-flex items-center gap-1.5 rounded-lg border border-rose-100 bg-white px-3 py-2 text-xs font-semibold text-rose-600 hover:bg-rose-50">
+                      <Trash2 className="h-3.5 w-3.5" /> Delete
                     </button>
-                  ) : null}
-                  {item.outputReady && item.documentId ? (
-                    <button type="button" onClick={() => void saveToLibrary(item)} className="inline-flex items-center gap-2 rounded-xl bg-white px-3 py-2 text-xs font-semibold text-slate-600 shadow-sm hover:text-royal-700">
-                      <Save className="h-4 w-4" /> Save to Library
+                  </div>
+                ) : itemFailed ? (
+                  <div className="mt-3 flex gap-2">
+                    <button type="button" onClick={() => void retryItem(item)} className="inline-flex items-center gap-1.5 rounded-lg bg-royal-600 px-3 py-2 text-xs font-semibold text-white hover:bg-royal-700">
+                      <RefreshCcw className="h-3.5 w-3.5" /> Retry
                     </button>
-                  ) : null}
-                  {item.conversionStatus === "completed" ? <CheckCircle2 className="h-5 w-5 text-emerald-500" /> : item.uploadStatus === "failed" || item.conversionStatus === "failed" ? <XCircle className="h-5 w-5 text-rose-500" /> : <Clock3 className="h-5 w-5 text-royal-500" />}
-                </div>
-              </div>
-            </article>
-          ))}
+                    <button type="button" onClick={() => void removeItem(item)} className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-700 hover:text-rose-600">
+                      <Trash2 className="h-3.5 w-3.5" /> Remove
+                    </button>
+                  </div>
+                ) : itemPaused ? (
+                  <div className="mt-3 flex gap-2">
+                    <button type="button" onClick={() => resumeItem(item)} className="inline-flex items-center gap-1.5 rounded-lg bg-royal-600 px-3 py-2 text-xs font-semibold text-white hover:bg-royal-700">
+                      <Play className="h-3.5 w-3.5" /> Resume
+                    </button>
+                    <button type="button" onClick={() => void cancelItem(item)} className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-700 hover:text-rose-600">
+                      <X className="h-3.5 w-3.5" /> Cancel
+                    </button>
+                  </div>
+                ) : itemUploading ? (
+                  <div className="mt-3 flex gap-2">
+                    <button type="button" onClick={() => pauseItem(item)} className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-700 hover:text-amber-700">
+                      <Pause className="h-3.5 w-3.5" /> Pause
+                    </button>
+                    <button type="button" onClick={() => void cancelItem(item)} className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-700 hover:text-rose-600">
+                      <X className="h-3.5 w-3.5" /> Cancel
+                    </button>
+                  </div>
+                ) : itemConverting ? (
+                  <div className="mt-3">
+                    <button type="button" onClick={() => void cancelItem(item)} className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-700 hover:text-rose-600">
+                      <X className="h-3.5 w-3.5" /> Cancel
+                    </button>
+                  </div>
+                ) : (
+                  <div className="mt-3">
+                    <button type="button" onClick={() => void removeItem(item)} className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-700 hover:text-rose-600">
+                      <Trash2 className="h-3.5 w-3.5" /> Remove
+                    </button>
+                  </div>
+                )}
+              </article>
+            );
+          })}
         </div>
       </section>
 

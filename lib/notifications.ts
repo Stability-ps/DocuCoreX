@@ -156,6 +156,29 @@ export async function markNotificationRead(id: string): Promise<NotificationReco
   return listNotifications();
 }
 
+export async function markNotificationsRead(ids: string[]): Promise<NotificationRecord[]> {
+  if (!ids.length) return listNotifications();
+  const context = await getWorkspaceContext().catch(() => null);
+  const readAt = new Date().toISOString();
+
+  if (!context) {
+    ids.forEach((id) => {
+      const notification = mockNotifications.find((item) => item.id === id);
+      if (notification && !notification.readAt) notification.readAt = readAt;
+    });
+    return listNotifications();
+  }
+
+  await context.supabase
+    .from("notifications")
+    .update({ read_at: readAt })
+    .eq("workspace_id", context.workspaceId)
+    .in("id", ids)
+    .is("read_at", null);
+
+  return listNotifications();
+}
+
 export async function markAllNotificationsRead(): Promise<NotificationRecord[]> {
   const context = await getWorkspaceContext().catch(() => null);
   const readAt = new Date().toISOString();
