@@ -118,6 +118,9 @@ from main import (
     detect_company_name,
     insert_inferred_fnb_service_fees,
     looks_like_address,
+    parse_hash_fee_lines,
+    parse_single_amount_line,
+    parse_transactions,
     parse_metadata,
     parse_fnb_section_transactions,
     parse_fnb_service_fee_transactions,
@@ -216,6 +219,81 @@ def run():
     ]:
         account, _vat, _bc, _conf = classify_transaction(desc, 100.0, None)
         assert_equal(account, expected_account, f"category for {desc!r}")
+
+    # Accounting-accuracy regressions: these must NOT land in P&L income/expense
+    # or Bank Charges.
+    dep_acct, _v, dep_bc, _c = classify_transaction("ADT Cash Deposit Woodland", None, 23550.0)
+    assert_equal(dep_acct, "Cash Deposits / Revenue", "ADT cash deposit account")
+    assert_equal(dep_bc, False, "ADT cash deposit must not be a bank charge")
+    tax_acct, _v, _b, _c = classify_transaction("Tax Deposit", None, 120000.0)
+    assert_equal(tax_acct, "SARS / Tax Suspense", "tax deposit account")
+    assert_equal(classify_transaction("Refund Client X", 35000.0, None)[0], "Refund / Suspense", "refund account")
+    assert_equal(classify_transaction("Loan Repayment Wesbank", 500.0, None)[0], "Loan / Liability", "loan account")
+    fee_acct, _v, fee_bc, _c = classify_transaction("# Cash Deposit Fee", 599.44, None)
+    assert_equal(fee_acct, "Bank Charges", "cash deposit FEE is a bank charge")
+    assert_equal(fee_bc, True, "cash deposit fee bank_charge flag")
+
+    # Regression for the 6 rows that failed to extract on the ACAPOLITE statement
+    # (single-amount rows and #-prefixed fee lines with no running balance).
+    acap_statement = "\n".join([
+        "ACAPOLITE CONSULTING (PTY) LTD Universal Branch Code 250655",
+        "Gold Business Account : 63041819765",
+        "Statement Period 28 Feb 2026 to 31 Mar 2026",
+        "Opening Balance 3,390.09",
+        "Closing Balance 342.37",
+        "Credit Transactions 15",
+        "Debit Transactions 128",
+        "Transactions in Rand (ZAR)",
+        "01 Mar FNB OB Pmt From Client 10,000.00 13,390.09Cr",
+        "02 Mar Internal Debit Order Fnbfuneral Fi11941792 J62730 696.30",
+        "18 Mar FNB App Payment To 819035690 3,000.00",
+        "18 Mar FNB App Rtc Pmt To Patric 25,000.00",
+        "Closing Balance 342.37",
+        "24 Mar # Monthly Account Fee 93.00",
+        "24 Mar # Service Fees 523.80",
+        "24 Mar # Cash Deposit Fee 599.44",
+    ])
+    acap_meta = parse_metadata(acap_statement)
+    assert_equal(acap_meta["expected_transaction_count"], 143, "acapolite expected turnover count")
+
+    txns = parse_transactions([], acap_meta, acap_statement)
+    descriptions = " || ".join(t.description.lower() for t in txns)
+    for fragment in [
+        "internal debit order fnbfuneral",
+        "app payment to 819035690",
+        "app rtc pmt to patric",
+        "monthly account fee",
+        "service fees",
+        "cash deposit fee",
+    ]:
+        if fragment not in descriptions:
+            raise AssertionError(f"missing extracted row: {fragment!r}")
+
+    # The 3 #-prefixed fees must be captured as bank charges (bank_charge=True)
+    # so bank charges are no longer R0.
+    bank_charges_total = sum(
+        (t.debit_amount or 0) for t in txns if t.bank_charge and (t.debit_amount or 0) > 0
+    )
+    fee_amounts = {round(t.debit_amount or 0, 2) for t in txns if t.bank_charge}
+    for expected_fee in (93.00, 523.80, 599.44):
+        if expected_fee not in fee_amounts:
+            raise AssertionError(f"bank charge fee not extracted: {expected_fee}")
+    if round(bank_charges_total, 2) < 1216.24:
+        raise AssertionError(f"bank charges too low (R0 bug): {bank_charges_total}")
+
+    # The 3 single-amount debit rows must be captured with their amounts.
+    debit_amounts = {round(t.debit_amount or 0, 2) for t in txns if (t.debit_amount or 0) > 0}
+    for expected_debit in (696.30, 3000.00, 25000.00):
+        if expected_debit not in debit_amounts:
+            raise AssertionError(f"single-amount debit row not extracted: {expected_debit}")
+
+    # Direct unit checks on the two new parsers.
+    fees = parse_hash_fee_lines("24 Mar # Cash Deposit Fee 599.44", {"statement_period_end": "2026-03-31"})
+    assert_equal(len(fees), 1, "hash fee parser count")
+    assert_equal(fees[0].bank_charge, True, "hash fee is a bank charge")
+    single = parse_single_amount_line("18 Mar FNB App Rtc Pmt To Patric 25,000.00", {"statement_period_end": "2026-03-31"})
+    assert_equal(single is not None, True, "single amount row parsed")
+    assert_equal(round(single.debit_amount, 2), 25000.00, "single amount debit value")
 
     debit, credit = parse_transaction_amount_cell("10129 25,000.00Cr") or (None, None)
     assert_equal(debit, None, "credit debit side")

@@ -7,6 +7,7 @@ export type ProfitLossLine = { category: string; amount: number; count: number }
 export type ProfitLossData = {
   revenue: ProfitLossLine[];
   expenses: ProfitLossLine[];
+  excluded: ProfitLossLine[];
   totalRevenue: number;
   totalExpenses: number;
   netSurplus: number;
@@ -14,6 +15,43 @@ export type ProfitLossData = {
   periodMonths: number;
   note: string;
 };
+
+// ─── Account-type taxonomy ────────────────────────────────────────────────────
+// Every category maps to a type that determines where it belongs. Only revenue,
+// expense and bank_charges hit the Profit & Loss — tax, director loans, loans,
+// refunds, transfers and suspense are balance-sheet / contra / review items and
+// must NEVER appear as P&L income or expense.
+
+export type AccountType =
+  | "revenue"
+  | "expense"
+  | "bank_charges"
+  | "tax"
+  | "director_loan"
+  | "loan"
+  | "refund"
+  | "transfer"
+  | "suspense";
+
+const PL_TYPES: ReadonlySet<AccountType> = new Set(["revenue", "expense", "bank_charges"]);
+
+export function accountType(category: string): AccountType {
+  const c = (category || "").toLowerCase();
+  if (/inter-?account|transfer/.test(c)) return "transfer";
+  if (/director|drawings|related[- ]?party|shareholder/.test(c)) return "director_loan";
+  if (/finance cost|interest (paid|charged|expense)/.test(c)) return "expense";
+  if (/\bloan\b|liability|finance lease|hire purchase|instal?ment/.test(c)) return "loan";
+  if (/sars|paye|provisional tax|tax (liability|suspense|deposit)|vat control/.test(c)) return "tax";
+  if (/refund|reversal|contra|\bsuspense\b/.test(c)) return "refund";
+  if (/bank charge|bank fee|service fee|cash deposit fee|account fee|admin fee|card fee/.test(c)) return "bank_charges";
+  if (/uncategori|review required|unknown/.test(c)) return "suspense";
+  if (/sales|revenue|income|turnover|interest income/.test(c)) return "revenue";
+  return "expense";
+}
+
+export function isProfitLossAccount(category: string): boolean {
+  return PL_TYPES.has(accountType(category));
+}
 
 export type CashFlowLine = { label: string; amount: number };
 
@@ -143,34 +181,52 @@ export function computeProfitLoss(
   const periodMonths = monthsBetween(run.statementPeriodStart, run.statementPeriodEnd);
   const revenueMap = new Map<string, { amount: number; count: number }>();
   const expenseMap = new Map<string, { amount: number; count: number }>();
+  const excludedMap = new Map<string, { amount: number; count: number }>();
   let interAccountTransfers = 0;
 
   for (const t of transactions) {
     const cat = t.accountCategory || "Uncategorised";
-    if (TRANSFER_CATEGORIES.has(cat)) {
-      interAccountTransfers += (t.debitAmount ?? 0) + (t.creditAmount ?? 0);
+    const type = accountType(cat);
+    const movement = (t.debitAmount ?? 0) + (t.creditAmount ?? 0);
+
+    if (type === "transfer") {
+      interAccountTransfers += movement;
       continue;
     }
-    if (t.creditAmount) {
+    // Balance-sheet / contra / review types never touch the P&L. Track them so
+    // the accountant can see they were deliberately excluded.
+    if (type === "tax" || type === "director_loan" || type === "loan" || type === "refund" || type === "suspense") {
+      const e = excludedMap.get(cat) ?? { amount: 0, count: 0 };
+      e.amount += movement;
+      e.count += 1;
+      excludedMap.set(cat, e);
+      continue;
+    }
+    // revenue = credits of revenue accounts; expenses = debits of expense/bank accounts.
+    if (type === "revenue" && t.creditAmount) {
       const e = revenueMap.get(cat) ?? { amount: 0, count: 0 };
       e.amount += t.creditAmount;
       e.count += 1;
       revenueMap.set(cat, e);
-    }
-    if (t.debitAmount) {
+    } else if ((type === "expense" || type === "bank_charges") && t.debitAmount) {
       const e = expenseMap.get(cat) ?? { amount: 0, count: 0 };
       e.amount += t.debitAmount;
       e.count += 1;
       expenseMap.set(cat, e);
+    } else {
+      // e.g. a revenue account with a debit (reversal) — keep out of P&L totals.
+      const e = excludedMap.get(cat) ?? { amount: 0, count: 0 };
+      e.amount += movement;
+      e.count += 1;
+      excludedMap.set(cat, e);
     }
   }
 
-  const revenue = Array.from(revenueMap, ([category, v]) => ({ category, ...v })).sort(
-    (a, b) => b.amount - a.amount,
-  );
-  const expenses = Array.from(expenseMap, ([category, v]) => ({ category, ...v })).sort(
-    (a, b) => b.amount - a.amount,
-  );
+  const toLines = (map: Map<string, { amount: number; count: number }>) =>
+    Array.from(map, ([category, v]) => ({ category, ...v })).sort((a, b) => b.amount - a.amount);
+  const revenue = toLines(revenueMap);
+  const expenses = toLines(expenseMap);
+  const excluded = toLines(excludedMap);
 
   const totalRevenue = revenue.reduce((s, r) => s + r.amount, 0);
   const totalExpenses = expenses.reduce((s, e) => s + e.amount, 0);
@@ -178,12 +234,13 @@ export function computeProfitLoss(
   return {
     revenue,
     expenses,
+    excluded,
     totalRevenue,
     totalExpenses,
     netSurplus: totalRevenue - totalExpenses,
     interAccountTransfers,
     periodMonths,
-    note: "Cash-basis statement derived from bank transaction data. Excludes accrued income, prepaid expenses, depreciation and capital items. Requires accountant review before finalisation.",
+    note: "Cash-basis P&L derived from bank data. Only revenue and operating/bank-charge expenses are included; tax, director loans, loans, refunds, transfers and unclassified items are shown separately (balance-sheet / suspense / review) and excluded from profit. Requires accountant review.",
   };
 }
 

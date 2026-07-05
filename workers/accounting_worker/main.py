@@ -526,13 +526,18 @@ def classify_transaction(description: str, debit: float | None, credit: float | 
     # ("review") wherever an invoice is needed, but the account is still assigned
     # so transactions do not fall through to "Uncategorised".
     rules: list[tuple[tuple[str, ...], str, str, bool, float]] = [
-        # Bank charges & fees (VAT-standard, input VAT applies)
+        # Bank charges & fees ONLY (VAT-standard, input VAT applies). NOTE: a bare
+        # "cash deposit" is an inflow, not a fee — only the "cash deposit FEE" line
+        # is a bank charge.
         (("service fee", "#service fees", "# service fees", "monthly account fee", "#monthly account fee",
-          "byc debit", "bank charges", "accrued bank charge", "cash deposit fee", "#cash deposit fee",
-          "cash deposit", "admin fee", "card fee", "pos fee"), "Bank Charges", "standard", True, 97),
+          "byc debit", "accrued bank charge", "cash deposit fee", "#cash deposit fee", "cash handling fee",
+          "admin fee", "card fee", "pos fee"), "Bank Charges", "standard", True, 97),
         # Interest
         (("credit interest", "interest received"), "Interest Income", "exempt", False, 90),
         (("debit interest", "interest charged", "overdraft interest"), "Finance Costs", "exempt", False, 88),
+        # Cash deposits (the deposit amount is an inflow, NOT a bank charge)
+        (("adt cash deposit", "cash deposit woodland", "cash deposit", "cash dep "),
+         "Cash Deposits / Revenue", "review", False, 78),
         # Communication (prepaid / airtime / data)
         (("prepaid", "airtime", "data bundle", "fnb app prepaid", "vodacom", "mtn ", "telkom", "cell c", "rain "),
          "Telephone / Internet / Communication", "review", False, 84),
@@ -545,17 +550,17 @@ def classify_transaction(description: str, debit: float | None, credit: float | 
           "rtc pmt to sibande", "send money to sibande", "payshap to patric", "payshap to sibande",
           "drawings", "director loan"),
          "Director Loan / Drawings", "out_of_scope", False, 80),
-        # SARS / tax
+        # SARS / tax — suspense/liability, NEVER revenue. Excluded from P&L.
         (("tax deposit", "sars", "efiling", "paye", "vat201", "provisional tax"),
-         "SARS / Tax Liability", "review", False, 82),
+         "SARS / Tax Suspense", "review", False, 82),
         # Insurance / funeral debit orders
         (("discovery account", "discovery insure", "insurance premium", "funeral", "fnbfuneral",
           "life cover", "outsurance", "santam", "old mutual"), "Insurance Expense", "exempt", False, 85),
         # Salaries / payroll
         (("salary", "payroll", "wages", "nanny", "care giver"), "Salaries & Wages", "out_of_scope", False, 90),
-        # Loans / finance
+        # Loans — balance-sheet liability, excluded from P&L (interest is separate).
         (("loan repayment", "loan installment", "loan instalment", "vehicle finance", "wesbank", "loan"),
-         "Loan / Finance", "out_of_scope", False, 80),
+         "Loan / Liability", "out_of_scope", False, 80),
         # Refunds
         (("refund", "reversal"), "Refund / Suspense", "review", False, 74),
         # Levies
@@ -786,7 +791,97 @@ def parse_fnb_section_transactions(full_text: str, metadata: dict[str, Any]) -> 
         transaction = parse_fnb_transaction_line(line, metadata)
         if transaction:
             transactions.append(transaction)
+            continue
+        # Fallback: some rows (debit orders, app payments, RTC transfers) print
+        # the amount without a running balance, so the strict two-token parser
+        # rejects them and the statement fails to reconcile. Capture a dated line
+        # that carries exactly one money token as a single-sided movement.
+        fallback = parse_single_amount_line(line, metadata)
+        if fallback:
+            transactions.append(fallback)
 
+    return transactions
+
+
+def parse_single_amount_line(line: str, metadata: dict[str, Any]) -> ParsedTransaction | None:
+    line = strip_fnb_page_artifacts(line)
+    date_match = LOOSE_DATE.match(line)
+    if not date_match:
+        return None
+    matches = list(MONEY_TOKEN.finditer(line))
+    if len(matches) != 1:
+        return None
+    amount_match = matches[0]
+    amount = parse_money_cell(amount_match.group(0))
+    if amount is None or amount == 0:
+        return None
+    suffix = (amount_match.group("suffix") or "").lower()
+    debit = credit = None
+    if suffix == "cr":
+        credit = decimal_to_float(amount.copy_abs())
+    else:
+        debit = decimal_to_float(amount.copy_abs())
+    description = line[date_match.end():amount_match.start()].strip()
+    # Balance is unknown for these rows — leave it None so reconciliation totals
+    # still include the movement without asserting a false running balance.
+    return build_transaction(
+        date_match.group("date"), description, debit, credit, None, metadata, None, line, 74
+    )
+
+
+# FNB prints accrued bank charges as "#"-prefixed lines. When such a line carries
+# ONLY the fee amount and no running balance (e.g. "24 Mar # Cash Deposit Fee
+# 599.44"), the strict transaction parser drops it. Lines that DO carry a balance
+# are already handled by the section/fee paths, so only single-money-token "#"
+# lines are captured here (avoids mistaking the balance for the fee).
+FEE_HASH_KEYWORDS = (
+    "service fee",
+    "service fees",
+    "monthly account fee",
+    "account fee",
+    "cash deposit fee",
+    "cash handling fee",
+    "admin fee",
+    "card fee",
+    "bank charge",
+)
+
+
+def parse_hash_fee_lines(full_text: str, metadata: dict[str, Any]) -> list[ParsedTransaction]:
+    transactions: list[ParsedTransaction] = []
+    fallback_date = metadata.get("statement_period_end") or ""
+    for raw in full_text.splitlines():
+        line = strip_fnb_page_artifacts(raw).strip()
+        if "#" not in line:
+            continue
+        money = list(MONEY_TOKEN.finditer(line))
+        if len(money) != 1:
+            # Two+ tokens means a running balance is present — handled elsewhere.
+            continue
+        token = money[0]
+        hash_index = line.find("#")
+        desc = re.sub(r"\s+", " ", line[hash_index:token.start()]).strip(" #").strip()
+        if not any(keyword in desc.lower() for keyword in FEE_HASH_KEYWORDS):
+            continue
+        amount = parse_money_cell(token.group(0))
+        if amount is None or amount == 0:
+            continue
+        date_match = LOOSE_DATE.match(line)
+        raw_date = date_match.group("date") if date_match else fallback_date
+        transaction = build_transaction(
+            raw_date,
+            f"# {desc}",
+            decimal_to_float(amount.copy_abs()),
+            None,
+            None,
+            metadata,
+            None,
+            line,
+            98,
+        )
+        if transaction:
+            transaction.bank_charge = True
+            transactions.append(transaction)
     return transactions
 
 
@@ -1205,11 +1300,14 @@ def parse_transactions(pages: list[dict[str, Any]], metadata: dict[str, Any], fu
     section_transactions = parse_fnb_section_transactions(full_text, metadata) if full_text else []
     if section_transactions:
         service_fee_transactions = parse_fnb_service_fee_transactions(full_text, metadata) if full_text else []
-        parsed = dedupe_transactions([*section_transactions, *service_fee_transactions])
+        hash_fee_transactions = parse_hash_fee_lines(full_text, metadata) if full_text else []
+        parsed = dedupe_transactions([*section_transactions, *service_fee_transactions, *hash_fee_transactions])
         return insert_inferred_fnb_service_fees(parsed, metadata)
     table_transactions = parse_table_transactions(pages, metadata)
     if table_transactions:
-        return normalize_transactions_from_balances(dedupe_transactions(table_transactions), metadata.get("opening_balance"))
+        hash_fee_transactions = parse_hash_fee_lines(full_text, metadata) if full_text else []
+        merged = dedupe_transactions([*table_transactions, *hash_fee_transactions])
+        return normalize_transactions_from_balances(merged, metadata.get("opening_balance"))
     return dedupe_transactions(parse_text_transactions(pages, metadata))
 
 

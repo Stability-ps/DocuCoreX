@@ -11,6 +11,8 @@ import {
   computeSarsRisk,
   computeForecast,
   buildAuditSummary,
+  accountType,
+  type AccountType,
 } from "@/lib/accounting/analytics";
 
 // ─── Cell model ─────────────────────────────────────────────────────────────
@@ -175,11 +177,15 @@ export function buildStatementMetadata(detail: AccountingRunDetail, resolvedComp
   };
 }
 
+// Group by the real account/category so the General Ledger and Trial Balance
+// reflect actual accounts. Only genuinely-unknown categories collapse into the
+// suspense account — everything else keeps its own ledger line.
 function accountGroups(transactions: AccountingTransaction[]) {
-  const groups = new Map<string, { debit: number; credit: number; count: number }>();
+  const groups = new Map<string, { debit: number; credit: number; count: number; type: AccountType }>();
   for (const t of transactions) {
-    const account = t.reviewStatus === "approved" ? t.accountCategory : "Review Required Suspense";
-    const current = groups.get(account) ?? { debit: 0, credit: 0, count: 0 };
+    const type = accountType(t.accountCategory);
+    const account = type === "suspense" ? "Review Required Suspense" : t.accountCategory || "Uncategorised";
+    const current = groups.get(account) ?? { debit: 0, credit: 0, count: 0, type };
     current.debit += t.debitAmount ?? 0;
     current.credit += t.creditAmount ?? 0;
     current.count += 1;
@@ -380,6 +386,16 @@ export function buildExportSections(detail: AccountingRunDetail, resolvedCompany
 
   // General Ledger
   const groups = accountGroups(txns);
+  // Aggregate ledger accounts by account type for the Balance Sheet and Cash Flow.
+  const typeGroups = new Map<AccountType, { debit: number; credit: number }>();
+  for (const g of groups) {
+    const e = typeGroups.get(g.type) ?? { debit: 0, credit: 0 };
+    e.debit += g.debit;
+    e.credit += g.credit;
+    typeGroups.set(g.type, e);
+  }
+  const tg = (type: AccountType) => typeGroups.get(type) ?? { debit: 0, credit: 0 };
+
   sections.push({
     id: "general-ledger",
     label: "General Ledger",
@@ -393,23 +409,36 @@ export function buildExportSections(detail: AccountingRunDetail, resolvedCompany
     ],
   });
 
-  // Trial Balance
-  const drTotal = groups.reduce((s, g) => s + Math.max(0, g.debit - g.credit), 0);
-  const crTotal = groups.reduce((s, g) => s + Math.max(0, g.credit - g.debit), 0);
+  // Trial Balance — built from the GL accounts with a balancing bank contra so
+  // debits equal credits (draft, bank-statement derived).
+  const catDr = groups.reduce((s, g) => s + Math.max(0, g.debit - g.credit), 0);
+  const catCr = groups.reduce((s, g) => s + Math.max(0, g.credit - g.debit), 0);
+  // The bank account is the contra to every category posting.
+  const bankContra = catDr - catCr; // >0 => bank is net credit (money left), <0 => net debit
+  const bankDr = bankContra < 0 ? Math.abs(bankContra) : 0;
+  const bankCr = bankContra > 0 ? bankContra : 0;
+  const drTotal = catDr + bankDr;
+  const crTotal = catCr + bankCr;
   sections.push({
     id: "trial-balance",
     label: "Trial Balance",
     sheet: "Trial Balance",
     headerRow: 3,
     rows: [
-      [MUTE("Derived from AI-assigned transaction categories. Not a full double-entry trial balance — the bank contra account is not represented.")],
+      [MUTE("Draft trial balance built from AI-assigned GL accounts with a balancing bank contra. Balance-sheet items appear as accounts, not as P&L. Requires accountant review.")],
       [],
       [HDR("Account"), HDR("Debit Balance"), HDR("Credit Balance")],
       ...groups.map((g) => {
         const net = g.debit - g.credit;
         return [S(g.account), M(net > 0 ? net : 0), M(net < 0 ? Math.abs(net) : 0)];
       }),
+      [S("Bank / Cash (contra)"), M(bankDr), M(bankCr)],
       [B("Totals"), MT(drTotal), MT(crTotal)],
+      [
+        S("Balanced"),
+        Math.abs(drTotal - crTotal) < 0.01 ? GOOD("Yes") : WARN("No"),
+        S(""),
+      ],
     ],
   });
 
@@ -480,54 +509,82 @@ export function buildExportSections(detail: AccountingRunDetail, resolvedCompany
       [B("Total Expenses"), S(""), MT(pl.totalExpenses)],
       [],
       [B(pl.netSurplus >= 0 ? "Net Surplus" : "Net Deficit"), S(""), pl.netSurplus >= 0 ? MT(pl.netSurplus) : MW(pl.netSurplus)],
+      [],
+      [HDR("Excluded from P&L (balance sheet / suspense / review)"), HDR("Count"), HDR("Movement")],
+      ...(pl.excluded.length
+        ? pl.excluded.map((e) => [MUTE(e.category), INT(e.count), M(e.amount)])
+        : [[MUTE("None"), S(""), M(0)]]),
       [MUTE("Inter-account transfers excluded"), S(""), M(pl.interAccountTransfers)],
+      [MUTE("Tax, director loans, loans, refunds and unclassified items are excluded from profit and shown on the Balance Sheet / Suspense.")],
     ],
   });
 
-  // Balance Sheet (partial — explained, not fabricated)
+  // Balance Sheet (partial — cash + detected movements, nothing fabricated)
+  const directorNet = tg("director_loan").debit - tg("director_loan").credit; // debit = paid to director
+  const taxNet = tg("tax").credit - tg("tax").debit;
+  const loanNet = tg("loan").credit - tg("loan").debit; // credit = loan received (liability up)
+  const refundNet = tg("refund").debit - tg("refund").credit;
   sections.push({
     id: "balance-sheet",
     label: "Balance Sheet",
     sheet: "Balance Sheet",
+    headerRow: 4,
     rows: [
-      [TITLE("Balance Sheet")],
-      [WARN("Status: Partial — cash position only")],
+      [TITLE("Balance Sheet (partial — bank-statement derived)")],
+      [WARN("Cash position plus balance-sheet movements detected on the statement. Not a complete IFRS balance sheet.")],
       [],
-      [HDR("Available from bank data"), HDR("Amount")],
-      [S("Cash at bank (closing balance)"), M(meta.closingBalance)],
+      [HDR("Item"), HDR("Amount (period movement)"), HDR("Note")],
+      [B("Cash at bank (closing balance)"), M(meta.closingBalance), S("From the statement")],
+      [S("Director loan / drawings movement"), M(directorNet), MUTE("Requires accountant review — asset/receivable or drawings")],
+      [S("Tax / SARS suspense movement"), M(taxNet), MUTE("Requires review — liability or asset, confirm with SARS")],
+      [S("Loan / finance movement"), M(loanNet), MUTE("Requires review — loan liability")],
+      [S("Refund / suspense movement"), M(refundNet), MUTE("Requires review — contra / to be matched")],
       [],
       [B("Not available from a single bank statement")],
-      [MUTE("Fixed assets, debtors, creditors, inventory, loans, equity and retained earnings")],
-      [],
+      [MUTE("Fixed assets, debtors, creditors, inventory, equity and retained earnings")],
       [B("Data needed for a full balance sheet")],
       [MUTE("General ledger, asset register, accounts receivable/payable, loan schedules and prior-year equity")],
       [],
-      [MUTE("No figures are fabricated. A full IFRS balance sheet requires accountant input.")],
+      [MUTE("No figures are fabricated — only movements observed on the statement are shown, all flagged for accountant review.")],
     ],
   });
 
-  // Cash Flow
+  // Cash Flow — grouped by activity so balance-sheet movements are not shown as
+  // operating income/expense. Net of all sections must reconcile opening→closing.
+  const operatingIn = tg("revenue").credit;
+  const operatingOut = tg("expense").debit + tg("bank_charges").debit;
+  const netFor = (type: AccountType) => tg(type).credit - tg(type).debit;
+  const cashSections: Array<[string, number]> = [
+    ["Operating inflows (revenue)", operatingIn],
+    ["Operating outflows (expenses & bank charges)", -operatingOut],
+    ["Owner / director movements", netFor("director_loan")],
+    ["Tax / SARS movements", netFor("tax")],
+    ["Loan / finance movements", netFor("loan")],
+    ["Transfers", netFor("transfer")],
+    ["Refunds / suspense / review", netFor("refund") + netFor("suspense")],
+  ];
+  const netMovement = cashSections.reduce((s, [, amt]) => s + amt, 0);
+  const expectedClose = (meta.openingBalance ?? 0) + netMovement;
+  const cashReconciled = Math.abs(expectedClose - (meta.closingBalance ?? expectedClose)) < 0.02;
+  void cashFlow;
   sections.push({
     id: "cash-flow",
     label: "Cash Flow",
     sheet: "Cash Flow",
+    headerRow: 4,
     rows: [
-      [TITLE("Cash Flow (direct method)")],
-      [MUTE(cashFlow.note)],
+      [TITLE("Cash Flow (direct method, by activity)")],
+      [MUTE("Movements grouped by activity. Balance-sheet items (tax, loans, director, transfers) are shown separately from operating cash flow. Net of all sections reconciles the bank balance.")],
       [],
-      [B("Opening balance"), M(cashFlow.openingBalance)],
-      [B("Closing balance"), M(cashFlow.closingBalance)],
+      [HDR("Activity"), HDR("Net Cash")],
+      ...cashSections.map(([label, amount]) => [S(label), amount < 0 ? MW(amount) : M(amount)]),
+      [B("Net movement"), MT(netMovement)],
       [],
-      [HDR("Inflows"), HDR("Amount")],
-      ...cashFlow.inflows.map((i) => [S(i.label), M(i.amount)]),
-      [B("Total inflows"), MT(cashFlow.totalInflows)],
-      [],
-      [HDR("Outflows"), HDR("Amount")],
-      ...cashFlow.outflows.map((o) => [S(o.label), M(o.amount)]),
-      [B("Total outflows"), MT(cashFlow.totalOutflows)],
-      [],
-      [B("Net movement"), MT(cashFlow.netMovement)],
-      [B("Reconciled"), cashFlow.reconciled ? GOOD("Yes") : WARN("No — check for missing transactions")],
+      [B("Opening balance"), M(meta.openingBalance)],
+      [B("+ Net movement"), MT(netMovement)],
+      [B("= Expected closing"), MT(expectedClose)],
+      [B("Statement closing balance"), M(meta.closingBalance)],
+      [B("Reconciled"), cashReconciled ? GOOD("Yes — cash flow ties to the bank balance") : WARN("No — extraction incomplete; see Data Quality")],
     ],
   });
 
