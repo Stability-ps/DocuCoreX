@@ -90,7 +90,13 @@ if importlib.util.find_spec("openpyxl") is None:
 
 from openpyxl import load_workbook
 
-from main import ParsedTransaction, build_workbook, validate_statement, validation_summary
+from main import (
+    ParsedTransaction,
+    build_workbook,
+    parse_transactions,
+    validate_statement,
+    validation_summary,
+)
 
 
 ROOT = Path(__file__).resolve().parents[3]
@@ -156,7 +162,109 @@ def run_synthetic_case(case_id: str, fixture_path: Path) -> None:
 
 
 
+# ── FNB date-grouped extraction regression (ACAPOLITE class of failure) ──────
+#
+# FNB prints a transaction date only once per date group; later rows in the
+# group (debit orders, app / RTC payments, fee lines) print WITHOUT a leading
+# date. Those rows were being merged into the previous line and dropped, so the
+# statement lost 6 debits (R29,912.54) and failed to reconcile. This fixture
+# reproduces that exact layout at full scale (143 transactions) and fails unless
+# every row is extracted and the reconciliation difference is R0.00.
+FNB_EXPECTED = {
+    "transaction_count": 143,
+    "credit_count": 15,
+    "debit_count": 128,
+    "total_credits": "419700.00",
+    "total_debits": "422747.72",
+    "opening_balance": "3390.09",
+    "closing_balance": "342.37",
+}
+
+
+def _build_acapolite_style_statement() -> tuple[str, dict]:
+    from decimal import Decimal as D
+
+    lines = ["Transactions in Rand (ZAR)"]
+    bal = D("3390.09")  # true running balance for the balance-bearing rows
+
+    def money(value: D) -> str:
+        return f"{value:,.2f}"
+
+    # 15 credits summing 419,700.00.
+    for i in range(15):
+        bal += D("27980.00")
+        lines.append(f"0{(i % 9) + 1} Mar Eft Deposit Customer {i:03d} 27,980.00Cr {money(bal)} Cr")
+
+    # 121 ordinary debits of 3,200.00 (each date-led with a running balance).
+    for i in range(121):
+        bal -= D("3200.00")
+        lines.append(f"1{(i % 9)} Mar Card Purchase Merchant {i:03d} 3,200.00 {money(bal)} Cr")
+    # One more ordinary debit (5,635.18) immediately followed by the date-LESS
+    # debit-order row (the ACAPOLITE 02 Mar case) that used to be swallowed.
+    bal -= D("5635.18")
+    lines.append(f"02 Mar Card Purchase Fuel Filling Station 5,635.18 {money(bal)} Cr")
+    lines.append("Internal Debit Order Fnbfuneral Fi11941792 J62730 696.30")
+
+    # 18 Mar group: date printed once, second payment has no leading date.
+    lines.append("18 Mar Fnb App Payment To 819035690 3,000.00")
+    lines.append("Fnb App Rtc Pmt To Patric 25,000.00")
+
+    # 24 Mar fee group: three fee rows, date printed once.
+    lines.append("24 Mar Monthly Account Fee 93.00")
+    lines.append("Service Fees 523.80")
+    lines.append("Cash Deposit Fee 599.44")
+
+    lines.append("Closing Balance 342.37")
+
+    metadata = {
+        "statement_period_start": "2026-03-01",
+        "statement_period_end": "2026-03-31",
+        "opening_balance": 3390.09,
+        "closing_balance": 342.37,
+    }
+    return "\n".join(lines), metadata
+
+
+def run_fnb_extraction_case() -> None:
+    case_id = "fnb-acapolite-grouped-rows"
+    text, metadata = _build_acapolite_style_statement()
+    transactions = parse_transactions([], metadata, text)
+
+    # All 143 rows must be extracted — including the 6 date-grouped debits.
+    assert_equal(len(transactions), FNB_EXPECTED["transaction_count"], f"{case_id} transaction count")
+
+    # The six previously-missing rows must be present with the exact amounts.
+    missing_rows = {
+        ("Internal Debit Order Fnbfuneral Fi11941792 J62730", "696.30"),
+        ("Fnb App Payment To 819035690", "3000.00"),
+        ("Fnb App Rtc Pmt To Patric", "25000.00"),
+        ("Monthly Account Fee", "93.00"),
+        ("Service Fees", "523.80"),
+        ("Cash Deposit Fee", "599.44"),
+    }
+    extracted = {(t.description, f"{(t.debit_amount or 0):.2f}") for t in transactions}
+    for desc, amount in missing_rows:
+        if (desc, amount) not in extracted:
+            raise AssertionError(f"{case_id}: missing row not extracted: {desc} R{amount}")
+
+    summary = validation_summary(transactions)
+    assert_equal(str(summary["total_credits"]), FNB_EXPECTED["total_credits"], f"{case_id} total credits")
+    assert_equal(str(summary["total_debits"]), FNB_EXPECTED["total_debits"], f"{case_id} total debits")
+    assert_equal(summary["credit_count"], FNB_EXPECTED["credit_count"], f"{case_id} credit count")
+    assert_equal(summary["debit_count"], FNB_EXPECTED["debit_count"], f"{case_id} debit count")
+
+    # Reconciliation difference must be exactly R0.00 (validate_statement raises otherwise).
+    validation = validate_statement(metadata, transactions)
+    if validation["calculated_closing"] != validation["closing_balance"]:
+        raise AssertionError(
+            f"{case_id}: reconciliation difference not zero — calculated {validation['calculated_closing']} vs closing {validation['closing_balance']}"
+        )
+    assert_equal(str(validation["closing_balance"]), FNB_EXPECTED["closing_balance"], f"{case_id} closing balance")
+
+
 def run() -> None:
+    run_fnb_extraction_case()
+
     manifest = json.loads(MANIFEST_PATH.read_text())
     cases = manifest.get("cases") if isinstance(manifest, dict) else None
     if not isinstance(cases, list) or not cases:

@@ -743,6 +743,7 @@ def transaction_section_lines(full_text: str) -> list[str]:
 def transaction_candidate_lines(full_text: str) -> list[str]:
     candidates: list[str] = []
     current = ""
+    last_date = ""
 
     for line in transaction_section_lines(full_text):
         line = strip_fnb_page_artifacts(line)
@@ -751,10 +752,26 @@ def transaction_candidate_lines(full_text: str) -> list[str]:
                 candidates.append(current.strip())
                 current = ""
             continue
-        if LOOSE_DATE.match(line):
+        date_match = LOOSE_DATE.match(line)
+        if date_match:
             if current:
                 candidates.append(current.strip())
             current = line
+            last_date = date_match.group("date")
+            continue
+
+        # FNB prints the transaction date only once per date group, so rows after
+        # the first in a group (debit orders, app / RTC payments, fee lines) print
+        # WITHOUT a leading date. If such a continuation line carries its OWN
+        # described money amount it is a separate movement, not a wrapped
+        # description — start a new candidate for it inheriting the group's date so
+        # it is not swallowed into the previous row (which drops the movement and
+        # breaks reconciliation). A bare balance token (no descriptive text) is
+        # treated as a wrap and appended.
+        if last_date and _is_grouped_movement_line(line):
+            if current:
+                candidates.append(current.strip())
+            current = f"{last_date} {line}".strip()
             continue
 
         if current:
@@ -764,6 +781,16 @@ def transaction_candidate_lines(full_text: str) -> list[str]:
         candidates.append(current.strip())
 
     return candidates
+
+
+def _is_grouped_movement_line(line: str) -> bool:
+    """A dateless continuation line that is itself a movement: it carries a money
+    token preceded by descriptive text (letters). Excludes lone balance carries."""
+    money = MONEY_TOKEN.search(line)
+    if not money:
+        return False
+    lead = line[: money.start()]
+    return bool(re.search(r"[A-Za-z]", lead))
 
 
 def parse_fnb_transaction_line(line: str, metadata: dict[str, Any], base_confidence: float = 96) -> ParsedTransaction | None:
