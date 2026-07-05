@@ -45,6 +45,8 @@ const XLSX_PACKS: Record<string, ExportSectionId[]> = {
     "forecasting",
     "audit-tools",
     "assumptions",
+    "data-quality",
+    "extraction-log",
   ],
 };
 

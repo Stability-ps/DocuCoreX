@@ -343,18 +343,21 @@ def detect_company_name(full_text: str) -> str | None:
     lines = [line.strip() for line in full_text.splitlines() if line.strip()]
     header = lines[:25]
 
-    # 2) A line with a legal-entity suffix that is not an address or bank name.
+    # 2) A line with a legal-entity suffix. Truncate at the suffix so trailing
+    #    bank header text (branch code, VAT reg, account number) is dropped.
     for line in header:
-        if len(line) < 4 or len(line) > 70:
+        if len(line) < 4 or len(line) > 120:
             continue
         if line.upper() in _BANK_NAMES:
             continue
         if _COMPANY_SUFFIX.search(line) and not looks_like_address(line):
-            return re.sub(r"\s+", " ", line).strip(" *:-")
+            cleaned = clean_company_name(line)
+            if cleaned and not looks_like_address(cleaned):
+                return cleaned
 
     # 3) First business-looking uppercase line before the address block.
     for line in header:
-        stripped = line.strip(" *:-")
+        stripped = clean_company_name(line.strip(" *:-"))
         if len(stripped) < 4 or len(stripped) > 60:
             continue
         upper = stripped.upper()
@@ -370,12 +373,47 @@ def detect_company_name(full_text: str) -> str | None:
     return None
 
 
-def parse_metadata(full_text: str) -> dict[str, Any]:
-    account_number = find_first([
-        r"Account\s*(?:Number|No\.?)\s*[:\-]?\s*([0-9\s-]{6,})",
-        r"Business\s*Account\s*[:\-]?\s*([0-9\s-]{6,})",
-    ], full_text)
+# Bank-header tokens that must never be part of a company name.
+_BANK_META_TAIL = re.compile(
+    r"\b(UNIVERSAL\s+BRANCH\s+CODE|BRANCH\s+CODE|BRANCH|VAT\s+(?:REG|REGISTRATION)"
+    r"|ACCOUNT\s+(?:NUMBER|NO)|SWIFT|BIC|STATEMENT\s+(?:NO|NUMBER|DATE|PERIOD))\b",
+    flags=re.IGNORECASE,
+)
 
+
+def clean_company_name(text: str) -> str:
+    """Return just the legal entity name — never trailing bank header text such
+    as 'Universal Branch Code 250655'."""
+    name = re.sub(r"\s+", " ", text).strip(" *:-,")
+    suffix = _COMPANY_SUFFIX.search(name)
+    if suffix:
+        # Keep up to and including the first legal suffix, drop the rest.
+        name = name[: suffix.end()].strip(" *:-,")
+    else:
+        tail = _BANK_META_TAIL.search(name)
+        if tail:
+            name = name[: tail.start()].strip(" *:-,")
+    return name
+
+
+def detect_account_number(full_text: str) -> str | None:
+    """FNB prints e.g. 'Gold Business Account : 63041819765'. Account numbers are
+    8+ digits (FNB uses 11) — never a short reference/delivery/branch number."""
+    labelled = find_first([
+        r"(?:Cheque|Gold|Platinum|Business|Savings|Current|Enterprise|Easy|Core)\s+Account\s*[:#\-]?\s*(\d[\d\s]{7,})",
+        r"Account\s*(?:Number|No\.?)\s*[:#\-]?\s*(\d[\d\s]{7,})",
+    ], full_text)
+    if labelled:
+        digits = re.sub(r"\D", "", labelled)
+        if 8 <= len(digits) <= 16:
+            return digits
+    match = re.search(r"Account[^\d]{0,25}(\d{10,13})", full_text, flags=re.IGNORECASE)
+    if match:
+        return match.group(1)
+    return None
+
+
+def parse_metadata(full_text: str) -> dict[str, Any]:
     # Detect the account holder / company from the statement itself, never from
     # an address line and never hardcoded.
     company_name = detect_company_name(full_text)
@@ -402,15 +440,26 @@ def parse_metadata(full_text: str) -> dict[str, Any]:
         r"Balance\s*Carried\s*Forward\s*[:\-]?\s*R?\s*([0-9,.\-() ]+)",
     ], full_text)
 
+    # Statement turnover counts — used to detect missing transactions before the
+    # workbook is treated as complete.
+    credit_txn_count = find_first([r"Credit\s*[Tt]ransactions?\s*[:\-]?\s*(\d+)"], full_text)
+    debit_txn_count = find_first([r"Debit\s*[Tt]ransactions?\s*[:\-]?\s*(\d+)"], full_text)
+    expected_count = None
+    if credit_txn_count is not None and debit_txn_count is not None:
+        expected_count = int(credit_txn_count) + int(debit_txn_count)
+
     return {
         "company_name": company_name,
-        "account_number": re.sub(r"\s+", "", account_number) if account_number else None,
+        "account_number": detect_account_number(full_text),
         "statement_number": statement_number.strip() if statement_number else None,
         "statement_date": parse_date(statement_date) if statement_date else None,
         "statement_period_start": parse_date(period.group(1)) if period else None,
         "statement_period_end": parse_date(period.group(2)) if period else None,
         "opening_balance": parse_money(opening_balance),
         "closing_balance": parse_money(closing_balance),
+        "expected_credit_count": int(credit_txn_count) if credit_txn_count is not None else None,
+        "expected_debit_count": int(debit_txn_count) if debit_txn_count is not None else None,
+        "expected_transaction_count": expected_count,
     }
 
 
@@ -473,29 +522,67 @@ def normalize_transaction_date(raw_date: str, metadata: dict[str, Any]) -> str |
 
 def classify_transaction(description: str, debit: float | None, credit: float | None) -> tuple[str, str, bool, float]:
     text = description.lower()
+    # Ordered deterministic rules — most specific first. VAT is kept conservative
+    # ("review") wherever an invoice is needed, but the account is still assigned
+    # so transactions do not fall through to "Uncategorised".
     rules: list[tuple[tuple[str, ...], str, str, bool, float]] = [
-        (("service fee", "#service fees", "monthly account fee", "byc debit", "bank charges", "cash deposit fee"), "Bank Charges", "standard", True, 98),
-        (("fnb app transfer to savings", "fnb app transfer from credit", "inter-account", "internal transfer"), "Inter-account Transfer", "out_of_scope", False, 98),
-        (("salary", "payroll", "wages", "nanny", "care giver", "waterfall salary"), "Salaries & Wages", "out_of_scope", False, 95),
-        (("discovery account", "discovery insure", "insurance premium"), "Insurance", "exempt", False, 93),
-        (("emporers ridge levy", "levy"), "Levies", "review", False, 90),
-        (("google chatgpt", "chatgpt", "openai"), "Software Subscriptions", "standard", False, 92),
-        (("google xiaomi home", "xiaomi home"), "Software / IT", "review", False, 86),
-        (("dhl", "paygate*dhl", "courier"), "Courier / Delivery", "review", False, 88),
-        (("uber eats",), "Staff Welfare / Meals / Entertainment", "review", False, 82),
-        (("fuel", "petrol", "garage", "engen", "shell", "bp "), "Motor Vehicle Expenses", "review", False, 84),
-        (("vat", "value added tax"), "VAT Control", "standard", False, 92),
-        (("loan", "interest"), "Finance Costs", "exempt", False, 80),
-        (("subscription", "saas", "microsoft", "adobe"), "Software Subscriptions", "review", False, 82),
-        (("senses spa", "adore photography", "sloppy kisses", "puppy classes"), "Review Required", "review", False, 68),
+        # Bank charges & fees (VAT-standard, input VAT applies)
+        (("service fee", "#service fees", "# service fees", "monthly account fee", "#monthly account fee",
+          "byc debit", "bank charges", "accrued bank charge", "cash deposit fee", "#cash deposit fee",
+          "cash deposit", "admin fee", "card fee", "pos fee"), "Bank Charges", "standard", True, 97),
+        # Interest
+        (("credit interest", "interest received"), "Interest Income", "exempt", False, 90),
+        (("debit interest", "interest charged", "overdraft interest"), "Finance Costs", "exempt", False, 88),
+        # Communication (prepaid / airtime / data)
+        (("prepaid", "airtime", "data bundle", "fnb app prepaid", "vodacom", "mtn ", "telkom", "cell c", "rain "),
+         "Telephone / Internet / Communication", "review", False, 84),
+        # Inter-account / own transfers
+        (("fnb app transfer to savings", "fnb app transfer from", "transfer to me", "transfer from",
+          "transfer to savings", "inter-account", "internal transfer", "own account"),
+         "Inter-account Transfer", "out_of_scope", False, 92),
+        # Director / related-party movements (RTC / PayShap / send money to a person)
+        (("rtc pmt to patric", "app payment to patric", "send money to patric", "payment to sibande",
+          "rtc pmt to sibande", "send money to sibande", "payshap to patric", "payshap to sibande",
+          "drawings", "director loan"),
+         "Director Loan / Drawings", "out_of_scope", False, 80),
+        # SARS / tax
+        (("tax deposit", "sars", "efiling", "paye", "vat201", "provisional tax"),
+         "SARS / Tax Liability", "review", False, 82),
+        # Insurance / funeral debit orders
+        (("discovery account", "discovery insure", "insurance premium", "funeral", "fnbfuneral",
+          "life cover", "outsurance", "santam", "old mutual"), "Insurance Expense", "exempt", False, 85),
+        # Salaries / payroll
+        (("salary", "payroll", "wages", "nanny", "care giver"), "Salaries & Wages", "out_of_scope", False, 90),
+        # Loans / finance
+        (("loan repayment", "loan installment", "loan instalment", "vehicle finance", "wesbank", "loan"),
+         "Loan / Finance", "out_of_scope", False, 80),
+        # Refunds
+        (("refund", "reversal"), "Refund / Suspense", "review", False, 74),
+        # Levies
+        (("levy", "levies", "body corporate", "hoa "), "Levies", "review", False, 84),
+        # Software / IT
+        (("google chatgpt", "chatgpt", "openai", "microsoft", "adobe", "subscription", "saas", "aws ", "google cloud"),
+         "Software Subscriptions", "standard", False, 84),
+        (("google xiaomi home", "xiaomi home"), "Software / IT", "review", False, 82),
+        # Courier / delivery
+        (("dhl", "paygate*dhl", "courier", "aramex", "the courier guy", "postnet"), "Courier / Delivery", "standard", False, 84),
+        # Meals / entertainment
+        (("uber eats", "mr d food", "restaurant"), "Staff Welfare / Meals / Entertainment", "review", False, 80),
+        # Fuel / motor
+        (("fuel", "petrol", "garage", "engen", "shell", "bp ", "sasol", "total ", "caltex"),
+         "Motor Vehicle Expenses", "standard", False, 84),
+        # Sales / income (inbound payments)
+        (("fnb ob pmt", "payment from", "rtc credit", "cash deposit received", "eft credit"),
+         "Sales / Revenue", "review", False, 80),
     ]
     for needles, category, vat, bank_charge, confidence in rules:
         if any(needle in text for needle in needles):
             return category, vat, bank_charge, confidence
+    # Direction-based fallbacks — still categorised, not "Uncategorised".
     if credit and credit > 0:
-        return "Income", "review", False, 72
+        return "Sales / Revenue", "review", False, 68
     if debit and debit > 0:
-        return "Uncategorised Expense", "review", False, 58
+        return "Operating Expenses", "review", False, 60
     return "Uncategorised", "review", False, 50
 
 
@@ -505,7 +592,7 @@ def normalize_merchant_key(description: str) -> str:
     lowered = re.sub(r"\b(?:inv|invoice|ref|rmsp|m)\s*[\w-]+\b", " ", lowered)
     lowered = re.sub(r"\b\d{3,}\b", " ", lowered)
     lowered = re.sub(r"\d+[.,]\d{2}\s*(cr|dr)?", " ", lowered)
-    lowered = re.sub(r"\b(allianz holdings|pty|ltd|business account)\b", " ", lowered)
+    lowered = re.sub(r"\b(pty|ltd|business account)\b", " ", lowered)
     lowered = re.sub(r"[^a-z#* ]+", " ", lowered)
     return re.sub(r"\s+", " ", lowered).strip()[:160]
 

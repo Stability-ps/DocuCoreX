@@ -59,7 +59,9 @@ export type ExportSectionId =
   | "ai-intelligence"
   | "forecasting"
   | "audit-tools"
-  | "assumptions";
+  | "assumptions"
+  | "data-quality"
+  | "extraction-log";
 
 export type ExportSection = {
   id: ExportSectionId;
@@ -661,6 +663,61 @@ export function buildExportSections(detail: AccountingRunDetail, resolvedCompany
       [S("Forecasting"), S(forecast.periodMonths <= 1 ? "Single period" : "Multi-period"), MUTE("Assumes consistent patterns; process more statements to improve.")],
       [S("Trial Balance"), S("Indicative"), MUTE("Not double-entry; bank contra account not represented.")],
       [S("Reconciliation"), meta.reconciled ? S("Balanced") : S("Review required"), MUTE(meta.reconciled ? "Opening + receipts − payments = closing." : "See Reconciliation Issues sheet.")],
+    ],
+  });
+
+  // Data Quality Report — the extraction "hard gate".
+  const uncategorised = txns.filter(
+    (t) => /uncategori|review required|operating expenses/i.test(t.accountCategory),
+  ).length;
+  const lowConfidence = txns.filter((t) => t.confidence < 70).length;
+  const withoutInvoice = txns.filter((t) => (t.debitAmount ?? 0) > 5000 && !t.supportedByInvoice && !t.bankCharge).length;
+  const extractionOk = meta.reconciled;
+  sections.push({
+    id: "data-quality",
+    label: "Data Quality Report",
+    sheet: "Data Quality",
+    headerRow: 5,
+    rows: [
+      [TITLE("Data Quality Report")],
+      extractionOk
+        ? [GOOD("Extraction status: COMPLETE — statement reconciles.")]
+        : [WARN("Extraction status: REVIEW REQUIRED — statement does not reconcile. Figures may be incomplete; do not rely on the financial statements until resolved.")],
+      [],
+      [MUTE("This report flags data-quality issues so misleading statements are never presented as final.")],
+      [HDR("Check"), HDR("Result"), HDR("Detail")],
+      [S("Reconciliation"), meta.reconciled ? GOOD("Pass") : WARN("Fail"), meta.reconciled ? S("Balanced") : MW(meta.reconciliationDifference)],
+      [S("Review items"), meta.reviewCount === 0 ? GOOD("0") : WARN(String(meta.reviewCount)), S("Transactions needing accountant review")],
+      [S("Uncategorised"), uncategorised === 0 ? GOOD("0") : WARN(String(uncategorised)), S("Assign accounts before posting")],
+      [S("Low confidence (<70%)"), lowConfidence === 0 ? GOOD("0") : WARN(String(lowConfidence)), S("Verify amounts and descriptions")],
+      [S("Payments >R5k without invoice"), withoutInvoice === 0 ? GOOD("0") : WARN(String(withoutInvoice)), S("Attach supporting documents")],
+      [S("Extraction confidence"), S(`${meta.confidence}%`), S("Overall parser confidence")],
+      [S("Transactions extracted"), INT(meta.transactionCount), S("Rows captured from the statement")],
+    ],
+  });
+
+  // Extraction Log — provenance of every figure.
+  sections.push({
+    id: "extraction-log",
+    label: "Extraction Log",
+    sheet: "Extraction Log",
+    headerRow: 1,
+    rows: [
+      [HDR("Field"), HDR("Value")],
+      [S("Bank"), S(run.bank)],
+      [S("Statement type"), S(run.statementType)],
+      [S("Extraction provider"), S(run.extractionProvider)],
+      [S("Parser profile"), S(run.parserProfile ?? "—")],
+      [S("Parser version"), S(run.parserVersion ?? "—")],
+      [S("Processing status"), S(run.status)],
+      [S("Extraction confidence"), S(`${meta.confidence}%`)],
+      [S("Company (as extracted)"), S(meta.company || "Not detected")],
+      [S("Account number (as extracted)"), S(meta.accountNumber || "Not detected")],
+      [S("Statement period"), S(meta.statementPeriod)],
+      [S("Opening balance"), M(meta.openingBalance)],
+      [S("Closing balance"), M(meta.closingBalance)],
+      [S("Reconciliation difference"), meta.reconciled ? M(0) : MW(meta.reconciliationDifference)],
+      [S("Generated"), S(new Date().toISOString())],
     ],
   });
 

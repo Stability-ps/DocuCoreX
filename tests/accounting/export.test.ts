@@ -86,10 +86,19 @@ test("full pack includes every required accounting section", () => {
     "forecasting",
     "audit-tools",
     "assumptions",
+    "data-quality",
+    "extraction-log",
   ];
   for (const id of required) {
     assert.match(src, new RegExp(`id:\\s*"${id}"`), `export must build the "${id}" section`);
   }
+});
+
+test("data quality report is a hard extraction gate", () => {
+  const src = read("lib/accounting/export.ts");
+  assert.match(src, /Extraction status: COMPLETE/);
+  assert.match(src, /Extraction status: REVIEW REQUIRED/);
+  assert.match(src, /const extractionOk = meta\.reconciled/);
 });
 
 test("export route offers single-section CSV and grouped/full XLSX packs", () => {

@@ -114,6 +114,7 @@ else:
 
 from main import (
     balance_gap_diagnostics,
+    classify_transaction,
     detect_company_name,
     insert_inferred_fnb_service_fees,
     looks_like_address,
@@ -182,6 +183,39 @@ def run():
         "JOHN P SMITH",
         "personal account holder",
     )
+
+    # Regression for the exact ACAPOLITE statement bug: company name must stop at
+    # the legal suffix (no "Universal Branch Code"), and the account number must
+    # be the FNB 11-digit account, never a short reference number like 753665.
+    acap = parse_metadata("""
+    ACAPOLITE CONSULTING (PTY) LTD Universal Branch Code 250655
+    12 Itala Place
+    Mooikloof
+    Pretoria
+    0059
+    Delivery Reference 753665
+    Gold Business Account : 63041819765
+    Statement Period 28 Feb 2026 to 31 Mar 2026
+    Opening Balance 3,390.09
+    Closing Balance 342.37
+    """)
+    assert_equal(acap["company_name"], "ACAPOLITE CONSULTING (PTY) LTD", "acapolite clean company name")
+    assert_equal(acap["account_number"], "63041819765", "acapolite fnb account number")
+    if "Universal Branch Code" in (acap["company_name"] or ""):
+        raise AssertionError("company name still contains branch code")
+    if acap["account_number"] == "753665":
+        raise AssertionError("account number is the wrong reference number 753665")
+    # Categorisation: common FNB patterns must NOT fall through to Uncategorised.
+    for desc, expected_account in [
+        ("# Cash Deposit Fee", "Bank Charges"),
+        ("# Monthly Account Fee", "Bank Charges"),
+        ("# Service Fees", "Bank Charges"),
+        ("FNB App Prepaid Airtime", "Telephone / Internet / Communication"),
+        ("Internal Debit Order Fnbfuneral Fi11941792", "Insurance Expense"),
+        ("FNB App Transfer To Savings", "Inter-account Transfer"),
+    ]:
+        account, _vat, _bc, _conf = classify_transaction(desc, 100.0, None)
+        assert_equal(account, expected_account, f"category for {desc!r}")
 
     debit, credit = parse_transaction_amount_cell("10129 25,000.00Cr") or (None, None)
     assert_equal(debit, None, "credit debit side")
