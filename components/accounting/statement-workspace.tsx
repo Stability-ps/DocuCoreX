@@ -321,7 +321,7 @@ export function StatementWorkspace({ statementId }: { statementId: string }) {
               {moreOpen ? (
                 <div className="absolute right-0 z-20 mt-1 w-52 rounded-xl border border-slate-200 bg-white p-1 shadow-lg">
                   <a
-                    href={sourceUrl}
+                    href={`${sourceUrl}?download=1`}
                     target="_blank"
                     rel="noreferrer"
                     onClick={() => setMoreOpen(false)}
@@ -358,7 +358,7 @@ export function StatementWorkspace({ statementId }: { statementId: string }) {
       {/* ── Three-column layout ─────────────────────────────────────────── */}
       <div className="mt-4 grid gap-4 lg:grid-cols-[300px_minmax(0,1fr)] xl:grid-cols-[300px_minmax(0,1fr)_460px]">
         <StatementSidebar run={run} totals={totals} reviewCount={reviewItems.length} dataQuality={dataQuality} onReview={() => setActiveTab("review")} />
-        <DocumentViewer sourceUrl={sourceUrl} fileName={`${runTitle(run)}.pdf`} kind="pdf" />
+        <DocumentViewer sourceUrl={sourceUrl} downloadUrl={`${sourceUrl}?download=1`} fileName={`${runTitle(run)}.pdf`} kind="pdf" />
         <div className="min-w-0 xl:row-span-1">
           <RightPanel
             statementId={statementId}

@@ -48,6 +48,41 @@ test("no user-facing AI wording in the accounting UI", () => {
   assert.match(read("components/accounting/accounting-intelligence.tsx"), /label: "Transaction Insights"/, "AI Intelligence tab must be renamed to Transaction Insights");
 });
 
+test("preview serves inline, download serves attachment (separate logic)", () => {
+  // Documents: dedicated inline preview endpoint, separate attachment download.
+  const preview = read("app/api/documents/[id]/preview/route.ts");
+  assert.match(preview, /"content-disposition": `inline/, "preview must be Content-Disposition: inline");
+  assert.doesNotMatch(preview, /"content-disposition":\s*`?attachment/, "preview endpoint header must never force a download");
+  const download = read("app/api/documents/[id]/download/route.ts");
+  assert.match(download, /"content-disposition": `attachment/, "download must stay attachment");
+
+  // Accounting statement source streams inline, and only attaches on ?download=1.
+  const source = read("app/api/accounting/fnb/runs/[id]/source/route.ts");
+  assert.doesNotMatch(source, /NextResponse\.redirect/, "must stream same-origin, not redirect to a cross-origin signed URL");
+  assert.match(source, /download \? "attachment" : "inline"/, "inline by default, attachment on ?download=1");
+
+  // The Documents preview uses the inline preview URL for viewing and the
+  // download URL only for the Download button.
+  const docs = read("components/documents/document-detail-panel.tsx");
+  assert.match(docs, /const previewUrl = `\/api\/documents\/\$\{documentId\}\/preview`/, "documents must build an inline preview URL");
+  assert.match(docs, /sourceUrl=\{previewUrl\} downloadUrl=\{downloadUrl\}/, "viewer must preview inline and download separately");
+});
+
+test("the shared document viewer separates preview and download and handles errors", () => {
+  const viewer = read("components/document-viewer.tsx");
+  assert.match(viewer, /downloadUrl\?: string/, "viewer must accept a separate download URL");
+  assert.match(viewer, /const resolvedDownloadUrl = downloadUrl \?\? sourceUrl/, "download button uses downloadUrl");
+  // Error handling: title, actual message, Retry, Download Original.
+  assert.match(viewer, /Unable to preview document/);
+  assert.match(viewer, /Download Original/);
+  assert.match(viewer, /onError=\{onFrameError\}/, "frame errors must be handled, not left blank");
+  assert.match(viewer, /RENDER_TIMEOUT_MS/, "a render timeout must surface an error instead of a blank viewer");
+  // Dev-only diagnostics.
+  assert.match(viewer, /viewer diagnostics/);
+  assert.match(viewer, /renderStarted|renderCompleted|renderFailed/);
+  assert.match(viewer, /process\.env\.NODE_ENV !== "production"/, "diagnostics must be development-only");
+});
+
 test("one shared DocumentViewer is the standard viewer across the platform", () => {
   // The shared component exists.
   const viewer = read("components/document-viewer.tsx");

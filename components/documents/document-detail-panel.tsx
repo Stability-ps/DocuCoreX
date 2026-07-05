@@ -50,6 +50,7 @@ export function DocumentDetailPanel({ documentId }: { documentId: string }) {
   const [showConvert, setShowConvert] = useState(false);
 
   const downloadUrl = `/api/documents/${documentId}/download`;
+  const previewUrl = `/api/documents/${documentId}/preview`;
 
   const loadCore = useCallback(async () => {
     const [documentResponse, ocrResponse, extractionResponse] = await Promise.all([
@@ -282,7 +283,7 @@ export function DocumentDetailPanel({ documentId }: { documentId: string }) {
       </div>
 
       {tab === "Overview" ? <OverviewTab doc={doc} jobs={data.jobs} /> : null}
-      {tab === "Preview" ? <PreviewTab kind={previewKind} downloadUrl={downloadUrl} name={doc.name} /> : null}
+      {tab === "Preview" ? <PreviewTab kind={previewKind} previewUrl={previewUrl} downloadUrl={downloadUrl} name={doc.name} /> : null}
       {tab === "OCR Text" ? <OcrTab ocr={data.ocr} onRun={runProcess} busy={busy} /> : null}
       {tab === "Extracted Data" ? <ExtractionTab extraction={data.extraction} onRun={runProcess} busy={busy} /> : null}
       {tab === "History" ? <HistoryTab versions={data.versions} downloads={data.downloads} /> : null}
@@ -417,10 +418,11 @@ function OverviewTab({ doc, jobs }: { doc: DocumentRecord; jobs: ProcessingJob[]
   );
 }
 
-function PreviewTab({ kind, downloadUrl, name }: { kind: string; downloadUrl: string; name: string }) {
+function PreviewTab({ kind, previewUrl, downloadUrl, name }: { kind: string; previewUrl: string; downloadUrl: string; name: string }) {
   // Standard platform-wide viewer (same one used in the Statement Review Workspace).
+  // Preview renders inline (previewUrl); Download uses the attachment endpoint.
   const viewerKind: DocumentViewerKind = kind === "pdf" ? "pdf" : kind === "image" ? "image" : "other";
-  return <DocumentViewer sourceUrl={downloadUrl} fileName={name} kind={viewerKind} minHeightClass="min-h-[70vh]" />;
+  return <DocumentViewer sourceUrl={previewUrl} downloadUrl={downloadUrl} fileName={name} kind={viewerKind} minHeightClass="min-h-[70vh]" />;
 }
 
 function OcrTab({ ocr, onRun, busy }: { ocr?: OcrResult; onRun: () => void; busy: boolean }) {

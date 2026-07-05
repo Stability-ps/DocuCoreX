@@ -3,34 +3,51 @@ import { getAccountingRunDetail } from "@/lib/accounting/server";
 import { getWorkspaceContext } from "@/lib/server-documents";
 
 // Serves the ORIGINAL statement PDF for the Statement Review Workspace viewer.
-// Redirects to a short-lived Supabase signed URL so the browser renders the PDF
-// directly (no duplicate storage). Returns 404 when the source is unavailable so
-// the viewer can show its "Preview unavailable" state.
-export async function GET(_request: Request, { params }: { params: Promise<{ id: string }> }) {
+// Streams the bytes from Supabase Storage same-origin with Content-Disposition:
+// inline so the browser RENDERS the PDF in the viewer (a cross-origin signed-URL
+// redirect can be blocked from an iframe and render blank in production).
+// `?download=1` switches to an attachment response for the Download button.
+
+async function resolvePath(id: string) {
+  const context = await getWorkspaceContext();
+  if (!context) return { error: "Unauthorized", status: 401 } as const;
+  const detail = await getAccountingRunDetail(id);
+  if (!detail) return { error: "Statement not found.", status: 404 } as const;
+  const path = detail.run.sourceStoragePath;
+  if (!path) return { error: "Preview unavailable.", status: 404 } as const;
+  return { context, path } as const;
+}
+
+export async function HEAD(_request: Request, { params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
+  const resolved = await resolvePath(id);
+  if ("error" in resolved) return new NextResponse(null, { status: resolved.status });
+  return new NextResponse(null, { status: 200 });
+}
+
+export async function GET(request: Request, { params }: { params: Promise<{ id: string }> }) {
+  const { id } = await params;
+  const download = new URL(request.url).searchParams.get("download") === "1";
 
   try {
-    const context = await getWorkspaceContext();
-    if (!context) {
-      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    const resolved = await resolvePath(id);
+    if ("error" in resolved) {
+      return NextResponse.json({ error: resolved.error }, { status: resolved.status });
     }
 
-    const detail = await getAccountingRunDetail(id);
-    if (!detail) {
-      return NextResponse.json({ error: "Statement not found." }, { status: 404 });
+    const { data, error } = await resolved.context.supabase.storage.from("documents").download(resolved.path);
+    if (error || !data) {
+      return NextResponse.json({ error: error?.message ?? "Preview unavailable." }, { status: 404 });
     }
 
-    const path = detail.run.sourceStoragePath;
-    if (!path) {
-      return NextResponse.json({ error: "Preview unavailable." }, { status: 404 });
-    }
-
-    const { data, error } = await context.supabase.storage.from("documents").createSignedUrl(path, 300);
-    if (error || !data?.signedUrl) {
-      return NextResponse.json({ error: "Preview unavailable." }, { status: 404 });
-    }
-
-    return NextResponse.redirect(data.signedUrl);
+    const fileName = resolved.path.split("/").pop() || "statement.pdf";
+    return new NextResponse(data, {
+      headers: {
+        "content-disposition": `${download ? "attachment" : "inline"}; filename="${fileName}"`,
+        "content-type": data.type || "application/pdf",
+        "cache-control": "private, max-age=60",
+      },
+    });
   } catch (error) {
     const message = error instanceof Error ? error.message : "Unable to load statement source.";
     return NextResponse.json({ error: message }, { status: message === "Unauthorized" ? 401 : 500 });
