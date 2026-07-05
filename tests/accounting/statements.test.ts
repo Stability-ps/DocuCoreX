@@ -8,6 +8,7 @@ register("./alias-hook.mjs", pathToFileURL(new URL(".", import.meta.url).pathnam
 
 const { computeProfitLoss, accountType } = await import("@/lib/accounting/analytics.ts");
 const { buildExportSections, buildStatementMetadata, resolveCompanyName } = await import("@/lib/accounting/export.ts");
+const { buildAccountingModel, resolveAccount, CHART } = await import("@/lib/accounting/model.ts");
 
 function txn(o: Record<string, unknown>) {
   return {
@@ -107,27 +108,28 @@ function cellText(cell: unknown): string {
   return v === undefined ? "" : String(v);
 }
 
-test("General Ledger is not one collapsed suspense line", () => {
+test("General Ledger is double-entry and not one collapsed suspense line", () => {
   const sections = buildExportSections(detail, resolveCompanyName(run.companyName, null));
   const gl = sections.find((s: { id: string }) => s.id === "general-ledger");
-  const accountNames = gl.rows.slice(1, -1).map((r: unknown[]) => cellText(r[0]));
-  assert.ok(accountNames.length > 1, "GL must have multiple accounts");
-  assert.ok(accountNames.includes("Bank Charges"), "GL must contain a Bank Charges account");
-  assert.ok(accountNames.includes("Sales / Revenue"), "GL must contain a revenue account");
-  // Bank Charges GL debit must be the fee (616.80), never a cash deposit (23,550).
-  const bankRow = gl.rows.find((r: unknown[]) => cellText(r[0]) === "Bank Charges");
-  const bankDebit = Number((bankRow[2] as { v: number }).v);
-  assert.equal(bankDebit, 616.8, "bank charges must be the fee, not a deposit");
-  assert.notEqual(bankDebit, 23550);
+  // Account name column is index 5 in the double-entry GL.
+  const accountNames = new Set(gl.rows.slice(1, -1).map((r: unknown[]) => cellText(r[5])));
+  assert.ok(accountNames.size > 1, "GL must have multiple accounts");
+  assert.ok(accountNames.has("Cash at Bank"), "bank posts every leg");
+  assert.ok(accountNames.has("Bank Charges"), "GL must contain a Bank Charges account");
+  // The Bank Charges debit leg must be the fee (616.80), never a cash deposit (23,550).
+  const bankRow = gl.rows.find((r: unknown[]) => cellText(r[5]) === "Bank Charges" && Number((r[6] as { v?: number })?.v) > 0);
+  assert.equal(Number((bankRow[6] as { v: number }).v), 616.8, "bank charges must be the fee, not a deposit");
 });
 
-test("Trial Balance balances via a bank contra", () => {
+test("Trial Balance is double-entry balanced (no artificial contra plug)", () => {
   const sections = buildExportSections(detail, resolveCompanyName(run.companyName, null));
   const tb = sections.find((s: { id: string }) => s.id === "trial-balance");
   const balancedRow = tb.rows.find((r: unknown[]) => cellText(r[0]) === "Balanced");
   assert.equal(cellText(balancedRow[1]), "Yes", "trial balance must balance");
-  const hasContra = tb.rows.some((r: unknown[]) => cellText(r[0]) === "Bank / Cash (contra)");
-  assert.ok(hasContra, "trial balance must include a bank contra account");
+  // Bank is a real ledger account (Cash at Bank), not a plugged "contra".
+  const accountNames = tb.rows.map((r: unknown[]) => cellText(r[1]));
+  assert.ok(accountNames.includes("Cash at Bank"), "bank must be a real ledger account");
+  assert.ok(!accountNames.includes("Bank / Cash (contra)"), "no artificial contra plug");
 });
 
 test("Cash Flow reconciles opening to closing and separates activities", () => {
@@ -185,4 +187,45 @@ test("account type keeps refund and suspense distinct", () => {
   assert.equal(accountType("Suspense / Review Required"), "suspense");
   assert.equal(accountType("Related Party / Drawings"), "director_loan");
   assert.equal(accountType("Revenue Review"), "revenue");
+});
+
+// ─── One canonical accounting model ────────────────────────────────────────
+
+test("every category maps to exactly one chart account with a number", () => {
+  for (const cat of ["Bank Charges", "Sales / Revenue", "SARS / Tax Suspense", "Director Loan / Drawings", "Loan / Liability", "Refund / Suspense", "Suspense / Review Required", "Motor Vehicle Expenses", "Cash Deposits / Revenue"]) {
+    const a = resolveAccount(cat);
+    assert.ok(a && /^\d{4}$/.test(a.number), `${cat} must map to a numbered account`);
+    assert.ok(CHART.some((c: { number: string }) => c.number === a.number), "account must be in the chart");
+  }
+});
+
+test("model produces double-entry journals and a balanced trial balance", () => {
+  const model = buildAccountingModel(detail);
+  // Two legs per transaction with a debit or credit.
+  const posting = txns.filter((t) => (t.debitAmount ?? 0) > 0 || (t.creditAmount ?? 0) > 0).length;
+  assert.equal(model.journals.length, posting * 2, "each transaction posts two legs");
+  // Debits equal credits (double-entry).
+  assert.ok(Math.abs(model.trialBalance.totalDebit - model.trialBalance.totalCredit) < 0.01, "TB must balance");
+  assert.equal(model.trialBalance.balanced, true);
+  // GL is not one suspense line.
+  assert.ok(model.ledger.length > 1, "ledger must have multiple accounts");
+  assert.ok(model.ledger.some((a: { name: string }) => a.name === "Cash at Bank"), "bank account posts every leg");
+});
+
+test("model VAT ties output/input to the transactions", () => {
+  const model = buildAccountingModel(detail);
+  // In this fixture the sales/deposits are VAT "review" (no output VAT); only the
+  // bank fee and fuel are standard-rated debits => input VAT on those only.
+  assert.equal(Math.round(model.vat201.outputVat * 100) / 100, 0, "no output VAT when sales are under review");
+  const expectedInput = Math.round((616.8 + 1000) * (15 / 115) * 100) / 100;
+  assert.equal(Math.round(model.vat201.inputVat * 100) / 100, expectedInput, "input VAT ties to standard expenses");
+});
+
+test("financials come from the ledger — tax/suspense are not revenue/expense", () => {
+  const model = buildAccountingModel(detail);
+  const revNames = model.financials.revenue.map((r: { name: string }) => r.name);
+  const expNames = model.financials.expenses.map((e: { name: string }) => e.name);
+  assert.ok(!revNames.includes("SARS / Tax Liability"), "tax is not revenue");
+  assert.ok(!expNames.some((n: string) => /suspense/i.test(n)), "suspense is not an expense");
+  assert.ok(model.financials.balanceSheet.liabilities.some((l: { name: string }) => /SARS|Suspense/.test(l.name)), "tax/suspense sit on the balance sheet");
 });

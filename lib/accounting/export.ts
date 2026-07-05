@@ -14,6 +14,7 @@ import {
   accountType,
   type AccountType,
 } from "@/lib/accounting/analytics";
+import { buildAccountingModel } from "@/lib/accounting/model";
 
 // ─── Cell model ─────────────────────────────────────────────────────────────
 // One cell model drives BOTH the multi-sheet XLSX and per-section CSV so Cover,
@@ -63,7 +64,13 @@ export type ExportSectionId =
   | "audit-tools"
   | "assumptions"
   | "data-quality"
-  | "extraction-log";
+  | "extraction-log"
+  | "chart-of-accounts"
+  | "vat201"
+  | "ai-categorisation"
+  | "review-queue"
+  | "exception-report"
+  | "lead-schedules";
 
 export type ExportSection = {
   id: ExportSectionId;
@@ -219,6 +226,9 @@ export function buildExportSections(detail: AccountingRunDetail, resolvedCompany
   const totals = { debit: meta.totalPayments, credit: meta.totalReceipts, bankCharges: meta.bankCharges };
   const run = detail.run;
 
+  // ONE canonical accounting model — every ledger-based sheet consumes this.
+  const model = buildAccountingModel(detail);
+
   const pl = computeProfitLoss(txns, run);
   const cashFlow = computeCashFlow(txns, run);
   const ratios = computeFinancialRatios(txns, run, totals);
@@ -345,48 +355,75 @@ export function buildExportSections(detail: AccountingRunDetail, resolvedCompany
     ],
   });
 
-  // VAT Schedule (fixes #7)
-  const vatDetailRows: Cell[][] = txns.map((t) => {
-    const { outputVat, inputVat, netVat } = vatForTransaction(t);
-    const claim =
-      t.vatTreatment === "review"
-        ? "Review required"
-        : t.vatTreatment === "standard"
+  // VAT Working Paper — professional, every VAT amount traces to a transaction.
+  const v201 = model.vat201;
+  const claimStatusOf = (t: (typeof model.transactions)[number]) =>
+    t.vatCode === "REV"
+      ? "Review required"
+      : t.vatCode === "STD"
+        ? t.debit > 0
           ? t.supportedByInvoice
             ? "Claimable (invoice on file)"
             : "Invoice required"
-          : VAT_LABELS[t.vatTreatment] ?? t.vatTreatment;
-    const netCell = netVat < 0 ? { v: netVat, num: true, fmt: "money" as const } : M(netVat);
-    return [
-      S(t.transactionDate ?? ""),
-      S(t.description),
-      M(t.creditAmount ?? 0),
-      M(t.debitAmount ?? 0),
-      S(VAT_LABELS[t.vatTreatment] ?? t.vatTreatment),
-      S(claim),
-      M(outputVat),
-      M(inputVat),
-      netCell,
-      S(t.supportedByInvoice ? "Invoice on file" : "No document"),
-      S(reviewReason(t) || "—"),
-      INT(t.confidence),
-    ];
-  });
+          : "Output VAT"
+        : t.vatTreatmentLabel;
   sections.push({
     id: "vat",
-    label: "VAT Schedule",
-    sheet: "VAT Schedule",
-    headerRow: 6,
+    label: "VAT Working Paper",
+    sheet: "VAT Working Paper",
+    headerRow: 8,
     filter: true,
     rows: [
-      [TITLE("VAT Schedule")],
-      [MUTE("VAT estimated at 15% inclusive (15/115) on standard-rated transactions. Verify against SARS VAT201. Not tax advice.")],
+      [TITLE("VAT Working Paper")],
+      [MUTE("VAT estimated at 15% inclusive (15/115). Every amount traces to a transaction. Verify against valid tax invoices and SARS VAT201. Not tax advice.")],
       [],
-      [B("Est. Output VAT"), M(meta.estOutputVat), B("Est. Input VAT"), M(meta.estInputVat), B("Net VAT Position"), M(meta.netVat)],
+      [HDR("Estimated VAT201"), HDR("Output VAT"), HDR("Input VAT"), HDR("Net VAT"), HDR("Review Items"), HDR("Missing Invoices"), HDR("Low Confidence")],
+      [S("Totals"), M(v201.outputVat), M(v201.inputVat), M(v201.netVat), INT(v201.reviewItems), INT(v201.missingInvoices), INT(v201.lowConfidence)],
       [],
-      [HDR("Date"), HDR("Description"), HDR("Money In"), HDR("Money Out"), HDR("VAT Treatment"), HDR("Claim Status"), HDR("Output VAT"), HDR("Input VAT"), HDR("Net VAT"), HDR("Document Status"), HDR("Review Reason"), HDR("Confidence")],
-      ...vatDetailRows,
-      [B("Totals"), S(""), S(""), S(""), S(""), S(""), MT(meta.estOutputVat), MT(meta.estInputVat), MT(meta.netVat), S(""), S(""), S("")],
+      [HDR("Date"), HDR("Reference"), HDR("Description"), HDR("Debit"), HDR("Credit"), HDR("GL Account"), HDR("Account No"), HDR("VAT Code"), HDR("VAT Treatment"), HDR("Output VAT"), HDR("Input VAT"), HDR("Net VAT"), HDR("Claim Status"), HDR("SARS Box"), HDR("Confidence"), HDR("Source"), HDR("Review Status"), HDR("Review Reason"), HDR("Document Status")],
+      ...model.transactions.map((t) => [
+        S(t.date),
+        S(t.reference),
+        S(t.description),
+        M(t.debit),
+        M(t.credit),
+        S(t.account.name),
+        S(t.account.number),
+        t.vatCode === "REV" ? WARN(t.vatCode) : t.vatCode === "STD" ? S(t.vatCode) : MUTE(t.vatCode),
+        S(t.vatTreatmentLabel),
+        M(t.outputVat),
+        M(t.inputVat),
+        t.netVat < 0 ? MW(t.netVat) : M(t.netVat),
+        S(claimStatusOf(t)),
+        S(t.sarsBox),
+        INT(t.confidence),
+        S(t.source),
+        S(t.reviewStatus),
+        S(t.reviewReason || "—"),
+        t.supportedByInvoice ? GOOD("Invoice on file") : S("No document"),
+      ]),
+      [B("Totals"), S(""), S(""), MT(meta.totalPayments), MT(meta.totalReceipts), S(""), S(""), S(""), S(""), MT(v201.outputVat), MT(v201.inputVat), MT(v201.netVat), S(""), S(""), S(""), S(""), S(""), S(""), S("")],
+    ],
+  });
+
+  // VAT201 Summary
+  sections.push({
+    id: "vat201",
+    label: "VAT201 Summary",
+    sheet: "VAT201 Summary",
+    headerRow: 3,
+    rows: [
+      [TITLE("Estimated SARS VAT201")],
+      [MUTE("Estimated from bank data. Confirm against tax invoices before filing. Not a SARS submission.")],
+      [HDR("VAT201 Box"), HDR("Description"), HDR("Amount")],
+      [S("1"), S("Standard-rate supplies (output)"), M(v201.standardSupplies)],
+      [S("2"), S("Zero-rated supplies"), M(v201.zeroRated)],
+      [S("3"), S("Exempt / non-supplies"), M(v201.exempt)],
+      [S("4"), S("Output VAT"), M(v201.outputVat)],
+      [S("14/15"), S("Input VAT"), M(v201.inputVat)],
+      [B("13"), B(v201.netVat >= 0 ? "Net VAT payable" : "Net VAT refundable"), v201.netVat >= 0 ? MT(v201.netVat) : MW(v201.netVat)],
+      [],
+      [WARN(`${v201.reviewItems} review items · ${v201.missingInvoices} missing invoices · ${v201.lowConfidence} low-confidence`)],
     ],
   });
 
@@ -402,6 +439,26 @@ export function buildExportSections(detail: AccountingRunDetail, resolvedCompany
   }
   const tg = (type: AccountType) => typeGroups.get(type) ?? { debit: 0, credit: 0 };
 
+  // Chart of Accounts — every account the model can post to.
+  sections.push({
+    id: "chart-of-accounts",
+    label: "Chart of Accounts",
+    sheet: "Chart of Accounts",
+    headerRow: 1,
+    filter: true,
+    rows: [
+      [HDR("Account No"), HDR("Account"), HDR("Group"), HDR("Statement"), HDR("Used")],
+      ...model.chartOfAccounts.map((a) => [
+        S(a.number),
+        S(a.name),
+        S(a.group),
+        S(a.statement === "profit_loss" ? "Profit & Loss" : "Balance Sheet"),
+        model.usedAccounts.some((u) => u.number === a.number) ? GOOD("Yes") : MUTE("—"),
+      ]),
+    ],
+  });
+
+  // General Ledger — double-entry journal postings from the one model.
   sections.push({
     id: "general-ledger",
     label: "General Ledger",
@@ -409,41 +466,44 @@ export function buildExportSections(detail: AccountingRunDetail, resolvedCompany
     headerRow: 1,
     filter: true,
     rows: [
-      [HDR("Account"), HDR("Transactions"), HDR("Debits"), HDR("Credits"), HDR("Net Movement")],
-      ...groups.map((g) => [S(g.account), INT(g.count), M(g.debit), M(g.credit), M(g.credit - g.debit)]),
-      [B("Totals"), INT(txns.length), MT(meta.totalPayments), MT(meta.totalReceipts), MT(meta.totalReceipts - meta.totalPayments)],
+      [HDR("Date"), HDR("Journal No"), HDR("Reference"), HDR("Description"), HDR("Account No"), HDR("Account"), HDR("Debit"), HDR("Credit"), HDR("Source"), HDR("Review Status"), HDR("Page")],
+      ...model.journals.map((j) => [
+        S(j.date),
+        S(j.journalNo),
+        S(j.reference),
+        S(j.description),
+        S(j.accountNumber),
+        S(j.account),
+        j.debit > 0 ? M(j.debit) : S(""),
+        j.credit > 0 ? M(j.credit) : S(""),
+        S(j.source),
+        S(j.reviewStatus),
+        j.sourcePage != null ? INT(j.sourcePage) : S(""),
+      ]),
+      [B("Totals"), S(""), S(""), S(""), S(""), S(""), MT(model.trialBalance.totalDebit), MT(model.trialBalance.totalCredit), S(""), S(""), S("")],
     ],
   });
 
-  // Trial Balance — built from the GL accounts. A balancing bank contra is only
-  // added when the statement RECONCILES; if it does not, the TB is marked invalid
-  // and the real imbalance is shown (never hidden behind an artificial contra).
-  const catDr = groups.reduce((s, g) => s + Math.max(0, g.debit - g.credit), 0);
-  const catCr = groups.reduce((s, g) => s + Math.max(0, g.credit - g.debit), 0);
-  const bankContra = catDr - catCr;
-  const bankDr = bankContra < 0 ? Math.abs(bankContra) : 0;
-  const bankCr = bankContra > 0 ? bankContra : 0;
-  const tbRows: Cell[][] = [
-    meta.reconciled
-      ? [MUTE("Draft trial balance from GL accounts with a balancing bank contra. Balance-sheet items appear as accounts, not P&L. Requires accountant review.")]
-      : [WARN("INVALID / REVIEW REQUIRED — the statement does not reconcile, so this trial balance is not reliable and no balancing contra has been added. Resolve extraction first.")],
-    [],
-    [HDR("Account"), HDR("Debit Balance"), HDR("Credit Balance")],
-    ...groups.map((g) => {
-      const net = g.debit - g.credit;
-      return [S(g.account), M(net > 0 ? net : 0), M(net < 0 ? Math.abs(net) : 0)];
-    }),
-  ];
-  if (meta.reconciled) {
-    tbRows.push([S("Bank / Cash (contra)"), M(bankDr), M(bankCr)]);
-    tbRows.push([B("Totals"), MT(catDr + bankDr), MT(catCr + bankCr)]);
-    tbRows.push([S("Balanced"), GOOD("Yes"), S("")]);
-  } else {
-    tbRows.push([B("Category totals"), MT(catDr), MT(catCr)]);
-    tbRows.push([S("Imbalance (missing bank contra / transactions)"), MW(catDr - catCr), S("")]);
-    tbRows.push([S("Status"), WARN("Invalid — review required"), S("")]);
-  }
-  sections.push({ id: "trial-balance", label: "Trial Balance", sheet: "Trial Balance", headerRow: 3, rows: tbRows });
+  // Trial Balance — from the ledger. Double-entry balances by construction; when
+  // the statement does not reconcile the whole TB is marked INVALID (not hidden).
+  const tb = model.trialBalance;
+  sections.push({
+    id: "trial-balance",
+    label: "Trial Balance",
+    sheet: "Trial Balance",
+    headerRow: 3,
+    filter: true,
+    rows: [
+      meta.reconciled
+        ? [MUTE("Trial balance from the general ledger (double-entry). Requires accountant review.")]
+        : [WARN("INVALID / REVIEW REQUIRED — the statement does not reconcile, so the underlying data is incomplete. Do not rely on this trial balance until extraction is resolved.")],
+      [],
+      [HDR("Account No"), HDR("Account"), HDR("Debit"), HDR("Credit")],
+      ...tb.rows.map((r) => [S(r.number), S(r.name), M(r.debit), M(r.credit)]),
+      [B("Totals"), S(""), MT(tb.totalDebit), MT(tb.totalCredit)],
+      [S("Balanced"), meta.reconciled ? (tb.balanced ? GOOD("Yes") : WARN("No")) : WARN("Invalid — extraction does not reconcile"), S(""), S("")],
+    ],
+  });
 
   // Bank Reconciliation
   sections.push({
@@ -705,6 +765,103 @@ export function buildExportSections(detail: AccountingRunDetail, resolvedCompany
           ])
         : [[GOOD("No audit findings. Statement appears complete and well-classified.")]]),
     ],
+  });
+
+  // AI Categorisation — how every transaction was classified and by what source.
+  sections.push({
+    id: "ai-categorisation",
+    label: "AI Categorisation",
+    sheet: "AI Categorisation",
+    headerRow: 1,
+    filter: true,
+    rows: [
+      [HDR("Date"), HDR("Description"), HDR("Amount"), HDR("Category"), HDR("GL Account"), HDR("Account No"), HDR("VAT Code"), HDR("Confidence"), HDR("Source"), HDR("Review Status")],
+      ...model.transactions.map((t) => [
+        S(t.date),
+        S(t.description),
+        M(t.debit || t.credit),
+        S(t.category),
+        S(t.account.name),
+        S(t.account.number),
+        S(t.vatCode),
+        t.confidence < 70 ? WARN(`${t.confidence}%`) : S(`${t.confidence}%`),
+        t.source === "AI" ? WARN(t.source) : S(t.source),
+        S(t.reviewStatus),
+      ]),
+      [MUTE("AI suggestions are never auto-approved — Source = AI means the accountant must review. Approvals are stored per workspace for reuse.")],
+    ],
+  });
+
+  // Review Queue — everything needing an accountant decision.
+  const reviewQueue = model.transactions.filter(
+    (t) => t.reviewReason || t.reviewStatus === "needs_review" || t.reviewStatus === "in_review" || t.source === "AI",
+  );
+  sections.push({
+    id: "review-queue",
+    label: "Review Queue",
+    sheet: "Review Queue",
+    headerRow: 1,
+    filter: reviewQueue.length > 0,
+    rows: [
+      [HDR("Date"), HDR("Description"), HDR("Amount"), HDR("Category"), HDR("VAT Code"), HDR("Confidence"), HDR("Source"), HDR("Review Reason")],
+      ...(reviewQueue.length
+        ? reviewQueue.map((t) => [
+            S(t.date),
+            S(t.description),
+            M(t.debit || t.credit),
+            S(t.category),
+            S(t.vatCode),
+            WARN(`${t.confidence}%`),
+            S(t.source),
+            S(t.reviewReason || "AI suggestion — approve or correct"),
+          ])
+        : [[GOOD("Nothing to review — all transactions are rule-classified with resolved VAT.")]]),
+    ],
+  });
+
+  // Exception Report — accountant risk flags in one place.
+  const exceptions: Cell[][] = [];
+  if (!meta.reconciled) exceptions.push([WARN("Reconciliation"), MW(meta.reconciliationDifference), S("Statement does not reconcile — extraction incomplete")]);
+  if (duplicates.length) exceptions.push([WARN("Duplicate payments"), INT(duplicates.length), S("Potential duplicate payment groups")]);
+  if (v201.missingInvoices) exceptions.push([WARN("Missing invoices"), INT(v201.missingInvoices), S("Standard-rated payments without a tax invoice")]);
+  if (v201.lowConfidence) exceptions.push([WARN("Low confidence"), INT(v201.lowConfidence), S("Transactions below 70% confidence")]);
+  if (directors.length) exceptions.push([WARN("Director / related-party"), INT(directors.length), S("Director or related-party movements to confirm")]);
+  const largeCount = model.transactions.filter((t) => (t.debit || t.credit) >= 25000).length;
+  if (largeCount) exceptions.push([WARN("Large transactions"), INT(largeCount), S("Transactions of R25,000 or more")]);
+  sections.push({
+    id: "exception-report",
+    label: "Exception Report",
+    sheet: "Exception Report",
+    headerRow: 2,
+    rows: [
+      [TITLE("Exception Report")],
+      [HDR("Exception"), HDR("Count / Amount"), HDR("Detail")],
+      ...(exceptions.length ? exceptions : [[GOOD("No exceptions detected."), S(""), S("")]]),
+    ],
+  });
+
+  // Lead Schedules — account-group summaries tying to the trial balance.
+  const leadGroups: Array<[string, "asset" | "liability" | "equity" | "revenue" | "expense"]> = [
+    ["Assets", "asset"],
+    ["Liabilities", "liability"],
+    ["Equity", "equity"],
+    ["Revenue", "revenue"],
+    ["Expenses", "expense"],
+  ];
+  const leadRows: Cell[][] = [];
+  for (const [label, group] of leadGroups) {
+    const accounts = model.ledger.filter((a) => a.group === group);
+    if (!accounts.length) continue;
+    leadRows.push([HDR(label), HDR("Account No"), HDR("Movement")]);
+    for (const a of accounts) leadRows.push([S(a.name), S(a.number), M(a.movement)]);
+    leadRows.push([B(`Total ${label}`), S(""), MT(accounts.reduce((s, a) => s + a.movement, 0))]);
+    leadRows.push([]);
+  }
+  sections.push({
+    id: "lead-schedules",
+    label: "Lead Schedules",
+    sheet: "Lead Schedules",
+    rows: [[TITLE("Lead Schedules")], [MUTE("Per-account-group summaries derived from the general ledger.")], [], ...leadRows],
   });
 
   // Assumptions / Limitations
