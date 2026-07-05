@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { useEffect, useRef, useState } from "react";
-import { Bell, ChevronDown, Command, CreditCard, Folder, Home, Landmark, LogOut, Plus, Receipt, Search, Settings, ShieldCheck, Upload, UsersRound } from "lucide-react";
+import { Bell, ChevronDown, Command, CreditCard, Folder, Home, Landmark, LogOut, Plus, Receipt, Search, Settings, ShieldCheck, UsersRound } from "lucide-react";
 import { BrandLogo } from "@/components/brand";
 import { SelectionCheckbox, checkboxShiftKey, useBulkSelection } from "@/components/bulk-selection";
 import { appNav, newActionItems } from "@/lib/product-data";
@@ -18,7 +18,7 @@ const SHELL_CACHE_TTL_MS = 60_000;
 const mobileTabs = [
   { title: "Home", href: "/dashboard", icon: Home },
   { title: "Invoices", href: "/invoices", icon: Receipt },
-  { title: "Upload", href: "/upload", icon: Upload },
+  { title: "Documents", href: "/documents", icon: Folder },
   { title: "Accounting", href: "/accounting", icon: Landmark },
   { title: "Settings", href: "/settings", icon: Settings },
 ];
@@ -77,7 +77,6 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const [showNewMenu, setShowNewMenu] = useState(false);
   const [expandedGroups, setExpandedGroups] = useState<Record<string, boolean>>({
     Documents: false,
-    "Convert Files": false,
   });
   const [shellError, setShellError] = useState("");
   const searchCacheRef = useRef<Map<string, SearchResult[]>>(new Map());
@@ -596,7 +595,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           <div className="grid grid-cols-5 gap-1">
             {mobileTabs.map((item) => {
               const active = isActive(item.href);
-              const uploadTab = item.href === "/upload";
+              const uploadTab = item.href === "/documents";
               return (
                 <Link
                   key={item.href}

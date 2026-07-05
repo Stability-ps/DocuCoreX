@@ -37,6 +37,9 @@ Thumbs.db
 .idea/
 .vscode/
 
+# Claude Code local plans/memory
+.claude/
+
 # TypeScript incremental cache
 *.tsbuildinfo
 .vercel

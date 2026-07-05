@@ -1,5 +1,5 @@
-import { TranslateConsole } from "@/components/convert-tools-console";
+import { redirect } from "next/navigation";
 
-export default function TranslatePage() {
-  return <TranslateConsole />;
+export default function ConvertToolPage() {
+  redirect("/documents");
 }

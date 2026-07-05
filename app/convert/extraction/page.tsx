@@ -1,5 +1,5 @@
-import { ExtractionConsole } from "@/components/convert-tools-console";
+import { redirect } from "next/navigation";
 
-export default function ExtractionPage() {
-  return <ExtractionConsole />;
+export default function ConvertToolPage() {
+  redirect("/documents");
 }

@@ -1,5 +1,5 @@
-import { CompareConsole } from "@/components/convert-tools-console";
+import { redirect } from "next/navigation";
 
-export default function ComparePage() {
-  return <CompareConsole />;
+export default function ConvertToolPage() {
+  redirect("/documents");
 }

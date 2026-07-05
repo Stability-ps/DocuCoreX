@@ -1,5 +1,5 @@
-import { SummariesConsole } from "@/components/convert-tools-console";
+import { redirect } from "next/navigation";
 
-export default function SummariesPage() {
-  return <SummariesConsole />;
+export default function ConvertToolPage() {
+  redirect("/documents");
 }

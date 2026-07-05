@@ -69,26 +69,11 @@ export const appNav: NavGroup[] = [
     href: "/documents",
     icon: Folder,
     children: [
-      { title: "Intake", href: "/intake", icon: FileInput },
-      { title: "Upload Center", href: "/upload", icon: Upload },
       { title: "All Documents", href: "/documents", icon: Folder },
       { title: "Recent", href: "/documents/recent", icon: FileClock },
       { title: "Shared", href: "/documents/shared", icon: Share2 },
       { title: "Archive", href: "/documents/archive", icon: FolderArchive },
       { title: "Trash", href: "/documents/trash", icon: Trash2 },
-    ],
-  },
-  {
-    title: "Convert Files",
-    href: "/upload",
-    icon: RefreshCcw,
-    children: [
-      { title: "OCR", href: "/convert/ocr", icon: ScanText },
-      { title: "Extraction", href: "/convert/extraction", icon: FileSearch },
-      { title: "Summaries", href: "/convert/summaries", icon: WandSparkles },
-      { title: "Compare", href: "/convert/compare", icon: Columns3 },
-      { title: "Translate", href: "/convert/translate", icon: MessageSquareText },
-      { title: "Redact", href: "/convert/redact", icon: PencilLine },
     ],
   },
   { title: "Accounting Intelligence", href: "/accounting", icon: ReceiptText },
@@ -104,11 +89,10 @@ export const appNav: NavGroup[] = [
 ];
 
 export const newActionItems: NavItem[] = [
-  { title: "Upload Document", href: "/upload", icon: CloudUpload },
+  { title: "Upload Document", href: "/documents", icon: CloudUpload },
   { title: "FNB Statement", href: "/accounting", icon: ReceiptText },
-  { title: "Scan Document", href: "/upload?workflow=scan_document", icon: ScanText },
-  { title: "Create Folder", href: "/documents/folders", icon: FolderPlus },
-  { title: "Import Files", href: "/upload?workflow=import_files", icon: FileInput },
+  { title: "Scan Document", href: "/documents", icon: ScanText },
+  { title: "Import Files", href: "/documents", icon: FileInput },
   { title: "New Automation", href: "/settings/automations", icon: Workflow },
   { title: "New API Key", href: "/settings/api-keys", icon: KeyRound },
 ];
@@ -123,11 +107,11 @@ export const dashboardStats = [
 ];
 
 export const quickActions = [
-  { label: "Upload Document", href: "/upload", icon: CloudUpload, description: "PDF, Office, images and ZIP" },
-  { label: "Convert File", href: "/upload", icon: RefreshCcw, description: "PDF, Word, Excel and images" },
+  { label: "Upload Document", href: "/documents", icon: CloudUpload, description: "PDF, Office, images and ZIP" },
+  { label: "Convert File", href: "/documents", icon: RefreshCcw, description: "PDF, Word, Excel and images" },
   { label: "Edit PDF", href: "/documents", icon: Edit3, description: "Open a document workspace" },
-  { label: "OCR Scan", href: "/convert/ocr", icon: ScanText, description: "Extract text and layout" },
-  { label: "AI Analysis", href: "/convert/summaries", icon: Bot, description: "Ask document questions" },
+  { label: "OCR Scan", href: "/documents", icon: ScanText, description: "Extract text and layout" },
+  { label: "AI Analysis", href: "/documents", icon: Bot, description: "Ask document questions" },
 ];
 
 export const recentActivity = [

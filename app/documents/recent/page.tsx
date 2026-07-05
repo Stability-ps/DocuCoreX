@@ -1,6 +1,5 @@
-import { Upload } from "lucide-react";
-import { DocumentLibrary } from "@/components/document-library";
-import { PageHeader, PrimaryButton } from "@/components/ui";
+import { DocumentWorkspaceShell } from "@/components/documents/document-workspace-shell";
+import { PageHeader } from "@/components/ui";
 
 export default function RecentDocumentsPage() {
   return (
@@ -8,17 +7,9 @@ export default function RecentDocumentsPage() {
       <PageHeader
         eyebrow="Documents"
         title="Recent documents"
-        description="Recently uploaded and updated documents across your workspace."
-        action={
-          <PrimaryButton href="/upload">
-            <Upload className="h-5 w-5" />
-            New Upload
-          </PrimaryButton>
-        }
+        description="Your most recently updated documents, newest first."
       />
-      <div className="p-4 sm:p-6 lg:p-8">
-        <DocumentLibrary initialFilter="Recent" />
-      </div>
+      <DocumentWorkspaceShell initialFilter="all" />
     </>
   );
 }

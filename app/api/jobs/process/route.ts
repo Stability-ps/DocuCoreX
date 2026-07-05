@@ -8,11 +8,19 @@ import {
   processingJobs,
 } from "@/lib/mock-repository";
 import { getWorkspaceContext } from "@/lib/server-documents";
+import { createSupabaseServiceRoleClient } from "@/lib/supabase-server";
 import type { DocumentRecord, ProcessingJob } from "@/lib/types";
 import { createWorkflowAdapters } from "@/lib/workflow-adapters";
 
+type ProcessJobRequest = {
+  conversionId?: string;
+  jobId?: string;
+  documentId?: string;
+};
+
 export async function POST(request: Request) {
-  const proxied = await proxyToConversionWorker(request);
+  const processRequest = (await request.clone().json().catch(() => ({}))) as ProcessJobRequest;
+  const proxied = await proxyToConversionWorker(request, processRequest);
   if (proxied) return proxied;
 
   if (isHostedFrontendWithoutWorker()) {
@@ -34,23 +42,44 @@ export async function POST(request: Request) {
     }
   }
 
-  const context = await getWorkspaceContext().catch(() => null);
+  const context =
+    (await getWorkspaceContext().catch(() => null)) ??
+    (process.env.CONVERSION_WORKER_MODE === "true" ? await getServiceRoleContextForJob(processRequest).catch(() => null) : null);
   const providers = createWorkflowAdapters();
 
   if (!context) {
     return NextResponse.json(await processDemoJobs(providers));
   }
 
-  const { data: jobs, error } = await context.supabase
+  let jobsQuery = context.supabase
     .from("processing_jobs")
     .select("id, document_id, type, status, progress, message, documents!inner(*)")
     .in("status", ["queued", "running"])
-    .order("created_at", { ascending: true })
-    .limit(10);
+    .order("created_at", { ascending: true });
+
+  if (processRequest.jobId) {
+    jobsQuery = jobsQuery.eq("id", processRequest.jobId).limit(1);
+  } else if (processRequest.conversionId) {
+    jobsQuery = jobsQuery.ilike("message", `%conversion:${processRequest.conversionId}%`).limit(1);
+  } else if (processRequest.documentId) {
+    jobsQuery = jobsQuery.eq("document_id", processRequest.documentId).limit(10);
+  } else {
+    jobsQuery = jobsQuery.limit(10);
+  }
+
+  const { data: jobs, error } = await jobsQuery;
 
   if (error) {
     return NextResponse.json({ error: error.message }, { status: 500 });
   }
+
+  console.info("docucorex.conversion_worker.jobs_selected", {
+    processorMode: process.env.CONVERSION_WORKER_MODE === "true" ? "worker" : "app",
+    requestedConversionId: processRequest.conversionId ?? null,
+    requestedJobId: processRequest.jobId ?? null,
+    selectedJobIds: (jobs ?? []).map((job) => job.id),
+    selectedCount: jobs?.length ?? 0,
+  });
 
   const results = [];
 
@@ -140,7 +169,7 @@ export async function POST(request: Request) {
       }
 
       if (job.type === "conversion") {
-        const conversionId = getConversionIdFromMessage(job.message);
+        const conversionId = processRequest.conversionId ?? getConversionIdFromMessage(job.message);
         const conversion = await getNextQueuedConversion(context, document.id, conversionId);
         if (!conversion) {
           throw new Error("Conversion record is missing or no longer queued. Please start the conversion again.");
@@ -318,7 +347,7 @@ export async function GET() {
   return POST(new Request("http://localhost/api/jobs/process", { method: "POST" }));
 }
 
-async function proxyToConversionWorker(request: Request) {
+async function proxyToConversionWorker(request: Request, processRequest: ProcessJobRequest) {
   const workerUrl = process.env.CONVERSION_WORKER_URL?.trim();
   if (!workerUrl || process.env.CONVERSION_WORKER_MODE === "true") return null;
 
@@ -327,6 +356,9 @@ async function proxyToConversionWorker(request: Request) {
     workerHost: target.host,
     targetPath: target.pathname,
     hasSecret: Boolean(process.env.CONVERSION_WORKER_SECRET),
+    conversionId: processRequest.conversionId ?? null,
+    jobId: processRequest.jobId ?? null,
+    documentId: processRequest.documentId ?? null,
   });
   const response = await fetch(target, {
     method: "POST",
@@ -335,6 +367,7 @@ async function proxyToConversionWorker(request: Request) {
       ...(process.env.CONVERSION_WORKER_SECRET ? { "x-docucorex-worker-secret": process.env.CONVERSION_WORKER_SECRET } : {}),
       cookie: request.headers.get("cookie") ?? "",
     },
+    body: JSON.stringify(processRequest),
     cache: "no-store",
   }).catch((error) => {
     console.error("docucorex.conversion_worker.proxy_failed", { message: error instanceof Error ? error.message : String(error), workerUrl });
@@ -358,6 +391,45 @@ async function proxyToConversionWorker(request: Request) {
       "content-type": response.headers.get("content-type") ?? "application/json",
     },
   });
+}
+
+async function getServiceRoleContextForJob(processRequest: ProcessJobRequest) {
+  const supabase = createSupabaseServiceRoleClient();
+  if (!supabase) {
+    throw new Error("Service-role Supabase client is not configured for the conversion worker.");
+  }
+
+  let query = supabase
+    .from("processing_jobs")
+    .select("id, document_id, message, documents!inner(workspace_id,owner_id)")
+    .eq("type", "conversion")
+    .order("created_at", { ascending: true });
+
+  if (processRequest.jobId) {
+    query = query.eq("id", processRequest.jobId).limit(1);
+  } else if (processRequest.conversionId) {
+    query = query.ilike("message", `%conversion:${processRequest.conversionId}%`).limit(1);
+  } else if (processRequest.documentId) {
+    query = query.eq("document_id", processRequest.documentId).limit(1);
+  } else {
+    throw new Error("A jobId, conversionId, or documentId is required for worker-mode processing.");
+  }
+
+  const { data: job, error } = await query.maybeSingle();
+  if (error || !job) {
+    throw new Error(error?.message ?? "Queued conversion job not found.");
+  }
+
+  const document = Array.isArray(job.documents) ? job.documents[0] : job.documents;
+  if (!document?.workspace_id) {
+    throw new Error("Queued conversion job is missing workspace context.");
+  }
+
+  return {
+    supabase,
+    userId: String(document.owner_id ?? ""),
+    workspaceId: String(document.workspace_id),
+  };
 }
 
 function isHostedFrontendWithoutWorker() {

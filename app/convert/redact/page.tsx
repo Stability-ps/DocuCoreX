@@ -1,5 +1,5 @@
-import { RedactConsole } from "@/components/convert-tools-console";
+import { redirect } from "next/navigation";
 
-export default function RedactPage() {
-  return <RedactConsole />;
+export default function ConvertToolPage() {
+  redirect("/documents");
 }

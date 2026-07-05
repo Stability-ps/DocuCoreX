@@ -1,5 +1,5 @@
-import { OcrConsole } from "@/components/convert-tools-console";
+import { redirect } from "next/navigation";
 
-export default function OcrPage() {
-  return <OcrConsole />;
+export default function ConvertToolPage() {
+  redirect("/documents");
 }

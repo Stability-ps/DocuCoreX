@@ -1,4 +1,4 @@
-import { DocumentLibrary } from "@/components/document-library";
+import { DocumentWorkspaceShell } from "@/components/documents/document-workspace-shell";
 import { PageHeader } from "@/components/ui";
 
 export default function TrashDocumentsPage() {
@@ -7,12 +7,9 @@ export default function TrashDocumentsPage() {
       <PageHeader
         eyebrow="Documents"
         title="Trash"
-        description="Restore deleted documents or permanently remove files that are no longer needed."
-        action={null}
+        description="Restore deleted documents or permanently remove files you no longer need."
       />
-      <div className="p-4 sm:p-6 lg:p-8">
-        <DocumentLibrary initialFilter="Trash" />
-      </div>
+      <DocumentWorkspaceShell initialFilter="trash" />
     </>
   );
 }

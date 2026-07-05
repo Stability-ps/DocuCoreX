@@ -1,5 +1,5 @@
 import { redirect } from "next/navigation";
 
 export default function ConvertPage() {
-  redirect("/upload");
+  redirect("/documents");
 }

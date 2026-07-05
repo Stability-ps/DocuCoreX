@@ -1,16 +1,15 @@
-import { FolderArchive } from "lucide-react";
-import { PlaceholderPage } from "@/components/placeholder-page";
+import { DocumentWorkspaceShell } from "@/components/documents/document-workspace-shell";
+import { PageHeader } from "@/components/ui";
 
 export default function ArchiveDocumentsPage() {
   return (
-    <PlaceholderPage
-      eyebrow="Documents"
-      title="Archive"
-      description="Long-term document retention for closed periods, completed audits and historical exports."
-      icon={FolderArchive}
-      status="Archive workflow ready"
-      capabilities={["Archive policy area", "Retention-ready route", "Workspace-scoped document access"]}
-      actions={[{ label: "View All Documents", href: "/documents" }]}
-    />
+    <>
+      <PageHeader
+        eyebrow="Documents"
+        title="Archive"
+        description="Archived documents kept out of the main workspace but retained for reference."
+      />
+      <DocumentWorkspaceShell initialFilter="archived" />
+    </>
   );
 }
