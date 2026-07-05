@@ -11,6 +11,7 @@ export function AutomationsConsole() {
   const [input, setInput] = useState("Finance uploads folder");
   const [output, setOutput] = useState("Excel export queue");
   const [requests, setRequests] = useState("");
+  const [requestKind, setRequestKind] = useState<"support" | "bug" | "feature">("support");
   const [status, setStatus] = useState("");
   const [isSavingPipeline, setIsSavingPipeline] = useState(false);
   const [isSendingRequest, setIsSendingRequest] = useState(false);
@@ -25,6 +26,34 @@ export function AutomationsConsole() {
 
     void load();
   }, []);
+
+  // Help & Support deep-links here with ?topic=bug|feature to open a specific
+  // intake. The topic is captured in the ticket body so requests are distinct.
+  useEffect(() => {
+    const topic = new URLSearchParams(window.location.search).get("topic");
+    if (topic === "bug" || topic === "feature") setRequestKind(topic);
+  }, []);
+
+  const requestCopy = {
+    support: {
+      title: "Request automation support",
+      detail: "Capture missing inputs, outputs, mapping rules or workflow requirements for the roadmap.",
+      placeholder: "Describe the workflow you need",
+      prefix: "",
+    },
+    bug: {
+      title: "Report a bug",
+      detail: "Describe the issue and the steps to reproduce it. This creates a ticket for the product team.",
+      placeholder: "What went wrong, and how can we reproduce it?",
+      prefix: "[Bug] ",
+    },
+    feature: {
+      title: "Request a feature",
+      detail: "Tell us what you'd like DocuCoreX to do. This creates a ticket for the roadmap.",
+      placeholder: "Describe the feature or workflow you'd like",
+      prefix: "[Feature] ",
+    },
+  }[requestKind];
 
   async function createPipeline() {
     if (!input.trim() || !output.trim()) {
@@ -72,13 +101,19 @@ export function AutomationsConsole() {
     const response = await fetch("/api/automations", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ type: "request", body: requests }),
+      body: JSON.stringify({ type: "request", body: `${requestCopy.prefix}${requests}` }),
     });
     if (response.ok) {
       setRequests("");
-      setStatus("Support request created.");
+      setStatus(
+        requestKind === "bug"
+          ? "Bug report submitted. Thank you."
+          : requestKind === "feature"
+            ? "Feature request submitted. Thank you."
+            : "Support request created.",
+      );
     } else {
-      setStatus("Support request could not be created.");
+      setStatus("Your request could not be submitted. Please try again.");
     }
     setIsSendingRequest(false);
   }
@@ -119,13 +154,29 @@ export function AutomationsConsole() {
       </section>
 
       <section className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
-        <h2 className="text-xl font-semibold text-navy-950">Request automation support</h2>
-        <p className="mt-1 text-sm leading-6 text-slate-500">Capture missing inputs, outputs, mapping rules or workflow requirements for the roadmap.</p>
-        <div className="mt-5 flex flex-col gap-3 sm:flex-row">
+        <h2 className="text-xl font-semibold text-navy-950">{requestCopy.title}</h2>
+        <p className="mt-1 text-sm leading-6 text-slate-500">{requestCopy.detail}</p>
+        <div className="mt-4 flex flex-wrap gap-2">
+          {(["support", "bug", "feature"] as const).map((kind) => (
+            <button
+              key={kind}
+              type="button"
+              onClick={() => setRequestKind(kind)}
+              className={`rounded-full border px-3 py-1.5 text-xs font-bold capitalize transition ${
+                requestKind === kind
+                  ? "border-royal-300 bg-royal-600 text-white"
+                  : "border-slate-200 bg-white text-slate-600 hover:border-royal-200"
+              }`}
+            >
+              {kind === "support" ? "Support" : kind === "bug" ? "Report Bug" : "Feature Request"}
+            </button>
+          ))}
+        </div>
+        <div className="mt-4 flex flex-col gap-3 sm:flex-row">
           <input
             className="min-h-12 flex-1 rounded-2xl border border-slate-200 bg-slate-50 px-4 text-sm font-semibold outline-none focus:border-royal-300 focus:bg-white"
             onChange={(event) => setRequests(event.target.value)}
-            placeholder="Describe the workflow you need"
+            placeholder={requestCopy.placeholder}
             value={requests}
           />
           <button

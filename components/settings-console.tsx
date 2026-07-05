@@ -28,6 +28,7 @@ import {
   Zap,
 } from "lucide-react";
 import type { UserSettingsRecord } from "@/lib/app-state";
+import { supabase, getSiteUrl } from "@/lib/supabase";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -48,7 +49,15 @@ type Section =
   | "billing"
   | "danger";
 
-type ProfileState = { fullName: string; company: string; role: string };
+type ProfileState = { fullName: string; company: string; role: string; email: string };
+
+type UsageState = {
+  documentsUploaded: number;
+  pagesProcessed: number;
+  storageBytes: number;
+  exportsCreated: number;
+  ocrCreditsRemaining: number;
+} | null;
 
 type ApiKey = {
   id: string;
@@ -217,11 +226,16 @@ function ActionButton({
 export function SettingsConsole({ initialSection = "overview" }: { initialSection?: Section }) {
   const [section, setSection] = useState<Section>(initialSection);
   const [sidebarOpen, setSidebarOpen] = useState(false);
-  const [profile, setProfile] = useState<ProfileState>({ fullName: "", company: "", role: "" });
+  const [profile, setProfile] = useState<ProfileState>({ fullName: "", company: "", role: "", email: "" });
   const [apiKeys, setApiKeys] = useState<ApiKey[]>([]);
   const [auditLogs, setAuditLogs] = useState<AuditLog[]>([]);
   const [newSecret, setNewSecret] = useState("");
   const [saveStatus, setSaveStatus] = useState<"idle" | "saving" | "saved" | "error">("idle");
+  const [usage, setUsage] = useState<UsageState>(null);
+  const [usageState, setUsageState] = useState<"loading" | "ready" | "error">("loading");
+  const [keyName, setKeyName] = useState("");
+  const [keyBusy, setKeyBusy] = useState(false);
+  const [revokeBusyId, setRevokeBusyId] = useState<string | null>(null);
   const [userSettings, setUserSettings] = useState<UserSettingsRecord>({
     theme: "system",
     notifications: true,
@@ -240,11 +254,12 @@ export function SettingsConsole({ initialSection = "overview" }: { initialSectio
         fetch("/api/user-settings"),
       ]);
       if (profileRes.ok) {
-        const data = (await profileRes.json()) as { profile: ProfilePayload["profile"] };
+        const data = (await profileRes.json()) as { profile: ProfilePayload["profile"] & { email?: string | null } };
         setProfile({
           fullName: data.profile.fullName ?? data.profile.full_name ?? "",
           company: data.profile.company ?? "",
           role: data.profile.role ?? "",
+          email: data.profile.email ?? "",
         });
       }
       if (keysRes.ok) {
@@ -262,6 +277,46 @@ export function SettingsConsole({ initialSection = "overview" }: { initialSectio
     }
     void load();
   }, []);
+
+  const loadUsage = useCallback(async () => {
+    setUsageState("loading");
+    try {
+      const res = await fetch("/api/usage");
+      if (!res.ok) {
+        setUsageState("error");
+        return;
+      }
+      const data = (await res.json()) as {
+        usage?: {
+          documentsUploaded?: number;
+          documents_uploaded?: number;
+          pagesProcessed?: number;
+          pages_processed?: number;
+          storageBytes?: number;
+          storage_bytes?: number;
+          exportsCreated?: number;
+          exports_created?: number;
+          ocrCreditsRemaining?: number;
+          ocr_credits_remaining?: number;
+        };
+      };
+      const u = data.usage ?? {};
+      setUsage({
+        documentsUploaded: u.documentsUploaded ?? u.documents_uploaded ?? 0,
+        pagesProcessed: u.pagesProcessed ?? u.pages_processed ?? 0,
+        storageBytes: u.storageBytes ?? u.storage_bytes ?? 0,
+        exportsCreated: u.exportsCreated ?? u.exports_created ?? 0,
+        ocrCreditsRemaining: u.ocrCreditsRemaining ?? u.ocr_credits_remaining ?? 0,
+      });
+      setUsageState("ready");
+    } catch {
+      setUsageState("error");
+    }
+  }, []);
+
+  useEffect(() => {
+    if (section === "storage" || section === "overview") void loadUsage();
+  }, [section, loadUsage]);
 
   useEffect(() => {
     if (!sidebarOpen) {
@@ -340,26 +395,41 @@ export function SettingsConsole({ initialSection = "overview" }: { initialSectio
   }, []);
 
   const createApiKey = useCallback(async () => {
-    const res = await fetch("/api/api-keys", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ name: "Workspace automation key" }),
-    });
-    if (!res.ok) return;
-    const data = (await res.json()) as { apiKey: ApiKey; secret: string };
-    setApiKeys((k) => [data.apiKey, ...k]);
-    setNewSecret(data.secret);
-  }, []);
+    if (keyBusy) return;
+    setKeyBusy(true);
+    try {
+      const res = await fetch("/api/api-keys", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name: keyName.trim() || "Workspace automation key" }),
+      });
+      if (!res.ok) return;
+      const data = (await res.json()) as { apiKey: ApiKey; secret: string };
+      setApiKeys((k) => [data.apiKey, ...k]);
+      setNewSecret(data.secret);
+      setKeyName("");
+    } finally {
+      setKeyBusy(false);
+    }
+  }, [keyBusy, keyName]);
 
   const revokeApiKey = useCallback(async (id: string, revoked: boolean) => {
-    const res = await fetch("/api/api-keys", {
-      method: "PATCH",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ id, revoked }),
-    });
-    if (!res.ok) return;
-    const data = (await res.json()) as { apiKey: ApiKey };
-    setApiKeys((k) => k.map((key) => (key.id === id ? data.apiKey : key)));
+    if (revoked && !window.confirm("Revoke this API key? Any integration using it will stop working immediately.")) {
+      return;
+    }
+    setRevokeBusyId(id);
+    try {
+      const res = await fetch("/api/api-keys", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id, revoked }),
+      });
+      if (!res.ok) return;
+      const data = (await res.json()) as { apiKey: ApiKey };
+      setApiKeys((k) => k.map((key) => (key.id === id ? data.apiKey : key)));
+    } finally {
+      setRevokeBusyId(null);
+    }
   }, []);
 
   function navigate(s: Section) {
@@ -380,6 +450,9 @@ export function SettingsConsole({ initialSection = "overview" }: { initialSectio
     createApiKey,
     revokeApiKey,
     auditLogs,
+    usage,
+    usageState,
+    loadUsage,
     onNavigate: navigate,
   };
 
@@ -464,11 +537,11 @@ export function SettingsConsole({ initialSection = "overview" }: { initialSectio
           {section === "profile" && <ProfileSection {...shared} />}
           {section === "appearance" && <AppearanceSection {...shared} />}
           {section === "notifications" && <NotificationsSection {...shared} />}
-          {section === "security" && <SecuritySection />}
+          {section === "security" && <SecuritySection email={profile.email} />}
           {section === "audit-logs" && <AuditLogsSection auditLogs={shared.auditLogs} />}
           {section === "team" && <TeamSection />}
           {section === "companies" && <CompaniesSection />}
-          {section === "storage" && <StorageSection />}
+          {section === "storage" && <StorageSection usage={usage} usageState={usageState} loadUsage={loadUsage} />}
           {section === "ocr-ai" && <OcrAiSection />}
           {section === "integrations" && <IntegrationsSection />}
           {section === "api-keys" && (
@@ -477,6 +550,10 @@ export function SettingsConsole({ initialSection = "overview" }: { initialSectio
               newSecret={shared.newSecret}
               createApiKey={shared.createApiKey}
               revokeApiKey={shared.revokeApiKey}
+              keyName={keyName}
+              setKeyName={setKeyName}
+              keyBusy={keyBusy}
+              revokeBusyId={revokeBusyId}
             />
           )}
           {section === "billing" && <BillingSection />}
@@ -502,32 +579,31 @@ type SharedProps = {
   createApiKey: () => Promise<void>;
   revokeApiKey: (id: string, revoked: boolean) => Promise<void>;
   auditLogs: AuditLog[];
+  usage: UsageState;
+  usageState: "loading" | "ready" | "error";
+  loadUsage: () => Promise<void>;
   onNavigate: (s: Section) => void;
 };
 
 // ─── Overview ─────────────────────────────────────────────────────────────────
 
 function OverviewSection({ auditLogs, apiKeys, onNavigate }: SharedProps) {
+  const activeKeys = apiKeys.filter((k) => !k.revokedAt && !k.revoked_at).length;
   const health = [
-    { label: "Workspace Status", value: "Healthy", badge: "healthy" as BadgeVariant, detail: "All systems operational" },
-    { label: "Security Score", value: "Needs Attention", badge: "warning" as BadgeVariant, detail: "Two-factor auth not enabled" },
-    { label: "Storage", value: "Available", badge: "healthy" as BadgeVariant, detail: "Supabase Storage configured" },
-    { label: "AI Engine", value: "Ready", badge: "healthy" as BadgeVariant, detail: "Connected to AI provider" },
-    { label: "OCR Engine", value: "Ready", badge: "healthy" as BadgeVariant, detail: "Processing normally" },
+    { label: "Workspace Status", value: "Active", badge: "healthy" as BadgeVariant, detail: "Signed in and workspace resolved" },
+    { label: "Storage & AI", value: "Server-managed", badge: "info" as BadgeVariant, detail: "OCR & AI run on the worker" },
     {
       label: "API Keys",
-      value: apiKeys.filter((k) => !k.revokedAt && !k.revoked_at).length > 0
-        ? `${apiKeys.filter((k) => !k.revokedAt && !k.revoked_at).length} active`
-        : "None",
-      badge: (apiKeys.length > 0 ? "info" : "inactive") as BadgeVariant,
-      detail: apiKeys.length > 0 ? "Developer access configured" : "No keys created yet",
+      value: activeKeys > 0 ? `${activeKeys} active` : "None",
+      badge: (activeKeys > 0 ? "info" : "inactive") as BadgeVariant,
+      detail: activeKeys > 0 ? "Developer access configured" : "No keys created yet",
     },
   ];
 
   const quickActions: Array<{ label: string; section: Section; icon: React.ElementType }> = [
     { label: "Edit Profile", section: "profile", icon: User },
-    { label: "Generate API Key", section: "api-keys", icon: Key },
-    { label: "Enable 2FA", section: "security", icon: Shield },
+    { label: "API Keys", section: "api-keys", icon: Key },
+    { label: "Security", section: "security", icon: Shield },
     { label: "View Audit Logs", section: "audit-logs", icon: ShieldCheck },
     { label: "Team & Permissions", section: "team", icon: Users },
     { label: "Billing & Usage", section: "billing", icon: CreditCard },
@@ -606,7 +682,7 @@ function OverviewSection({ auditLogs, apiKeys, onNavigate }: SharedProps) {
 
 // ─── Workspace ────────────────────────────────────────────────────────────────
 
-function WorkspaceSection({ profile, setProfile, saveProfile, saveStatus }: SharedProps) {
+function WorkspaceSection({ profile, setProfile, saveProfile, saveStatus, userSettings, saveSettings }: SharedProps) {
   return (
     <div className="space-y-8">
       <SectionHeader title="Workspace" description="Configure your workspace name, company details, and regional settings." />
@@ -618,29 +694,28 @@ function WorkspaceSection({ profile, setProfile, saveProfile, saveStatus }: Shar
             onChange={(e) => setProfile((p) => ({ ...p, company: e.target.value }))}
           />
         </SettingRow>
+        <SettingRow label="Date format" description="Applies to exports and document metadata. Saved automatically.">
+          <select
+            className="w-52 rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-sm text-slate-700 outline-none focus:border-blue-400"
+            value={userSettings.dateFormat}
+            onChange={(e) => void saveSettings({ dateFormat: e.target.value })}
+          >
+            <option value="DD/MM/YYYY">DD/MM/YYYY</option>
+            <option value="MM/DD/YYYY">MM/DD/YYYY</option>
+            <option value="YYYY-MM-DD">YYYY-MM-DD</option>
+          </select>
+        </SettingRow>
         <SettingRow label="Default timezone" description="Used for scheduled jobs and audit timestamps.">
-          <select className="w-52 rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-sm text-slate-700 outline-none focus:border-blue-400">
-            <option>UTC</option>
-            <option>Africa/Johannesburg</option>
-            <option>Europe/London</option>
-            <option>America/New_York</option>
-          </select>
+          <div className="flex items-center gap-2">
+            <span className="text-sm text-slate-500">UTC</span>
+            <StatusBadge label="Coming soon" variant="inactive" />
+          </div>
         </SettingRow>
-        <SettingRow label="Default OCR language" description="Primary language when processing documents.">
-          <select className="w-52 rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-sm text-slate-700 outline-none focus:border-blue-400">
-            <option>English</option>
-            <option>Afrikaans</option>
-            <option>French</option>
-            <option>German</option>
-            <option>Spanish</option>
-          </select>
-        </SettingRow>
-        <SettingRow label="Date format" description="Applies to exports and document metadata." last>
-          <select className="w-52 rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-sm text-slate-700 outline-none focus:border-blue-400">
-            <option>DD/MM/YYYY</option>
-            <option>MM/DD/YYYY</option>
-            <option>YYYY-MM-DD</option>
-          </select>
+        <SettingRow label="Default OCR language" description="Primary language when processing documents. English is used by default." last>
+          <div className="flex items-center gap-2">
+            <span className="text-sm text-slate-500">English</span>
+            <StatusBadge label="Coming soon" variant="inactive" />
+          </div>
         </SettingRow>
       </div>
       <div className="flex items-center gap-3">
@@ -676,8 +751,8 @@ function ProfileSection({ profile, setProfile, saveProfile, saveStatus }: Shared
         </SettingRow>
         <SettingRow label="Email address" description="Managed by your authentication provider." last>
           <div className="flex items-center gap-2">
-            <span className="text-sm text-slate-500">Supabase Auth</span>
-            <StatusBadge label="Verified" variant="healthy" />
+            <span className="text-sm text-slate-600">{profile.email || "—"}</span>
+            {profile.email ? <StatusBadge label="Verified" variant="healthy" /> : null}
           </div>
         </SettingRow>
       </div>
@@ -770,8 +845,8 @@ function NotificationsSection({ userSettings, saveSettings }: SharedProps) {
         </SettingRow>
         <SettingRow label="Security alerts" description="Immediate alerts for new sign-ins and permission changes." last>
           <div className="flex items-center gap-2">
-            <Toggle on={true} onChange={() => undefined} />
-            <StatusBadge label="Recommended" variant="info" />
+            <Toggle on={false} onChange={() => undefined} disabled />
+            <StatusBadge label="Coming soon" variant="inactive" />
           </div>
         </SettingRow>
       </div>
@@ -795,7 +870,21 @@ function Toggle({ on, onChange, disabled = false }: { on: boolean; onChange: () 
 
 // ─── Security ─────────────────────────────────────────────────────────────────
 
-function SecuritySection() {
+function SecuritySection({ email }: { email: string }) {
+  const [resetState, setResetState] = useState<"idle" | "sending" | "sent" | "error">("idle");
+
+  async function sendPasswordReset() {
+    if (!supabase || !email) {
+      setResetState("error");
+      return;
+    }
+    setResetState("sending");
+    const { error } = await supabase.auth.resetPasswordForEmail(email, {
+      redirectTo: `${getSiteUrl()}/login?mode=signin`,
+    });
+    setResetState(error ? "error" : "sent");
+  }
+
   return (
     <div className="space-y-8">
       <SectionHeader title="Security" description="Authentication methods, active sessions, and access controls." />
@@ -803,16 +892,19 @@ function SecuritySection() {
       <div>
         <h3 className="mb-3 text-xs font-bold uppercase tracking-widest text-slate-400">Password</h3>
         <div className="rounded-xl border border-slate-100">
-          <SettingRow label="Password" description="Keep your password strong and unique.">
-            <ActionButton disabled>Change password</ActionButton>
-          </SettingRow>
-          <SettingRow label="Recovery codes" description="Emergency codes if you lose access to your 2FA device." last>
+          <SettingRow label="Password" description="We'll email you a secure link to set a new password.">
             <div className="flex items-center gap-2">
-              <ActionButton disabled>Generate codes</ActionButton>
-              <StatusBadge label="Not set" variant="inactive" />
+              <ActionButton onClick={() => void sendPasswordReset()} disabled={resetState === "sending" || !email}>
+                {resetState === "sending" ? "Sending…" : resetState === "sent" ? "Email sent ✓" : "Change password"}
+              </ActionButton>
             </div>
           </SettingRow>
+          <SettingRow label="Recovery codes" description="Emergency codes if you lose access to your 2FA device." last>
+            <StatusBadge label="Coming soon" variant="inactive" />
+          </SettingRow>
         </div>
+        {resetState === "sent" && <p className="mt-2 text-sm font-semibold text-emerald-600">Password reset link sent to {email}.</p>}
+        {resetState === "error" && <p className="mt-2 text-sm font-semibold text-rose-600">Could not send reset email. Please try again.</p>}
       </div>
 
       <div>
@@ -825,29 +917,23 @@ function SecuritySection() {
               </div>
               <div>
                 <p className="text-sm font-semibold text-amber-900">Two-factor authentication is off</p>
-                <p className="mt-0.5 text-sm text-amber-700">Protect your account with an authenticator app or hardware security key.</p>
+                <p className="mt-0.5 text-sm text-amber-700">Authenticator-app 2FA is coming soon. For now, keep your account secure with a strong, unique password.</p>
               </div>
             </div>
-            <StatusBadge label="Disabled" variant="warning" />
-          </div>
-          <div className="mt-4">
-            <ActionButton variant="primary" disabled>Enable 2FA</ActionButton>
+            <StatusBadge label="Coming soon" variant="inactive" />
           </div>
         </div>
       </div>
 
       <div>
         <h3 className="mb-3 text-xs font-bold uppercase tracking-widest text-slate-400">Active Sessions</h3>
-        <div className="divide-y divide-slate-100 rounded-xl border border-slate-100">
-          <div className="flex items-center justify-between px-4 py-4">
+        <div className="rounded-xl border border-slate-100 px-4 py-4">
+          <div className="flex items-center justify-between gap-4">
             <div>
-              <div className="flex items-center gap-2">
-                <p className="text-sm font-medium text-slate-800">Current session</p>
-                <StatusBadge label="Active" variant="healthy" />
-              </div>
-              <p className="mt-0.5 text-xs text-slate-400">Browser · This device · DocuCoreX Web</p>
+              <p className="text-sm font-medium text-slate-800">Session management</p>
+              <p className="mt-0.5 text-sm text-slate-500">Signing out clears your session on this device. Per-device session revocation is coming soon.</p>
             </div>
-            <ActionButton variant="danger" disabled>Revoke</ActionButton>
+            <StatusBadge label="Coming soon" variant="inactive" />
           </div>
         </div>
       </div>
@@ -950,24 +1036,60 @@ function CompaniesSection() {
 
 // ─── Storage ──────────────────────────────────────────────────────────────────
 
-function StorageSection() {
+function formatStorageBytes(bytes: number): string {
+  if (!bytes) return "0 MB";
+  const units = ["B", "KB", "MB", "GB", "TB"];
+  const index = Math.min(Math.floor(Math.log(bytes) / Math.log(1024)), units.length - 1);
+  return `${(bytes / 1024 ** index).toFixed(index <= 1 ? 0 : 1)} ${units[index]}`;
+}
+
+function StorageSection({
+  usage,
+  usageState,
+  loadUsage,
+}: {
+  usage: UsageState;
+  usageState: "loading" | "ready" | "error";
+  loadUsage: () => Promise<void>;
+}) {
+  const stats: Array<{ label: string; value: string }> = [
+    { label: "Storage used", value: usage ? formatStorageBytes(usage.storageBytes) : "—" },
+    { label: "Documents", value: usage ? usage.documentsUploaded.toLocaleString() : "—" },
+    { label: "Pages processed", value: usage ? usage.pagesProcessed.toLocaleString() : "—" },
+  ];
   return (
     <div className="space-y-8">
-      <SectionHeader title="Storage" description="Storage usage, retention policies, and version history." />
-      <div className="grid gap-4 sm:grid-cols-3">
-        {["Used", "Available", "Files"].map((label) => (
-          <div key={label} className="rounded-xl border border-slate-100 bg-slate-50 p-4">
-            <p className="text-xs font-semibold uppercase tracking-wide text-slate-400">{label}</p>
-            <p className="mt-2 text-2xl font-bold text-slate-400">—</p>
-          </div>
-        ))}
+      <div className="flex items-start justify-between gap-4">
+        <SectionHeader title="Storage" description="Storage usage across this workspace." />
+        <button
+          type="button"
+          onClick={() => void loadUsage()}
+          disabled={usageState === "loading"}
+          className="shrink-0 rounded-lg border border-slate-200 px-3 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50 disabled:opacity-50"
+        >
+          {usageState === "loading" ? "Refreshing…" : "Refresh"}
+        </button>
       </div>
+      {usageState === "error" ? (
+        <div className="rounded-xl border border-rose-200 bg-rose-50 p-4 text-sm font-semibold text-rose-700">
+          Unable to load storage usage.
+        </div>
+      ) : (
+        <div className="grid gap-4 sm:grid-cols-3">
+          {stats.map((stat) => (
+            <div key={stat.label} className="rounded-xl border border-slate-100 bg-slate-50 p-4">
+              <p className="text-xs font-semibold uppercase tracking-wide text-slate-400">{stat.label}</p>
+              <p className="mt-2 text-2xl font-bold text-navy-950">{usageState === "loading" ? "…" : stat.value}</p>
+            </div>
+          ))}
+        </div>
+      )}
       <div className="rounded-xl border border-slate-100">
         <SettingRow label="Retention policy" description="Automatically archive or delete documents after a set period.">
-          <StatusBadge label="Not configured" variant="inactive" />
-        </SettingRow>
-        <SettingRow label="Version history" description="Retain previous versions of processed documents." last>
           <StatusBadge label="Coming soon" variant="inactive" />
+        </SettingRow>
+        <SettingRow label="Version history" description="Version history is retained automatically for processed documents." last>
+          <StatusBadge label="Automatic" variant="healthy" />
         </SettingRow>
       </div>
     </div>
@@ -981,16 +1103,16 @@ function OcrAiSection() {
     <div className="space-y-8">
       <SectionHeader title="OCR & Processing" description="Configure OCR, document processing and extraction readiness." />
       <div className="rounded-xl border border-slate-100">
-        <SettingRow label="OCR engine" description="Text extraction engine for uploaded documents.">
+        <SettingRow label="OCR engine" description="OCR runs on the conversion worker (ocrmypdf / Tesseract). Provider keys are managed server-side.">
           <div className="flex items-center gap-2">
-            <span className="text-sm text-slate-600">Supabase Edge</span>
-            <StatusBadge label="Ready" variant="healthy" />
+            <span className="text-sm text-slate-600">Conversion worker</span>
+            <StatusBadge label="Server-managed" variant="info" />
           </div>
         </SettingRow>
-        <SettingRow label="Document intelligence provider" description="Provider used for summarisation, Q&A and extraction assistance.">
+        <SettingRow label="Document intelligence provider" description="AI summaries and extraction use the server's configured provider (requires OPENAI_API_KEY on the worker).">
           <div className="flex items-center gap-2">
-            <span className="text-sm text-slate-600">GPT-4o</span>
-            <StatusBadge label="Ready" variant="healthy" />
+            <span className="text-sm text-slate-600">OpenAI</span>
+            <StatusBadge label="Server-managed" variant="info" />
           </div>
         </SettingRow>
         <SettingRow label="Semantic search index" description="Vector index for semantic document search." last>
@@ -1028,11 +1150,19 @@ function ApiKeysSection({
   newSecret,
   createApiKey,
   revokeApiKey,
+  keyName,
+  setKeyName,
+  keyBusy,
+  revokeBusyId,
 }: {
   apiKeys: ApiKey[];
   newSecret: string;
   createApiKey: () => Promise<void>;
   revokeApiKey: (id: string, revoked: boolean) => Promise<void>;
+  keyName: string;
+  setKeyName: (value: string) => void;
+  keyBusy: boolean;
+  revokeBusyId: string | null;
 }) {
   return (
     <div className="space-y-8">
@@ -1054,18 +1184,26 @@ function ApiKeysSection({
         </div>
       )}
 
-      <div className="flex items-center justify-between">
-        <div>
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
+        <div className="flex-1">
           <p className="text-sm font-semibold text-slate-800">API Keys</p>
           <p className="text-sm text-slate-500">
             {apiKeys.filter((k) => !k.revokedAt && !k.revoked_at).length} active ·{" "}
             {apiKeys.filter((k) => k.revokedAt || k.revoked_at).length} revoked
           </p>
         </div>
-        <ActionButton variant="primary" onClick={createApiKey}>
-          <Plus className="h-4 w-4" />
-          Create key
-        </ActionButton>
+        <div className="flex items-center gap-2">
+          <input
+            className="min-h-10 w-48 rounded-lg border border-slate-200 bg-white px-3 text-sm outline-none focus:border-blue-400 focus:ring-2 focus:ring-blue-100"
+            placeholder="Key name (optional)"
+            value={keyName}
+            onChange={(e) => setKeyName(e.target.value)}
+          />
+          <ActionButton variant="primary" onClick={createApiKey} disabled={keyBusy}>
+            <Plus className="h-4 w-4" />
+            {keyBusy ? "Creating…" : "Create key"}
+          </ActionButton>
+        </div>
       </div>
 
       {apiKeys.length === 0 ? (
@@ -1092,8 +1230,12 @@ function ApiKeysSection({
                       : "Never used"}
                   </p>
                 </div>
-                <ActionButton variant={revoked ? "secondary" : "danger"} onClick={() => void revokeApiKey(key.id, !revoked)}>
-                  {revoked ? "Restore" : "Revoke"}
+                <ActionButton
+                  variant={revoked ? "secondary" : "danger"}
+                  onClick={() => void revokeApiKey(key.id, !revoked)}
+                  disabled={revokeBusyId === key.id}
+                >
+                  {revokeBusyId === key.id ? "…" : revoked ? "Restore" : "Revoke"}
                 </ActionButton>
               </div>
             );
@@ -1130,11 +1272,12 @@ function BillingSection() {
           </div>
           <StatusBadge label="Active" variant="healthy" />
         </div>
-        <div className="mt-5">
-          <ActionButton variant="primary">
+        <div className="mt-5 flex items-center gap-3">
+          <ActionButton variant="primary" disabled>
             <CreditCard className="h-4 w-4" />
             Upgrade plan
           </ActionButton>
+          <span className="text-xs font-semibold text-slate-400">Available once Stripe billing is connected.</span>
         </div>
       </div>
 
@@ -1168,7 +1311,10 @@ function DangerSection() {
               <p className="text-sm font-semibold text-slate-900">Export workspace data</p>
               <p className="mt-0.5 text-sm text-slate-500">Download all documents, extracted data, and settings as a ZIP archive.</p>
             </div>
-            <ActionButton variant="secondary" disabled>Export</ActionButton>
+            <div className="flex flex-col items-end gap-1">
+              <ActionButton variant="secondary" disabled>Export</ActionButton>
+              <StatusBadge label="Coming soon" variant="inactive" />
+            </div>
           </div>
         </div>
         <div className="rounded-xl border border-rose-200 bg-rose-50 p-5">
@@ -1178,6 +1324,9 @@ function DangerSection() {
               <p className="mt-0.5 text-sm text-rose-700">
                 Permanently delete this workspace, all documents, extracted data, API keys, and team members.
                 <strong className="block mt-1">This action cannot be undone.</strong>
+              </p>
+              <p className="mt-2 text-xs font-semibold text-rose-600">
+                To prevent accidental data loss, workspace deletion is handled by support. Contact support to permanently delete this workspace.
               </p>
             </div>
             <ActionButton variant="danger" disabled>

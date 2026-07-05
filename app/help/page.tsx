@@ -5,9 +5,9 @@ import { PageHeader, SectionPanel, StatusPill } from "@/components/ui";
 const supportCards = [
   { title: "Documentation", detail: "Setup guides, upload workflows and provider configuration.", icon: BookOpen, href: "", comingSoon: true },
   { title: "Tutorials", detail: "Step-by-step walkthroughs for extraction, conversion and search.", icon: PlayCircle, href: "", comingSoon: true },
-  { title: "Contact Support", detail: "Send support requests through the automations support form.", icon: LifeBuoy, href: "/settings/automations" },
-  { title: "Report Bug", detail: "Capture a reproducible issue for the product team.", icon: Bug, href: "/settings/automations" },
-  { title: "Feature Request", detail: "Request new inputs, outputs, integrations or workflows.", icon: Lightbulb, href: "/settings/automations" },
+  { title: "Contact Support", detail: "Send a support request to the DocuCoreX team.", icon: LifeBuoy, href: "/settings/automations?topic=support" },
+  { title: "Report Bug", detail: "Capture a reproducible issue for the product team.", icon: Bug, href: "/settings/automations?topic=bug" },
+  { title: "Feature Request", detail: "Request new inputs, outputs, integrations or workflows.", icon: Lightbulb, href: "/settings/automations?topic=feature" },
   { title: "System Status", detail: "Review app status and authentication diagnostics.", icon: RadioTower, href: "/debug/auth" },
 ];
 

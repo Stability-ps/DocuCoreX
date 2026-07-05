@@ -62,6 +62,7 @@ export async function GET() {
       ...data,
       full_name: resolvedFullName,
       fullName: resolvedFullName,
+      email: user.email ?? null,
     },
     mode: "live",
   });

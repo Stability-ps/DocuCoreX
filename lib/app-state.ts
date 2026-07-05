@@ -190,6 +190,73 @@ export async function inviteTeamMember(
   return mapTeamRow(data as TeamRow);
 }
 
+export type TeamMutationResult =
+  | { ok: true; member?: TeamMemberRecord }
+  | { ok: false; status: number; error: string };
+
+export async function updateTeamMemberRole(
+  access: SettingsAccess,
+  id: string,
+  role: TeamMemberRecord["role"],
+): Promise<TeamMutationResult> {
+  const members = await getTeamMembers(access);
+  const target = members.find((member) => member.id === id);
+  if (!target) return { ok: false, status: 404, error: "Member not found" };
+
+  // Don't allow demoting the only Owner — a workspace must always have one.
+  if (target.role === "Owner" && role !== "Owner") {
+    const owners = members.filter((member) => member.role === "Owner").length;
+    if (owners <= 1) {
+      return { ok: false, status: 409, error: "Assign another Owner before changing this role." };
+    }
+  }
+
+  if (access.mode === "demo") {
+    const member = demoStore().teamMembers.find((item) => item.id === id);
+    if (member) member.role = role;
+    return { ok: true, member: member ?? undefined };
+  }
+
+  const { data, error } = await access.supabase
+    .from("team_members")
+    .update({ role })
+    .eq("workspace_id", access.workspaceId)
+    .eq("id", id)
+    .select("id, email, role, status, user_id")
+    .maybeSingle();
+  if (error) return { ok: false, status: 500, error: error.message };
+  if (!data) return { ok: false, status: 404, error: "Member not found" };
+  return { ok: true, member: mapTeamRow(data as TeamRow) };
+}
+
+export async function removeTeamMember(access: SettingsAccess, id: string): Promise<TeamMutationResult> {
+  const members = await getTeamMembers(access);
+  const target = members.find((member) => member.id === id);
+  if (!target) return { ok: false, status: 404, error: "Member not found" };
+
+  // Never remove the last Owner.
+  if (target.role === "Owner") {
+    const owners = members.filter((member) => member.role === "Owner").length;
+    if (owners <= 1) {
+      return { ok: false, status: 409, error: "Transfer ownership before removing the last Owner." };
+    }
+  }
+
+  if (access.mode === "demo") {
+    const store = demoStore();
+    store.teamMembers = store.teamMembers.filter((item) => item.id !== id);
+    return { ok: true };
+  }
+
+  const { error } = await access.supabase
+    .from("team_members")
+    .delete()
+    .eq("workspace_id", access.workspaceId)
+    .eq("id", id);
+  if (error) return { ok: false, status: 500, error: error.message };
+  return { ok: true };
+}
+
 // ── Integrations ────────────────────────────────────────────────────────────
 
 type IntegrationRow = { provider: string; category: string; status: string; config: Record<string, string> | null; updated_at: string };
