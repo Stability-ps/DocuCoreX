@@ -45,11 +45,10 @@ test("one canonical statement metadata object feeds every sheet", () => {
   assert.match(src, /export type StatementMetadata/);
 });
 
-test("reconciliation is validated and surfaces an issues sheet when unbalanced", () => {
+test("reconciliation is validated and reports are watermarked when unbalanced", () => {
   const src = read("lib/accounting/export.ts");
   assert.match(src, /reconciliationDifference/);
-  assert.match(src, /id:\s*"reconciliation-issues"/, "must add a Reconciliation Issues section");
-  assert.match(src, /if \(!meta\.reconciled\)/, "issues sheet only when unbalanced");
+  assert.match(src, /unreliableBanner/, "reports must carry an unreliable watermark");
   assert.match(src, /REVIEW REQUIRED/, "cover must flag review required");
 });
 
@@ -68,11 +67,11 @@ test("workbook styles apply a red-negative number format", () => {
   assert.match(src, /\[Red\]/, "styles.xml must use a [Red] negative number format");
 });
 
-test("full pack includes every required accounting section", () => {
+test("full pack includes every core accounting section", () => {
   const src = read("lib/accounting/export.ts");
   const required = [
     "transactions",
-    "review-items",
+    "review-queue",
     "vat",
     "general-ledger",
     "trial-balance",
@@ -80,17 +79,21 @@ test("full pack includes every required accounting section", () => {
     "profit-loss",
     "balance-sheet",
     "cash-flow",
-    "financial-statements",
-    "tax-vat",
     "ai-intelligence",
-    "forecasting",
-    "audit-tools",
+    "exception-report",
     "assumptions",
     "data-quality",
     "extraction-log",
   ];
   for (const id of required) {
     assert.match(src, new RegExp(`id:\\s*"${id}"`), `export must build the "${id}" section`);
+  }
+});
+
+test("removed/merged sheets are no longer generated", () => {
+  const src = read("lib/accounting/export.ts");
+  for (const gone of ["chart-of-accounts", "vat201", "ai-categorisation", "lead-schedules", "tax-vat", "reconciliation-issues", "audit-tools"]) {
+    assert.doesNotMatch(src, new RegExp(`id:\\s*"${gone}"`), `"${gone}" sheet must be removed/merged`);
   }
 });
 
@@ -101,12 +104,11 @@ test("data quality report is a hard extraction gate", () => {
   assert.match(src, /const extractionOk = meta\.reconciled/);
 });
 
-test("export route offers single-section CSV and grouped/full XLSX packs", () => {
+test("export route serves the full pack and every individual export", () => {
   const route = read("app/api/accounting/fnb/export/[runId]/route.ts");
-  assert.match(route, /CSV_SECTIONS/, "single-section CSV downloads must exist");
-  assert.match(route, /XLSX_PACKS/, "grouped/full XLSX packs must exist");
-  assert.match(route, /"financial-statements":/, "financial statements pack must exist");
-  assert.match(route, /"audit-pack":/, "audit pack must exist");
+  assert.match(route, /EXPORT_MENU/, "route uses the shared export menu");
+  assert.match(route, /FULL_PACK_SECTIONS/, "route uses the shared full pack");
+  assert.match(route, /SECTION_BY_KEY/, "route resolves each export key to a section");
 });
 
 test("accounting UI has a sticky action bar and an export selector modal", () => {

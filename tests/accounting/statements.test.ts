@@ -7,8 +7,36 @@ import { pathToFileURL } from "node:url";
 register("./alias-hook.mjs", pathToFileURL(new URL(".", import.meta.url).pathname));
 
 const { computeProfitLoss, accountType } = await import("@/lib/accounting/analytics.ts");
-const { buildExportSections, buildStatementMetadata, resolveCompanyName } = await import("@/lib/accounting/export.ts");
+const { buildExportSections, buildStatementMetadata, resolveCompanyName, FULL_PACK_SECTIONS, EXPORT_MENU } = await import("@/lib/accounting/export.ts");
 const { buildAccountingModel, resolveAccount, CHART } = await import("@/lib/accounting/model.ts");
+
+// The only sheet names allowed in the workbook.
+const APPROVED_SHEETS = new Set([
+  "Cover",
+  "Summary",
+  "Data Quality",
+  "Extraction Log",
+  "Transactions",
+  "Review Queue",
+  "VAT Working Paper",
+  "General Ledger",
+  "Trial Balance",
+  "Profit & Loss",
+  "Balance Sheet",
+  "Cash Flow",
+  "Bank Reconciliation",
+  "AI Accountant Notes",
+  "Audit Exceptions",
+  "Assumptions",
+  "Financial Ratios", // conditional (reliable only)
+  "Forecasting", // conditional (3+ periods only)
+]);
+
+function packSheets(d: unknown) {
+  const all = buildExportSections(d as never, "ACAPOLITE CONSULTING (PTY) LTD");
+  const byId = new Map(all.map((s: { id: string }) => [s.id, s]));
+  return FULL_PACK_SECTIONS.map((id: string) => byId.get(id)).filter(Boolean) as Array<{ id: string; sheet: string; rows: unknown[] }>;
+}
 
 function txn(o: Record<string, unknown>) {
   return {
@@ -98,8 +126,10 @@ test("P&L excludes tax, refund, loan and director from revenue/expenses", () => 
   for (const c of ["SARS / Tax Suspense", "Refund / Suspense", "Loan / Liability", "Director Loan / Drawings"]) {
     assert.ok(excludedCats.includes(c), `${c} must be shown as excluded`);
   }
-  // Revenue is only real revenue; expenses only real expenses + bank charges.
-  assert.equal(pl.totalRevenue, 100000 + 23550);
+  // Revenue is only confirmed sales (cash deposits are excluded pending review);
+  // expenses are only real expenses + bank charges.
+  assert.equal(pl.totalRevenue, 100000);
+  assert.ok(excludedCats.includes("Cash Deposits / Revenue"), "cash deposits excluded from revenue");
   assert.equal(Math.round(pl.totalExpenses * 100) / 100, 616.8 + 1000);
 });
 
@@ -228,4 +258,61 @@ test("financials come from the ledger — tax/suspense are not revenue/expense",
   assert.ok(!revNames.includes("SARS / Tax Liability"), "tax is not revenue");
   assert.ok(!expNames.some((n: string) => /suspense/i.test(n)), "suspense is not an expense");
   assert.ok(model.financials.balanceSheet.liabilities.some((l: { name: string }) => /SARS|Suspense/.test(l.name)), "tax/suspense sit on the balance sheet");
+});
+
+// ─── Pack structure & export selector ──────────────────────────────────────
+
+test("workbook is limited to approved core sheets (no extras, no placeholders)", () => {
+  const sheets = packSheets(detail);
+  assert.ok(sheets.length <= 18, `too many sheets: ${sheets.length}`);
+  for (const s of sheets) {
+    assert.ok(APPROVED_SHEETS.has(s.sheet), `unapproved sheet: ${s.sheet}`);
+    // No placeholder sheets — every sheet has real content beyond a title row.
+    assert.ok(s.rows.length > 1, `placeholder sheet: ${s.sheet}`);
+  }
+});
+
+test("export selector lists every available export and each maps to a real section", () => {
+  // Full pack + 13 individual options = 14.
+  assert.equal(EXPORT_MENU.length, 14, "modal must offer 14 exports");
+  assert.equal(EXPORT_MENU[0].section, "all", "first option is the full pack");
+  const all = buildExportSections(detail, "ACAPOLITE CONSULTING (PTY) LTD");
+  const ids = new Set(all.map((s: { id: string }) => s.id));
+  for (const option of EXPORT_MENU) {
+    if (option.section === "all") {
+      assert.ok(FULL_PACK_SECTIONS.length > 0, "full pack must have sections");
+    } else {
+      assert.ok(ids.has(option.section), `export option "${option.label}" has no section`);
+    }
+  }
+  // Every option label matches an approved export name.
+  const labels = EXPORT_MENU.map((o) => o.label);
+  for (const expected of ["Full Accounting Pack", "Transactions", "Review Queue", "VAT Working Paper", "General Ledger", "Trial Balance", "Profit & Loss", "Balance Sheet", "Cash Flow", "Bank Reconciliation", "AI Accountant Notes", "Audit Exceptions", "Data Quality Report", "Extraction Log"]) {
+    assert.ok(labels.includes(expected), `missing export option: ${expected}`);
+  }
+});
+
+test("cash deposits are excluded from final P&L revenue", () => {
+  const pl = computeProfitLoss(txns, run);
+  const revenueCats = pl.revenue.map((r: { category: string }) => r.category);
+  const excludedCats = pl.excluded.map((e: { category: string }) => e.category);
+  assert.ok(!revenueCats.includes("Cash Deposits / Revenue"), "cash deposits are not final revenue");
+  assert.ok(excludedCats.includes("Cash Deposits / Revenue"), "cash deposits go to excluded pending review");
+});
+
+test("declared bank VAT appears in the VAT working paper", () => {
+  const sections = buildExportSections(detail, "ACAPOLITE CONSULTING (PTY) LTD");
+  const vat = sections.find((s: { id: string }) => s.id === "vat");
+  const text = vat.rows.map((r: unknown[]) => r.map(cellText).join(" ")).join("\n");
+  assert.match(text, /Declared Bank VAT/, "VAT sheet must surface declared bank VAT");
+  assert.match(text, /Estimated SARS VAT201/, "VAT201 boxes must be embedded in the VAT sheet");
+});
+
+test("unreliable reports are watermarked but still exportable when reconciliation fails", () => {
+  const sheets = packSheets(unbalancedDetail);
+  // Pack still produces (export allowed with watermark).
+  assert.ok(sheets.length > 0, "export must still be produced when unreconciled");
+  const pl = sheets.find((s) => s.sheet === "Profit & Loss");
+  const plText = (pl!.rows as unknown[]).map((r: unknown) => (r as unknown[]).map(cellText).join(" ")).join("\n");
+  assert.match(plText, /UNRELIABLE|does not reconcile/, "P&L must be watermarked when unreconciled");
 });

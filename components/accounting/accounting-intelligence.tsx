@@ -1405,26 +1405,30 @@ export function AccountingIntelligence() {
   );
 }
 
-type ExportOption = { label: string; section: string; detail: string; kind: "csv" | "xlsx" };
+type ExportOption = { label: string; section: string; detail: string };
 
-// Every downloadable item, shown in the export selector. Each is downloadable
-// separately; the full pack bundles every sheet into one workbook.
+// Every real export the pack can produce. Each downloads individually as a
+// styled single-sheet workbook; the full pack bundles the core sheets. Kept in
+// sync with the export engine's EXPORT_MENU.
 const EXPORT_OPTIONS: ExportOption[] = [
-  { label: "Transactions", section: "transactions", detail: "CSV transaction listing", kind: "csv" },
-  { label: "VAT Schedule", section: "vat", detail: "Output, input & net VAT per line", kind: "csv" },
-  { label: "General Ledger", section: "general-ledger", detail: "Account movement summary", kind: "csv" },
-  { label: "Trial Balance", section: "trial-balance", detail: "Debit and credit balances", kind: "csv" },
-  { label: "Review Items", section: "review-items", detail: "Rows requiring accountant review", kind: "csv" },
-  { label: "Bank Reconciliation", section: "bank-reconciliation", detail: "Opening → closing balance check", kind: "csv" },
-  { label: "Financial Statements", section: "financial-statements", detail: "P&L, Balance Sheet, Cash Flow, Ratios", kind: "xlsx" },
-  { label: "AI Insights", section: "ai-insights", detail: "Duplicates, unusual, director activity, risk", kind: "xlsx" },
-  { label: "Audit Pack", section: "audit-pack", detail: "Findings, review items, assumptions", kind: "xlsx" },
+  { label: "Transactions", section: "transactions", detail: "Full transaction listing" },
+  { label: "Review Queue", section: "review-queue", detail: "Rows requiring accountant review" },
+  { label: "VAT Working Paper", section: "vat", detail: "VAT per line + VAT201 boxes" },
+  { label: "General Ledger", section: "general-ledger", detail: "Double-entry journal postings" },
+  { label: "Trial Balance", section: "trial-balance", detail: "Debit and credit balances" },
+  { label: "Profit & Loss", section: "profit-loss", detail: "Recognised revenue and expenses" },
+  { label: "Balance Sheet", section: "balance-sheet", detail: "Cash and detected balances" },
+  { label: "Cash Flow", section: "cash-flow", detail: "Cash movements by activity" },
+  { label: "Bank Reconciliation", section: "bank-reconciliation", detail: "Opening → closing balance check" },
+  { label: "AI Accountant Notes", section: "ai-intelligence", detail: "Risk score, duplicates, related-party" },
+  { label: "Audit Exceptions", section: "exception-report", detail: "Exceptions and audit findings" },
+  { label: "Data Quality Report", section: "data-quality", detail: "Extraction validation status" },
+  { label: "Extraction Log", section: "extraction-log", detail: "Provenance of the figures" },
 ];
 const FULL_PACK_OPTION: ExportOption = {
   label: "Full Accounting Pack",
   section: "all",
-  detail: "Every section in one Excel workbook",
-  kind: "xlsx",
+  detail: "Every core sheet in one Excel workbook",
 };
 
 function exportHref(runId: string, section: string) {
@@ -1481,7 +1485,7 @@ function ExportDropdown({
               <span>
                 {option.section === "all" && isDraftExport ? "Full draft pack" : option.label}
                 <span className="mt-0.5 block text-xs font-semibold text-slate-500">
-                  {option.detail} · {option.kind.toUpperCase()}
+                  {option.detail}
                 </span>
               </span>
             </a>
@@ -1558,7 +1562,7 @@ function ExportOptionsModal({
               <span className="min-w-0">
                 {option.label}
                 <span className="mt-0.5 block truncate text-xs font-semibold text-slate-500">
-                  {option.detail} · {option.kind.toUpperCase()}
+                  {option.detail}
                 </span>
               </span>
             </a>

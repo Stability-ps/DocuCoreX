@@ -204,8 +204,15 @@ export function computeProfitLoss(
       excludedMap.set(cat, e);
       continue;
     }
-    // revenue = credits of revenue accounts; expenses = debits of expense/bank accounts.
-    if (type === "revenue" && t.creditAmount) {
+    // Cash deposits and unconfirmed receipts are NOT final revenue until an
+    // accountant confirms them as sales — they go to Excluded Pending Review.
+    const isRevenueReview = /cash deposit|revenue review|\breview\b/i.test(cat);
+    if (type === "revenue" && t.creditAmount && isRevenueReview) {
+      const e = excludedMap.get(cat) ?? { amount: 0, count: 0 };
+      e.amount += t.creditAmount;
+      e.count += 1;
+      excludedMap.set(cat, e);
+    } else if (type === "revenue" && t.creditAmount) {
       const e = revenueMap.get(cat) ?? { amount: 0, count: 0 };
       e.amount += t.creditAmount;
       e.count += 1;

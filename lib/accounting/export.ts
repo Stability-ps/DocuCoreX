@@ -49,28 +49,21 @@ export type ExportSectionId =
   | "summary"
   | "transactions"
   | "review-items"
+  | "review-queue"
   | "vat"
   | "general-ledger"
   | "trial-balance"
   | "bank-reconciliation"
-  | "reconciliation-issues"
   | "profit-loss"
   | "balance-sheet"
   | "cash-flow"
   | "financial-statements"
-  | "tax-vat"
   | "ai-intelligence"
   | "forecasting"
-  | "audit-tools"
+  | "exception-report"
   | "assumptions"
   | "data-quality"
-  | "extraction-log"
-  | "chart-of-accounts"
-  | "vat201"
-  | "ai-categorisation"
-  | "review-queue"
-  | "exception-report"
-  | "lead-schedules";
+  | "extraction-log";
 
 export type ExportSection = {
   id: ExportSectionId;
@@ -80,6 +73,48 @@ export type ExportSection = {
   headerRow?: number; // 1-based; freezes rows above+including and enables filter
   filter?: boolean;
 };
+
+// The canonical core accounting pack — the ONLY sheets in the full workbook, in
+// order. Financial Ratios and Forecasting are only built when reliable, so they
+// are dropped automatically if absent. Shared by the export route and the modal.
+export const FULL_PACK_SECTIONS: ExportSectionId[] = [
+  "cover",
+  "summary",
+  "data-quality",
+  "extraction-log",
+  "transactions",
+  "review-queue",
+  "vat",
+  "general-ledger",
+  "trial-balance",
+  "profit-loss",
+  "balance-sheet",
+  "cash-flow",
+  "bank-reconciliation",
+  "financial-statements",
+  "forecasting",
+  "ai-intelligence",
+  "exception-report",
+  "assumptions",
+];
+
+// The individually downloadable exports shown in the modal (label → section id).
+export const EXPORT_MENU: Array<{ key: string; label: string; section: ExportSectionId | "all" }> = [
+  { key: "all", label: "Full Accounting Pack", section: "all" },
+  { key: "transactions", label: "Transactions", section: "transactions" },
+  { key: "review-queue", label: "Review Queue", section: "review-queue" },
+  { key: "vat", label: "VAT Working Paper", section: "vat" },
+  { key: "general-ledger", label: "General Ledger", section: "general-ledger" },
+  { key: "trial-balance", label: "Trial Balance", section: "trial-balance" },
+  { key: "profit-loss", label: "Profit & Loss", section: "profit-loss" },
+  { key: "balance-sheet", label: "Balance Sheet", section: "balance-sheet" },
+  { key: "cash-flow", label: "Cash Flow", section: "cash-flow" },
+  { key: "bank-reconciliation", label: "Bank Reconciliation", section: "bank-reconciliation" },
+  { key: "ai-intelligence", label: "AI Accountant Notes", section: "ai-intelligence" },
+  { key: "exception-report", label: "Audit Exceptions", section: "exception-report" },
+  { key: "data-quality", label: "Data Quality Report", section: "data-quality" },
+  { key: "extraction-log", label: "Extraction Log", section: "extraction-log" },
+];
 
 const VAT_RATE = 15 / 115;
 
@@ -367,6 +402,14 @@ export function buildExportSections(detail: AccountingRunDetail, resolvedCompany
             : "Invoice required"
           : "Output VAT"
         : t.vatTreatmentLabel;
+  // Declared bank VAT from the statement's fee summary (e.g. R158.64). If the
+  // fee rows were extracted per-transaction their input VAT is already counted;
+  // otherwise the shortfall is added so declared bank VAT is never lost.
+  const bankChargeInputVat = model.transactions.filter((t) => t.bankCharge).reduce((s, t) => s + t.inputVat, 0);
+  const declaredBankVat = meta.bankCharges * VAT_RATE;
+  const supplementaryBankVat = Math.max(0, declaredBankVat - bankChargeInputVat);
+  const totalInputVat = v201.inputVat + supplementaryBankVat;
+  const totalNetVat = v201.outputVat - totalInputVat;
   sections.push({
     id: "vat",
     label: "VAT Working Paper",
@@ -374,11 +417,11 @@ export function buildExportSections(detail: AccountingRunDetail, resolvedCompany
     headerRow: 8,
     filter: true,
     rows: [
-      [TITLE("VAT Working Paper")],
+      [TITLE("VAT Working Paper & VAT201")],
       [MUTE("VAT estimated at 15% inclusive (15/115). Every amount traces to a transaction. Verify against valid tax invoices and SARS VAT201. Not tax advice.")],
       [],
-      [HDR("Estimated VAT201"), HDR("Output VAT"), HDR("Input VAT"), HDR("Net VAT"), HDR("Review Items"), HDR("Missing Invoices"), HDR("Low Confidence")],
-      [S("Totals"), M(v201.outputVat), M(v201.inputVat), M(v201.netVat), INT(v201.reviewItems), INT(v201.missingInvoices), INT(v201.lowConfidence)],
+      [HDR("Estimated VAT201"), HDR("Output VAT"), HDR("Input VAT"), HDR("Declared Bank VAT"), HDR("Net VAT"), HDR("Review Items"), HDR("Missing Invoices")],
+      [S("Totals"), M(v201.outputVat), M(totalInputVat), M(declaredBankVat), M(totalNetVat), INT(v201.reviewItems), INT(v201.missingInvoices)],
       [],
       [HDR("Date"), HDR("Reference"), HDR("Description"), HDR("Debit"), HDR("Credit"), HDR("GL Account"), HDR("Account No"), HDR("VAT Code"), HDR("VAT Treatment"), HDR("Output VAT"), HDR("Input VAT"), HDR("Net VAT"), HDR("Claim Status"), HDR("SARS Box"), HDR("Confidence"), HDR("Source"), HDR("Review Status"), HDR("Review Reason"), HDR("Document Status")],
       ...model.transactions.map((t) => [
@@ -402,28 +445,19 @@ export function buildExportSections(detail: AccountingRunDetail, resolvedCompany
         S(t.reviewReason || "—"),
         t.supportedByInvoice ? GOOD("Invoice on file") : S("No document"),
       ]),
-      [B("Totals"), S(""), S(""), MT(meta.totalPayments), MT(meta.totalReceipts), S(""), S(""), S(""), S(""), MT(v201.outputVat), MT(v201.inputVat), MT(v201.netVat), S(""), S(""), S(""), S(""), S(""), S(""), S("")],
-    ],
-  });
-
-  // VAT201 Summary
-  sections.push({
-    id: "vat201",
-    label: "VAT201 Summary",
-    sheet: "VAT201 Summary",
-    headerRow: 3,
-    rows: [
+      ...(supplementaryBankVat > 0.005
+        ? [[B("Declared bank VAT (fees not itemised)"), S(""), S(""), S(""), S(""), S("5000 Bank Charges"), S("5000"), S("STD"), S("Standard 15%"), M(0), M(supplementaryBankVat), M(-supplementaryBankVat), S("Input VAT"), S("14/15 (Input VAT)"), S(""), S("Rule"), S("needs_review"), S("From statement fee summary"), S("Statement summary")]]
+        : []),
+      [B("Totals"), S(""), S(""), MT(meta.totalPayments), MT(meta.totalReceipts), S(""), S(""), S(""), S(""), MT(v201.outputVat), MT(totalInputVat), MT(totalNetVat), S(""), S(""), S(""), S(""), S(""), S(""), S("")],
+      [],
       [TITLE("Estimated SARS VAT201")],
-      [MUTE("Estimated from bank data. Confirm against tax invoices before filing. Not a SARS submission.")],
       [HDR("VAT201 Box"), HDR("Description"), HDR("Amount")],
       [S("1"), S("Standard-rate supplies (output)"), M(v201.standardSupplies)],
       [S("2"), S("Zero-rated supplies"), M(v201.zeroRated)],
       [S("3"), S("Exempt / non-supplies"), M(v201.exempt)],
       [S("4"), S("Output VAT"), M(v201.outputVat)],
-      [S("14/15"), S("Input VAT"), M(v201.inputVat)],
-      [B("13"), B(v201.netVat >= 0 ? "Net VAT payable" : "Net VAT refundable"), v201.netVat >= 0 ? MT(v201.netVat) : MW(v201.netVat)],
-      [],
-      [WARN(`${v201.reviewItems} review items · ${v201.missingInvoices} missing invoices · ${v201.lowConfidence} low-confidence`)],
+      [S("14/15"), S("Input VAT (incl. declared bank VAT)"), M(totalInputVat)],
+      [B("13"), B(totalNetVat >= 0 ? "Net VAT payable" : "Net VAT refundable"), totalNetVat >= 0 ? MT(totalNetVat) : MW(totalNetVat)],
     ],
   });
 
@@ -438,25 +472,6 @@ export function buildExportSections(detail: AccountingRunDetail, resolvedCompany
     typeGroups.set(g.type, e);
   }
   const tg = (type: AccountType) => typeGroups.get(type) ?? { debit: 0, credit: 0 };
-
-  // Chart of Accounts — every account the model can post to.
-  sections.push({
-    id: "chart-of-accounts",
-    label: "Chart of Accounts",
-    sheet: "Chart of Accounts",
-    headerRow: 1,
-    filter: true,
-    rows: [
-      [HDR("Account No"), HDR("Account"), HDR("Group"), HDR("Statement"), HDR("Used")],
-      ...model.chartOfAccounts.map((a) => [
-        S(a.number),
-        S(a.name),
-        S(a.group),
-        S(a.statement === "profit_loss" ? "Profit & Loss" : "Balance Sheet"),
-        model.usedAccounts.some((u) => u.number === a.number) ? GOOD("Yes") : MUTE("—"),
-      ]),
-    ],
-  });
 
   // General Ledger — double-entry journal postings from the one model.
   sections.push({
@@ -525,33 +540,8 @@ export function buildExportSections(detail: AccountingRunDetail, resolvedCompany
     ],
   });
 
-  // Reconciliation Issues — only when unbalanced (never silently export bad values)
-  if (!meta.reconciled) {
-    sections.push({
-      id: "reconciliation-issues",
-      label: "Reconciliation Issues",
-      sheet: "Reconciliation Issues",
-      rows: [
-        [TITLE("Reconciliation Issues")],
-        [WARN("This statement does not reconcile. Do not use these figures for filing until resolved.")],
-        [],
-        [B("Opening balance"), M(meta.openingBalance)],
-        [B("+ Receipts"), M(meta.totalReceipts)],
-        [B("- Payments"), M(meta.totalPayments)],
-        [B("= Expected closing"), M(meta.expectedClosing)],
-        [B("Statement closing"), M(meta.closingBalance)],
-        [B("Difference"), MW(meta.reconciliationDifference)],
-        [],
-        [B("Likely causes")],
-        [S("Missing or duplicated transactions during extraction")],
-        [S("Opening/closing balance mis-read from the statement")],
-        [S("Bank charges or interest not captured on separate lines")],
-        [],
-        [B("What is needed")],
-        [S("Re-check the source statement totals and re-process, or adjust the affected transactions in the review queue.")],
-      ],
-    });
-  }
+  // (Reconciliation detail is surfaced on the Data Quality Report and Bank
+  // Reconciliation sheets — no separate sheet.)
 
   // Profit & Loss
   sections.push({
@@ -654,57 +644,43 @@ export function buildExportSections(detail: AccountingRunDetail, resolvedCompany
     ],
   });
 
-  // Financial Ratios
-  sections.push({
-    id: "financial-statements",
-    label: "Financial Ratios",
-    sheet: "Financial Ratios",
-    headerRow: 4,
-    rows: [
-      [TITLE("Financial Ratios")],
-      [MUTE(ratios.note)],
-      [],
-      [HDR("Ratio"), HDR("Value")],
-      [S("Expense ratio"), ratios.expenseRatio !== null ? PCT(ratios.expenseRatio) : S("—")],
-      [S("Net cash margin"), ratios.netCashMargin !== null ? PCT(ratios.netCashMargin / 100) : S("—")],
-      [S("Cash coverage"), S(ratios.cashCoverageRatio !== null ? `${ratios.cashCoverageRatio.toFixed(2)}x` : "—")],
-      [S("Avg monthly income"), M(ratios.avgMonthlyIncome ?? 0)],
-      [S("Avg monthly expenses"), M(ratios.avgMonthlyExpenses ?? 0)],
-      [S("Net monthly cash flow"), M(ratios.netMonthlyCashFlow ?? 0)],
-      [S("Bank charges ratio"), ratios.bankChargesRatio !== null ? PCT(ratios.bankChargesRatio / 100) : S("—")],
-      [S("Period (months)"), INT(ratios.periodMonths)],
-    ],
-  });
+  // Financial Ratios — only when the statement reconciles (otherwise unreliable).
+  if (meta.reconciled) {
+    sections.push({
+      id: "financial-statements",
+      label: "Financial Ratios",
+      sheet: "Financial Ratios",
+      headerRow: 4,
+      rows: [
+        [TITLE("Financial Ratios")],
+        [MUTE(ratios.note)],
+        [],
+        [HDR("Ratio"), HDR("Value")],
+        [S("Expense ratio"), ratios.expenseRatio !== null ? PCT(ratios.expenseRatio) : S("—")],
+        [S("Net cash margin"), ratios.netCashMargin !== null ? PCT(ratios.netCashMargin / 100) : S("—")],
+        [S("Cash coverage"), S(ratios.cashCoverageRatio !== null ? `${ratios.cashCoverageRatio.toFixed(2)}x` : "—")],
+        [S("Avg monthly income"), M(ratios.avgMonthlyIncome ?? 0)],
+        [S("Avg monthly expenses"), M(ratios.avgMonthlyExpenses ?? 0)],
+        [S("Net monthly cash flow"), M(ratios.netMonthlyCashFlow ?? 0)],
+        [S("Bank charges ratio"), ratios.bankChargesRatio !== null ? PCT(ratios.bankChargesRatio / 100) : S("—")],
+        [S("Period (months)"), INT(ratios.periodMonths)],
+      ],
+    });
+  }
 
-  // Tax & VAT
+  // AI Accountant Notes — SARS risk + AI transaction intelligence in one place.
   sections.push({
-    id: "tax-vat",
-    label: "Tax & VAT Intelligence",
-    sheet: "Tax & VAT",
+    id: "ai-intelligence",
+    label: "AI Accountant Notes",
+    sheet: "AI Accountant Notes",
     rows: [
-      [TITLE("Tax & VAT Intelligence")],
+      [TITLE("AI Accountant Notes")],
       [B("Internal SARS risk score"), S(`${risk.score}/100 (${risk.level})`)],
       [MUTE(risk.summary)],
       [],
       [HDR("Risk factor"), HDR("Score"), HDR("Max"), HDR("Detail")],
       ...risk.factors.map((f) => [S(f.name), INT(f.score), INT(f.maxScore), S(f.detail)]),
       [],
-      [HDR("VAT anomalies"), HDR("Severity"), HDR("Amount"), HDR("Detail")],
-      ...(vatAnomalies.length
-        ? vatAnomalies.map((a) => [S(a.type), WARN(a.severity), M(a.amount), S(a.description)])
-        : [[GOOD("No VAT anomalies detected.")]]),
-      [],
-      [MUTE("Internal advisory only. Not a SARS assessment or tax advice.")],
-    ],
-  });
-
-  // AI Intelligence
-  sections.push({
-    id: "ai-intelligence",
-    label: "AI Intelligence",
-    sheet: "AI Intelligence",
-    rows: [
-      [TITLE("AI Transaction Intelligence")],
       [B(`Duplicate groups: ${duplicates.length}`), B(`Unusual: ${unusuals.length}`), B(`Director-linked: ${directors.length}`)],
       [],
       [HDR("Potential duplicate payments"), HDR("Amount"), HDR("Count"), HDR("Confidence")],
@@ -724,73 +700,29 @@ export function buildExportSections(detail: AccountingRunDetail, resolvedCompany
     ],
   });
 
-  // Forecasting
-  sections.push({
-    id: "forecasting",
-    label: "Forecasting",
-    sheet: "Forecasting",
-    headerRow: 8,
-    rows: [
-      [TITLE("Cash Flow Forecast")],
-      [MUTE(forecast.note)],
-      [],
-      [B("Monthly avg income"), M(forecast.monthlyAvgIncome)],
-      [B("Monthly avg expenses"), M(forecast.monthlyAvgExpenses)],
-      [B("Monthly net flow"), M(forecast.monthlyNetFlow)],
-      [],
-      [HDR("Month"), HDR("Projected Income"), HDR("Projected Expenses"), HDR("Net Flow"), HDR("Closing Balance")],
-      ...forecast.projections.map((p) => [S(p.label), M(p.projectedIncome), M(p.projectedExpenses), M(p.projectedNetFlow), M(p.projectedClosingBalance)]),
-    ],
-  });
+  // Forecasting — only reliable with 3+ statement periods.
+  if (forecast.periodMonths >= 3) {
+    sections.push({
+      id: "forecasting",
+      label: "Forecasting",
+      sheet: "Forecasting",
+      headerRow: 8,
+      rows: [
+        [TITLE("Cash Flow Forecast")],
+        [MUTE(forecast.note)],
+        [],
+        [B("Monthly avg income"), M(forecast.monthlyAvgIncome)],
+        [B("Monthly avg expenses"), M(forecast.monthlyAvgExpenses)],
+        [B("Monthly net flow"), M(forecast.monthlyNetFlow)],
+        [],
+        [HDR("Month"), HDR("Projected Income"), HDR("Projected Expenses"), HDR("Net Flow"), HDR("Closing Balance")],
+        ...forecast.projections.map((p) => [S(p.label), M(p.projectedIncome), M(p.projectedExpenses), M(p.projectedNetFlow), M(p.projectedClosingBalance)]),
+      ],
+    });
+  }
 
-  // Audit Tools
-  sections.push({
-    id: "audit-tools",
-    label: "Audit Tools",
-    sheet: "Audit Tools",
-    rows: [
-      [TITLE("Audit Pack")],
-      [B("Risk"), S(`${audit.riskScore.score}/100 (${audit.riskScore.level})`)],
-      [B("Review items"), INT(audit.reviewItems)],
-      [B("Uncategorised"), INT(audit.uncategorized)],
-      [B("Payments >R5k without invoice"), INT(audit.transactionsNeedingInvoice.length)],
-      [],
-      [HDR("Finding"), HDR("Severity"), HDR("Category"), HDR("Detail")],
-      ...(audit.findings.length
-        ? audit.findings.map((f) => [
-            S(f.title),
-            f.severity === "high" || f.severity === "critical" ? WARN(f.severity) : S(f.severity),
-            S(f.category),
-            S(f.detail),
-          ])
-        : [[GOOD("No audit findings. Statement appears complete and well-classified.")]]),
-    ],
-  });
-
-  // AI Categorisation — how every transaction was classified and by what source.
-  sections.push({
-    id: "ai-categorisation",
-    label: "AI Categorisation",
-    sheet: "AI Categorisation",
-    headerRow: 1,
-    filter: true,
-    rows: [
-      [HDR("Date"), HDR("Description"), HDR("Amount"), HDR("Category"), HDR("GL Account"), HDR("Account No"), HDR("VAT Code"), HDR("Confidence"), HDR("Source"), HDR("Review Status")],
-      ...model.transactions.map((t) => [
-        S(t.date),
-        S(t.description),
-        M(t.debit || t.credit),
-        S(t.category),
-        S(t.account.name),
-        S(t.account.number),
-        S(t.vatCode),
-        t.confidence < 70 ? WARN(`${t.confidence}%`) : S(`${t.confidence}%`),
-        t.source === "AI" ? WARN(t.source) : S(t.source),
-        S(t.reviewStatus),
-      ]),
-      [MUTE("AI suggestions are never auto-approved — Source = AI means the accountant must review. Approvals are stored per workspace for reuse.")],
-    ],
-  });
+  // (Audit findings are merged into the Audit Exceptions sheet below; per-
+  // transaction classification/source lives on the Review Queue and GL/VAT.)
 
   // Review Queue — everything needing an accountant decision.
   const reviewQueue = model.transactions.filter(
@@ -828,41 +760,30 @@ export function buildExportSections(detail: AccountingRunDetail, resolvedCompany
   if (directors.length) exceptions.push([WARN("Director / related-party"), INT(directors.length), S("Director or related-party movements to confirm")]);
   const largeCount = model.transactions.filter((t) => (t.debit || t.credit) >= 25000).length;
   if (largeCount) exceptions.push([WARN("Large transactions"), INT(largeCount), S("Transactions of R25,000 or more")]);
+  // Audit Exceptions — merges the exception flags and the audit findings.
   sections.push({
     id: "exception-report",
-    label: "Exception Report",
-    sheet: "Exception Report",
+    label: "Audit Exceptions",
+    sheet: "Audit Exceptions",
     headerRow: 2,
     rows: [
-      [TITLE("Exception Report")],
+      [TITLE("Audit Exceptions")],
       [HDR("Exception"), HDR("Count / Amount"), HDR("Detail")],
       ...(exceptions.length ? exceptions : [[GOOD("No exceptions detected."), S(""), S("")]]),
+      [],
+      [B(`Internal risk score: ${audit.riskScore.score}/100 (${audit.riskScore.level})`), S(""), S("")],
+      [HDR("Audit finding"), HDR("Severity"), HDR("Detail")],
+      ...(audit.findings.length
+        ? audit.findings.map((f) => [
+            S(f.title),
+            f.severity === "high" || f.severity === "critical" ? WARN(f.severity) : S(f.severity),
+            S(f.detail),
+          ])
+        : [[GOOD("No audit findings."), S(""), S("")]]),
     ],
   });
 
-  // Lead Schedules — account-group summaries tying to the trial balance.
-  const leadGroups: Array<[string, "asset" | "liability" | "equity" | "revenue" | "expense"]> = [
-    ["Assets", "asset"],
-    ["Liabilities", "liability"],
-    ["Equity", "equity"],
-    ["Revenue", "revenue"],
-    ["Expenses", "expense"],
-  ];
-  const leadRows: Cell[][] = [];
-  for (const [label, group] of leadGroups) {
-    const accounts = model.ledger.filter((a) => a.group === group);
-    if (!accounts.length) continue;
-    leadRows.push([HDR(label), HDR("Account No"), HDR("Movement")]);
-    for (const a of accounts) leadRows.push([S(a.name), S(a.number), M(a.movement)]);
-    leadRows.push([B(`Total ${label}`), S(""), MT(accounts.reduce((s, a) => s + a.movement, 0))]);
-    leadRows.push([]);
-  }
-  sections.push({
-    id: "lead-schedules",
-    label: "Lead Schedules",
-    sheet: "Lead Schedules",
-    rows: [[TITLE("Lead Schedules")], [MUTE("Per-account-group summaries derived from the general ledger.")], [], ...leadRows],
-  });
+  // (Lead Schedules require a full GL beyond a single bank statement — omitted.)
 
   // Assumptions / Limitations
   sections.push({

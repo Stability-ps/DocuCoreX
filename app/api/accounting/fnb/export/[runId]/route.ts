@@ -4,62 +4,18 @@ import { getWorkspaceContext } from "@/lib/server-documents";
 import {
   buildExportSections,
   resolveCompanyName,
-  sectionToCsv,
   sectionsToXlsx,
+  EXPORT_MENU,
+  FULL_PACK_SECTIONS,
   type ExportSection,
   type ExportSectionId,
 } from "@/lib/accounting/export";
 
-// Single-section CSV downloads.
-const CSV_SECTIONS: Record<string, ExportSectionId> = {
-  transactions: "transactions",
-  "review-items": "review-items",
-  summary: "summary",
-  "bank-reconciliation": "bank-reconciliation",
-  vat: "vat",
-  "general-ledger": "general-ledger",
-  "trial-balance": "trial-balance",
-  "chart-of-accounts": "chart-of-accounts",
-  vat201: "vat201",
-  "review-queue": "review-queue",
-  "exception-report": "exception-report",
-};
-
-// Grouped / full multi-sheet XLSX packs.
-const XLSX_PACKS: Record<string, ExportSectionId[]> = {
-  "financial-statements": ["profit-loss", "balance-sheet", "cash-flow", "financial-statements"],
-  "ai-insights": ["ai-categorisation", "review-queue", "ai-intelligence", "tax-vat"],
-  "audit-pack": ["cover", "audit-tools", "lead-schedules", "exception-report", "review-queue", "reconciliation-issues", "tax-vat", "assumptions"],
-  vat: ["vat", "vat201"],
-  // Full professional accounting pack (Big-Four sheet order).
-  all: [
-    "cover",
-    "summary",
-    "data-quality",
-    "extraction-log",
-    "transactions",
-    "ai-categorisation",
-    "review-queue",
-    "chart-of-accounts",
-    "general-ledger",
-    "trial-balance",
-    "profit-loss",
-    "balance-sheet",
-    "cash-flow",
-    "vat",
-    "vat201",
-    "bank-reconciliation",
-    "reconciliation-issues",
-    "financial-statements",
-    "tax-vat",
-    "ai-intelligence",
-    "forecasting",
-    "audit-tools",
-    "lead-schedules",
-    "exception-report",
-    "assumptions",
-  ],
-};
+// Every export the modal offers maps to a section id (single-sheet XLSX) or the
+// full pack. Built from the shared EXPORT_MENU so the UI and route never drift.
+const SECTION_BY_KEY: Record<string, ExportSectionId | "all"> = Object.fromEntries(
+  EXPORT_MENU.map((option) => [option.key, option.section]),
+);
 
 function pickSections(all: ExportSection[], ids: ExportSectionId[]): ExportSection[] {
   const byId = new Map(all.map((s) => [s.id, s]));
@@ -98,24 +54,15 @@ export async function GET(request: Request, { params }: { params: Promise<{ runI
     const shortId = detail.run.id.slice(0, 8);
     const slug = (company || "bank-statement").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 40) || "bank-statement";
 
-    // Single-section CSV
-    if (section in CSV_SECTIONS) {
-      const target = pickSections(sections, [CSV_SECTIONS[section]])[0];
-      const body = sectionToCsv(target);
-      const fileName = `${slug}-${section}-${shortId}.csv`;
-      return new NextResponse(body, {
-        headers: {
-          "Content-Type": "text/csv; charset=utf-8",
-          "Content-Disposition": `attachment; filename="${fileName}"`,
-        },
-      });
-    }
-
-    // Grouped / full XLSX pack
-    const packIds = XLSX_PACKS[section] ?? XLSX_PACKS.all;
+    // Resolve the requested export: full pack, or a single section (styled XLSX).
+    const resolved = SECTION_BY_KEY[section] ?? "all";
+    const packIds = resolved === "all" ? FULL_PACK_SECTIONS : [resolved];
     const packSections = pickSections(sections, packIds);
+    if (!packSections.length) {
+      return NextResponse.json({ error: "Requested export is not available for this statement." }, { status: 404 });
+    }
     const xlsx = sectionsToXlsx(packSections);
-    const packLabel = section === "all" ? "accounting-pack" : section;
+    const packLabel = resolved === "all" ? "accounting-pack" : resolved;
     const fileName = `${slug}-${packLabel}-${shortId}.xlsx`;
 
     return new NextResponse(Buffer.from(xlsx), {
