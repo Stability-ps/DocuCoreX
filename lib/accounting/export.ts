@@ -232,6 +232,12 @@ export function buildExportSections(detail: AccountingRunDetail, resolvedCompany
 
   const sections: ExportSection[] = [];
 
+  // When the statement does not reconcile, extraction is incomplete and every
+  // derived statement must be watermarked as unreliable — never silently shown.
+  const unreliableBanner: Cell[] | null = meta.reconciled
+    ? null
+    : [WARN("UNRELIABLE — statement does not reconcile (extraction incomplete). Do not use for filing. See Data Quality & Reconciliation Issues.")];
+
   // Cover — canonical header + reconciliation banner
   sections.push({
     id: "cover",
@@ -409,38 +415,35 @@ export function buildExportSections(detail: AccountingRunDetail, resolvedCompany
     ],
   });
 
-  // Trial Balance — built from the GL accounts with a balancing bank contra so
-  // debits equal credits (draft, bank-statement derived).
+  // Trial Balance — built from the GL accounts. A balancing bank contra is only
+  // added when the statement RECONCILES; if it does not, the TB is marked invalid
+  // and the real imbalance is shown (never hidden behind an artificial contra).
   const catDr = groups.reduce((s, g) => s + Math.max(0, g.debit - g.credit), 0);
   const catCr = groups.reduce((s, g) => s + Math.max(0, g.credit - g.debit), 0);
-  // The bank account is the contra to every category posting.
-  const bankContra = catDr - catCr; // >0 => bank is net credit (money left), <0 => net debit
+  const bankContra = catDr - catCr;
   const bankDr = bankContra < 0 ? Math.abs(bankContra) : 0;
   const bankCr = bankContra > 0 ? bankContra : 0;
-  const drTotal = catDr + bankDr;
-  const crTotal = catCr + bankCr;
-  sections.push({
-    id: "trial-balance",
-    label: "Trial Balance",
-    sheet: "Trial Balance",
-    headerRow: 3,
-    rows: [
-      [MUTE("Draft trial balance built from AI-assigned GL accounts with a balancing bank contra. Balance-sheet items appear as accounts, not as P&L. Requires accountant review.")],
-      [],
-      [HDR("Account"), HDR("Debit Balance"), HDR("Credit Balance")],
-      ...groups.map((g) => {
-        const net = g.debit - g.credit;
-        return [S(g.account), M(net > 0 ? net : 0), M(net < 0 ? Math.abs(net) : 0)];
-      }),
-      [S("Bank / Cash (contra)"), M(bankDr), M(bankCr)],
-      [B("Totals"), MT(drTotal), MT(crTotal)],
-      [
-        S("Balanced"),
-        Math.abs(drTotal - crTotal) < 0.01 ? GOOD("Yes") : WARN("No"),
-        S(""),
-      ],
-    ],
-  });
+  const tbRows: Cell[][] = [
+    meta.reconciled
+      ? [MUTE("Draft trial balance from GL accounts with a balancing bank contra. Balance-sheet items appear as accounts, not P&L. Requires accountant review.")]
+      : [WARN("INVALID / REVIEW REQUIRED — the statement does not reconcile, so this trial balance is not reliable and no balancing contra has been added. Resolve extraction first.")],
+    [],
+    [HDR("Account"), HDR("Debit Balance"), HDR("Credit Balance")],
+    ...groups.map((g) => {
+      const net = g.debit - g.credit;
+      return [S(g.account), M(net > 0 ? net : 0), M(net < 0 ? Math.abs(net) : 0)];
+    }),
+  ];
+  if (meta.reconciled) {
+    tbRows.push([S("Bank / Cash (contra)"), M(bankDr), M(bankCr)]);
+    tbRows.push([B("Totals"), MT(catDr + bankDr), MT(catCr + bankCr)]);
+    tbRows.push([S("Balanced"), GOOD("Yes"), S("")]);
+  } else {
+    tbRows.push([B("Category totals"), MT(catDr), MT(catCr)]);
+    tbRows.push([S("Imbalance (missing bank contra / transactions)"), MW(catDr - catCr), S("")]);
+    tbRows.push([S("Status"), WARN("Invalid — review required"), S("")]);
+  }
+  sections.push({ id: "trial-balance", label: "Trial Balance", sheet: "Trial Balance", headerRow: 3, rows: tbRows });
 
   // Bank Reconciliation
   sections.push({
@@ -498,6 +501,7 @@ export function buildExportSections(detail: AccountingRunDetail, resolvedCompany
     headerRow: 4,
     rows: [
       [TITLE("Profit & Loss (cash basis)")],
+      ...(unreliableBanner ? [unreliableBanner] : []),
       [MUTE(pl.note)],
       [],
       [HDR("Income"), HDR("Count"), HDR("Amount")],
@@ -531,6 +535,7 @@ export function buildExportSections(detail: AccountingRunDetail, resolvedCompany
     headerRow: 4,
     rows: [
       [TITLE("Balance Sheet (partial — bank-statement derived)")],
+      ...(unreliableBanner ? [unreliableBanner] : []),
       [WARN("Cash position plus balance-sheet movements detected on the statement. Not a complete IFRS balance sheet.")],
       [],
       [HDR("Item"), HDR("Amount (period movement)"), HDR("Note")],
@@ -574,6 +579,7 @@ export function buildExportSections(detail: AccountingRunDetail, resolvedCompany
     headerRow: 4,
     rows: [
       [TITLE("Cash Flow (direct method, by activity)")],
+      ...(cashReconciled ? [] : [[WARN("INVALID / REVIEW REQUIRED — cash flow does not tie to the bank balance; extraction is incomplete.")]]),
       [MUTE("Movements grouped by activity. Balance-sheet items (tax, loans, director, transfers) are shown separately from operating cash flow. Net of all sections reconciles the bank balance.")],
       [],
       [HDR("Activity"), HDR("Net Cash")],

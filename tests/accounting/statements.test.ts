@@ -155,3 +155,34 @@ test("statement metadata is canonical and reconciles", () => {
   assert.equal(meta.accountNumber, "63041819765");
   assert.equal(meta.reconciled, true);
 });
+
+// When extraction does NOT reconcile, TB / Cash Flow / P&L must be marked
+// invalid/unreliable and the TB must not be balanced by an artificial contra.
+const unbalancedRun = { ...run, closingBalance: closing + 5000 };
+const unbalancedDetail = { run: unbalancedRun, transactions: txns };
+
+test("Trial Balance is marked invalid (no artificial contra) when unreconciled", () => {
+  const sections = buildExportSections(unbalancedDetail, "ACAPOLITE CONSULTING (PTY) LTD");
+  const tb = sections.find((s: { id: string }) => s.id === "trial-balance");
+  const text = tb.rows.map((r: unknown[]) => r.map(cellText).join(" ")).join("\n");
+  assert.match(text, /INVALID|Invalid/);
+  assert.ok(!text.includes("Bank / Cash (contra)"), "must not hide the gap behind a contra");
+  assert.ok(!/Balanced\s+Yes/.test(text), "must not claim balanced when unreconciled");
+});
+
+test("Cash Flow and P&L are watermarked unreliable when unreconciled", () => {
+  const sections = buildExportSections(unbalancedDetail, "ACAPOLITE CONSULTING (PTY) LTD");
+  const cf = sections.find((s: { id: string }) => s.id === "cash-flow");
+  const pl = sections.find((s: { id: string }) => s.id === "profit-loss");
+  const cfText = cf.rows.map((r: unknown[]) => r.map(cellText).join(" ")).join("\n");
+  const plText = pl.rows.map((r: unknown[]) => r.map(cellText).join(" ")).join("\n");
+  assert.match(cfText, /INVALID|does not tie/);
+  assert.match(plText, /UNRELIABLE|does not reconcile/);
+});
+
+test("account type keeps refund and suspense distinct", () => {
+  assert.equal(accountType("Refund / Suspense"), "refund");
+  assert.equal(accountType("Suspense / Review Required"), "suspense");
+  assert.equal(accountType("Related Party / Drawings"), "director_loan");
+  assert.equal(accountType("Revenue Review"), "revenue");
+});

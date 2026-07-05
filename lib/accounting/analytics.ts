@@ -42,9 +42,11 @@ export function accountType(category: string): AccountType {
   if (/finance cost|interest (paid|charged|expense)/.test(c)) return "expense";
   if (/\bloan\b|liability|finance lease|hire purchase|instal?ment/.test(c)) return "loan";
   if (/sars|paye|provisional tax|tax (liability|suspense|deposit)|vat control/.test(c)) return "tax";
-  if (/refund|reversal|contra|\bsuspense\b/.test(c)) return "refund";
+  // "Refund / Suspense" is a refund; "Suspense / Review Required" is suspense.
+  // Check refund (by its own keywords) first, then general suspense/review.
+  if (/refund|reversal|contra/.test(c)) return "refund";
+  if (/uncategori|review required|unknown|\bsuspense\b/.test(c)) return "suspense";
   if (/bank charge|bank fee|service fee|cash deposit fee|account fee|admin fee|card fee/.test(c)) return "bank_charges";
-  if (/uncategori|review required|unknown/.test(c)) return "suspense";
   if (/sales|revenue|income|turnover|interest income/.test(c)) return "revenue";
   return "expense";
 }

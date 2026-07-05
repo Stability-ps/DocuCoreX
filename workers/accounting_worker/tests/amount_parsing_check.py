@@ -113,7 +113,9 @@ else:
         supabase.create_client = create_client
 
 from main import (
+    ParsedTransaction,
     balance_gap_diagnostics,
+    bank_charges_from_statement,
     classify_transaction,
     detect_company_name,
     insert_inferred_fnb_service_fees,
@@ -122,6 +124,7 @@ from main import (
     parse_single_amount_line,
     parse_transactions,
     parse_metadata,
+    validate_extraction,
     parse_fnb_section_transactions,
     parse_fnb_service_fee_transactions,
     parse_money_cell,
@@ -136,6 +139,15 @@ from main import (
 def assert_equal(actual, expected, label):
     if actual != expected:
         raise AssertionError(f"{label}: expected {expected!r}, got {actual!r}")
+
+
+def make_txn(debit=None, credit=None):
+    return ParsedTransaction(
+        transaction_date="2026-03-10",
+        description="row",
+        debit_amount=debit,
+        credit_amount=credit,
+    )
 
 
 def run():
@@ -232,6 +244,55 @@ def run():
     fee_acct, _v, fee_bc, _c = classify_transaction("# Cash Deposit Fee", 599.44, None)
     assert_equal(fee_acct, "Bank Charges", "cash deposit FEE is a bank charge")
     assert_equal(fee_bc, True, "cash deposit fee bank_charge flag")
+
+    # Generic (not name-specific) related-party / suspense classification.
+    assert_equal(classify_transaction("FNB App Rtc Pmt To Thabo", 5000.0, None)[0], "Related Party / Drawings", "payment to a name")
+    assert_equal(classify_transaction("FNB App Payment To 819035690", 3000.0, None)[0], "Suspense / Review Required", "payment to a number")
+    assert_equal(classify_transaction("PayShap To Nomsa", 1200.0, None)[0], "Related Party / Drawings", "payshap to a name")
+    # An unknown debit must NOT become an Operating Expense by default.
+    assert_equal(classify_transaction("Some Unknown Vendor XYZ", 999.0, None)[0], "Suspense / Review Required", "unknown debit is suspense")
+
+    # Statement summary extraction (declared ground truth, any bank).
+    summary_meta = parse_metadata("\n".join([
+        "ACAPOLITE CONSULTING (PTY) LTD",
+        "Gold Business Account : 63041819765",
+        "Statement Period 28 Feb 2026 to 31 Mar 2026",
+        "Opening Balance 3,390.09",
+        "Closing Balance 342.37",
+        "Credit Transactions 15 419,700.00",
+        "Debit Transactions 128 422,747.72",
+        "Service Fees 616.80",
+        "Cash Deposit Fees 599.44",
+        "Total VAT 158.64",
+    ]))
+    assert_equal(summary_meta["expected_credit_count"], 15, "declared credit count")
+    assert_equal(summary_meta["expected_debit_count"], 128, "declared debit count")
+    assert_equal(summary_meta["expected_transaction_count"], 143, "declared total count")
+    assert_equal(summary_meta["declared_credit_total"], 419700.0, "declared credit total")
+    assert_equal(summary_meta["declared_debit_total"], 422747.72, "declared debit total")
+    assert_equal(summary_meta["declared_service_fees"], 616.80, "declared service fees")
+    assert_equal(summary_meta["declared_cash_deposit_fees"], 599.44, "declared cash deposit fees")
+    assert_equal(summary_meta["declared_total_vat"], 158.64, "declared total VAT")
+
+    # Bank charges come from the declared fee summary even if fee rows are missed
+    # (never R0, never a cash-deposit amount).
+    charges = bank_charges_from_statement(summary_meta, [])
+    assert_equal(str(charges), "1216.24", "bank charges from declared summary")
+
+    # General extraction validation: complete vs incomplete.
+    complete = (
+        [make_txn(credit=(405700.00 if i == 0 else 1000.00)) for i in range(15)]
+        + [make_txn(debit=(295747.72 if i == 0 else 1000.00)) for i in range(128)]
+    )
+    ok = validate_extraction(summary_meta, complete)
+    assert_equal(ok["status"], "ok", "complete extraction validates")
+    assert_equal(ok["reconciliation_difference"], "0.00", "complete extraction reconciles")
+
+    incomplete = complete[:-1]  # drop one debit (a "missing row")
+    bad = validate_extraction(summary_meta, incomplete)
+    assert_equal(bad["status"], "review_required", "incomplete extraction flagged")
+    if "reconciliation" not in bad["failures"] or "transaction_count" not in bad["failures"]:
+        raise AssertionError(f"missing-row validation failures wrong: {bad['failures']}")
 
     # Regression for the 6 rows that failed to extract on the ACAPOLITE statement
     # (single-amount rows and #-prefixed fee lines with no running balance).

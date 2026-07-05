@@ -440,13 +440,31 @@ def parse_metadata(full_text: str) -> dict[str, Any]:
         r"Balance\s*Carried\s*Forward\s*[:\-]?\s*R?\s*([0-9,.\-() ]+)",
     ], full_text)
 
-    # Statement turnover counts — used to detect missing transactions before the
-    # workbook is treated as complete.
+    # Statement summary block — the statement's OWN declared totals. These are the
+    # ground truth used to validate the extraction (any bank, any statement).
     credit_txn_count = find_first([r"Credit\s*[Tt]ransactions?\s*[:\-]?\s*(\d+)"], full_text)
     debit_txn_count = find_first([r"Debit\s*[Tt]ransactions?\s*[:\-]?\s*(\d+)"], full_text)
     expected_count = None
     if credit_txn_count is not None and debit_txn_count is not None:
         expected_count = int(credit_txn_count) + int(debit_txn_count)
+
+    # Declared turnover totals (e.g. "Credit Transactions 15 419,700.00").
+    credit_total = find_first([
+        r"Credit\s*[Tt]ransactions?\s*\d+\s+R?\s*([0-9,]+\.\d{2})",
+        r"Total\s*Credits?\s*[:\-]?\s*R?\s*([0-9,]+\.\d{2})",
+    ], full_text)
+    debit_total = find_first([
+        r"Debit\s*[Tt]ransactions?\s*\d+\s+R?\s*([0-9,]+\.\d{2})",
+        r"Total\s*Debits?\s*[:\-]?\s*R?\s*([0-9,]+\.\d{2})",
+    ], full_text)
+
+    # Declared bank fee / VAT summary (do NOT treat cash deposit *amounts* as fees).
+    service_fees = find_first([r"Service\s*Fees?\s*[:\-]?\s*R?\s*([0-9,]+\.\d{2})"], full_text)
+    cash_deposit_fees = find_first([r"Cash\s*Deposit\s*Fees?\s*[:\-]?\s*R?\s*([0-9,]+\.\d{2})"], full_text)
+    total_vat = find_first([
+        r"Total\s*VAT\s*[:\-]?\s*R?\s*([0-9,]+\.\d{2})",
+        r"VAT\s*Charged\s*[:\-]?\s*R?\s*([0-9,]+\.\d{2})",
+    ], full_text)
 
     return {
         "company_name": company_name,
@@ -460,6 +478,11 @@ def parse_metadata(full_text: str) -> dict[str, Any]:
         "expected_credit_count": int(credit_txn_count) if credit_txn_count is not None else None,
         "expected_debit_count": int(debit_txn_count) if debit_txn_count is not None else None,
         "expected_transaction_count": expected_count,
+        "declared_credit_total": parse_money(credit_total),
+        "declared_debit_total": parse_money(debit_total),
+        "declared_service_fees": parse_money(service_fees),
+        "declared_cash_deposit_fees": parse_money(cash_deposit_fees),
+        "declared_total_vat": parse_money(total_vat),
     }
 
 
@@ -545,11 +568,9 @@ def classify_transaction(description: str, debit: float | None, credit: float | 
         (("fnb app transfer to savings", "fnb app transfer from", "transfer to me", "transfer from",
           "transfer to savings", "inter-account", "internal transfer", "own account"),
          "Inter-account Transfer", "out_of_scope", False, 92),
-        # Director / related-party movements (RTC / PayShap / send money to a person)
-        (("rtc pmt to patric", "app payment to patric", "send money to patric", "payment to sibande",
-          "rtc pmt to sibande", "send money to sibande", "payshap to patric", "payshap to sibande",
-          "drawings", "director loan"),
-         "Director Loan / Drawings", "out_of_scope", False, 80),
+        # Explicit director / drawings keywords (generic).
+        (("drawings", "director loan", "director's loan", "owner draw"),
+         "Director Loan / Drawings", "out_of_scope", False, 82),
         # SARS / tax — suspense/liability, NEVER revenue. Excluded from P&L.
         (("tax deposit", "sars", "efiling", "paye", "vat201", "provisional tax"),
          "SARS / Tax Suspense", "review", False, 82),
@@ -583,11 +604,26 @@ def classify_transaction(description: str, debit: float | None, credit: float | 
     for needles, category, vat, bank_charge, confidence in rules:
         if any(needle in text for needle in needles):
             return category, vat, bank_charge, confidence
-    # Direction-based fallbacks — still categorised, not "Uncategorised".
+
+    # Generic person-to-person / instant payments (any name, never hardcoded).
+    # A payment to a NAME is a related-party / drawings movement; a payment to a
+    # NUMBER/reference is a suspense item. Both are review, never P&L expense.
+    person_markers = (
+        "app payment to", "app rtc pmt to", "rtc pmt to", "payshap", "send money to",
+        "e wallet", "ewallet", "instant money", "cardless", "app transfer to ",
+    )
+    if any(marker in text for marker in person_markers):
+        tail = text.rsplit(" to ", 1)[-1] if " to " in text else text
+        if re.search(r"\d{5,}", tail) and not re.search(r"[a-z]{3,}", tail):
+            return "Suspense / Review Required", "review", False, 60
+        return "Related Party / Drawings", "out_of_scope", False, 68
+
+    # Direction-based fallbacks — conservative: never assume an unknown debit is a
+    # normal operating expense. Unknown outflows are suspense/review.
     if credit and credit > 0:
-        return "Sales / Revenue", "review", False, 68
+        return "Revenue Review", "review", False, 66
     if debit and debit > 0:
-        return "Operating Expenses", "review", False, 60
+        return "Suspense / Review Required", "review", False, 55
     return "Uncategorised", "review", False, 50
 
 
@@ -1327,6 +1363,79 @@ def validation_summary(transactions: list[ParsedTransaction]) -> dict[str, Any]:
         "total_credits": total_credits.quantize(CENT),
         "debit_count": debit_count,
         "credit_count": credit_count,
+    }
+
+
+def bank_charges_from_statement(metadata: dict[str, Any], transactions: list[ParsedTransaction]) -> Decimal:
+    """Bank charges come from the statement's declared fee summary first (Service
+    Fees + Cash Deposit Fees), falling back to the sum of extracted fee rows.
+    Never from cash-deposit transaction amounts."""
+    declared = Decimal("0.00")
+    for key in ("declared_service_fees", "declared_cash_deposit_fees"):
+        value = metadata.get(key)
+        if value is not None:
+            declared += decimal_amount(value)
+    if declared > 0:
+        return declared.quantize(CENT)
+    return sum(
+        (decimal_amount(t.debit_amount) for t in transactions if t.bank_charge),
+        Decimal("0.00"),
+    ).quantize(CENT)
+
+
+def validate_extraction(metadata: dict[str, Any], transactions: list[ParsedTransaction]) -> dict[str, Any]:
+    """General, bank-agnostic extraction validation. Compares what we extracted
+    against the statement's own declared totals and the opening/closing balance.
+    Returns a structured report; status is 'ok' only when everything ties out."""
+    summary = validation_summary(transactions)
+    checks: list[dict[str, Any]] = []
+
+    def check(name: str, ok: bool, detail: str) -> None:
+        checks.append({"name": name, "ok": bool(ok), "detail": detail})
+        if not ok:
+            failures.append(name)
+
+    failures: list[str] = []
+    tolerance = Decimal("0.05")
+
+    opening = metadata.get("opening_balance")
+    closing = metadata.get("closing_balance")
+    recon_diff = None
+    if opening is not None and closing is not None:
+        expected_close = (decimal_amount(opening) + summary["total_credits"] - summary["total_debits"]).quantize(CENT)
+        recon_diff = (expected_close - decimal_amount(closing)).quantize(CENT)
+        check("reconciliation", abs(recon_diff) <= tolerance, f"difference {recon_diff}")
+
+    expected_count = metadata.get("expected_transaction_count")
+    if expected_count is not None:
+        actual = len(transactions)
+        check("transaction_count", actual == expected_count, f"extracted {actual} of {expected_count}")
+
+    if metadata.get("expected_credit_count") is not None:
+        check("credit_count", summary["credit_count"] == metadata["expected_credit_count"],
+              f"{summary['credit_count']} of {metadata['expected_credit_count']}")
+    if metadata.get("expected_debit_count") is not None:
+        check("debit_count", summary["debit_count"] == metadata["expected_debit_count"],
+              f"{summary['debit_count']} of {metadata['expected_debit_count']}")
+
+    if metadata.get("declared_credit_total") is not None:
+        diff = (summary["total_credits"] - decimal_amount(metadata["declared_credit_total"])).quantize(CENT)
+        check("credit_total", abs(diff) <= tolerance, f"variance {diff}")
+    if metadata.get("declared_debit_total") is not None:
+        diff = (summary["total_debits"] - decimal_amount(metadata["declared_debit_total"])).quantize(CENT)
+        check("debit_total", abs(diff) <= tolerance, f"variance {diff}")
+
+    bank_charges = bank_charges_from_statement(metadata, transactions)
+    return {
+        "status": "ok" if not failures else "review_required",
+        "failures": failures,
+        "checks": checks,
+        "reconciliation_difference": str(recon_diff) if recon_diff is not None else None,
+        "extracted_transaction_count": len(transactions),
+        "expected_transaction_count": expected_count,
+        "extracted_credits": str(summary["total_credits"]),
+        "extracted_debits": str(summary["total_debits"]),
+        "bank_charges": str(bank_charges),
     }
 
 
@@ -3062,12 +3171,24 @@ def process_fnb_statement(payload: ProcessRequest, authorization: str | None = H
         export_duration_ms = round((time.perf_counter() - export_started) * 1000, 2)
         log_event("worker.workbook_exported", run_id=payload.run_id, duration_ms=export_duration_ms, parser_profile=WORKER_PARSER_VERSION)
 
-        bank_charges_total = sum(transaction.debit_amount or 0 for transaction in transactions if transaction.bank_charge)
+        # General extraction validation (count / totals / reconciliation vs the
+        # statement's own declared figures). Bank charges come from the declared
+        # fee summary, not from cash-deposit amounts.
+        extraction_check = validate_extraction(metadata, transactions)
+        extraction_incomplete = extraction_check["status"] != "ok"
+        bank_charges_total = float(bank_charges_from_statement(metadata, transactions))
         avg_confidence = sum(transaction.confidence for transaction in transactions) / len(transactions)
-        status = "review" if review_issue or any(transaction.review_status == "needs_review" for transaction in transactions) else "completed"
-        run_error = review_error_message(review_issue)
+        status = "review" if (
+            review_issue
+            or extraction_incomplete
+            or any(transaction.review_status == "needs_review" for transaction in transactions)
+        ) else "completed"
+        run_error = review_error_message(review_issue) or (
+            f"Extraction validation failed: {', '.join(extraction_check['failures'])}" if extraction_incomplete else None
+        )
         processing_duration_ms = round((time.perf_counter() - process_started) * 1000, 2)
         review_required = status == "review"
+        validation = {**(validation or {}), **{f"extraction_{k}": v for k, v in extraction_check.items() if k != "checks"}}
 
         supabase.table("accounting_statement_runs").update(
             {
