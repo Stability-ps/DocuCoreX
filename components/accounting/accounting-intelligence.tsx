@@ -1,6 +1,8 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
+import Link from "next/link";
+import { useRouter } from "next/navigation";
 import {
   ArrowDownToLine,
   AlertTriangle,
@@ -1108,17 +1110,12 @@ export function AccountingIntelligence() {
                 {item.error ? <p className="mt-2 break-words text-xs font-semibold text-rose-700">{item.error}</p> : null}
                 <div className="mt-3 flex flex-wrap gap-2">
                   {item.runId ? (
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setSelectedRunId(item.runId ?? "");
-                        setActiveTab("transactions");
-                        void loadRunDetail(item.runId ?? "").catch((loadError) => setError(loadError instanceof Error ? loadError.message : "Unable to open statement."));
-                      }}
-                      className="min-h-10 rounded-lg bg-white px-3 py-2 text-xs font-black text-royal-700 shadow-sm ring-1 ring-slate-200"
+                    <Link
+                      href={`/accounting/statements/${item.runId}`}
+                      className="inline-flex min-h-10 items-center rounded-lg bg-white px-3 py-2 text-xs font-black text-royal-700 shadow-sm ring-1 ring-slate-200 hover:bg-royal-50"
                     >
                       Open Statement
-                    </button>
+                    </Link>
                   ) : null}
                   {item.status === "Failed" && item.file ? (
                     <button
@@ -1854,6 +1851,7 @@ function StatementRuns({
   onRefresh: () => void;
   onSelect: (runId: string) => void;
 }) {
+  const router = useRouter();
   const [visibleCount, setVisibleCount] = useState(20);
   const filteredRuns = useMemo(() => {
     const normalizedSearch = search.trim().toLowerCase();
@@ -1951,6 +1949,7 @@ function StatementRuns({
             <div
               key={run.id}
               onClick={() => onSelect(run.id)}
+              onDoubleClick={() => router.push(`/accounting/statements/${run.id}`)}
               onKeyDown={(event) => {
                 if (event.key === "Enter" || event.key === " ") {
                   event.preventDefault();
@@ -1977,7 +1976,13 @@ function StatementRuns({
                 />
                 <div className="min-w-0 flex-1">
                   <div className="flex items-center justify-between gap-2">
-                    <p className="truncate text-sm font-black text-navy-950">{runDisplayTitle(run)}</p>
+                    <Link
+                      href={`/accounting/statements/${run.id}`}
+                      onClick={(event) => event.stopPropagation()}
+                      className="truncate text-sm font-black text-navy-950 hover:text-royal-700 hover:underline"
+                    >
+                      {runDisplayTitle(run)}
+                    </Link>
                     <span className={`shrink-0 rounded-full px-2 py-0.5 text-[10px] font-black ${statusTone(run.status)}`}>{statusLabel(run.status)}</span>
                   </div>
                   <div className="mt-1 flex items-center justify-between gap-2 text-[11px] font-semibold text-slate-500">
@@ -1985,6 +1990,14 @@ function StatementRuns({
                     <span>{run.status === "processing" || run.status === "queued" ? "Calculating..." : `${Math.round(run.confidence)}%`}</span>
                   </div>
                 </div>
+                <Link
+                  href={`/accounting/statements/${run.id}`}
+                  onClick={(event) => event.stopPropagation()}
+                  className="rounded-md px-2 py-1 text-[11px] font-black text-royal-700 opacity-0 transition hover:bg-royal-50 group-hover:opacity-100"
+                  aria-label={`View ${runDisplayTitle(run)}`}
+                >
+                  View
+                </Link>
                 <button
                   type="button"
                   onClick={(event) => {
@@ -1992,7 +2005,7 @@ function StatementRuns({
                     onSelect(run.id);
                   }}
                   className="rounded-md p-1.5 text-slate-400 hover:bg-white hover:text-slate-700"
-                  aria-label={`Open ${runDisplayTitle(run)}`}
+                  aria-label={`Preview ${runDisplayTitle(run)}`}
                 >
                   <MoreVertical className="h-4 w-4" />
                 </button>
