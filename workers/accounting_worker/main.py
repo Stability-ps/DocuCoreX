@@ -278,29 +278,114 @@ def find_first(patterns: list[str], text: str) -> str | None:
     return None
 
 
+# Words/patterns that identify an ADDRESS line. A company name must never be
+# taken from a line matching any of these (fixes "ITALA PLACE" / "MOOIKLOOF"
+# being used as the company name).
+_ADDRESS_WORDS = {
+    "STREET", "STR", "ROAD", "RD", "AVENUE", "AVE", "DRIVE", "DRV", "LANE",
+    "CLOSE", "CRESCENT", "CRES", "BOULEVARD", "BLVD", "PLACE", "PARK", "ESTATE",
+    "UNIT", "SUITE", "FLOOR", "BLOCK", "ERF", "PLOT", "HIGHWAY", "RIDGE", "VIEW",
+    "HEIGHTS", "GARDENS", "VILLAGE", "MEWS", "POSTNET", "BAG",
+}
+# Common SA suburbs/cities that appear on statements and must not be used as a name.
+_ADDRESS_PLACES = {
+    "MOOIKLOOF", "PRETORIA", "JOHANNESBURG", "CENTURION", "SANDTON", "MIDRAND",
+    "CAPE TOWN", "DURBAN", "BLOEMFONTEIN", "GQEBERHA", "PORT ELIZABETH",
+    "POLOKWANE", "MBOMBELA", "NELSPRUIT", "KIMBERLEY", "EAST LONDON",
+    "PIETERMARITZBURG", "RANDBURG", "ROODEPOORT", "BENONI", "BOKSBURG",
+    "GERMISTON", "SOWETO", "WATERFALL", "FOURWAYS", "BRYANSTON", "ROSEBANK",
+}
+# Legal-entity suffixes that strongly indicate a real company name.
+_COMPANY_SUFFIX = re.compile(
+    r"\b(\(?PTY\)?\s*LTD|PTY\s*LTD|LTD|CC|INC|LLP|NPC|SOC\s*LTD|TRUST|BK|BPK|EDMS\s*BPK)\b",
+    flags=re.IGNORECASE,
+)
+_BANK_NAMES = {"FNB", "FIRST NATIONAL BANK", "ABSA", "NEDBANK", "STANDARD BANK", "CAPITEC", "INVESTEC", "TYMEBANK"}
+
+
+def looks_like_address(text: str) -> bool:
+    if not text:
+        return True
+    upper = text.upper().strip()
+    # Standalone postal code, or a line starting with a street number.
+    if re.fullmatch(r"\d{4}", upper):
+        return True
+    if re.match(r"^\d+\s", upper) and not _COMPANY_SUFFIX.search(upper):
+        return True
+    if "P O BOX" in upper or "PO BOX" in upper or "PRIVATE BAG" in upper:
+        return True
+    tokens = set(re.findall(r"[A-Z]+", upper))
+    if tokens & _ADDRESS_WORDS:
+        return True
+    for place in _ADDRESS_PLACES:
+        if place in upper:
+            return True
+    return False
+
+
+def detect_company_name(full_text: str) -> str | None:
+    """Detect the account holder / company. Priority:
+    1) explicit labelled fields, 2) a line carrying a legal suffix,
+    3) the first business-looking line — always rejecting address lines.
+    """
+    # 1) Explicit labels.
+    labelled = find_first([
+        r"Account\s*Holder\s*[:\-]?\s*(.+)",
+        r"Account\s*Name\s*[:\-]?\s*(.+)",
+        r"Customer\s*Name\s*[:\-]?\s*(.+)",
+        r"Client\s*Name\s*[:\-]?\s*(.+)",
+    ], full_text)
+    if labelled:
+        candidate = labelled.strip()
+        if candidate and not looks_like_address(candidate):
+            return candidate
+
+    lines = [line.strip() for line in full_text.splitlines() if line.strip()]
+    header = lines[:25]
+
+    # 2) A line with a legal-entity suffix that is not an address or bank name.
+    for line in header:
+        if len(line) < 4 or len(line) > 70:
+            continue
+        if line.upper() in _BANK_NAMES:
+            continue
+        if _COMPANY_SUFFIX.search(line) and not looks_like_address(line):
+            return re.sub(r"\s+", " ", line).strip(" *:-")
+
+    # 3) First business-looking uppercase line before the address block.
+    for line in header:
+        stripped = line.strip(" *:-")
+        if len(stripped) < 4 or len(stripped) > 60:
+            continue
+        upper = stripped.upper()
+        if upper in _BANK_NAMES or upper in {"STATEMENT", "BANK STATEMENT", "TAX INVOICE"}:
+            continue
+        if re.search(r"\d{2}[/ ]\d{2}", stripped):  # looks like a date
+            continue
+        if looks_like_address(stripped):
+            continue
+        if re.search(r"[A-Za-z]{3,}", stripped) and re.match(r"^[A-Z0-9 &().,'/-]+$", stripped):
+            return re.sub(r"\s+", " ", stripped).strip()
+
+    return None
+
+
 def parse_metadata(full_text: str) -> dict[str, Any]:
-    normalized_text = re.sub(r"\s+", " ", full_text)
     account_number = find_first([
         r"Account\s*(?:Number|No\.?)\s*[:\-]?\s*([0-9\s-]{6,})",
         r"Business\s*Account\s*[:\-]?\s*([0-9\s-]{6,})",
     ], full_text)
-    if "63012589818" in normalized_text:
-        account_number = "63012589818"
-    elif account_number and re.sub(r"\D", "", account_number) == "4210102051":
-        account_number = None
 
-    # Detect the account holder / company from the statement itself. Do NOT
-    # hardcode any specific company name — this must work for personal and
-    # business statements alike.
-    company_name = find_first([
-        r"Account\s*Holder\s*[:\-]?\s*(.+)",
-        r"Customer\s*Name\s*[:\-]?\s*(.+)",
-        r"Account\s*Name\s*[:\-]?\s*(.+)",
-        r"^([A-Z0-9 &().,'/-]{5,})\n(?:Account|Statement)",
+    # Detect the account holder / company from the statement itself, never from
+    # an address line and never hardcoded.
+    company_name = detect_company_name(full_text)
+
+    statement_number = find_first([
+        r"Statement\s*(?:Number|No\.?)\s*[:\-]?\s*([A-Z0-9][A-Z0-9\-/]{2,})",
     ], full_text)
-    if company_name and "waterfall" in company_name.lower():
-        # Address line mistaken for a name.
-        company_name = None
+    statement_date = find_first([
+        r"Statement\s*Date\s*[:\-]?\s*(\d{1,2}[\/ ](?:\d{1,2}|[A-Za-z]{3,9})[\/ ]\d{2,4})",
+    ], full_text)
 
     period = re.search(
         r"(?:Statement\s*Period|Period)\s*[:\-]?\s*(\d{1,2}[\/ ](?:\d{1,2}|[A-Za-z]{3,9})[\/ ]\d{2,4})\s*(?:to|-)\s*(\d{1,2}[\/ ](?:\d{1,2}|[A-Za-z]{3,9})[\/ ]\d{2,4})",
@@ -320,6 +405,8 @@ def parse_metadata(full_text: str) -> dict[str, Any]:
     return {
         "company_name": company_name,
         "account_number": re.sub(r"\s+", "", account_number) if account_number else None,
+        "statement_number": statement_number.strip() if statement_number else None,
+        "statement_date": parse_date(statement_date) if statement_date else None,
         "statement_period_start": parse_date(period.group(1)) if period else None,
         "statement_period_end": parse_date(period.group(2)) if period else None,
         "opening_balance": parse_money(opening_balance),

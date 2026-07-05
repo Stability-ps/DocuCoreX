@@ -14,19 +14,32 @@ import {
 } from "@/lib/accounting/analytics";
 
 // ─── Cell model ─────────────────────────────────────────────────────────────
-// A cell is either a string (optionally styled) or a number. Number cells are
-// rendered with a red-negative money format in XLSX. This one model feeds both
-// the multi-sheet XLSX and the per-section CSV so the two never diverge.
+// One cell model drives BOTH the multi-sheet XLSX and per-section CSV so Cover,
+// Summary, Dashboard etc. can never diverge. `style` controls font/fill/border;
+// `fmt` controls number formatting (money renders negatives in red).
 
-export type Cell =
-  | { k: "s"; v: string; style?: "plain" | "bold" | "title" }
-  | { k: "n"; v: number; money?: boolean };
+export type CellStyle = "plain" | "bold" | "title" | "header" | "good" | "warn" | "muted" | "total";
+export type CellFmt = "money" | "int" | "percent";
 
-const S = (v: unknown): Cell => ({ k: "s", v: v === null || v === undefined ? "" : String(v) });
-const B = (v: string): Cell => ({ k: "s", v, style: "bold" });
-const T = (v: string): Cell => ({ k: "s", v, style: "title" });
-const M = (v: number | null | undefined): Cell => ({ k: "n", v: Number(v ?? 0), money: true });
-const N = (v: number | null | undefined): Cell => ({ k: "n", v: Number(v ?? 0) });
+export type Cell = {
+  v: string | number;
+  num?: boolean;
+  fmt?: CellFmt;
+  style?: CellStyle;
+};
+
+const S = (v: unknown): Cell => ({ v: v === null || v === undefined ? "" : String(v) });
+const B = (v: string): Cell => ({ v, style: "bold" });
+const TITLE = (v: string): Cell => ({ v, style: "title" });
+const HDR = (v: string): Cell => ({ v, style: "header" });
+const GOOD = (v: string): Cell => ({ v, style: "good" });
+const WARN = (v: string): Cell => ({ v, style: "warn" });
+const MUTE = (v: string): Cell => ({ v, style: "muted" });
+const M = (v: number | null | undefined): Cell => ({ v: Number(v ?? 0), num: true, fmt: "money" });
+const MT = (v: number | null | undefined): Cell => ({ v: Number(v ?? 0), num: true, fmt: "money", style: "total" });
+const MW = (v: number | null | undefined): Cell => ({ v: Number(v ?? 0), num: true, fmt: "money", style: "warn" });
+const INT = (v: number | null | undefined): Cell => ({ v: Number(v ?? 0), num: true, fmt: "int" });
+const PCT = (v: number): Cell => ({ v, num: true, fmt: "percent" });
 
 export type ExportSectionId =
   | "cover"
@@ -37,6 +50,7 @@ export type ExportSectionId =
   | "general-ledger"
   | "trial-balance"
   | "bank-reconciliation"
+  | "reconciliation-issues"
   | "profit-loss"
   | "balance-sheet"
   | "cash-flow"
@@ -49,9 +63,11 @@ export type ExportSectionId =
 
 export type ExportSection = {
   id: ExportSectionId;
-  label: string; // human label (modal + file name)
-  sheet: string; // XLSX tab name (<=31 chars, sanitized later)
+  label: string;
+  sheet: string;
   rows: Cell[][];
+  headerRow?: number; // 1-based; freezes rows above+including and enables filter
+  filter?: boolean;
 };
 
 const VAT_RATE = 15 / 115;
@@ -59,7 +75,7 @@ const VAT_RATE = 15 / 115;
 const DISCLAIMER =
   "Draft management report generated from bank-statement data only. This is not a final IFRS or Companies Act financial statement and requires accountant review. No figures are fabricated — modules without sufficient source data are marked accordingly.";
 
-// ─── Company name resolution (fixes the hardcoded title) ─────────────────────
+// ─── Company name resolution (fixes the hardcoded / address title) ───────────
 
 export function resolveCompanyName(
   companyName: string | null | undefined,
@@ -73,12 +89,35 @@ export function resolveCompanyName(
 }
 
 export function packTitle(resolvedCompany: string): string {
-  return resolvedCompany
-    ? `${resolvedCompany} — Bank Statement Accounting Pack`
-    : "Bank Statement Accounting Pack";
+  return resolvedCompany ? `${resolvedCompany} — Bank Statement Accounting Pack` : "Bank Statement Accounting Pack";
 }
 
-// ─── Shared helpers ─────────────────────────────────────────────────────────
+// ─── Canonical statement metadata ────────────────────────────────────────────
+// Built ONCE and consumed by every sheet. Nothing recomputes these figures.
+
+export type StatementMetadata = {
+  company: string;
+  title: string;
+  bank: string;
+  accountNumber: string;
+  statementPeriod: string;
+  periodStart: string;
+  periodEnd: string;
+  openingBalance: number;
+  closingBalance: number;
+  totalReceipts: number;
+  totalPayments: number;
+  bankCharges: number;
+  transactionCount: number;
+  reviewCount: number;
+  confidence: number;
+  estOutputVat: number;
+  estInputVat: number;
+  netVat: number;
+  expectedClosing: number;
+  reconciliationDifference: number;
+  reconciled: boolean;
+};
 
 function isReviewItem(t: AccountingTransaction): boolean {
   return (
@@ -91,6 +130,49 @@ function isReviewItem(t: AccountingTransaction): boolean {
   );
 }
 
+function vatForTransaction(t: AccountingTransaction) {
+  const isStandard = t.vatTreatment === "standard";
+  const outputVat = isStandard ? (t.creditAmount ?? 0) * VAT_RATE : 0;
+  const inputVat = isStandard ? (t.debitAmount ?? 0) * VAT_RATE : 0;
+  return { outputVat, inputVat, netVat: outputVat - inputVat };
+}
+
+export function buildStatementMetadata(detail: AccountingRunDetail, resolvedCompany: string): StatementMetadata {
+  const { run } = detail;
+  const txns = detail.transactions;
+  const totalReceipts = txns.reduce((s, t) => s + (t.creditAmount ?? 0), 0);
+  const totalPayments = txns.reduce((s, t) => s + (t.debitAmount ?? 0), 0);
+  const estOutputVat = txns.reduce((s, t) => s + vatForTransaction(t).outputVat, 0);
+  const estInputVat = txns.reduce((s, t) => s + vatForTransaction(t).inputVat, 0);
+  const opening = run.openingBalance ?? 0;
+  const closing = run.closingBalance ?? 0;
+  const expectedClosing = opening + totalReceipts - totalPayments;
+  const reconciliationDifference = expectedClosing - closing;
+  return {
+    company: resolvedCompany,
+    title: packTitle(resolvedCompany),
+    bank: run.bank,
+    accountNumber: run.accountNumber ?? "",
+    statementPeriod: `${run.statementPeriodStart ?? "?"} to ${run.statementPeriodEnd ?? "?"}`,
+    periodStart: run.statementPeriodStart ?? "",
+    periodEnd: run.statementPeriodEnd ?? "",
+    openingBalance: opening,
+    closingBalance: closing,
+    totalReceipts,
+    totalPayments,
+    bankCharges: run.bankChargesTotal,
+    transactionCount: txns.length,
+    reviewCount: txns.filter(isReviewItem).length,
+    confidence: Math.round(run.confidence),
+    estOutputVat,
+    estInputVat,
+    netVat: estOutputVat - estInputVat,
+    expectedClosing,
+    reconciliationDifference,
+    reconciled: Math.abs(reconciliationDifference) < 0.01,
+  };
+}
+
 function accountGroups(transactions: AccountingTransaction[]) {
   const groups = new Map<string, { debit: number; credit: number; count: number }>();
   for (const t of transactions) {
@@ -101,9 +183,7 @@ function accountGroups(transactions: AccountingTransaction[]) {
     current.count += 1;
     groups.set(account, current);
   }
-  return Array.from(groups, ([account, v]) => ({ account, ...v })).sort((a, b) =>
-    a.account.localeCompare(b.account),
-  );
+  return Array.from(groups, ([account, v]) => ({ account, ...v })).sort((a, b) => a.account.localeCompare(b.account));
 }
 
 const VAT_LABELS: Record<string, string> = {
@@ -114,28 +194,22 @@ const VAT_LABELS: Record<string, string> = {
   review: "Review required",
 };
 
-// Per-transaction VAT. Output VAT on receipts, input VAT on payments, only for
-// standard-rated lines (SA 15% inclusive = 15/115). Never silently zeroes a line
-// that has a real VAT treatment — the treatment is always shown.
-function vatForTransaction(t: AccountingTransaction) {
-  const isStandard = t.vatTreatment === "standard";
-  const outputVat = isStandard ? (t.creditAmount ?? 0) * VAT_RATE : 0;
-  const inputVat = isStandard ? (t.debitAmount ?? 0) * VAT_RATE : 0;
-  return { outputVat, inputVat, netVat: outputVat - inputVat };
+function reviewReason(t: AccountingTransaction): string {
+  if (t.vatTreatment === "review") return "VAT treatment unresolved";
+  if (t.reviewStatus === "needs_review" || t.reviewStatus === "in_review") return "Flagged for review";
+  if (t.accountCategory === "Review Required" || t.accountCategory === "Uncategorised Expense") return "Category unresolved";
+  if (t.confidence < 80) return `Low confidence (${t.confidence}%)`;
+  return "";
 }
 
 // ─── Section builders ───────────────────────────────────────────────────────
 
-export function buildExportSections(
-  detail: AccountingRunDetail,
-  resolvedCompany: string,
-): ExportSection[] {
-  const { run } = detail;
+export function buildExportSections(detail: AccountingRunDetail, resolvedCompany: string): ExportSection[] {
+  const meta = buildStatementMetadata(detail, resolvedCompany);
   const txns = detail.transactions;
-  const totalDebits = txns.reduce((s, t) => s + (t.debitAmount ?? 0), 0);
-  const totalCredits = txns.reduce((s, t) => s + (t.creditAmount ?? 0), 0);
   const reviews = txns.filter(isReviewItem);
-  const totals = { debit: totalDebits, credit: totalCredits, bankCharges: run.bankChargesTotal };
+  const totals = { debit: meta.totalPayments, credit: meta.totalReceipts, bankCharges: meta.bankCharges };
+  const run = detail.run;
 
   const pl = computeProfitLoss(txns, run);
   const cashFlow = computeCashFlow(txns, run);
@@ -148,50 +222,62 @@ export function buildExportSections(
   const risk = computeSarsRisk(txns, vatAnomalies, duplicates, unusuals, directors);
   const audit = buildAuditSummary(txns, run, duplicates, unusuals, vatAnomalies, risk);
 
-  const expectedClosing = (run.openingBalance ?? 0) + totalCredits - totalDebits;
-  const difference = expectedClosing - (run.closingBalance ?? 0);
-
   const sections: ExportSection[] = [];
 
-  // Cover
+  // Cover — canonical header + reconciliation banner
   sections.push({
     id: "cover",
     label: "Cover",
     sheet: "Cover",
     rows: [
-      [T(packTitle(resolvedCompany))],
+      [TITLE(meta.title)],
       [],
-      [B("Company / account holder"), S(resolvedCompany || "Not detected")],
-      [B("Bank"), S(run.bank)],
-      [B("Account number"), S(run.accountNumber ?? "")],
-      [B("Statement period"), S(`${run.statementPeriodStart ?? "?"} to ${run.statementPeriodEnd ?? "?"}`)],
-      [B("Transactions"), N(txns.length)],
-      [B("Extraction confidence"), S(`${Math.round(run.confidence)}%`)],
+      meta.reconciled
+        ? [GOOD("Status: Balanced — opening + receipts − payments = closing")]
+        : [WARN(`REVIEW REQUIRED — reconciliation difference of R${Math.abs(meta.reconciliationDifference).toFixed(2)}. See Reconciliation Issues.`)],
+      [],
+      [B("Company / account holder"), S(meta.company || "Not detected")],
+      [B("Bank"), S(meta.bank)],
+      [B("Account number"), S(meta.accountNumber)],
+      [B("Statement period"), S(meta.statementPeriod)],
+      [B("Opening balance"), M(meta.openingBalance)],
+      [B("Closing balance"), M(meta.closingBalance)],
+      [B("Total receipts"), M(meta.totalReceipts)],
+      [B("Total payments"), M(meta.totalPayments)],
+      [B("Transactions"), INT(meta.transactionCount)],
+      [B("Review items"), INT(meta.reviewCount)],
+      [B("Extraction confidence"), S(`${meta.confidence}%`)],
       [B("Generated"), S(new Date().toISOString().slice(0, 10))],
       [],
-      [B("Disclaimer"), S(DISCLAIMER)],
+      [MUTE(DISCLAIMER)],
     ],
   });
 
-  // Summary (Bank Statement)
+  // Summary — same canonical metadata as the Cover
   sections.push({
     id: "summary",
     label: "Bank Statement Summary",
     sheet: "Summary",
+    headerRow: 1,
     rows: [
-      [B("Metric"), B("Value")],
-      [S("Company"), S(resolvedCompany)],
-      [S("Account number"), S(run.accountNumber ?? "")],
-      [S("Statement period start"), S(run.statementPeriodStart ?? "")],
-      [S("Statement period end"), S(run.statementPeriodEnd ?? "")],
-      [S("Opening balance"), M(run.openingBalance)],
-      [S("Total receipts"), M(totalCredits)],
-      [S("Total payments"), M(totalDebits)],
-      [S("Closing balance"), M(run.closingBalance)],
-      [S("Net movement"), M(totalCredits - totalDebits)],
-      [S("Transactions extracted"), N(txns.length)],
-      [S("Review items"), N(reviews.length)],
-      [S("Bank charges"), M(run.bankChargesTotal)],
+      [HDR("Metric"), HDR("Value")],
+      [S("Company"), S(meta.company)],
+      [S("Account number"), S(meta.accountNumber)],
+      [S("Statement period start"), S(meta.periodStart)],
+      [S("Statement period end"), S(meta.periodEnd)],
+      [S("Opening balance"), M(meta.openingBalance)],
+      [S("Total receipts"), M(meta.totalReceipts)],
+      [S("Total payments"), M(meta.totalPayments)],
+      [S("Closing balance"), M(meta.closingBalance)],
+      [S("Net movement"), M(meta.totalReceipts - meta.totalPayments)],
+      [S("Expected closing (recon)"), M(meta.expectedClosing)],
+      [S("Reconciliation difference"), meta.reconciled ? M(0) : MW(meta.reconciliationDifference)],
+      [S("Transactions extracted"), INT(meta.transactionCount)],
+      [S("Review items"), INT(meta.reviewCount)],
+      [S("Bank charges"), M(meta.bankCharges)],
+      [S("Est. Output VAT"), M(meta.estOutputVat)],
+      [S("Est. Input VAT"), M(meta.estInputVat)],
+      [S("Net VAT position"), M(meta.netVat)],
     ],
   });
 
@@ -200,8 +286,10 @@ export function buildExportSections(
     id: "transactions",
     label: "Transactions",
     sheet: "Transactions",
+    headerRow: 1,
+    filter: true,
     rows: [
-      [B("Date"), B("Description"), B("Money In"), B("Money Out"), B("Balance"), B("Account"), B("VAT Treatment"), B("Review"), B("Confidence"), B("Notes")],
+      [HDR("Date"), HDR("Description"), HDR("Money In"), HDR("Money Out"), HDR("Balance"), HDR("Account"), HDR("VAT Treatment"), HDR("Review"), HDR("Confidence"), HDR("Notes")],
       ...txns.map((t) => [
         S(t.transactionDate ?? ""),
         S(t.description),
@@ -211,10 +299,10 @@ export function buildExportSections(
         S(t.accountCategory),
         S(VAT_LABELS[t.vatTreatment] ?? t.vatTreatment),
         S(t.reviewStatus),
-        N(t.confidence),
+        INT(t.confidence),
         S(t.notes),
       ]),
-      [B("Totals"), S(""), M(totalCredits), M(totalDebits), S(""), S(""), S(""), S(""), S(""), S("")],
+      [B("Totals"), S(""), MT(meta.totalReceipts), MT(meta.totalPayments), S(""), S(""), S(""), S(""), S(""), S("")],
     ],
   });
 
@@ -223,8 +311,10 @@ export function buildExportSections(
     id: "review-items",
     label: "Review Items",
     sheet: "Review Items",
+    headerRow: 1,
+    filter: reviews.length > 0,
     rows: [
-      [B("Date"), B("Description"), B("Money In"), B("Money Out"), B("Account"), B("VAT Treatment"), B("Review Status"), B("Confidence"), B("Notes")],
+      [HDR("Date"), HDR("Description"), HDR("Money In"), HDR("Money Out"), HDR("Account"), HDR("VAT Treatment"), HDR("Review Status"), HDR("Reason"), HDR("Confidence")],
       ...(reviews.length
         ? reviews.map((t) => [
             S(t.transactionDate ?? ""),
@@ -233,15 +323,15 @@ export function buildExportSections(
             M(t.debitAmount ?? 0),
             S(t.accountCategory),
             S(VAT_LABELS[t.vatTreatment] ?? t.vatTreatment),
-            S(t.reviewStatus),
-            N(t.confidence),
-            S(t.notes),
+            WARN(t.reviewStatus),
+            S(reviewReason(t)),
+            INT(t.confidence),
           ])
-        : [[S("No items require review.")]]),
+        : [[GOOD("No items require review.")]]),
     ],
   });
 
-  // VAT Schedule (fixes #2)
+  // VAT Schedule (fixes #7)
   const vatDetailRows: Cell[][] = txns.map((t) => {
     const { outputVat, inputVat, netVat } = vatForTransaction(t);
     const claim =
@@ -252,34 +342,37 @@ export function buildExportSections(
             ? "Claimable (invoice on file)"
             : "Invoice required"
           : VAT_LABELS[t.vatTreatment] ?? t.vatTreatment;
+    const netCell = netVat < 0 ? { v: netVat, num: true, fmt: "money" as const } : M(netVat);
     return [
       S(t.transactionDate ?? ""),
       S(t.description),
       M(t.creditAmount ?? 0),
       M(t.debitAmount ?? 0),
       S(VAT_LABELS[t.vatTreatment] ?? t.vatTreatment),
+      S(claim),
       M(outputVat),
       M(inputVat),
-      M(netVat),
-      S(claim),
-      S(t.reviewStatus),
+      netCell,
+      S(t.supportedByInvoice ? "Invoice on file" : "No document"),
+      S(reviewReason(t) || "—"),
+      INT(t.confidence),
     ];
   });
-  const totalOutputVat = txns.reduce((s, t) => s + vatForTransaction(t).outputVat, 0);
-  const totalInputVat = txns.reduce((s, t) => s + vatForTransaction(t).inputVat, 0);
   sections.push({
     id: "vat",
     label: "VAT Schedule",
     sheet: "VAT Schedule",
+    headerRow: 6,
+    filter: true,
     rows: [
-      [T("VAT Schedule")],
-      [S("VAT estimated at 15% inclusive (15/115) on standard-rated transactions. Verify against SARS VAT201. Not tax advice.")],
+      [TITLE("VAT Schedule")],
+      [MUTE("VAT estimated at 15% inclusive (15/115) on standard-rated transactions. Verify against SARS VAT201. Not tax advice.")],
       [],
-      [B("Est. Output VAT"), M(totalOutputVat), B("Est. Input VAT"), M(totalInputVat), B("Net VAT Position"), M(totalOutputVat - totalInputVat)],
+      [B("Est. Output VAT"), M(meta.estOutputVat), B("Est. Input VAT"), M(meta.estInputVat), B("Net VAT Position"), M(meta.netVat)],
       [],
-      [B("Date"), B("Description"), B("Money In"), B("Money Out"), B("VAT Treatment"), B("Output VAT"), B("Input VAT"), B("Net VAT"), B("Claim Status"), B("Review")],
+      [HDR("Date"), HDR("Description"), HDR("Money In"), HDR("Money Out"), HDR("VAT Treatment"), HDR("Claim Status"), HDR("Output VAT"), HDR("Input VAT"), HDR("Net VAT"), HDR("Document Status"), HDR("Review Reason"), HDR("Confidence")],
       ...vatDetailRows,
-      [B("Totals"), S(""), S(""), S(""), S(""), M(totalOutputVat), M(totalInputVat), M(totalOutputVat - totalInputVat), S(""), S("")],
+      [B("Totals"), S(""), S(""), S(""), S(""), S(""), MT(meta.estOutputVat), MT(meta.estInputVat), MT(meta.netVat), S(""), S(""), S("")],
     ],
   });
 
@@ -289,10 +382,12 @@ export function buildExportSections(
     id: "general-ledger",
     label: "General Ledger",
     sheet: "General Ledger",
+    headerRow: 1,
+    filter: true,
     rows: [
-      [B("Account"), B("Transactions"), B("Debits"), B("Credits"), B("Net Movement")],
-      ...groups.map((g) => [S(g.account), N(g.count), M(g.debit), M(g.credit), M(g.credit - g.debit)]),
-      [B("Totals"), N(txns.length), M(totalDebits), M(totalCredits), M(totalCredits - totalDebits)],
+      [HDR("Account"), HDR("Transactions"), HDR("Debits"), HDR("Credits"), HDR("Net Movement")],
+      ...groups.map((g) => [S(g.account), INT(g.count), M(g.debit), M(g.credit), M(g.credit - g.debit)]),
+      [B("Totals"), INT(txns.length), MT(meta.totalPayments), MT(meta.totalReceipts), MT(meta.totalReceipts - meta.totalPayments)],
     ],
   });
 
@@ -303,15 +398,16 @@ export function buildExportSections(
     id: "trial-balance",
     label: "Trial Balance",
     sheet: "Trial Balance",
+    headerRow: 3,
     rows: [
-      [S("Derived from AI-assigned transaction categories. Not a full double-entry trial balance — the bank contra account is not represented.")],
+      [MUTE("Derived from AI-assigned transaction categories. Not a full double-entry trial balance — the bank contra account is not represented.")],
       [],
-      [B("Account"), B("Debit Balance"), B("Credit Balance")],
+      [HDR("Account"), HDR("Debit Balance"), HDR("Credit Balance")],
       ...groups.map((g) => {
         const net = g.debit - g.credit;
         return [S(g.account), M(net > 0 ? net : 0), M(net < 0 ? Math.abs(net) : 0)];
       }),
-      [B("Totals"), M(drTotal), M(crTotal)],
+      [B("Totals"), MT(drTotal), MT(crTotal)],
     ],
   });
 
@@ -320,61 +416,91 @@ export function buildExportSections(
     id: "bank-reconciliation",
     label: "Bank Reconciliation",
     sheet: "Bank Reconciliation",
+    headerRow: 1,
     rows: [
-      [B("Bank Reconciliation"), B("Amount")],
-      [S("Opening Balance"), M(run.openingBalance)],
-      [S("+ Receipts"), M(totalCredits)],
-      [S("- Payments"), M(totalDebits)],
-      [S("= Expected Closing Balance"), M(expectedClosing)],
-      [S("Statement Closing Balance"), M(run.closingBalance)],
-      [S("Difference"), M(difference)],
-      [S("Status"), S(Math.abs(difference) < 0.01 ? "Reconciled" : "Review required")],
-      [S("Bank charges"), M(run.bankChargesTotal)],
-      [S("Bank VAT (15/115)"), M(run.bankChargesTotal * VAT_RATE)],
+      [HDR("Bank Reconciliation"), HDR("Amount")],
+      [S("Opening Balance"), M(meta.openingBalance)],
+      [S("+ Receipts"), M(meta.totalReceipts)],
+      [S("- Payments"), M(meta.totalPayments)],
+      [B("= Expected Closing Balance"), MT(meta.expectedClosing)],
+      [S("Statement Closing Balance"), M(meta.closingBalance)],
+      [B("Difference"), meta.reconciled ? MT(0) : MW(meta.reconciliationDifference)],
+      [S("Status"), meta.reconciled ? GOOD("Reconciled") : WARN("Review required")],
+      [S("Bank charges"), M(meta.bankCharges)],
+      [S("Bank VAT (15/115)"), M(meta.bankCharges * VAT_RATE)],
     ],
   });
+
+  // Reconciliation Issues — only when unbalanced (never silently export bad values)
+  if (!meta.reconciled) {
+    sections.push({
+      id: "reconciliation-issues",
+      label: "Reconciliation Issues",
+      sheet: "Reconciliation Issues",
+      rows: [
+        [TITLE("Reconciliation Issues")],
+        [WARN("This statement does not reconcile. Do not use these figures for filing until resolved.")],
+        [],
+        [B("Opening balance"), M(meta.openingBalance)],
+        [B("+ Receipts"), M(meta.totalReceipts)],
+        [B("- Payments"), M(meta.totalPayments)],
+        [B("= Expected closing"), M(meta.expectedClosing)],
+        [B("Statement closing"), M(meta.closingBalance)],
+        [B("Difference"), MW(meta.reconciliationDifference)],
+        [],
+        [B("Likely causes")],
+        [S("Missing or duplicated transactions during extraction")],
+        [S("Opening/closing balance mis-read from the statement")],
+        [S("Bank charges or interest not captured on separate lines")],
+        [],
+        [B("What is needed")],
+        [S("Re-check the source statement totals and re-process, or adjust the affected transactions in the review queue.")],
+      ],
+    });
+  }
 
   // Profit & Loss
   sections.push({
     id: "profit-loss",
     label: "Profit & Loss",
     sheet: "Profit & Loss",
+    headerRow: 4,
     rows: [
-      [T("Profit & Loss (cash basis)")],
-      [S(pl.note)],
+      [TITLE("Profit & Loss (cash basis)")],
+      [MUTE(pl.note)],
       [],
-      [B("Income"), B("Count"), B("Amount")],
-      ...pl.revenue.map((r) => [S(r.category), N(r.count), M(r.amount)]),
-      [B("Total Revenue"), S(""), M(pl.totalRevenue)],
+      [HDR("Income"), HDR("Count"), HDR("Amount")],
+      ...pl.revenue.map((r) => [S(r.category), INT(r.count), M(r.amount)]),
+      [B("Total Revenue"), S(""), MT(pl.totalRevenue)],
       [],
-      [B("Expenses"), B("Count"), B("Amount")],
-      ...pl.expenses.map((e) => [S(e.category), N(e.count), M(e.amount)]),
-      [B("Total Expenses"), S(""), M(pl.totalExpenses)],
+      [HDR("Expenses"), HDR("Count"), HDR("Amount")],
+      ...pl.expenses.map((e) => [S(e.category), INT(e.count), M(e.amount)]),
+      [B("Total Expenses"), S(""), MT(pl.totalExpenses)],
       [],
-      [B(pl.netSurplus >= 0 ? "Net Surplus" : "Net Deficit"), S(""), M(pl.netSurplus)],
-      [S("Inter-account transfers excluded"), S(""), M(pl.interAccountTransfers)],
+      [B(pl.netSurplus >= 0 ? "Net Surplus" : "Net Deficit"), S(""), pl.netSurplus >= 0 ? MT(pl.netSurplus) : MW(pl.netSurplus)],
+      [MUTE("Inter-account transfers excluded"), S(""), M(pl.interAccountTransfers)],
     ],
   });
 
-  // Balance Sheet (not fully derivable — explain honestly)
+  // Balance Sheet (partial — explained, not fabricated)
   sections.push({
     id: "balance-sheet",
     label: "Balance Sheet",
     sheet: "Balance Sheet",
     rows: [
-      [T("Balance Sheet")],
-      [B("Status"), S("Partial — cash position only")],
+      [TITLE("Balance Sheet")],
+      [WARN("Status: Partial — cash position only")],
       [],
-      [B("Available from bank data"), B("Amount")],
-      [S("Cash at bank (closing balance)"), M(run.closingBalance)],
+      [HDR("Available from bank data"), HDR("Amount")],
+      [S("Cash at bank (closing balance)"), M(meta.closingBalance)],
       [],
       [B("Not available from a single bank statement")],
-      [S("Fixed assets, debtors, creditors, inventory, loans, equity and retained earnings")],
+      [MUTE("Fixed assets, debtors, creditors, inventory, loans, equity and retained earnings")],
       [],
       [B("Data needed for a full balance sheet")],
-      [S("General ledger, asset register, accounts receivable/payable, loan schedules and prior-year equity")],
+      [MUTE("General ledger, asset register, accounts receivable/payable, loan schedules and prior-year equity")],
       [],
-      [S("No figures are fabricated. A full IFRS balance sheet requires accountant input.")],
+      [MUTE("No figures are fabricated. A full IFRS balance sheet requires accountant input.")],
     ],
   });
 
@@ -384,65 +510,66 @@ export function buildExportSections(
     label: "Cash Flow",
     sheet: "Cash Flow",
     rows: [
-      [T("Cash Flow (direct method)")],
-      [S(cashFlow.note)],
+      [TITLE("Cash Flow (direct method)")],
+      [MUTE(cashFlow.note)],
       [],
       [B("Opening balance"), M(cashFlow.openingBalance)],
       [B("Closing balance"), M(cashFlow.closingBalance)],
       [],
-      [B("Inflows"), B("Amount")],
+      [HDR("Inflows"), HDR("Amount")],
       ...cashFlow.inflows.map((i) => [S(i.label), M(i.amount)]),
-      [B("Total inflows"), M(cashFlow.totalInflows)],
+      [B("Total inflows"), MT(cashFlow.totalInflows)],
       [],
-      [B("Outflows"), B("Amount")],
+      [HDR("Outflows"), HDR("Amount")],
       ...cashFlow.outflows.map((o) => [S(o.label), M(o.amount)]),
-      [B("Total outflows"), M(cashFlow.totalOutflows)],
+      [B("Total outflows"), MT(cashFlow.totalOutflows)],
       [],
-      [B("Net movement"), M(cashFlow.netMovement)],
-      [B("Reconciled"), S(cashFlow.reconciled ? "Yes" : "No — check for missing transactions")],
+      [B("Net movement"), MT(cashFlow.netMovement)],
+      [B("Reconciled"), cashFlow.reconciled ? GOOD("Yes") : WARN("No — check for missing transactions")],
     ],
   });
 
-  // Financial Statements overview (ratios)
+  // Financial Ratios
   sections.push({
     id: "financial-statements",
     label: "Financial Ratios",
     sheet: "Financial Ratios",
+    headerRow: 4,
     rows: [
-      [T("Financial Ratios")],
-      [S(ratios.note)],
+      [TITLE("Financial Ratios")],
+      [MUTE(ratios.note)],
       [],
-      [B("Ratio"), B("Value")],
-      [S("Expense ratio"), S(ratios.expenseRatio !== null ? `${(ratios.expenseRatio * 100).toFixed(1)}%` : "—")],
-      [S("Net cash margin"), S(ratios.netCashMargin !== null ? `${ratios.netCashMargin.toFixed(1)}%` : "—")],
+      [HDR("Ratio"), HDR("Value")],
+      [S("Expense ratio"), ratios.expenseRatio !== null ? PCT(ratios.expenseRatio) : S("—")],
+      [S("Net cash margin"), ratios.netCashMargin !== null ? PCT(ratios.netCashMargin / 100) : S("—")],
       [S("Cash coverage"), S(ratios.cashCoverageRatio !== null ? `${ratios.cashCoverageRatio.toFixed(2)}x` : "—")],
       [S("Avg monthly income"), M(ratios.avgMonthlyIncome ?? 0)],
       [S("Avg monthly expenses"), M(ratios.avgMonthlyExpenses ?? 0)],
       [S("Net monthly cash flow"), M(ratios.netMonthlyCashFlow ?? 0)],
-      [S("Bank charges ratio"), S(ratios.bankChargesRatio !== null ? `${ratios.bankChargesRatio.toFixed(2)}%` : "—")],
-      [S("Period (months)"), N(ratios.periodMonths)],
+      [S("Bank charges ratio"), ratios.bankChargesRatio !== null ? PCT(ratios.bankChargesRatio / 100) : S("—")],
+      [S("Period (months)"), INT(ratios.periodMonths)],
     ],
   });
 
-  // Tax & VAT (anomalies + SARS risk)
+  // Tax & VAT
   sections.push({
     id: "tax-vat",
     label: "Tax & VAT Intelligence",
     sheet: "Tax & VAT",
     rows: [
-      [T("Tax & VAT Intelligence")],
+      [TITLE("Tax & VAT Intelligence")],
       [B("Internal SARS risk score"), S(`${risk.score}/100 (${risk.level})`)],
-      [S(risk.summary)],
+      [MUTE(risk.summary)],
       [],
-      [B("Risk factor"), B("Score"), B("Max"), B("Detail")],
-      ...risk.factors.map((f) => [S(f.name), N(f.score), N(f.maxScore), S(f.detail)]),
+      [HDR("Risk factor"), HDR("Score"), HDR("Max"), HDR("Detail")],
+      ...risk.factors.map((f) => [S(f.name), INT(f.score), INT(f.maxScore), S(f.detail)]),
       [],
-      [B("VAT anomalies"), B("Severity"), B("Amount"), B("Detail")],
+      [HDR("VAT anomalies"), HDR("Severity"), HDR("Amount"), HDR("Detail")],
       ...(vatAnomalies.length
-        ? vatAnomalies.map((a) => [S(a.type), S(a.severity), M(a.amount), S(a.description)])
-        : [[S("No VAT anomalies detected.")]]),
+        ? vatAnomalies.map((a) => [S(a.type), WARN(a.severity), M(a.amount), S(a.description)])
+        : [[GOOD("No VAT anomalies detected.")]]),
       [],
-      [S("Internal advisory only. Not a SARS assessment or tax advice.")],
+      [MUTE("Internal advisory only. Not a SARS assessment or tax advice.")],
     ],
   });
 
@@ -452,23 +579,23 @@ export function buildExportSections(
     label: "AI Intelligence",
     sheet: "AI Intelligence",
     rows: [
-      [T("AI Transaction Intelligence")],
+      [TITLE("AI Transaction Intelligence")],
       [B(`Duplicate groups: ${duplicates.length}`), B(`Unusual: ${unusuals.length}`), B(`Director-linked: ${directors.length}`)],
       [],
-      [B("Potential duplicate payments"), B("Amount"), B("Count"), B("Confidence")],
+      [HDR("Potential duplicate payments"), HDR("Amount"), HDR("Count"), HDR("Confidence")],
       ...(duplicates.length
-        ? duplicates.map((d) => [S(d.transactions[0]?.description ?? ""), M(d.amount), N(d.transactions.length), S(`${d.confidence}%`)])
-        : [[S("No duplicate payments detected.")]]),
+        ? duplicates.map((d) => [S(d.transactions[0]?.description ?? ""), M(d.amount), INT(d.transactions.length), S(`${d.confidence}%`)])
+        : [[GOOD("No duplicate payments detected.")]]),
       [],
-      [B("Unusual transactions"), B("Amount"), B("Reason")],
+      [HDR("Unusual transactions"), HDR("Amount"), HDR("Reason")],
       ...(unusuals.length
         ? unusuals.map((u) => [S(u.transaction.description), M(u.transaction.debitAmount ?? u.transaction.creditAmount ?? 0), S(u.reason)])
-        : [[S("No unusual transactions detected.")]]),
+        : [[GOOD("No unusual transactions detected.")]]),
       [],
-      [B("Director / related-party"), B("Amount"), B("Matched")],
+      [HDR("Director / related-party"), HDR("Amount"), HDR("Matched")],
       ...(directors.length
         ? directors.map((d) => [S(d.transaction.description), M(d.transaction.debitAmount ?? d.transaction.creditAmount ?? 0), S(d.matchedKeyword)])
-        : [[S("No director-linked transactions detected.")]]),
+        : [[GOOD("No director-linked transactions detected.")]]),
     ],
   });
 
@@ -477,15 +604,16 @@ export function buildExportSections(
     id: "forecasting",
     label: "Forecasting",
     sheet: "Forecasting",
+    headerRow: 8,
     rows: [
-      [T("Cash Flow Forecast")],
-      [S(forecast.note)],
+      [TITLE("Cash Flow Forecast")],
+      [MUTE(forecast.note)],
       [],
       [B("Monthly avg income"), M(forecast.monthlyAvgIncome)],
       [B("Monthly avg expenses"), M(forecast.monthlyAvgExpenses)],
       [B("Monthly net flow"), M(forecast.monthlyNetFlow)],
       [],
-      [B("Month"), B("Projected Income"), B("Projected Expenses"), B("Net Flow"), B("Closing Balance")],
+      [HDR("Month"), HDR("Projected Income"), HDR("Projected Expenses"), HDR("Net Flow"), HDR("Closing Balance")],
       ...forecast.projections.map((p) => [S(p.label), M(p.projectedIncome), M(p.projectedExpenses), M(p.projectedNetFlow), M(p.projectedClosingBalance)]),
     ],
   });
@@ -496,16 +624,21 @@ export function buildExportSections(
     label: "Audit Tools",
     sheet: "Audit Tools",
     rows: [
-      [T("Audit Pack")],
+      [TITLE("Audit Pack")],
       [B("Risk"), S(`${audit.riskScore.score}/100 (${audit.riskScore.level})`)],
-      [B("Review items"), N(audit.reviewItems)],
-      [B("Uncategorised"), N(audit.uncategorized)],
-      [B("Payments >R5k without invoice"), N(audit.transactionsNeedingInvoice.length)],
+      [B("Review items"), INT(audit.reviewItems)],
+      [B("Uncategorised"), INT(audit.uncategorized)],
+      [B("Payments >R5k without invoice"), INT(audit.transactionsNeedingInvoice.length)],
       [],
-      [B("Finding"), B("Severity"), B("Category"), B("Detail")],
+      [HDR("Finding"), HDR("Severity"), HDR("Category"), HDR("Detail")],
       ...(audit.findings.length
-        ? audit.findings.map((f) => [S(f.title), S(f.severity), S(f.category), S(f.detail)])
-        : [[S("No audit findings. Statement appears complete and well-classified.")]]),
+        ? audit.findings.map((f) => [
+            S(f.title),
+            f.severity === "high" || f.severity === "critical" ? WARN(f.severity) : S(f.severity),
+            S(f.category),
+            S(f.detail),
+          ])
+        : [[GOOD("No audit findings. Statement appears complete and well-classified.")]]),
     ],
   });
 
@@ -514,18 +647,20 @@ export function buildExportSections(
     id: "assumptions",
     label: "Assumptions & Limitations",
     sheet: "Assumptions",
+    headerRow: 4,
     rows: [
-      [T("Assumptions & Limitations")],
-      [S(DISCLAIMER)],
+      [TITLE("Assumptions & Limitations")],
+      [MUTE(DISCLAIMER)],
       [],
-      [B("Module"), B("Status"), B("Notes")],
-      [S("Profit & Loss"), S("Cash basis"), S("Excludes accruals, depreciation, prepayments and capital items.")],
-      [S("Balance Sheet"), S("Partial"), S("Cash position only. Full statement needs GL, assets, liabilities, equity.")],
-      [S("Cash Flow"), S("Direct method"), S("Investing/financing activities not separately classified.")],
-      [S("VAT"), S("Estimated"), S("15% inclusive on standard-rated lines. Verify against tax invoices and VAT201.")],
-      [S("SARS Risk"), S("Advisory"), S("Internal 0–100 score. Not a SARS assessment or tax advice.")],
-      [S("Forecasting"), S(forecast.periodMonths <= 1 ? "Single period" : "Multi-period"), S("Assumes consistent patterns; process more statements to improve.")],
-      [S("Trial Balance"), S("Indicative"), S("Not double-entry; bank contra account not represented.")],
+      [HDR("Module"), HDR("Status"), HDR("Notes")],
+      [S("Profit & Loss"), S("Cash basis"), MUTE("Excludes accruals, depreciation, prepayments and capital items.")],
+      [S("Balance Sheet"), S("Partial"), MUTE("Cash position only. Full statement needs GL, assets, liabilities, equity.")],
+      [S("Cash Flow"), S("Direct method"), MUTE("Investing/financing activities not separately classified.")],
+      [S("VAT"), S("Estimated"), MUTE("15% inclusive on standard-rated lines. Verify against tax invoices and VAT201.")],
+      [S("SARS Risk"), S("Advisory"), MUTE("Internal 0–100 score. Not a SARS assessment or tax advice.")],
+      [S("Forecasting"), S(forecast.periodMonths <= 1 ? "Single period" : "Multi-period"), MUTE("Assumes consistent patterns; process more statements to improve.")],
+      [S("Trial Balance"), S("Indicative"), MUTE("Not double-entry; bank contra account not represented.")],
+      [S("Reconciliation"), meta.reconciled ? S("Balanced") : S("Review required"), MUTE(meta.reconciled ? "Opening + receipts − payments = closing." : "See Reconciliation Issues sheet.")],
     ],
   });
 
@@ -535,7 +670,7 @@ export function buildExportSections(
 // ─── CSV renderer ───────────────────────────────────────────────────────────
 
 function csvCell(cell: Cell): string {
-  const text = cell.k === "n" ? String(cell.v) : cell.v;
+  const text = cell.num ? String(cell.v) : String(cell.v);
   return /[",\n]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
 }
 
@@ -543,7 +678,7 @@ export function sectionToCsv(section: ExportSection): string {
   return section.rows.map((row) => row.map(csvCell).join(",")).join("\n");
 }
 
-// ─── XLSX renderer (multi-sheet, styled, red negatives) ─────────────────────
+// ─── XLSX renderer (multi-sheet, styled, auto-fit, frozen, filtered) ─────────
 
 const encoder = new TextEncoder();
 const xml = (v: string) => v.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
@@ -559,43 +694,106 @@ function colLetter(index: number): string {
 }
 
 function sanitizeSheetName(name: string, used: Set<string>): string {
-  let base = name.replace(/[:\\/?*[\]]/g, " ").slice(0, 31).trim() || "Sheet";
+  const base = name.replace(/[:\\/?*[\]]/g, " ").slice(0, 31).trim() || "Sheet";
   let candidate = base;
   let i = 2;
   while (used.has(candidate.toLowerCase())) {
-    base = name.slice(0, 28);
-    candidate = `${base} ${i}`;
+    candidate = `${base.slice(0, 28)} ${i}`;
     i += 1;
   }
   used.add(candidate.toLowerCase());
   return candidate;
 }
 
-// Style indices in styles.xml below:
-//   0 plain, 1 bold, 2 title (bold white on dark fill), 3 money (red negatives)
-const STYLE = { plain: 0, bold: 1, title: 2, money: 3 } as const;
-
-function cellXml(cell: Cell, ref: string): string {
-  if (cell.k === "n") {
-    const style = cell.money ? STYLE.money : STYLE.plain;
-    const v = Number.isFinite(cell.v) ? cell.v : 0;
-    return `<c r="${ref}" s="${style}"><v>${v}</v></c>`;
+// cellXfs indices (see STYLES_XML): resolve from cell shape.
+function xfIndex(cell: Cell): number {
+  if (cell.num) {
+    if (cell.fmt === "int") return 10;
+    if (cell.fmt === "percent") return 11;
+    if (cell.style === "total") return 9;
+    if (cell.style === "warn") return 12;
+    if (cell.style === "good") return 13;
+    return 8; // money
   }
-  const style = cell.style === "bold" ? STYLE.bold : cell.style === "title" ? STYLE.title : STYLE.plain;
-  return `<c r="${ref}" s="${style}" t="inlineStr"><is><t xml:space="preserve">${xml(cell.v)}</t></is></c>`;
+  switch (cell.style) {
+    case "bold":
+      return 1;
+    case "title":
+      return 2;
+    case "header":
+      return 3;
+    case "good":
+      return 4;
+    case "warn":
+      return 5;
+    case "muted":
+      return 6;
+    case "total":
+      return 7;
+    default:
+      return 0;
+  }
 }
 
-function sheetXml(rows: Cell[][]): string {
+function displayLen(cell: Cell): number {
+  if (cell.num) {
+    if (cell.fmt === "percent") return 6;
+    const abs = Math.abs(Number(cell.v));
+    return abs.toLocaleString("en-ZA", { minimumFractionDigits: cell.fmt === "int" ? 0 : 2 }).length + 2;
+  }
+  return String(cell.v).length;
+}
+
+function cellXml(cell: Cell, ref: string): string {
+  const s = xfIndex(cell);
+  if (cell.num) {
+    const v = Number.isFinite(Number(cell.v)) ? Number(cell.v) : 0;
+    return `<c r="${ref}" s="${s}"><v>${v}</v></c>`;
+  }
+  return `<c r="${ref}" s="${s}" t="inlineStr"><is><t xml:space="preserve">${xml(String(cell.v))}</t></is></c>`;
+}
+
+function sheetXml(section: ExportSection): string {
+  const rows = section.rows;
+  const maxCols = rows.reduce((m, r) => Math.max(m, r.length), 1);
+
+  // Column widths (auto-fit, clamped).
+  const widths: number[] = [];
+  for (let c = 0; c < maxCols; c += 1) {
+    let w = 10;
+    for (const row of rows) {
+      if (row[c]) w = Math.max(w, displayLen(row[c]) + 1);
+    }
+    widths.push(Math.min(60, w));
+  }
+  const cols = `<cols>${widths.map((w, i) => `<col min="${i + 1}" max="${i + 1}" width="${w.toFixed(1)}" customWidth="1"/>`).join("")}</cols>`;
+
   const body = rows
     .map((row, r) => {
       const cells = row.map((cell, c) => cellXml(cell, `${colLetter(c)}${r + 1}`)).join("");
       return `<row r="${r + 1}">${cells}</row>`;
     })
     .join("");
-  return `<?xml version="1.0" encoding="UTF-8"?><worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetData>${body}</sheetData></worksheet>`;
+
+  // Freeze rows above+including the header row.
+  const freeze = section.headerRow
+    ? `<sheetView tabSelected="0" workbookViewId="0"><pane ySplit="${section.headerRow}" topLeftCell="A${section.headerRow + 1}" activePane="bottomLeft" state="frozen"/></sheetView>`
+    : `<sheetView workbookViewId="0"/>`;
+  const sheetViews = `<sheetViews>${freeze}</sheetViews>`;
+
+  const lastRow = rows.length;
+  const lastCol = colLetter(maxCols - 1);
+  const autoFilter =
+    section.filter && section.headerRow ? `<autoFilter ref="A${section.headerRow}:${lastCol}${lastRow}"/>` : "";
+
+  return `<?xml version="1.0" encoding="UTF-8"?><worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">${sheetViews}${cols}<sheetData>${body}</sheetData>${autoFilter}</worksheet>`;
 }
 
-const STYLES_XML = `<?xml version="1.0" encoding="UTF-8"?><styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><numFmts count="1"><numFmt numFmtId="164" formatCode="#,##0.00;[Red]-#,##0.00"/></numFmts><fonts count="3"><font><sz val="11"/><name val="Calibri"/></font><font><b/><sz val="11"/><name val="Calibri"/></font><font><b/><sz val="12"/><color rgb="FFFFFFFF"/><name val="Calibri"/></font></fonts><fills count="3"><fill><patternFill patternType="none"/></fill><fill><patternFill patternType="gray125"/></fill><fill><patternFill patternType="solid"><fgColor rgb="FF1E293B"/><bgColor indexed="64"/></patternFill></fill></fills><borders count="1"><border><left/><right/><top/><bottom/><diagonal/></border></borders><cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs><cellXfs count="4"><xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/><xf numFmtId="0" fontId="1" fillId="0" borderId="0" xfId="0" applyFont="1"/><xf numFmtId="0" fontId="2" fillId="2" borderId="0" xfId="0" applyFont="1" applyFill="1"/><xf numFmtId="164" fontId="0" fillId="0" borderId="0" xfId="0" applyNumberFormat="1"/></cellXfs><cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles></styleSheet>`;
+// Fonts: 0 default, 1 bold, 2 bold-white, 3 green, 4 grey
+// Fills: 0 none, 1 gray125, 2 navy(title), 3 blue(header), 4 lightgreen, 5 lightorange, 6 lightgrey
+// Borders: 0 none, 1 top-thin
+// numFmts: 164 money(red-neg), 165 int, 166 percent
+const STYLES_XML = `<?xml version="1.0" encoding="UTF-8"?><styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><numFmts count="3"><numFmt numFmtId="164" formatCode="#,##0.00;[Red]-#,##0.00"/><numFmt numFmtId="165" formatCode="#,##0"/><numFmt numFmtId="166" formatCode="0.0%"/></numFmts><fonts count="5"><font><sz val="11"/><name val="Calibri"/></font><font><b/><sz val="11"/><name val="Calibri"/></font><font><b/><sz val="11"/><color rgb="FFFFFFFF"/><name val="Calibri"/></font><font><sz val="11"/><color rgb="FF15803D"/><name val="Calibri"/></font><font><sz val="11"/><color rgb="FF64748B"/><name val="Calibri"/></font></fonts><fills count="7"><fill><patternFill patternType="none"/></fill><fill><patternFill patternType="gray125"/></fill><fill><patternFill patternType="solid"><fgColor rgb="FF1E293B"/><bgColor indexed="64"/></patternFill></fill><fill><patternFill patternType="solid"><fgColor rgb="FF2563EB"/><bgColor indexed="64"/></patternFill></fill><fill><patternFill patternType="solid"><fgColor rgb="FFDCFCE7"/><bgColor indexed="64"/></patternFill></fill><fill><patternFill patternType="solid"><fgColor rgb="FFFFEDD5"/><bgColor indexed="64"/></patternFill></fill><fill><patternFill patternType="solid"><fgColor rgb="FFF1F5F9"/><bgColor indexed="64"/></patternFill></fill></fills><borders count="2"><border><left/><right/><top/><bottom/><diagonal/></border><border><left/><right/><top style="thin"><color rgb="FF94A3B8"/></top><bottom/><diagonal/></border></borders><cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs><cellXfs count="14"><xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/><xf numFmtId="0" fontId="1" fillId="0" borderId="0" xfId="0" applyFont="1"/><xf numFmtId="0" fontId="2" fillId="2" borderId="0" xfId="0" applyFont="1" applyFill="1"/><xf numFmtId="0" fontId="2" fillId="3" borderId="0" xfId="0" applyFont="1" applyFill="1"/><xf numFmtId="0" fontId="3" fillId="4" borderId="0" xfId="0" applyFont="1" applyFill="1"/><xf numFmtId="0" fontId="0" fillId="5" borderId="0" xfId="0" applyFill="1"/><xf numFmtId="0" fontId="4" fillId="6" borderId="0" xfId="0" applyFont="1" applyFill="1"/><xf numFmtId="0" fontId="1" fillId="0" borderId="1" xfId="0" applyFont="1" applyBorder="1"/><xf numFmtId="164" fontId="0" fillId="0" borderId="0" xfId="0" applyNumberFormat="1"/><xf numFmtId="164" fontId="1" fillId="0" borderId="1" xfId="0" applyNumberFormat="1" applyFont="1" applyBorder="1"/><xf numFmtId="165" fontId="0" fillId="0" borderId="0" xfId="0" applyNumberFormat="1"/><xf numFmtId="166" fontId="0" fillId="0" borderId="0" xfId="0" applyNumberFormat="1"/><xf numFmtId="164" fontId="0" fillId="5" borderId="0" xfId="0" applyNumberFormat="1" applyFill="1"/><xf numFmtId="164" fontId="3" fillId="0" borderId="0" xfId="0" applyNumberFormat="1" applyFont="1"/></cellXfs><cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles></styleSheet>`;
 
 export function sectionsToXlsx(sections: ExportSection[]): Uint8Array {
   const used = new Set<string>();
@@ -621,7 +819,7 @@ export function sectionsToXlsx(sections: ExportSection[]): Uint8Array {
     { name: "xl/workbook.xml", content: encoder.encode(workbook) },
     { name: "xl/_rels/workbook.xml.rels", content: encoder.encode(workbookRels) },
     { name: "xl/styles.xml", content: encoder.encode(STYLES_XML) },
-    ...named.map((s, i) => ({ name: `xl/worksheets/sheet${i + 1}.xml`, content: encoder.encode(sheetXml(s.rows)) })),
+    ...named.map((s, i) => ({ name: `xl/worksheets/sheet${i + 1}.xml`, content: encoder.encode(sheetXml(s)) })),
   ];
 
   return createZip(entries);

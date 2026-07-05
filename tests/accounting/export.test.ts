@@ -32,12 +32,35 @@ test("company name resolution falls back statement -> workspace -> generic", () 
   assert.match(src, /"Bank Statement Accounting Pack"/, "generic fallback title must exist");
 });
 
-test("VAT schedule includes output, input and net VAT columns", () => {
+test("VAT schedule includes all required columns", () => {
   const src = read("lib/accounting/export.ts");
-  assert.match(src, /B\("Output VAT"\)/);
-  assert.match(src, /B\("Input VAT"\)/);
-  assert.match(src, /B\("Net VAT"\)/);
-  assert.match(src, /B\("Claim Status"\)/);
+  for (const col of ["Output VAT", "Input VAT", "Net VAT", "Claim Status", "VAT Treatment", "Document Status", "Review Reason", "Confidence"]) {
+    assert.match(src, new RegExp(`HDR\\("${col}"\\)`), `VAT schedule must have a "${col}" column`);
+  }
+});
+
+test("one canonical statement metadata object feeds every sheet", () => {
+  const src = read("lib/accounting/export.ts");
+  assert.match(src, /export function buildStatementMetadata/, "canonical metadata builder must exist");
+  assert.match(src, /export type StatementMetadata/);
+});
+
+test("reconciliation is validated and surfaces an issues sheet when unbalanced", () => {
+  const src = read("lib/accounting/export.ts");
+  assert.match(src, /reconciliationDifference/);
+  assert.match(src, /id:\s*"reconciliation-issues"/, "must add a Reconciliation Issues section");
+  assert.match(src, /if \(!meta\.reconciled\)/, "issues sheet only when unbalanced");
+  assert.match(src, /REVIEW REQUIRED/, "cover must flag review required");
+});
+
+test("workbook has professional formatting (freeze, filter, auto-fit, colour styles)", () => {
+  const src = read("lib/accounting/export.ts");
+  assert.match(src, /state="frozen"/, "freeze panes");
+  assert.match(src, /autoFilter ref=/, "auto filter");
+  assert.match(src, /customWidth="1"/, "auto-fit column widths");
+  assert.match(src, /numFmtId="164"/, "money format");
+  assert.match(src, /FFDCFCE7/, "green fill");
+  assert.match(src, /FFFFEDD5/, "orange (review) fill");
 });
 
 test("workbook styles apply a red-negative number format", () => {

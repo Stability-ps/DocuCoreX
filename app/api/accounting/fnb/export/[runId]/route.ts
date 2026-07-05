@@ -25,7 +25,7 @@ const CSV_SECTIONS: Record<string, ExportSectionId> = {
 const XLSX_PACKS: Record<string, ExportSectionId[]> = {
   "financial-statements": ["profit-loss", "balance-sheet", "cash-flow", "financial-statements"],
   "ai-insights": ["ai-intelligence", "tax-vat"],
-  "audit-pack": ["cover", "audit-tools", "review-items", "tax-vat", "assumptions"],
+  "audit-pack": ["cover", "audit-tools", "review-items", "reconciliation-issues", "tax-vat", "assumptions"],
   all: [
     "cover",
     "summary",
@@ -35,6 +35,7 @@ const XLSX_PACKS: Record<string, ExportSectionId[]> = {
     "general-ledger",
     "trial-balance",
     "bank-reconciliation",
+    "reconciliation-issues",
     "profit-loss",
     "balance-sheet",
     "cash-flow",

@@ -114,7 +114,9 @@ else:
 
 from main import (
     balance_gap_diagnostics,
+    detect_company_name,
     insert_inferred_fnb_service_fees,
+    looks_like_address,
     parse_metadata,
     parse_fnb_section_transactions,
     parse_fnb_service_fee_transactions,
@@ -149,6 +151,37 @@ def run():
     """)
     assert_equal(metadata["company_name"], "ALLIANZ HOLDINGS (PTY) LTD", "allianz company name")
     assert_equal(metadata["account_number"], "63012589818", "allianz account number")
+
+    # Regression: the company name must be the account holder, NEVER an address
+    # line (fixes "ITALA PLACE" / "MOOIKLOOF" being used as the company name).
+    acapolite = parse_metadata("""
+    ACAPOLITE CONSULTING (PTY) LTD
+    12 ITALA PLACE
+    MOOIKLOOF
+    PRETORIA
+    0059
+    Account Number: 62811110000
+    Statement Period 01 Mar 2026 to 31 Mar 2026
+    Opening Balance 50,000.00
+    Closing Balance 62,340.10
+    """)
+    assert_equal(acapolite["company_name"], "ACAPOLITE CONSULTING (PTY) LTD", "acapolite company name")
+    assert_equal(acapolite["account_number"], "62811110000", "acapolite account number")
+
+    # Address lines must be classified as addresses.
+    for addr in ["12 ITALA PLACE", "MOOIKLOOF", "PRETORIA", "0059", "P O BOX 1234", "45 Main Street"]:
+        if not looks_like_address(addr):
+            raise AssertionError(f"expected address: {addr!r}")
+    # Real companies must NOT be classified as addresses.
+    for name in ["ACAPOLITE CONSULTING (PTY) LTD", "MABENA TRADING CC", "SMITH & SONS INC"]:
+        if looks_like_address(name):
+            raise AssertionError(f"company misclassified as address: {name!r}")
+    # A personal statement (no legal suffix) still resolves to the holder name, not the address.
+    assert_equal(
+        detect_company_name("JOHN P SMITH\n88 OAK AVENUE\nSANDTON\n2196\nStatement Period 01 Jan to 31 Jan"),
+        "JOHN P SMITH",
+        "personal account holder",
+    )
 
     debit, credit = parse_transaction_amount_cell("10129 25,000.00Cr") or (None, None)
     assert_equal(debit, None, "credit debit side")
