@@ -2,46 +2,34 @@ import { createHash, randomBytes } from "node:crypto";
 import { NextResponse } from "next/server";
 import { recordAuditLog } from "@/lib/audit";
 import { apiKeys } from "@/lib/mock-repository";
-import { isDemoAllowed } from "@/lib/supabase";
+import { isDemoAllowed, isSupabaseConfigured } from "@/lib/supabase";
 import { createSupabaseServerClient } from "@/lib/supabase-server";
+import { getWorkspaceContext } from "@/lib/server-documents";
 
 export async function GET() {
-  const supabase = await createSupabaseServerClient();
-
-  if (!supabase && isDemoAllowed) {
-    return NextResponse.json({ apiKeys, mode: "demo" });
-  }
-
-  if (!supabase) {
-    return NextResponse.json({ error: "Supabase is not configured." }, { status: 503 });
-  }
-
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
-
-  if (!user && isDemoAllowed) {
-    return NextResponse.json({ apiKeys, mode: "demo" });
-  }
-
-  if (!user) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-  }
-
-  const { data, error } = await supabase
-    .from("api_keys")
-    .select("id, name, last_four, last_used_at, revoked_at, created_at")
-    .order("created_at", { ascending: false });
-
-  if (error) {
+  if (!isSupabaseConfigured) {
     if (isDemoAllowed) {
       return NextResponse.json({ apiKeys, mode: "demo" });
     }
+    return NextResponse.json({ error: "Supabase is not configured." }, { status: 503 });
+  }
 
+  const context = await getWorkspaceContext().catch(() => null);
+  if (!context) {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+
+  const { data, error } = await context.supabase
+    .from("api_keys")
+    .select("id, name, last_four, last_used_at, revoked_at, created_at")
+    .eq("workspace_id", context.workspaceId)
+    .order("created_at", { ascending: false });
+
+  if (error) {
     return NextResponse.json({ error: error.message }, { status: 500 });
   }
 
-  return NextResponse.json({ apiKeys: data });
+  return NextResponse.json({ apiKeys: data ?? [] });
 }
 
 export async function POST(request: Request) {
@@ -164,47 +152,40 @@ export async function PATCH(request: Request) {
     return NextResponse.json({ error: "id is required" }, { status: 400 });
   }
 
-  const supabase = await createSupabaseServerClient();
   const revokedAt = body.revoked === false ? null : new Date().toISOString();
 
-  if (!supabase && isDemoAllowed) {
-    const key = apiKeys.find((item) => item.id === body.id);
-    if (!key) return NextResponse.json({ error: "API key not found" }, { status: 404 });
-    Object.assign(key, { revokedAt, revoked_at: revokedAt });
-    await recordAuditLog({ action: revokedAt ? "api_key_revoked" : "api_key_created", entityType: "api_key", entityId: body.id });
-    return NextResponse.json({ apiKey: key, mode: "demo" });
-  }
-
-  if (!supabase) {
+  if (!isSupabaseConfigured) {
+    if (isDemoAllowed) {
+      const key = apiKeys.find((item) => item.id === body.id);
+      if (!key) return NextResponse.json({ error: "API key not found" }, { status: 404 });
+      Object.assign(key, { revokedAt, revoked_at: revokedAt });
+      await recordAuditLog({ action: revokedAt ? "api_key_revoked" : "api_key_created", entityType: "api_key", entityId: body.id });
+      return NextResponse.json({ apiKey: key, mode: "demo" });
+    }
     return NextResponse.json({ error: "Supabase is not configured." }, { status: 503 });
   }
 
-  const {
-    data: { user },
-    error: userError,
-  } = await supabase.auth.getUser();
-
-  if ((userError || !user) && isDemoAllowed) {
-    const key = apiKeys.find((item) => item.id === body.id);
-    if (!key) return NextResponse.json({ error: "API key not found" }, { status: 404 });
-    Object.assign(key, { revokedAt, revoked_at: revokedAt });
-    await recordAuditLog({ action: revokedAt ? "api_key_revoked" : "api_key_created", entityType: "api_key", entityId: body.id });
-    return NextResponse.json({ apiKey: key, mode: "demo" });
-  }
-
-  if (userError || !user) {
+  const context = await getWorkspaceContext().catch(() => null);
+  if (!context) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
-  const { data, error } = await supabase
+  // Scope the revoke to this workspace so a key id from another workspace can
+  // never be mutated (defense-in-depth on top of RLS).
+  const { data, error } = await context.supabase
     .from("api_keys")
     .update({ revoked_at: revokedAt })
     .eq("id", body.id)
+    .eq("workspace_id", context.workspaceId)
     .select("id, name, last_four, last_used_at, revoked_at, created_at")
-    .single();
+    .maybeSingle();
 
   if (error) {
     return NextResponse.json({ error: error.message }, { status: 500 });
+  }
+
+  if (!data) {
+    return NextResponse.json({ error: "API key not found" }, { status: 404 });
   }
 
   await recordAuditLog({ action: revokedAt ? "api_key_revoked" : "api_key_created", entityType: "api_key", entityId: data.id });

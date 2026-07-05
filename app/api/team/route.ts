@@ -1,15 +1,22 @@
 import { NextResponse } from "next/server";
 import { recordAuditLog } from "@/lib/audit";
-import { appStore, type TeamMemberRecord } from "@/lib/app-state";
+import { getSettingsAccess, getTeamMembers, inviteTeamMember, type TeamMemberRecord } from "@/lib/app-state";
 import { createNotification } from "@/lib/notifications";
 
 const roles = ["Owner", "Admin", "Finance", "Auditor", "Viewer"] as const;
 
 export async function GET() {
-  return NextResponse.json({ members: appStore.teamMembers });
+  const access = await getSettingsAccess();
+  if (!access) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+
+  const members = await getTeamMembers(access);
+  return NextResponse.json({ members });
 }
 
 export async function POST(request: Request) {
+  const access = await getSettingsAccess();
+  if (!access) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+
   const body = (await request.json().catch(() => ({}))) as { email?: string; role?: TeamMemberRecord["role"] };
   const email = body.email?.trim().toLowerCase();
 
@@ -18,15 +25,8 @@ export async function POST(request: Request) {
   }
 
   const role = roles.includes(body.role as TeamMemberRecord["role"]) ? (body.role as TeamMemberRecord["role"]) : "Viewer";
-  const member: TeamMemberRecord = {
-    id: `invite_${Date.now()}`,
-    name: email.split("@")[0],
-    email,
-    role,
-    status: "Invited",
-  };
+  const member = await inviteTeamMember(access, email, role);
 
-  appStore.teamMembers.unshift(member);
   await createNotification({
     type: "team_user_invited",
     title: "Team invite created",

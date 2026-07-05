@@ -44,7 +44,15 @@ export async function middleware(request: NextRequest) {
 
   const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
   const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
-  const authRequired = process.env.NODE_ENV === "production" ? process.env.NEXT_PUBLIC_REQUIRE_AUTH !== "false" : process.env.NEXT_PUBLIC_REQUIRE_AUTH === "true";
+  const supabaseConfigured = Boolean(supabaseUrl && supabaseAnonKey);
+  // Auth is required whenever a real Supabase backend is configured (never serve
+  // protected pages unauthenticated from a real backend), and in production by
+  // default. This mirrors the data-layer rule in lib/access-mode.ts.
+  const authRequired = supabaseConfigured
+    ? true
+    : process.env.NODE_ENV === "production"
+      ? process.env.NEXT_PUBLIC_REQUIRE_AUTH !== "false"
+      : process.env.NEXT_PUBLIC_REQUIRE_AUTH === "true";
 
   if (!authRequired || !supabaseUrl || !supabaseAnonKey) {
     return NextResponse.next();

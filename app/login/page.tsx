@@ -7,6 +7,7 @@ import { Suspense, useState, useEffect } from "react";
 import { ArrowRight, Check, Eye, EyeOff, KeyRound, LockKeyhole, Mail, ShieldCheck, AlertCircle } from "lucide-react";
 import { isDemoAllowed, isSupabaseConfigured, supabase } from "@/lib/supabase";
 import { profileChecklist } from "@/lib/product-data";
+import { clearDocucorexClientCache } from "@/lib/client-cache";
 
 function LoginContent() {
   const searchParams = useSearchParams();
@@ -22,6 +23,11 @@ function LoginContent() {
   const [callbackError, setCallbackError] = useState("");
 
   useEffect(() => {
+    // Reaching the login screen means there is no active authenticated session
+    // in this tab. Clear any cached per-user data so the next user to sign in
+    // starts clean and never sees the previous user's cached profile/documents.
+    clearDocucorexClientCache();
+
     const requestedMode = searchParams.get("mode");
     if (requestedMode === "signup" || requestedMode === "forgot" || requestedMode === "signin") {
       setMode(requestedMode);

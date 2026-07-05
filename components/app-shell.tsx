@@ -7,6 +7,7 @@ import { Bell, ChevronDown, Command, CreditCard, Folder, Home, Landmark, LogOut,
 import { BrandLogo } from "@/components/brand";
 import { SelectionCheckbox, checkboxShiftKey, useBulkSelection } from "@/components/bulk-selection";
 import { appNav, newActionItems } from "@/lib/product-data";
+import { clearDocucorexClientCache } from "@/lib/client-cache";
 import type { NotificationRecord } from "@/lib/types";
 
 type ProfileState = { fullName?: string; full_name?: string; email?: string; company?: string; role?: string } | null;
@@ -284,6 +285,10 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   }
 
   function signOut() {
+    // Clear all cached per-user data before leaving so the next user who signs
+    // in on this browser can never see the previous user's cached profile,
+    // notifications or documents.
+    clearDocucorexClientCache();
     window.location.assign("/auth/signout");
   }
 

@@ -1,4 +1,5 @@
 import { documents } from "@/lib/product-data";
+import { isSupabaseConfigured } from "@/lib/supabase";
 import type {
   AiInsight,
   CompanyProfile,
@@ -484,26 +485,47 @@ const seedNotifications: NotificationRecord[] = [
   },
 ];
 
+// SECURITY (P0 data isolation): the seeded demo data below identifies a
+// specific demo workspace ("workspace_demo" / Patric). It must NEVER be served
+// once a real Supabase backend is configured. When Supabase is present, the
+// store starts completely empty so that any accidental fallback to this
+// in-memory store can only ever yield nothing — never another user's data.
+const seedDemo = !isSupabaseConfigured;
+function seed<T>(rows: T[]): T[] {
+  return seedDemo ? [...rows] : [];
+}
+
 const store =
   globalMockStore.__docucorexMockStore ??
   (globalMockStore.__docucorexMockStore = {
-    documentRecords: [...seedDocumentRecords],
-    documentVersions: [...seedDocumentVersions],
-    processingJobs: [...seedProcessingJobs],
-    ocrResults: [...seedOcrResults],
-    extractionResults: [...seedExtractionResults],
-    apiKeys: [...seedApiKeys],
-    auditLogs: [...seedAuditLogs],
-    documentComments: [...seedDocumentComments],
-    documentDownloads: [...seedDocumentDownloads],
-    aiInsights: [...seedAiInsights],
-    invoices: [...seedInvoices],
-    invoiceItems: [...seedInvoiceItems],
-    invoiceSequences: { workspace_demo: 2 },
-    companies: [...seedCompanies],
-    companyInvoiceSequences: { company_demo_1: 2 } as Record<string, number>,
-    notifications: [...seedNotifications],
-    usageSummary: { ...seedUsageSummary },
+    documentRecords: seed(seedDocumentRecords),
+    documentVersions: seed(seedDocumentVersions),
+    processingJobs: seed(seedProcessingJobs),
+    ocrResults: seed(seedOcrResults),
+    extractionResults: seed(seedExtractionResults),
+    apiKeys: seed(seedApiKeys),
+    auditLogs: seed(seedAuditLogs),
+    documentComments: seed(seedDocumentComments),
+    documentDownloads: seed(seedDocumentDownloads),
+    aiInsights: seed(seedAiInsights),
+    invoices: seed(seedInvoices),
+    invoiceItems: seed(seedInvoiceItems),
+    invoiceSequences: seedDemo ? { workspace_demo: 2 } : {},
+    companies: seed(seedCompanies),
+    companyInvoiceSequences: (seedDemo ? { company_demo_1: 2 } : {}) as Record<string, number>,
+    notifications: seed(seedNotifications),
+    usageSummary: seedDemo
+      ? { ...seedUsageSummary }
+      : {
+          periodStart: seedUsageSummary.periodStart,
+          periodEnd: seedUsageSummary.periodEnd,
+          documentsUploaded: 0,
+          pagesProcessed: 0,
+          ocrCreditsUsed: 0,
+          ocrCreditsRemaining: 0,
+          storageBytes: 0,
+          exportsCreated: 0,
+        },
   });
 
 export const documentRecords = store.documentRecords;

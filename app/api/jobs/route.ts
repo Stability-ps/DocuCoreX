@@ -1,43 +1,31 @@
 import { NextResponse } from "next/server";
 import { processingJobs } from "@/lib/mock-repository";
-import { isDemoAllowed } from "@/lib/supabase";
-import { createSupabaseServerClient } from "@/lib/supabase-server";
+import { isDemoAllowed, isSupabaseConfigured } from "@/lib/supabase";
+import { getWorkspaceContext } from "@/lib/server-documents";
 
 export async function GET() {
-  const supabase = await createSupabaseServerClient();
-
-  if (!supabase && isDemoAllowed) {
-    return NextResponse.json({ jobs: processingJobs, mode: "demo" });
-  }
-
-  if (!supabase) {
+  if (!isSupabaseConfigured) {
+    if (isDemoAllowed) {
+      return NextResponse.json({ jobs: processingJobs, mode: "demo" });
+    }
     return NextResponse.json({ error: "Supabase is not configured." }, { status: 503 });
   }
 
-  const {
-    data: { user },
-    error: userError,
-  } = await supabase.auth.getUser();
-
-  if ((userError || !user) && isDemoAllowed) {
-    return NextResponse.json({ jobs: processingJobs, mode: "demo" });
-  }
-
-  if (userError || !user) {
+  const context = await getWorkspaceContext().catch(() => null);
+  if (!context) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
-  const { data, error } = await supabase
+  // Explicitly scope jobs to this workspace via the joined document row, in
+  // addition to RLS (defense-in-depth).
+  const { data, error } = await context.supabase
     .from("processing_jobs")
     .select("*, documents!inner(workspace_id)")
+    .eq("documents.workspace_id", context.workspaceId)
     .order("created_at", { ascending: false })
     .limit(50);
 
   if (error) {
-    if (isDemoAllowed) {
-      return NextResponse.json({ jobs: processingJobs, mode: "demo" });
-    }
-
     return NextResponse.json({ error: error.message }, { status: 500 });
   }
 

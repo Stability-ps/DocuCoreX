@@ -1,14 +1,19 @@
 import { NextResponse } from "next/server";
-import { appStore, type UserSettingsRecord } from "@/lib/app-state";
+import { getSettingsAccess, getUserSettings, updateUserSettings, type UserSettingsRecord } from "@/lib/app-state";
 
 export async function GET() {
-  return NextResponse.json({ settings: appStore.userSettings });
+  const access = await getSettingsAccess();
+  if (!access) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+
+  const settings = await getUserSettings(access);
+  return NextResponse.json({ settings });
 }
 
 export async function PATCH(request: Request) {
+  const access = await getSettingsAccess();
+  if (!access) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+
   const body = (await request.json().catch(() => ({}))) as Partial<UserSettingsRecord>;
-
-  Object.assign(appStore.userSettings, body);
-
-  return NextResponse.json({ settings: appStore.userSettings });
+  const settings = await updateUserSettings(access, body);
+  return NextResponse.json({ settings });
 }

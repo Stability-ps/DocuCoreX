@@ -8,6 +8,7 @@
     "start": "next start",
     "lint": "tsc --noEmit -p tsconfig.lint.json",
     "test": "playwright test",
+    "test:security": "node --test tests/security/*.test.ts",
     "test:accounting-regression": "./workers/accounting_worker/tests/run_regression.sh"
   },
   "dependencies": {

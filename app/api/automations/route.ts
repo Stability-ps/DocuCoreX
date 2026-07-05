@@ -1,15 +1,25 @@
 import { NextResponse } from "next/server";
 import { recordAuditLog } from "@/lib/audit";
-import { appStore, type AutomationPipelineRecord } from "@/lib/app-state";
+import {
+  getSettingsAccess,
+  getAutomationState,
+  createAutomationPipeline,
+  toggleAutomationPipeline,
+  createSupportRequest,
+} from "@/lib/app-state";
 
 export async function GET() {
-  return NextResponse.json({
-    pipelines: appStore.automationPipelines,
-    requests: appStore.supportRequests,
-  });
+  const access = await getSettingsAccess();
+  if (!access) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+
+  const { pipelines, requests } = await getAutomationState(access);
+  return NextResponse.json({ pipelines, requests });
 }
 
 export async function POST(request: Request) {
+  const access = await getSettingsAccess();
+  if (!access) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+
   const body = (await request.json().catch(() => ({}))) as {
     type?: "pipeline" | "request" | "toggle";
     id?: string;
@@ -21,16 +31,15 @@ export async function POST(request: Request) {
 
   if (body.type === "request") {
     if (!body.body?.trim()) return NextResponse.json({ error: "Request body is required" }, { status: 400 });
-    const request = { id: `request_${Date.now()}`, body: body.body.trim(), status: "open" as const, createdAt: new Date().toISOString() };
-    appStore.supportRequests.unshift(request);
-    await recordAuditLog({ action: "support_request_created", entityType: "support_request", entityId: request.id });
-    return NextResponse.json({ request });
+    const created = await createSupportRequest(access, body.body.trim());
+    await recordAuditLog({ action: "support_request_created", entityType: "support_request", entityId: created.id });
+    return NextResponse.json({ request: created });
   }
 
   if (body.type === "toggle") {
-    const pipeline = appStore.automationPipelines.find((item) => item.id === body.id);
+    if (!body.id) return NextResponse.json({ error: "Pipeline id is required" }, { status: 400 });
+    const pipeline = await toggleAutomationPipeline(access, body.id);
     if (!pipeline) return NextResponse.json({ error: "Pipeline not found" }, { status: 404 });
-    pipeline.active = !pipeline.active;
     await recordAuditLog({
       action: "automation_toggled",
       entityType: "automation_pipeline",
@@ -40,16 +49,11 @@ export async function POST(request: Request) {
     return NextResponse.json({ pipeline });
   }
 
-  const pipeline: AutomationPipelineRecord = {
-    id: `pipeline_${Date.now()}`,
+  const pipeline = await createAutomationPipeline(access, {
     name: body.name?.trim() || "New automation pipeline",
     input: body.input?.trim() || "Manual uploads",
     output: body.output?.trim() || "Document library",
-    active: true,
-    createdAt: new Date().toISOString(),
-  };
-
-  appStore.automationPipelines.unshift(pipeline);
+  });
   await recordAuditLog({ action: "automation_created", entityType: "automation_pipeline", entityId: pipeline.id });
   return NextResponse.json({ pipeline });
 }
