@@ -4,20 +4,29 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import {
   ArrowDownToLine,
   AlertTriangle,
+  AlertCircle,
   BadgeCheck,
   Banknote,
+  BarChart3,
   ChevronDown,
   CheckCircle2,
+  ClipboardList,
+  Copy,
   FileSpreadsheet,
   FileText,
   Filter,
+  Info,
   Loader2,
   MoreVertical,
   PackageCheck,
   PencilLine,
   RefreshCcw,
+  Scale,
   Search,
+  Shield,
   Trash2,
+  TrendingDown,
+  TrendingUp,
   UploadCloud,
 } from "lucide-react";
 import type {
@@ -27,6 +36,31 @@ import type {
   AccountingTransactionPatch,
   VatTreatment,
 } from "@/lib/accounting/types";
+import {
+  computeProfitLoss,
+  computeCashFlow,
+  computeFinancialRatios,
+  detectVatAnomalies,
+  detectDuplicates,
+  detectUnusualTransactions,
+  detectDirectorTransactions,
+  computeSarsRisk,
+  computeForecast,
+  buildAuditSummary,
+} from "@/lib/accounting/analytics";
+import type {
+  ProfitLossData,
+  CashFlowData,
+  FinancialRatios,
+  VatAnomaly,
+  DuplicateGroup,
+  UnusualTransaction,
+  DirectorTransaction,
+  SarsRiskScore,
+  ForecastData,
+  AuditSummary,
+} from "@/lib/accounting/analytics";
+import type { AiCommentaryResult, AiCommentaryType } from "@/lib/accounting/ai-service";
 
 type AccountingTab = "transactions" | "review" | "difference" | "summary" | "bank-rec" | "vat" | "general-ledger" | "trial-balance";
 type AccountingModule = "bank-statements" | "financial-statements" | "tax-vat" | "ai-intelligence" | "forecasting" | "audit-tools";
@@ -86,11 +120,11 @@ const accountingModules: Array<{
   status: "live" | "in-development" | "planned";
 }> = [
   { id: "bank-statements", label: "Bank Statements", status: "live" },
-  { id: "financial-statements", label: "Financial Statements", status: "in-development" },
-  { id: "tax-vat", label: "Tax & VAT", status: "in-development" },
-  { id: "ai-intelligence", label: "AI Intelligence", status: "in-development" },
-  { id: "forecasting", label: "Forecasting", status: "planned" },
-  { id: "audit-tools", label: "Audit Tools", status: "planned" },
+  { id: "financial-statements", label: "Financial Statements", status: "live" },
+  { id: "tax-vat", label: "Tax & VAT", status: "live" },
+  { id: "ai-intelligence", label: "AI Intelligence", status: "live" },
+  { id: "forecasting", label: "Forecasting", status: "live" },
+  { id: "audit-tools", label: "Audit Tools", status: "live" },
 ];
 
 const supportedBanks = [
@@ -758,6 +792,29 @@ export function AccountingIntelligence() {
     return Array.from(groups, ([vatTreatment, values]) => ({ vatTreatment, ...values }));
   }, [transactions]);
 
+  const detailAnalytics = useMemo(() => {
+    if (!detail) return null;
+    const txns = detail.transactions;
+    const run = detail.run;
+    const vatAnomalies = detectVatAnomalies(txns);
+    const duplicates = detectDuplicates(txns);
+    const unusuals = detectUnusualTransactions(txns);
+    const directors = detectDirectorTransactions(txns);
+    const riskScore = computeSarsRisk(txns, vatAnomalies, duplicates, unusuals, directors);
+    return {
+      pl: computeProfitLoss(txns, run),
+      cashFlow: computeCashFlow(txns, run),
+      ratios: computeFinancialRatios(txns, run, totals),
+      forecast: computeForecast(txns, run, totals),
+      vatAnomalies,
+      duplicates,
+      unusuals,
+      directors,
+      riskScore,
+      auditSummary: buildAuditSummary(txns, run, duplicates, unusuals, vatAnomalies, riskScore),
+    };
+  }, [detail, totals]);
+
   return (
     <div className={`space-y-4 p-4 sm:p-6 lg:space-y-5 lg:p-8 ${detail ? "pb-[calc(11rem+env(safe-area-inset-bottom))] md:pb-6 lg:pb-8" : ""}`}>
       <header className="flex flex-col gap-2 md:gap-4 lg:flex-row lg:items-center lg:justify-between">
@@ -806,8 +863,44 @@ export function AccountingIntelligence() {
         </div>
       </div>
 
-      {activeModule !== "bank-statements" ? (
-        <AccountingModulePanel moduleId={activeModule as Exclude<AccountingModule, "bank-statements">} />
+      {activeModule === "financial-statements" ? (
+        detailAnalytics ? (
+          <FinancialStatementsPanel pl={detailAnalytics.pl} cashFlow={detailAnalytics.cashFlow} ratios={detailAnalytics.ratios} />
+        ) : (
+          <ModuleNoDataMessage label="Financial Statements" onSelect={() => setActiveModule("bank-statements")} />
+        )
+      ) : null}
+
+      {activeModule === "tax-vat" ? (
+        detailAnalytics ? (
+          <TaxVatPanel vatRows={vatRows} vatAnomalies={detailAnalytics.vatAnomalies} riskScore={detailAnalytics.riskScore} />
+        ) : (
+          <ModuleNoDataMessage label="Tax & VAT" onSelect={() => setActiveModule("bank-statements")} />
+        )
+      ) : null}
+
+      {activeModule === "ai-intelligence" ? (
+        detailAnalytics ? (
+          <AiTransactionPanel duplicates={detailAnalytics.duplicates} unusuals={detailAnalytics.unusuals} directors={detailAnalytics.directors} />
+        ) : (
+          <ModuleNoDataMessage label="AI Transaction Intelligence" onSelect={() => setActiveModule("bank-statements")} />
+        )
+      ) : null}
+
+      {activeModule === "forecasting" ? (
+        detailAnalytics && detail ? (
+          <ForecastPanel forecast={detailAnalytics.forecast} ratios={detailAnalytics.ratios} run={detail.run} />
+        ) : (
+          <ModuleNoDataMessage label="Forecasting" onSelect={() => setActiveModule("bank-statements")} />
+        )
+      ) : null}
+
+      {activeModule === "audit-tools" ? (
+        detailAnalytics && detail ? (
+          <AuditToolsPanel auditSummary={detailAnalytics.auditSummary} run={detail.run} transactions={transactions} />
+        ) : (
+          <ModuleNoDataMessage label="Audit Tools" onSelect={() => setActiveModule("bank-statements")} />
+        )
       ) : null}
 
       {activeModule === "bank-statements" ? (
@@ -2508,6 +2601,1122 @@ const featureStatusConfig: Record<
     note: "text-slate-400",
   },
 };
+
+// ─── Module No-Data Message ────────────────────────────────────────────────
+
+function ModuleNoDataMessage({ label, onSelect }: { label: string; onSelect: () => void }) {
+  return (
+    <div className="flex flex-col items-center justify-center gap-4 rounded-2xl border border-slate-200 bg-white px-6 py-16 text-center shadow-sm">
+      <FileText className="h-10 w-10 text-slate-300" />
+      <div>
+        <p className="text-base font-bold text-navy-950">{label}</p>
+        <p className="mt-1 text-sm font-semibold text-slate-500">
+          Process a bank statement first to unlock this module.
+        </p>
+      </div>
+      <button
+        onClick={onSelect}
+        className="rounded-xl bg-royal-600 px-5 py-2.5 text-sm font-bold text-white shadow-sm hover:bg-royal-700"
+      >
+        Go to Bank Statements
+      </button>
+    </div>
+  );
+}
+
+// ─── Sub-tabs helper ───────────────────────────────────────────────────────
+
+function SubTabs({
+  tabs,
+  active,
+  onChange,
+}: {
+  tabs: { id: string; label: string; count?: number }[];
+  active: string;
+  onChange: (id: string) => void;
+}) {
+  return (
+    <div className="flex gap-1 rounded-xl border border-slate-200 bg-slate-50 p-1">
+      {tabs.map((tab) => (
+        <button
+          key={tab.id}
+          onClick={() => onChange(tab.id)}
+          className={`flex-1 rounded-lg px-3 py-2 text-xs font-bold transition-all ${
+            active === tab.id
+              ? "bg-white text-navy-950 shadow-sm"
+              : "text-slate-500 hover:text-navy-950"
+          }`}
+        >
+          {tab.label}
+          {tab.count !== undefined && tab.count > 0 ? (
+            <span
+              className={`ml-1.5 rounded-full px-1.5 py-0.5 text-[10px] font-black ${
+                active === tab.id
+                  ? "bg-royal-50 text-royal-700"
+                  : "bg-slate-200 text-slate-500"
+              }`}
+            >
+              {tab.count}
+            </span>
+          ) : null}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+// ─── Financial Statements Panel ────────────────────────────────────────────
+
+function FinancialStatementsPanel({
+  pl,
+  cashFlow,
+  ratios,
+}: {
+  pl: ProfitLossData;
+  cashFlow: CashFlowData;
+  ratios: FinancialRatios;
+}) {
+  const [activeTab, setActiveTab] = useState<"pl" | "cashflow" | "ratios">("pl");
+  const fmt = (v: number) =>
+    `R${Math.abs(v).toLocaleString("en-ZA", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+
+  return (
+    <div className="space-y-4 rounded-2xl border border-slate-200 bg-white p-4 shadow-sm sm:p-6">
+      <div className="flex items-center gap-2">
+        <BarChart3 className="h-5 w-5 text-royal-600" />
+        <h2 className="text-base font-bold text-navy-950">Financial Statements</h2>
+      </div>
+      <SubTabs
+        tabs={[
+          { id: "pl", label: "Profit & Loss" },
+          { id: "cashflow", label: "Cash Flow" },
+          { id: "ratios", label: "Ratios" },
+        ]}
+        active={activeTab}
+        onChange={(id) => setActiveTab(id as typeof activeTab)}
+      />
+
+      {activeTab === "pl" ? (
+        <div className="space-y-4">
+          <div className="grid grid-cols-3 gap-3">
+            {[
+              { label: "Revenue", value: pl.totalRevenue, color: "text-emerald-700" },
+              { label: "Expenses", value: pl.totalExpenses, color: "text-rose-700" },
+              {
+                label: pl.netSurplus >= 0 ? "Net Surplus" : "Net Deficit",
+                value: pl.netSurplus,
+                color: pl.netSurplus >= 0 ? "text-emerald-700" : "text-rose-700",
+              },
+            ].map((m) => (
+              <div key={m.label} className="rounded-xl border border-slate-200 bg-slate-50 p-3">
+                <p className="text-[11px] font-black uppercase tracking-wide text-slate-500">{m.label}</p>
+                <p className={`mt-1 truncate text-lg font-black ${m.color}`}>{fmt(m.value)}</p>
+              </div>
+            ))}
+          </div>
+
+          <div>
+            <p className="mb-2 text-xs font-black uppercase tracking-wide text-emerald-700">Income</p>
+            <div className="overflow-hidden rounded-xl border border-slate-200">
+              <table className="w-full text-sm">
+                <thead className="bg-slate-50">
+                  <tr>
+                    <th className="px-3 py-2 text-left text-xs font-black text-slate-500">Category</th>
+                    <th className="px-3 py-2 text-right text-xs font-black text-slate-500">Count</th>
+                    <th className="px-3 py-2 text-right text-xs font-black text-slate-500">Amount</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-100">
+                  {pl.revenue.map((row) => (
+                    <tr key={row.category}>
+                      <td className="px-3 py-2 font-semibold text-navy-950">{row.category}</td>
+                      <td className="px-3 py-2 text-right font-semibold text-slate-500">{row.count}</td>
+                      <td className="px-3 py-2 text-right font-bold text-emerald-700">{fmt(row.amount)}</td>
+                    </tr>
+                  ))}
+                  <tr className="bg-emerald-50/50">
+                    <td className="px-3 py-2 font-black text-emerald-900" colSpan={2}>Total Revenue</td>
+                    <td className="px-3 py-2 text-right font-black text-emerald-900">{fmt(pl.totalRevenue)}</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          <div>
+            <p className="mb-2 text-xs font-black uppercase tracking-wide text-rose-700">Expenses</p>
+            <div className="overflow-hidden rounded-xl border border-slate-200">
+              <table className="w-full text-sm">
+                <thead className="bg-slate-50">
+                  <tr>
+                    <th className="px-3 py-2 text-left text-xs font-black text-slate-500">Category</th>
+                    <th className="px-3 py-2 text-right text-xs font-black text-slate-500">Count</th>
+                    <th className="px-3 py-2 text-right text-xs font-black text-slate-500">Amount</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-100">
+                  {pl.expenses.map((row) => (
+                    <tr key={row.category}>
+                      <td className="px-3 py-2 font-semibold text-navy-950">{row.category}</td>
+                      <td className="px-3 py-2 text-right font-semibold text-slate-500">{row.count}</td>
+                      <td className="px-3 py-2 text-right font-bold text-rose-700">{fmt(row.amount)}</td>
+                    </tr>
+                  ))}
+                  <tr className="bg-rose-50/50">
+                    <td className="px-3 py-2 font-black text-rose-900" colSpan={2}>Total Expenses</td>
+                    <td className="px-3 py-2 text-right font-black text-rose-900">{fmt(pl.totalExpenses)}</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          {pl.interAccountTransfers > 0 ? (
+            <p className="text-xs font-semibold text-slate-400">
+              * Inter-account transfers ({fmt(pl.interAccountTransfers)}) excluded from P&L.
+            </p>
+          ) : null}
+
+          <div className="rounded-xl border border-amber-200 bg-amber-50 p-3">
+            <p className="flex items-start gap-2 text-xs font-semibold text-amber-800">
+              <Info className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+              {pl.note}
+            </p>
+          </div>
+        </div>
+      ) : activeTab === "cashflow" ? (
+        <div className="space-y-4">
+          <div className="grid grid-cols-2 gap-3">
+            {[
+              { label: "Opening Balance", value: cashFlow.openingBalance, color: "text-navy-950" },
+              { label: "Closing Balance", value: cashFlow.closingBalance, color: "text-navy-950" },
+              {
+                label: "Total Inflows",
+                value: cashFlow.totalInflows,
+                color: "text-emerald-700",
+              },
+              {
+                label: "Total Outflows",
+                value: cashFlow.totalOutflows,
+                color: "text-rose-700",
+              },
+            ].map((m) => (
+              <div key={m.label} className="rounded-xl border border-slate-200 bg-slate-50 p-3">
+                <p className="text-[11px] font-black uppercase tracking-wide text-slate-500">{m.label}</p>
+                <p className={`mt-1 truncate text-base font-black ${m.color}`}>
+                  {m.value !== null && m.value !== undefined ? fmt(m.value) : "—"}
+                </p>
+              </div>
+            ))}
+          </div>
+
+          {!cashFlow.reconciled ? (
+            <div className="rounded-xl border border-amber-200 bg-amber-50 p-3">
+              <p className="flex items-center gap-2 text-xs font-semibold text-amber-800">
+                <AlertTriangle className="h-3.5 w-3.5 shrink-0" />
+                Opening balance + net movement does not reconcile with the closing balance. Check for missing transactions.
+              </p>
+            </div>
+          ) : null}
+
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+            <div>
+              <p className="mb-2 text-xs font-black uppercase tracking-wide text-emerald-700">Inflows</p>
+              <div className="overflow-hidden rounded-xl border border-slate-200">
+                <table className="w-full text-sm">
+                  <tbody className="divide-y divide-slate-100">
+                    {cashFlow.inflows.map((row) => (
+                      <tr key={row.label}>
+                        <td className="px-3 py-2 font-semibold text-navy-950">{row.label}</td>
+                        <td className="px-3 py-2 text-right font-bold text-emerald-700">{fmt(row.amount)}</td>
+                      </tr>
+                    ))}
+                    <tr className="bg-emerald-50/50">
+                      <td className="px-3 py-2 font-black text-emerald-900">Total</td>
+                      <td className="px-3 py-2 text-right font-black text-emerald-900">{fmt(cashFlow.totalInflows)}</td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+            </div>
+            <div>
+              <p className="mb-2 text-xs font-black uppercase tracking-wide text-rose-700">Outflows</p>
+              <div className="overflow-hidden rounded-xl border border-slate-200">
+                <table className="w-full text-sm">
+                  <tbody className="divide-y divide-slate-100">
+                    {cashFlow.outflows.map((row) => (
+                      <tr key={row.label}>
+                        <td className="px-3 py-2 font-semibold text-navy-950">{row.label}</td>
+                        <td className="px-3 py-2 text-right font-bold text-rose-700">{fmt(row.amount)}</td>
+                      </tr>
+                    ))}
+                    <tr className="bg-rose-50/50">
+                      <td className="px-3 py-2 font-black text-rose-900">Total</td>
+                      <td className="px-3 py-2 text-right font-black text-rose-900">{fmt(cashFlow.totalOutflows)}</td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+
+          <div className="rounded-xl border border-amber-200 bg-amber-50 p-3">
+            <p className="flex items-start gap-2 text-xs font-semibold text-amber-800">
+              <Info className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+              {cashFlow.note}
+            </p>
+          </div>
+        </div>
+      ) : (
+        <div className="space-y-4">
+          <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
+            {[
+              {
+                label: "Expense Ratio",
+                value: ratios.expenseRatio !== null ? `${(ratios.expenseRatio * 100).toFixed(1)}%` : "—",
+                note: "Expenses ÷ Revenue",
+                color: ratios.expenseRatio !== null && ratios.expenseRatio > 0.9 ? "text-rose-700" : "text-navy-950",
+              },
+              {
+                label: "Net Cash Margin",
+                value: ratios.netCashMargin !== null ? `${ratios.netCashMargin.toFixed(1)}%` : "—",
+                note: "(Revenue − Expenses) ÷ Revenue",
+                color: ratios.netCashMargin !== null && ratios.netCashMargin < 0 ? "text-rose-700" : "text-emerald-700",
+              },
+              {
+                label: "Cash Coverage",
+                value: ratios.cashCoverageRatio !== null ? `${ratios.cashCoverageRatio.toFixed(2)}×` : "—",
+                note: "Revenue ÷ Expenses",
+                color: ratios.cashCoverageRatio !== null && ratios.cashCoverageRatio < 1 ? "text-rose-700" : "text-navy-950",
+              },
+              {
+                label: "Avg Monthly Income",
+                value: ratios.avgMonthlyIncome !== null ? `R${ratios.avgMonthlyIncome.toLocaleString("en-ZA", { maximumFractionDigits: 0 })}` : "—",
+                note: `Over ${ratios.periodMonths} month${ratios.periodMonths > 1 ? "s" : ""}`,
+                color: "text-emerald-700",
+              },
+              {
+                label: "Avg Monthly Expenses",
+                value: ratios.avgMonthlyExpenses !== null ? `R${ratios.avgMonthlyExpenses.toLocaleString("en-ZA", { maximumFractionDigits: 0 })}` : "—",
+                note: `Over ${ratios.periodMonths} month${ratios.periodMonths > 1 ? "s" : ""}`,
+                color: "text-rose-700",
+              },
+              {
+                label: "Bank Charges Ratio",
+                value: ratios.bankChargesRatio !== null ? `${ratios.bankChargesRatio.toFixed(2)}%` : "—",
+                note: "Bank charges ÷ Expenses",
+                color: "text-navy-950",
+              },
+            ].map((m) => (
+              <div key={m.label} className="rounded-xl border border-slate-200 bg-slate-50 p-3">
+                <p className="text-[11px] font-black uppercase tracking-wide text-slate-500">{m.label}</p>
+                <p className={`mt-1 truncate text-xl font-black ${m.color}`}>{m.value}</p>
+                <p className="mt-0.5 text-[10px] font-semibold text-slate-400">{m.note}</p>
+              </div>
+            ))}
+          </div>
+          <div className="rounded-xl border border-amber-200 bg-amber-50 p-3">
+            <p className="flex items-start gap-2 text-xs font-semibold text-amber-800">
+              <Info className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+              {ratios.note}
+            </p>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─── Tax & VAT Panel ───────────────────────────────────────────────────────
+
+function TaxVatPanel({
+  vatRows,
+  vatAnomalies,
+  riskScore,
+}: {
+  vatRows: { vatTreatment: VatTreatment; debit: number; credit: number; count: number }[];
+  vatAnomalies: VatAnomaly[];
+  riskScore: SarsRiskScore;
+}) {
+  const [activeTab, setActiveTab] = useState<"schedule" | "anomalies" | "risk">("schedule");
+  const fmt = (v: number) =>
+    `R${Math.abs(v).toLocaleString("en-ZA", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+
+  const VAT_RATE = 15 / 115;
+  const standardRow = vatRows.find((r) => r.vatTreatment === "standard");
+  const estOutputVat = (standardRow?.credit ?? 0) * VAT_RATE;
+  const estInputVat = (standardRow?.debit ?? 0) * VAT_RATE;
+  const netVat = estOutputVat - estInputVat;
+
+  const TREATMENT_LABELS: Record<VatTreatment, string> = {
+    standard: "Standard Rated (15%)",
+    zero_rated: "Zero Rated (0%)",
+    exempt: "Exempt",
+    out_of_scope: "Out of Scope",
+    review: "Review Required",
+  };
+
+  const severityColors: Record<string, string> = {
+    high: "border-rose-200 bg-rose-50 text-rose-800",
+    medium: "border-amber-200 bg-amber-50 text-amber-800",
+    low: "border-slate-200 bg-slate-50 text-slate-700",
+  };
+
+  const riskColors: Record<string, string> = {
+    low: "text-emerald-700",
+    moderate: "text-amber-700",
+    elevated: "text-orange-700",
+    high: "text-rose-700",
+  };
+
+  return (
+    <div className="space-y-4 rounded-2xl border border-slate-200 bg-white p-4 shadow-sm sm:p-6">
+      <div className="flex items-center gap-2">
+        <Scale className="h-5 w-5 text-royal-600" />
+        <h2 className="text-base font-bold text-navy-950">Tax & VAT Intelligence</h2>
+      </div>
+      <SubTabs
+        tabs={[
+          { id: "schedule", label: "VAT Schedule" },
+          { id: "anomalies", label: "Anomalies", count: vatAnomalies.length },
+          { id: "risk", label: "SARS Risk" },
+        ]}
+        active={activeTab}
+        onChange={(id) => setActiveTab(id as typeof activeTab)}
+      />
+
+      {activeTab === "schedule" ? (
+        <div className="space-y-4">
+          <div className="grid grid-cols-3 gap-3">
+            {[
+              { label: "Est. Output VAT", value: estOutputVat, color: "text-emerald-700" },
+              { label: "Est. Input VAT", value: estInputVat, color: "text-rose-700" },
+              {
+                label: netVat >= 0 ? "Net VAT Payable" : "Net VAT Refund",
+                value: netVat,
+                color: netVat >= 0 ? "text-amber-700" : "text-emerald-700",
+              },
+            ].map((m) => (
+              <div key={m.label} className="rounded-xl border border-slate-200 bg-slate-50 p-3">
+                <p className="text-[11px] font-black uppercase tracking-wide text-slate-500">{m.label}</p>
+                <p className={`mt-1 truncate text-lg font-black ${m.color}`}>{fmt(m.value)}</p>
+              </div>
+            ))}
+          </div>
+
+          <div className="overflow-hidden rounded-xl border border-slate-200">
+            <table className="w-full text-sm">
+              <thead className="bg-slate-50">
+                <tr>
+                  <th className="px-3 py-2 text-left text-xs font-black text-slate-500">Treatment</th>
+                  <th className="px-3 py-2 text-right text-xs font-black text-slate-500">Txns</th>
+                  <th className="px-3 py-2 text-right text-xs font-black text-slate-500">Money In</th>
+                  <th className="px-3 py-2 text-right text-xs font-black text-slate-500">Money Out</th>
+                  <th className="px-3 py-2 text-right text-xs font-black text-slate-500">Est. VAT</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-100">
+                {vatRows.map((row) => {
+                  const rowVat =
+                    row.vatTreatment === "standard"
+                      ? (row.credit + row.debit) * VAT_RATE
+                      : null;
+                  return (
+                    <tr key={row.vatTreatment}>
+                      <td className="px-3 py-2 font-semibold text-navy-950">
+                        {TREATMENT_LABELS[row.vatTreatment] ?? row.vatTreatment}
+                      </td>
+                      <td className="px-3 py-2 text-right font-semibold text-slate-500">{row.count}</td>
+                      <td className="px-3 py-2 text-right font-semibold text-emerald-700">
+                        {row.credit > 0 ? fmt(row.credit) : "—"}
+                      </td>
+                      <td className="px-3 py-2 text-right font-semibold text-rose-700">
+                        {row.debit > 0 ? fmt(row.debit) : "—"}
+                      </td>
+                      <td className="px-3 py-2 text-right font-bold text-navy-950">
+                        {rowVat !== null ? fmt(rowVat) : "—"}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+
+          <p className="text-xs font-semibold text-slate-400">
+            VAT estimated at 15% inclusive (15/115) on standard-rated transactions only. Verify against SARS VAT201 returns. Not tax advice.
+          </p>
+        </div>
+      ) : activeTab === "anomalies" ? (
+        <div className="space-y-3">
+          {vatAnomalies.length === 0 ? (
+            <div className="flex items-center gap-2 rounded-xl border border-emerald-200 bg-emerald-50 p-4">
+              <CheckCircle2 className="h-4 w-4 text-emerald-600" />
+              <p className="text-sm font-semibold text-emerald-800">No VAT anomalies detected in this statement.</p>
+            </div>
+          ) : (
+            vatAnomalies.map((anomaly) => (
+              <div
+                key={anomaly.id}
+                className={`rounded-xl border p-4 ${severityColors[anomaly.severity]}`}
+              >
+                <div className="flex items-start justify-between gap-3">
+                  <div>
+                    <div className="flex items-center gap-2">
+                      <AlertTriangle className="h-3.5 w-3.5 shrink-0" />
+                      <p className="text-xs font-black uppercase tracking-wide">
+                        {anomaly.severity === "high" ? "High" : anomaly.severity === "medium" ? "Medium" : "Low"} Severity
+                      </p>
+                    </div>
+                    <p className="mt-1 text-sm font-semibold">{anomaly.description}</p>
+                  </div>
+                  <p className="shrink-0 text-sm font-black">{fmt(anomaly.amount)}</p>
+                </div>
+                <p className="mt-1 text-xs font-semibold opacity-70">
+                  {anomaly.transactionIds.length} transaction{anomaly.transactionIds.length > 1 ? "s" : ""} affected
+                </p>
+              </div>
+            ))
+          )}
+        </div>
+      ) : (
+        <div className="space-y-4">
+          <div className="flex items-center justify-between rounded-xl border border-slate-200 bg-slate-50 p-4">
+            <div>
+              <p className="text-sm font-bold text-slate-500">Internal Advisory Risk Score</p>
+              <p className={`mt-1 text-4xl font-black ${riskColors[riskScore.level]}`}>
+                {riskScore.score}<span className="text-base font-semibold text-slate-400">/100</span>
+              </p>
+              <p className={`mt-0.5 text-sm font-bold capitalize ${riskColors[riskScore.level]}`}>{riskScore.level}</p>
+            </div>
+            <Shield className={`h-12 w-12 opacity-20 ${riskColors[riskScore.level]}`} />
+          </div>
+
+          <p className="text-sm font-semibold text-slate-600">{riskScore.summary}</p>
+
+          <div className="space-y-2">
+            {riskScore.factors.map((factor) => (
+              <div key={factor.name} className="rounded-xl border border-slate-200 p-3">
+                <div className="flex items-center justify-between">
+                  <p className="text-sm font-bold text-navy-950">{factor.name}</p>
+                  <p className="text-sm font-black text-navy-950">
+                    {factor.score}<span className="text-xs font-semibold text-slate-400">/{factor.maxScore}</span>
+                  </p>
+                </div>
+                <div className="mt-1.5 h-1.5 w-full overflow-hidden rounded-full bg-slate-100">
+                  <div
+                    className={`h-full rounded-full transition-all ${
+                      factor.score / factor.maxScore > 0.6
+                        ? "bg-rose-500"
+                        : factor.score / factor.maxScore > 0.3
+                          ? "bg-amber-500"
+                          : "bg-emerald-500"
+                    }`}
+                    style={{ width: `${(factor.score / factor.maxScore) * 100}%` }}
+                  />
+                </div>
+                <p className="mt-1 text-xs font-semibold text-slate-500">{factor.detail}</p>
+              </div>
+            ))}
+          </div>
+
+          <div className="rounded-xl border border-slate-200 bg-slate-50 p-3">
+            <p className="text-xs font-semibold text-slate-500">
+              <strong>Disclaimer:</strong> This is an internal advisory score based on bank statement data only. It does not represent a SARS assessment, guarantee of compliance, or tax advice. Engage a registered tax practitioner before any SARS submission.
+            </p>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─── AI Transaction Intelligence Panel ────────────────────────────────────
+
+function AiTransactionPanel({
+  duplicates,
+  unusuals,
+  directors,
+}: {
+  duplicates: DuplicateGroup[];
+  unusuals: UnusualTransaction[];
+  directors: DirectorTransaction[];
+}) {
+  const [activeTab, setActiveTab] = useState<"duplicates" | "unusuals" | "directors">("duplicates");
+  const fmt = (v: number) =>
+    `R${Math.abs(v).toLocaleString("en-ZA", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+
+  return (
+    <div className="space-y-4 rounded-2xl border border-slate-200 bg-white p-4 shadow-sm sm:p-6">
+      <div className="flex items-center gap-2">
+        <AlertCircle className="h-5 w-5 text-royal-600" />
+        <h2 className="text-base font-bold text-navy-950">AI Transaction Intelligence</h2>
+      </div>
+
+      <div className="grid grid-cols-3 gap-3">
+        {[
+          {
+            label: "Duplicates",
+            count: duplicates.length,
+            color: duplicates.length > 0 ? "text-rose-700" : "text-emerald-700",
+          },
+          {
+            label: "Unusual",
+            count: unusuals.length,
+            color: unusuals.length > 0 ? "text-amber-700" : "text-emerald-700",
+          },
+          {
+            label: "Director Activity",
+            count: directors.length,
+            color: directors.length > 0 ? "text-amber-700" : "text-navy-950",
+          },
+        ].map((m) => (
+          <div key={m.label} className="rounded-xl border border-slate-200 bg-slate-50 p-3">
+            <p className="text-[11px] font-black uppercase tracking-wide text-slate-500">{m.label}</p>
+            <p className={`mt-1 text-2xl font-black ${m.color}`}>{m.count}</p>
+          </div>
+        ))}
+      </div>
+
+      <SubTabs
+        tabs={[
+          { id: "duplicates", label: "Duplicates", count: duplicates.length },
+          { id: "unusuals", label: "Unusual", count: unusuals.length },
+          { id: "directors", label: "Director", count: directors.length },
+        ]}
+        active={activeTab}
+        onChange={(id) => setActiveTab(id as typeof activeTab)}
+      />
+
+      {activeTab === "duplicates" ? (
+        <div className="space-y-3">
+          {duplicates.length === 0 ? (
+            <div className="flex items-center gap-2 rounded-xl border border-emerald-200 bg-emerald-50 p-4">
+              <CheckCircle2 className="h-4 w-4 text-emerald-600" />
+              <p className="text-sm font-semibold text-emerald-800">No duplicate payments detected.</p>
+            </div>
+          ) : (
+            duplicates.map((group) => (
+              <div key={group.id} className="rounded-xl border border-rose-200 bg-rose-50/50 p-4">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2">
+                    <Copy className="h-4 w-4 text-rose-600" />
+                    <p className="text-sm font-bold text-rose-900">
+                      {group.transactions.length} matching payments — {fmt(group.amount)} each
+                    </p>
+                  </div>
+                  <span className="rounded-full bg-rose-100 px-2 py-0.5 text-[10px] font-black text-rose-700">
+                    {group.confidence}% confidence
+                  </span>
+                </div>
+                <div className="mt-2 space-y-1">
+                  {group.transactions.map((t) => (
+                    <div key={t.id} className="flex items-center justify-between rounded-lg bg-white px-3 py-1.5">
+                      <div className="min-w-0 flex-1">
+                        <p className="truncate text-xs font-semibold text-navy-950">{t.description}</p>
+                        <p className="text-[10px] font-semibold text-slate-400">{t.transactionDate ?? "—"}</p>
+                      </div>
+                      <p className="ml-2 shrink-0 text-xs font-black text-rose-700">{fmt(t.debitAmount ?? 0)}</p>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            ))
+          )}
+        </div>
+      ) : activeTab === "unusuals" ? (
+        <div className="space-y-3">
+          {unusuals.length === 0 ? (
+            <div className="flex items-center gap-2 rounded-xl border border-emerald-200 bg-emerald-50 p-4">
+              <CheckCircle2 className="h-4 w-4 text-emerald-600" />
+              <p className="text-sm font-semibold text-emerald-800">No statistically unusual transactions detected.</p>
+            </div>
+          ) : (
+            unusuals.map((u) => (
+              <div
+                key={u.transaction.id}
+                className={`rounded-xl border p-4 ${
+                  u.severity === "high"
+                    ? "border-rose-200 bg-rose-50/50"
+                    : "border-amber-200 bg-amber-50/50"
+                }`}
+              >
+                <div className="flex items-start justify-between gap-3">
+                  <div className="min-w-0 flex-1">
+                    <p className="truncate text-sm font-bold text-navy-950">{u.transaction.description}</p>
+                    <p className="text-xs font-semibold text-slate-500">{u.transaction.transactionDate ?? "—"}</p>
+                    <p
+                      className={`mt-1 text-xs font-semibold ${
+                        u.severity === "high" ? "text-rose-700" : "text-amber-700"
+                      }`}
+                    >
+                      {u.reason}
+                    </p>
+                  </div>
+                  <p className="shrink-0 text-sm font-black text-navy-950">
+                    {fmt((u.transaction.debitAmount ?? u.transaction.creditAmount) ?? 0)}
+                  </p>
+                </div>
+              </div>
+            ))
+          )}
+        </div>
+      ) : (
+        <div className="space-y-3">
+          {directors.length === 0 ? (
+            <div className="flex items-center gap-2 rounded-xl border border-slate-200 bg-slate-50 p-4">
+              <Info className="h-4 w-4 text-slate-400" />
+              <p className="text-sm font-semibold text-slate-600">No director or related-party transactions detected.</p>
+            </div>
+          ) : (
+            <>
+              <div className="rounded-xl border border-amber-200 bg-amber-50 p-3">
+                <p className="flex items-start gap-2 text-xs font-semibold text-amber-800">
+                  <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+                  Director loans and related-party transactions require disclosure under IAS 24. Confirm nature and obtain supporting documentation.
+                </p>
+              </div>
+              {directors.map((d) => (
+                <div key={d.transaction.id} className="flex items-center justify-between rounded-xl border border-amber-200 bg-amber-50/30 px-4 py-3">
+                  <div className="min-w-0 flex-1">
+                    <p className="truncate text-sm font-bold text-navy-950">{d.transaction.description}</p>
+                    <p className="text-xs font-semibold text-slate-500">
+                      {d.transaction.transactionDate ?? "—"} · matched: <span className="font-bold text-amber-700">{d.matchedKeyword}</span>
+                    </p>
+                  </div>
+                  <p className="ml-2 shrink-0 text-sm font-black text-navy-950">
+                    {fmt((d.transaction.debitAmount ?? d.transaction.creditAmount) ?? 0)}
+                  </p>
+                </div>
+              ))}
+            </>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─── Forecasting Panel ─────────────────────────────────────────────────────
+
+function ForecastPanel({
+  forecast,
+  ratios,
+  run,
+}: {
+  forecast: ForecastData;
+  ratios: FinancialRatios;
+  run: AccountingStatementRun;
+}) {
+  const fmt = (v: number) =>
+    `R${Math.abs(v).toLocaleString("en-ZA", { minimumFractionDigits: 0, maximumFractionDigits: 0 })}`;
+  void ratios;
+
+  return (
+    <div className="space-y-4 rounded-2xl border border-slate-200 bg-white p-4 shadow-sm sm:p-6">
+      <div className="flex items-center gap-2">
+        <TrendingUp className="h-5 w-5 text-royal-600" />
+        <h2 className="text-base font-bold text-navy-950">Cash Flow Forecast</h2>
+        {run.companyName ? (
+          <span className="rounded-full bg-slate-100 px-2 py-0.5 text-xs font-semibold text-slate-600">
+            {run.companyName}
+          </span>
+        ) : null}
+      </div>
+
+      <div className="grid grid-cols-3 gap-3">
+        {[
+          {
+            label: "Monthly Avg Income",
+            value: fmt(forecast.monthlyAvgIncome),
+            sub: `over ${forecast.periodMonths} month${forecast.periodMonths > 1 ? "s" : ""}`,
+            color: "text-emerald-700",
+          },
+          {
+            label: "Monthly Avg Expenses",
+            value: fmt(forecast.monthlyAvgExpenses),
+            sub: `over ${forecast.periodMonths} month${forecast.periodMonths > 1 ? "s" : ""}`,
+            color: "text-rose-700",
+          },
+          {
+            label: forecast.monthlyNetFlow >= 0 ? "Monthly Net Surplus" : "Monthly Net Deficit",
+            value: fmt(forecast.monthlyNetFlow),
+            sub: "income minus expenses",
+            color: forecast.monthlyNetFlow >= 0 ? "text-emerald-700" : "text-rose-700",
+          },
+        ].map((m) => (
+          <div key={m.label} className="rounded-xl border border-slate-200 bg-slate-50 p-3">
+            <p className="text-[11px] font-black uppercase tracking-wide text-slate-500">{m.label}</p>
+            <p className={`mt-1 truncate text-lg font-black ${m.color}`}>{m.value}</p>
+            <p className="mt-0.5 text-[10px] font-semibold text-slate-400">{m.sub}</p>
+          </div>
+        ))}
+      </div>
+
+      <div>
+        <p className="mb-2 text-xs font-black uppercase tracking-wide text-slate-500">3-Month Projection</p>
+        <div className="overflow-hidden rounded-xl border border-slate-200">
+          <table className="w-full text-sm">
+            <thead className="bg-slate-50">
+              <tr>
+                <th className="px-3 py-2 text-left text-xs font-black text-slate-500">Month</th>
+                <th className="px-3 py-2 text-right text-xs font-black text-slate-500">Income</th>
+                <th className="px-3 py-2 text-right text-xs font-black text-slate-500">Expenses</th>
+                <th className="px-3 py-2 text-right text-xs font-black text-slate-500">Net Flow</th>
+                <th className="px-3 py-2 text-right text-xs font-black text-slate-500">Closing Balance</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-slate-100">
+              {forecast.currentBalance !== null ? (
+                <tr className="bg-slate-50/50">
+                  <td className="px-3 py-2 font-semibold text-slate-500">Current</td>
+                  <td className="px-3 py-2 text-right font-semibold text-slate-400">—</td>
+                  <td className="px-3 py-2 text-right font-semibold text-slate-400">—</td>
+                  <td className="px-3 py-2 text-right font-semibold text-slate-400">—</td>
+                  <td className="px-3 py-2 text-right font-bold text-navy-950">{fmt(forecast.currentBalance)}</td>
+                </tr>
+              ) : null}
+              {forecast.projections.map((proj) => (
+                <tr key={proj.label}>
+                  <td className="px-3 py-2 font-semibold text-navy-950">{proj.label}</td>
+                  <td className="px-3 py-2 text-right font-semibold text-emerald-700">{fmt(proj.projectedIncome)}</td>
+                  <td className="px-3 py-2 text-right font-semibold text-rose-700">{fmt(proj.projectedExpenses)}</td>
+                  <td
+                    className={`px-3 py-2 text-right font-bold ${
+                      proj.projectedNetFlow >= 0 ? "text-emerald-700" : "text-rose-700"
+                    }`}
+                  >
+                    {proj.projectedNetFlow >= 0 ? "+" : ""}{fmt(proj.projectedNetFlow)}
+                  </td>
+                  <td
+                    className={`px-3 py-2 text-right font-black ${
+                      proj.projectedClosingBalance >= 0 ? "text-navy-950" : "text-rose-700"
+                    }`}
+                  >
+                    {fmt(proj.projectedClosingBalance)}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      {forecast.periodMonths === 1 ? (
+        <div className="rounded-xl border border-amber-200 bg-amber-50 p-3">
+          <p className="flex items-start gap-2 text-xs font-semibold text-amber-800">
+            <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+            Forecast based on a single month. Process 3+ statement periods for a reliable baseline.
+          </p>
+        </div>
+      ) : (
+        <p className="text-xs font-semibold text-slate-400">{forecast.note}</p>
+      )}
+    </div>
+  );
+}
+
+// ─── Audit Tools Panel ─────────────────────────────────────────────────────
+
+function AuditToolsPanel({
+  auditSummary,
+  run,
+  transactions,
+}: {
+  auditSummary: AuditSummary;
+  run: AccountingStatementRun;
+  transactions: AccountingTransaction[];
+}) {
+  const [activeTab, setActiveTab] = useState<"findings" | "checklist" | "ai">("findings");
+  const [aiResult, setAiResult] = useState<AiCommentaryResult | null>(null);
+  const [aiLoading, setAiLoading] = useState(false);
+  const [aiType, setAiType] = useState<AiCommentaryType>("executive-summary");
+
+  const SEVERITY_COLORS: Record<string, string> = {
+    critical: "border-rose-300 bg-rose-50 text-rose-900",
+    high: "border-rose-200 bg-rose-50/60 text-rose-800",
+    medium: "border-amber-200 bg-amber-50 text-amber-800",
+    low: "border-slate-200 bg-slate-50 text-slate-700",
+    info: "border-blue-200 bg-blue-50 text-blue-800",
+  };
+
+  const SEVERITY_LABEL: Record<string, string> = {
+    critical: "Critical",
+    high: "High",
+    medium: "Medium",
+    low: "Low",
+    info: "Info",
+  };
+
+  const riskColors: Record<string, string> = {
+    low: "text-emerald-700 bg-emerald-50 border-emerald-200",
+    moderate: "text-amber-700 bg-amber-50 border-amber-200",
+    elevated: "text-orange-700 bg-orange-50 border-orange-200",
+    high: "text-rose-700 bg-rose-50 border-rose-200",
+  };
+
+  const checklist = [
+    {
+      label: "Review queue cleared",
+      done: auditSummary.reviewItems === 0,
+      detail: auditSummary.reviewItems > 0 ? `${auditSummary.reviewItems} items remain` : "All items reviewed",
+    },
+    {
+      label: "All transactions categorised",
+      done: auditSummary.uncategorized === 0,
+      detail: auditSummary.uncategorized > 0 ? `${auditSummary.uncategorized} uncategorised` : "All categorised",
+    },
+    {
+      label: "No duplicate payments",
+      done: auditSummary.riskScore.factors.find((f) => f.name === "Duplicate Payments")?.score === 0,
+      detail: "Check AI Intelligence > Duplicates tab",
+    },
+    {
+      label: "VAT anomalies resolved",
+      done: auditSummary.riskScore.factors.find((f) => f.name === "VAT Anomalies")?.score === 0,
+      detail: "Check Tax & VAT > Anomalies tab",
+    },
+    {
+      label: "Invoices linked (R5k+ payments)",
+      done: auditSummary.transactionsNeedingInvoice.length === 0,
+      detail:
+        auditSummary.transactionsNeedingInvoice.length > 0
+          ? `${auditSummary.transactionsNeedingInvoice.length} without invoice`
+          : "All supported",
+    },
+    {
+      label: "Statement exported for accountant",
+      done: false,
+      detail: "Use the Export button on Bank Statements",
+    },
+  ];
+
+  const completedCount = checklist.filter((c) => c.done).length;
+
+  async function fetchAiCommentary(type: AiCommentaryType) {
+    setAiType(type);
+    setAiLoading(true);
+    setAiResult(null);
+    try {
+      const res = await fetch("/api/accounting/ai", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ runId: run.id, type }),
+      });
+      if (res.ok) {
+        const data = (await res.json()) as AiCommentaryResult;
+        setAiResult(data);
+      }
+    } finally {
+      setAiLoading(false);
+    }
+  }
+
+  void transactions;
+
+  return (
+    <div className="space-y-4 rounded-2xl border border-slate-200 bg-white p-4 shadow-sm sm:p-6">
+      <div className="flex items-center gap-2">
+        <ClipboardList className="h-5 w-5 text-royal-600" />
+        <h2 className="text-base font-bold text-navy-950">Audit Tools</h2>
+        <div
+          className={`ml-auto rounded-full border px-3 py-1 text-xs font-black capitalize ${riskColors[auditSummary.riskScore.level]}`}
+        >
+          Risk: {auditSummary.riskScore.level} ({auditSummary.riskScore.score}/100)
+        </div>
+      </div>
+
+      <SubTabs
+        tabs={[
+          { id: "findings", label: "Findings", count: auditSummary.findings.length },
+          { id: "checklist", label: "Checklist" },
+          { id: "ai", label: "AI Notes" },
+        ]}
+        active={activeTab}
+        onChange={(id) => setActiveTab(id as typeof activeTab)}
+      />
+
+      {activeTab === "findings" ? (
+        <div className="space-y-3">
+          {auditSummary.findings.length === 0 ? (
+            <div className="flex items-center gap-2 rounded-xl border border-emerald-200 bg-emerald-50 p-4">
+              <CheckCircle2 className="h-4 w-4 text-emerald-600" />
+              <p className="text-sm font-semibold text-emerald-800">No audit findings. Statement appears complete and well-classified.</p>
+            </div>
+          ) : (
+            auditSummary.findings.map((finding) => (
+              <div key={finding.id} className={`rounded-xl border p-4 ${SEVERITY_COLORS[finding.severity]}`}>
+                <div className="flex items-start justify-between gap-3">
+                  <div>
+                    <div className="flex items-center gap-2">
+                      <span className="rounded-full bg-white/70 px-2 py-0.5 text-[10px] font-black uppercase tracking-wide">
+                        {SEVERITY_LABEL[finding.severity]}
+                      </span>
+                      <span className="text-[10px] font-black uppercase tracking-wide opacity-60">
+                        {finding.category}
+                      </span>
+                    </div>
+                    <p className="mt-1 text-sm font-bold">{finding.title}</p>
+                    <p className="mt-0.5 text-xs font-semibold opacity-70">{finding.detail}</p>
+                  </div>
+                  {finding.count !== undefined && (
+                    <span className="shrink-0 text-xl font-black">{finding.count}</span>
+                  )}
+                </div>
+              </div>
+            ))
+          )}
+        </div>
+      ) : activeTab === "checklist" ? (
+        <div className="space-y-3">
+          <div className="flex items-center justify-between">
+            <p className="text-sm font-semibold text-slate-500">
+              Pre-export checklist — {completedCount}/{checklist.length} complete
+            </p>
+            <span
+              className={`rounded-full px-2 py-0.5 text-xs font-black ${
+                completedCount === checklist.length
+                  ? "bg-emerald-100 text-emerald-700"
+                  : "bg-amber-100 text-amber-700"
+              }`}
+            >
+              {completedCount === checklist.length ? "Ready" : "In Progress"}
+            </span>
+          </div>
+
+          <div className="h-1.5 w-full overflow-hidden rounded-full bg-slate-100">
+            <div
+              className="h-full rounded-full bg-emerald-500 transition-all"
+              style={{ width: `${(completedCount / checklist.length) * 100}%` }}
+            />
+          </div>
+
+          <div className="space-y-2">
+            {checklist.map((item, i) => (
+              <div
+                key={i}
+                className={`flex items-center gap-3 rounded-xl border p-3 ${
+                  item.done
+                    ? "border-emerald-200 bg-emerald-50/50"
+                    : "border-slate-200 bg-slate-50"
+                }`}
+              >
+                <div
+                  className={`flex h-5 w-5 shrink-0 items-center justify-center rounded-full border-2 ${
+                    item.done
+                      ? "border-emerald-500 bg-emerald-500"
+                      : "border-slate-300 bg-white"
+                  }`}
+                >
+                  {item.done ? <CheckCircle2 className="h-3 w-3 text-white" /> : null}
+                </div>
+                <div>
+                  <p
+                    className={`text-sm font-bold ${
+                      item.done ? "text-emerald-800 line-through decoration-emerald-400" : "text-navy-950"
+                    }`}
+                  >
+                    {item.label}
+                  </p>
+                  <p className="text-xs font-semibold text-slate-500">{item.detail}</p>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      ) : (
+        <div className="space-y-4">
+          <div className="flex flex-wrap gap-2">
+            {(
+              [
+                { id: "executive-summary" as AiCommentaryType, label: "Executive Summary" },
+                { id: "audit-notes" as AiCommentaryType, label: "Audit Notes" },
+                { id: "vat-commentary" as AiCommentaryType, label: "VAT Commentary" },
+                { id: "risk-explanation" as AiCommentaryType, label: "Risk Explanation" },
+                { id: "forecast-commentary" as AiCommentaryType, label: "Forecast Notes" },
+              ] as const
+            ).map((btn) => (
+              <button
+                key={btn.id}
+                onClick={() => void fetchAiCommentary(btn.id)}
+                disabled={aiLoading}
+                className={`rounded-xl border px-3 py-2 text-xs font-bold transition-all ${
+                  aiType === btn.id && aiResult
+                    ? "border-royal-300 bg-royal-50 text-royal-700"
+                    : "border-slate-200 bg-slate-50 text-slate-600 hover:border-royal-200 hover:bg-royal-50 hover:text-royal-700"
+                } disabled:opacity-50`}
+              >
+                {btn.label}
+              </button>
+            ))}
+          </div>
+
+          {aiLoading ? (
+            <div className="flex items-center justify-center gap-2 rounded-xl border border-slate-200 bg-slate-50 p-8">
+              <Loader2 className="h-5 w-5 animate-spin text-royal-600" />
+              <p className="text-sm font-semibold text-slate-500">Generating commentary…</p>
+            </div>
+          ) : aiResult ? (
+            <div className="space-y-3">
+              <div className="flex items-center gap-2">
+                <span className="text-xs font-black uppercase tracking-wide text-slate-500">Generated by</span>
+                <span
+                  className={`rounded-full px-2 py-0.5 text-[10px] font-black ${
+                    aiResult.provider === "openai"
+                      ? "bg-emerald-100 text-emerald-700"
+                      : "bg-slate-100 text-slate-500"
+                  }`}
+                >
+                  {aiResult.provider === "openai" ? "OpenAI" : "Rule-based"}
+                </span>
+              </div>
+              <div className="rounded-xl border border-slate-200 bg-slate-50 p-4">
+                <p className="text-sm font-semibold leading-relaxed text-navy-950">{aiResult.commentary}</p>
+              </div>
+              {aiResult.keyPoints.length > 0 ? (
+                <div>
+                  <p className="mb-1.5 text-xs font-black uppercase tracking-wide text-slate-500">Key Points</p>
+                  <ul className="space-y-1">
+                    {aiResult.keyPoints.map((point, i) => (
+                      <li key={i} className="flex items-start gap-2 text-xs font-semibold text-navy-950">
+                        <span className="mt-0.5 h-1.5 w-1.5 shrink-0 rounded-full bg-royal-500" />
+                        {point}
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              ) : null}
+              {aiResult.recommendations.length > 0 ? (
+                <div>
+                  <p className="mb-1.5 text-xs font-black uppercase tracking-wide text-slate-500">Recommendations</p>
+                  <ul className="space-y-1">
+                    {aiResult.recommendations.map((rec, i) => (
+                      <li key={i} className="flex items-start gap-2 text-xs font-semibold text-navy-950">
+                        <TrendingDown className="mt-0.5 h-3 w-3 shrink-0 text-royal-500" />
+                        {rec}
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              ) : null}
+            </div>
+          ) : (
+            <div className="rounded-xl border border-slate-200 bg-slate-50 p-6 text-center">
+              <p className="text-sm font-semibold text-slate-500">
+                Select a commentary type above to generate AI-assisted accounting notes.
+              </p>
+              <p className="mt-1 text-xs font-semibold text-slate-400">
+                Uses OpenAI if configured, otherwise generates rule-based notes.
+              </p>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─── AccountingModulePanel (legacy — no longer used for live modules) ──────
 
 function AccountingModulePanel({
   moduleId,
