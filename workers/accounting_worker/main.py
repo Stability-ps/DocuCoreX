@@ -289,15 +289,17 @@ def parse_metadata(full_text: str) -> dict[str, Any]:
     elif account_number and re.sub(r"\D", "", account_number) == "4210102051":
         account_number = None
 
+    # Detect the account holder / company from the statement itself. Do NOT
+    # hardcode any specific company name — this must work for personal and
+    # business statements alike.
     company_name = find_first([
-        r"\*?\s*(ALLIANZ\s+HOLDINGS\s+\(PTY\)\s+LTD)",
         r"Account\s*Holder\s*[:\-]?\s*(.+)",
         r"Customer\s*Name\s*[:\-]?\s*(.+)",
+        r"Account\s*Name\s*[:\-]?\s*(.+)",
         r"^([A-Z0-9 &().,'/-]{5,})\n(?:Account|Statement)",
     ], full_text)
-    if re.search(r"ALLIANZ\s+HOLDINGS", normalized_text, flags=re.IGNORECASE):
-        company_name = "ALLIANZ HOLDINGS (PTY) LTD"
-    elif company_name and "waterfall" in company_name.lower():
+    if company_name and "waterfall" in company_name.lower():
+        # Address line mistaken for a name.
         company_name = None
 
     period = re.search(
@@ -1703,7 +1705,7 @@ def request_ai_classifications(items: list[dict[str, Any]], diagnostics: dict[st
             "Return strict JSON only. Do not infer amounts, balances, dates, or reconciliation. "
             "Use conservative VAT treatment. Mark ambiguous, personal-looking, entertainment, or supplier-unknown items for review. "
             "Do not classify purely because a generic keyword appears in the description. Use merchant semantics, recurring pattern, amount direction, known supplier context, and the existing rule result. "
-            "ALLIANZ HOLDINGS is the account holder/company context, not an insurance merchant. Never classify a row as Insurance merely because Allianz appears."
+            "The account holder / company name printed on the statement is context, not a merchant. Never classify a row into a category merely because the account holder's own name appears in the description."
         ),
         "known_supplier_guidance": [
             {"merchant": "Discovery", "account": "Insurance", "reason": "Previously approved insurance supplier pattern."},
@@ -1861,9 +1863,11 @@ def build_workbook(metadata: dict[str, Any], transactions: list[ParsedTransactio
     status, calculated_closing = validation_status(metadata, transactions)
     opening = decimal_amount(metadata.get("opening_balance"))
     closing = decimal_amount(metadata.get("closing_balance"))
-    company_name = "ALLIANZ HOLDINGS (PTY) LTD"
-    account_number = "63012589818"
-    source_file = metadata.get("source_file") or "28 Feb 2026 - (Free)"
+    # Use the company/account holder detected from the actual statement. Never
+    # hardcode a company name into the workbook title.
+    company_name = (metadata.get("company_name") or "").strip()
+    account_number = (metadata.get("account_number") or "").strip()
+    source_file = metadata.get("source_file") or ""
     rows = [professional_transaction_row(transaction, source_file) for transaction in transactions]
     ai_started = time.perf_counter()
     ai_stats = apply_ai_classifications(rows)
@@ -1882,7 +1886,12 @@ def build_workbook(metadata: dict[str, Any], transactions: list[ParsedTransactio
     dashboard = workbook.active
     dashboard.title = "Dashboard"
     dashboard.merge_cells("A1:K1")
-    dashboard["A1"] = f"{company_name} - Bank Statement Accounting Pack"
+    workbook_title = (
+        f"{company_name} - Bank Statement Accounting Pack"
+        if company_name
+        else "Bank Statement Accounting Pack"
+    )
+    dashboard["A1"] = workbook_title
     dashboard["A1"].font = Font(bold=True, size=14, color="FFFFFF")
     dashboard["A1"].fill = HEADER_FILL
     dashboard["A1"].alignment = Alignment(horizontal="center")

@@ -83,7 +83,7 @@ function normalizeMerchantKey(description: string) {
     .replace(/\b(?:inv|invoice|ref|rmsp|m)\s*[\w-]+\b/g, " ")
     .replace(/\b\d{3,}\b/g, " ")
     .replace(/\d+[.,]\d{2}\s*(cr|dr)?/g, " ")
-    .replace(/\b(allianz holdings|pty|ltd|business account)\b/g, " ")
+    .replace(/\b(pty|ltd|business account)\b/g, " ")
     .replace(/[^a-z#* ]+/g, " ")
     .replace(/\s+/g, " ")
     .trim()

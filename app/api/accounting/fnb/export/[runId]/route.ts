@@ -1,20 +1,17 @@
 import { NextResponse } from "next/server";
 import { getAccountingRunDetail } from "@/lib/accounting/server";
 import { getWorkspaceContext } from "@/lib/server-documents";
-import type { AccountingRunDetail, AccountingTransaction } from "@/lib/accounting/types";
+import {
+  buildExportSections,
+  resolveCompanyName,
+  sectionToCsv,
+  sectionsToXlsx,
+  type ExportSection,
+  type ExportSectionId,
+} from "@/lib/accounting/export";
 
-type ExportSection =
-  | "all"
-  | "transactions"
-  | "review-items"
-  | "summary"
-  | "bank-reconciliation"
-  | "vat"
-  | "general-ledger"
-  | "trial-balance";
-
-const sectionNames: Record<ExportSection, string> = {
-  all: "workbook",
+// Single-section CSV downloads.
+const CSV_SECTIONS: Record<string, ExportSectionId> = {
   transactions: "transactions",
   "review-items": "review-items",
   summary: "summary",
@@ -24,160 +21,40 @@ const sectionNames: Record<ExportSection, string> = {
   "trial-balance": "trial-balance",
 };
 
-const reportDisclaimer =
-  "Draft management report generated from bank-statement data only. This is not a final IFRS or Companies Act financial statement and requires accountant review.";
+// Grouped / full multi-sheet XLSX packs.
+const XLSX_PACKS: Record<string, ExportSectionId[]> = {
+  "financial-statements": ["profit-loss", "balance-sheet", "cash-flow", "financial-statements"],
+  "ai-insights": ["ai-intelligence", "tax-vat"],
+  "audit-pack": ["cover", "audit-tools", "review-items", "tax-vat", "assumptions"],
+  all: [
+    "cover",
+    "summary",
+    "transactions",
+    "review-items",
+    "vat",
+    "general-ledger",
+    "trial-balance",
+    "bank-reconciliation",
+    "profit-loss",
+    "balance-sheet",
+    "cash-flow",
+    "financial-statements",
+    "tax-vat",
+    "ai-intelligence",
+    "forecasting",
+    "audit-tools",
+    "assumptions",
+  ],
+};
 
-function csvCell(value: unknown) {
-  const text = value === null || value === undefined ? "" : String(value);
-  return /[",\n]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
-}
-
-function csv(rows: unknown[][]) {
-  return rows.map((row) => row.map(csvCell).join(",")).join("\n");
-}
-
-function money(value: number | null | undefined) {
-  return value ?? "";
-}
-
-function reviewItems(transactions: AccountingTransaction[]) {
-  return transactions.filter(
-    (transaction) =>
-      transaction.reviewStatus === "needs_review" ||
-      transaction.vatTreatment === "review" ||
-      transaction.accountCategory === "Review Required" ||
-      transaction.accountCategory === "Uncategorised Expense" ||
-      transaction.confidence < 80,
-  );
-}
-
-function accountGroups(transactions: AccountingTransaction[]) {
-  const groups = new Map<string, { debit: number; credit: number; count: number }>();
-  for (const transaction of transactions) {
-    const account = transaction.reviewStatus === "approved" ? transaction.accountCategory : "Review Required Suspense";
-    const current = groups.get(account) ?? { debit: 0, credit: 0, count: 0 };
-    current.debit += transaction.debitAmount ?? 0;
-    current.credit += transaction.creditAmount ?? 0;
-    current.count += 1;
-    groups.set(account, current);
-  }
-  return Array.from(groups, ([account, values]) => ({ account, ...values })).sort((a, b) => a.account.localeCompare(b.account));
-}
-
-function csvForSection(detail: AccountingRunDetail, section: ExportSection) {
-  const transactions = detail.transactions;
-  const totalDebits = transactions.reduce((sum, transaction) => sum + (transaction.debitAmount ?? 0), 0);
-  const totalCredits = transactions.reduce((sum, transaction) => sum + (transaction.creditAmount ?? 0), 0);
-  const expectedClosing = (detail.run.openingBalance ?? 0) + totalCredits - totalDebits;
-  const difference = expectedClosing - (detail.run.closingBalance ?? 0);
-
-  if (section === "transactions") {
-    return csv([
-      ["Date", "Description", "Money In", "Money Out", "Balance", "Bank Charge", "Account", "VAT", "Review Status", "Confidence"],
-      ...transactions.map((transaction) => [
-        transaction.transactionDate,
-        transaction.description,
-        money(transaction.creditAmount),
-        money(transaction.debitAmount),
-        money(transaction.runningBalance),
-        transaction.bankCharge ? money(transaction.debitAmount) : "",
-        transaction.accountCategory,
-        transaction.vatTreatment,
-        transaction.reviewStatus,
-        transaction.confidence,
-      ]),
-    ]);
-  }
-
-  if (section === "review-items") {
-    return csv([
-      ["Date", "Description", "Money In", "Money Out", "Account", "VAT", "Review Status", "Confidence", "Notes"],
-      ...reviewItems(transactions).map((transaction) => [
-        transaction.transactionDate,
-        transaction.description,
-        money(transaction.creditAmount),
-        money(transaction.debitAmount),
-        transaction.accountCategory,
-        transaction.vatTreatment,
-        transaction.reviewStatus,
-        transaction.confidence,
-        transaction.notes,
-      ]),
-    ]);
-  }
-
-  if (section === "summary") {
-    return csv([
-      ["Disclaimer", reportDisclaimer],
-      [],
-      ["Metric", "Value"],
-      ["Company", detail.run.companyName ?? ""],
-      ["Account number", detail.run.accountNumber ?? ""],
-      ["Statement period start", detail.run.statementPeriodStart ?? ""],
-      ["Statement period end", detail.run.statementPeriodEnd ?? ""],
-      ["Opening balance", money(detail.run.openingBalance)],
-      ["Total receipts", totalCredits],
-      ["Total payments", totalDebits],
-      ["Closing balance", money(detail.run.closingBalance)],
-      ["Transactions extracted", transactions.length],
-      ["Review items", reviewItems(transactions).length],
-      ["Confidence", detail.run.confidence],
-    ]);
-  }
-
-  if (section === "bank-reconciliation") {
-    return csv([
-      ["Disclaimer", reportDisclaimer],
-      [],
-      ["Bank Reconciliation", "Amount"],
-      ["Opening Balance", money(detail.run.openingBalance)],
-      ["+ Receipts", totalCredits],
-      ["- Payments", totalDebits],
-      ["= Expected Closing Balance", expectedClosing],
-      ["Statement Closing Balance", money(detail.run.closingBalance)],
-      ["Difference", difference],
-      ["Status", Math.abs(difference) < 0.01 ? "Reconciled" : "Review required"],
-      ["Service Fees", detail.run.bankChargesTotal],
-      ["Bank VAT", detail.run.bankChargesTotal * (15 / 115)],
-    ]);
-  }
-
-  if (section === "vat") {
-    return csv([
-      ["Date", "Description", "Money In", "Money Out", "Account", "VAT Treatment", "Review Status"],
-      ...transactions.map((transaction) => [
-        transaction.transactionDate,
-        transaction.description,
-        money(transaction.creditAmount),
-        money(transaction.debitAmount),
-        transaction.reviewStatus === "approved" ? transaction.accountCategory : "Review Required Suspense",
-        transaction.reviewStatus === "approved" ? transaction.vatTreatment : "review",
-        transaction.reviewStatus,
-      ]),
-    ]);
-  }
-
-  const groups = accountGroups(transactions);
-  if (section === "general-ledger") {
-    return csv([
-      ["Account", "Transactions", "Debits", "Credits", "Net Movement"],
-      ...groups.map((group) => [group.account, group.count, group.debit, group.credit, group.credit - group.debit]),
-    ]);
-  }
-
-  return csv([
-    ["Account", "Total Debits", "Total Credits", "Debit Balance", "Credit Balance"],
-    ...groups.map((group) => {
-      const net = group.debit - group.credit;
-      return [group.account, group.debit, group.credit, net > 0 ? net : 0, net < 0 ? Math.abs(net) : 0];
-    }),
-  ]);
+function pickSections(all: ExportSection[], ids: ExportSectionId[]): ExportSection[] {
+  const byId = new Map(all.map((s) => [s.id, s]));
+  return ids.map((id) => byId.get(id)).filter((s): s is ExportSection => Boolean(s));
 }
 
 export async function GET(request: Request, { params }: { params: Promise<{ runId: string }> }) {
   const { runId } = await params;
-  const requestedSection = new URL(request.url).searchParams.get("section") as ExportSection | null;
-  const section: ExportSection = requestedSection && requestedSection in sectionNames ? requestedSection : "all";
+  const section = new URL(request.url).searchParams.get("section") ?? "all";
 
   try {
     const context = await getWorkspaceContext();
@@ -190,9 +67,28 @@ export async function GET(request: Request, { params }: { params: Promise<{ runI
       return NextResponse.json({ error: "Accounting run not found." }, { status: 404 });
     }
 
-    if (section !== "all") {
-      const body = csvForSection(detail, section);
-      const fileName = `FNB-${sectionNames[section]}-${detail.run.id.slice(0, 8)}.csv`;
+    let workspaceCompany: string | null = null;
+    try {
+      const { data } = await context.supabase
+        .from("companies")
+        .select("business_name")
+        .eq("workspace_id", context.workspaceId)
+        .eq("is_default", true)
+        .maybeSingle();
+      workspaceCompany = (data as { business_name?: string } | null)?.business_name ?? null;
+    } catch {
+      workspaceCompany = null;
+    }
+    const company = resolveCompanyName(detail.run.companyName, workspaceCompany);
+    const sections = buildExportSections(detail, company);
+    const shortId = detail.run.id.slice(0, 8);
+    const slug = (company || "bank-statement").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 40) || "bank-statement";
+
+    // Single-section CSV
+    if (section in CSV_SECTIONS) {
+      const target = pickSections(sections, [CSV_SECTIONS[section]])[0];
+      const body = sectionToCsv(target);
+      const fileName = `${slug}-${section}-${shortId}.csv`;
       return new NextResponse(body, {
         headers: {
           "Content-Type": "text/csv; charset=utf-8",
@@ -201,17 +97,14 @@ export async function GET(request: Request, { params }: { params: Promise<{ runI
       });
     }
 
-    if (!detail.run.workbookStoragePath) {
-      return NextResponse.json({ error: "The Excel workbook is not ready yet." }, { status: 409 });
-    }
+    // Grouped / full XLSX pack
+    const packIds = XLSX_PACKS[section] ?? XLSX_PACKS.all;
+    const packSections = pickSections(sections, packIds);
+    const xlsx = sectionsToXlsx(packSections);
+    const packLabel = section === "all" ? "accounting-pack" : section;
+    const fileName = `${slug}-${packLabel}-${shortId}.xlsx`;
 
-    const { data, error } = await context.supabase.storage.from("documents").download(detail.run.workbookStoragePath);
-    if (error || !data) {
-      return NextResponse.json({ error: error?.message ?? "Workbook not found." }, { status: 404 });
-    }
-
-    const fileName = `FNB-accounting-workbook-${detail.run.id.slice(0, 8)}.xlsx`;
-    return new NextResponse(data, {
+    return new NextResponse(Buffer.from(xlsx), {
       headers: {
         "Content-Type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         "Content-Disposition": `attachment; filename="${fileName}"`,

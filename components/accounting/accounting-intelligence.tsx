@@ -28,6 +28,7 @@ import {
   TrendingDown,
   TrendingUp,
   UploadCloud,
+  X,
 } from "lucide-react";
 import type {
   AccountingRunDetail,
@@ -369,6 +370,7 @@ export function AccountingIntelligence() {
   const [uploadQueue, setUploadQueue] = useState<UploadQueueItem[]>([]);
   const [selectedRunIds, setSelectedRunIds] = useState<string[]>([]);
   const [selectedRunId, setSelectedRunId] = useState("");
+  const [showExportModal, setShowExportModal] = useState(false);
   const [detail, setDetail] = useState<AccountingRunDetail | null>(null);
   const [busy, setBusy] = useState("");
   const [message, setMessage] = useState("");
@@ -643,14 +645,6 @@ export function AccountingIntelligence() {
     } finally {
       setBusy("");
     }
-  }
-
-  function exportSelectedRuns() {
-    if (selectedRunIds.length === 1) {
-      window.location.href = `/api/accounting/fnb/export/${selectedRunIds[0]}`;
-      return;
-    }
-    void createCombinedWorkbookWithPrecheck();
   }
 
   async function processRun(runId: string, options?: { manageBusy?: boolean; refreshAfter?: boolean }) {
@@ -1035,7 +1029,7 @@ export function AccountingIntelligence() {
       </section>
 
       {selectedRunIds.length ? (
-        <section className="rounded-xl border border-slate-200 bg-slate-50 p-3 shadow-sm md:p-4">
+        <section className="sticky top-2 z-40 rounded-xl border border-royal-200 bg-royal-50/95 p-3 shadow-md backdrop-blur supports-[backdrop-filter]:bg-royal-50/80 md:p-4">
           <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
             <p className="text-sm font-black text-navy-950">{selectedRunLabel}</p>
             <div className="flex flex-wrap gap-2">
@@ -1057,9 +1051,10 @@ export function AccountingIntelligence() {
               </button>
               <button
                 type="button"
-                onClick={exportSelectedRuns}
-                className="inline-flex min-h-10 items-center justify-center rounded-lg border border-slate-200 bg-white px-3 text-xs font-black text-slate-700"
+                onClick={() => setShowExportModal(true)}
+                className="inline-flex min-h-10 items-center justify-center gap-1.5 rounded-lg bg-royal-600 px-3 text-xs font-black text-white hover:bg-royal-700"
               >
+                <ArrowDownToLine className="h-3.5 w-3.5" />
                 Export
               </button>
             </div>
@@ -1397,8 +1392,43 @@ export function AccountingIntelligence() {
         </div>
       ) : null}
 
+      {showExportModal && selectedRunIds.length ? (
+        <ExportOptionsModal
+          runIds={selectedRunIds}
+          combinedLabel="Combined Full Pack"
+          onClose={() => setShowExportModal(false)}
+          onCombined={() => void createCombinedWorkbookWithPrecheck()}
+        />
+      ) : null}
+
     </div>
   );
+}
+
+type ExportOption = { label: string; section: string; detail: string; kind: "csv" | "xlsx" };
+
+// Every downloadable item, shown in the export selector. Each is downloadable
+// separately; the full pack bundles every sheet into one workbook.
+const EXPORT_OPTIONS: ExportOption[] = [
+  { label: "Transactions", section: "transactions", detail: "CSV transaction listing", kind: "csv" },
+  { label: "VAT Schedule", section: "vat", detail: "Output, input & net VAT per line", kind: "csv" },
+  { label: "General Ledger", section: "general-ledger", detail: "Account movement summary", kind: "csv" },
+  { label: "Trial Balance", section: "trial-balance", detail: "Debit and credit balances", kind: "csv" },
+  { label: "Review Items", section: "review-items", detail: "Rows requiring accountant review", kind: "csv" },
+  { label: "Bank Reconciliation", section: "bank-reconciliation", detail: "Opening → closing balance check", kind: "csv" },
+  { label: "Financial Statements", section: "financial-statements", detail: "P&L, Balance Sheet, Cash Flow, Ratios", kind: "xlsx" },
+  { label: "AI Insights", section: "ai-insights", detail: "Duplicates, unusual, director activity, risk", kind: "xlsx" },
+  { label: "Audit Pack", section: "audit-pack", detail: "Findings, review items, assumptions", kind: "xlsx" },
+];
+const FULL_PACK_OPTION: ExportOption = {
+  label: "Full Accounting Pack",
+  section: "all",
+  detail: "Every section in one Excel workbook",
+  kind: "xlsx",
+};
+
+function exportHref(runId: string, section: string) {
+  return `/api/accounting/fnb/export/${runId}?section=${section}`;
 }
 
 function ExportDropdown({
@@ -1418,22 +1448,13 @@ function ExportDropdown({
 }) {
   const isDraftExport = run.status === "review";
   const buttonLabel = isDraftExport ? "Export draft" : "Export";
-  const options = [
-    { label: `${buttonLabel} Transactions`, section: "transactions", detail: "CSV transaction listing" },
-    { label: `${buttonLabel} Review Items (${reviewCount})`, section: "review-items", detail: "Rows requiring accountant review" },
-    { label: `${buttonLabel} Summary`, section: "summary", detail: "Statement summary metrics" },
-    { label: `${buttonLabel} Bank Reconciliation`, section: "bank-reconciliation", detail: "Opening, receipts, payments and closing check" },
-    { label: `${buttonLabel} VAT`, section: "vat", detail: "VAT treatment schedule" },
-    { label: `${buttonLabel} General Ledger`, section: "general-ledger", detail: "Account movement summary" },
-    { label: `${buttonLabel} Trial Balance`, section: "trial-balance", detail: "Debit and credit balances" },
-    { label: isDraftExport ? "Export draft workbook" : "Export All in a single file", section: "all", detail: isDraftExport ? "Draft workbook for review, not final filing" : "All sections in one Excel file", requiresWorkbook: true },
-  ];
+  void reviewCount;
 
   return (
     <div className="relative">
       <button
         type="button"
-        disabled={!run.workbookStoragePath || disabled}
+        disabled={disabled}
         onClick={() => onOpenChange(!open)}
         className={`${mobile ? "h-11 w-full justify-center rounded-xl" : "h-11 rounded-lg px-4"} inline-flex items-center gap-2 bg-royal-600 text-sm font-semibold text-white hover:bg-royal-700 disabled:cursor-not-allowed disabled:bg-slate-100 disabled:text-slate-400`}
         aria-expanded={open}
@@ -1444,27 +1465,106 @@ function ExportDropdown({
         <ChevronDown className="h-4 w-4" />
       </button>
       {open ? (
-        <div className={`${mobile ? "fixed inset-x-3 bottom-[calc(9.5rem+env(safe-area-inset-bottom))]" : "absolute right-0 mt-2 w-80"} z-50 overflow-hidden rounded-lg border border-slate-200 bg-white p-2 shadow-xl`} role="menu">
+        <div className={`${mobile ? "fixed inset-x-3 bottom-[calc(9.5rem+env(safe-area-inset-bottom))]" : "absolute right-0 mt-2 w-80"} z-50 max-h-[70vh] overflow-auto rounded-lg border border-slate-200 bg-white p-2 shadow-xl`} role="menu">
           <p className="px-3 py-2 text-[11px] font-semibold uppercase tracking-[0.14em] text-slate-400">Export options</p>
-          {options.map((option, index) => (
+          {[...EXPORT_OPTIONS, FULL_PACK_OPTION].map((option, index) => (
             <a
               key={option.section}
-              href={`/api/accounting/fnb/export/${run.id}${option.section === "all" ? "" : `?section=${option.section}`}`}
+              href={exportHref(run.id, option.section)}
               onClick={() => onOpenChange(false)}
               className={`flex items-start gap-3 rounded-xl px-3 py-3 text-sm font-semibold text-navy-950 hover:bg-royal-50 ${
-                index === options.length - 1 ? "mt-2 border-t border-slate-100 pt-4" : ""
+                index === EXPORT_OPTIONS.length ? "mt-2 border-t border-slate-100 pt-4" : ""
               }`}
               role="menuitem"
             >
               <FileText className="mt-0.5 h-4 w-4 shrink-0 text-slate-500" />
               <span>
-                {option.label}
-                <span className="mt-0.5 block text-xs font-semibold text-slate-500">{option.detail}</span>
+                {option.section === "all" && isDraftExport ? "Full draft pack" : option.label}
+                <span className="mt-0.5 block text-xs font-semibold text-slate-500">
+                  {option.detail} · {option.kind.toUpperCase()}
+                </span>
               </span>
             </a>
           ))}
         </div>
       ) : null}
+    </div>
+  );
+}
+
+// Export selector for the top action bar. Operates on the selected statement(s):
+// single selection offers every per-section download; multiple selection offers a
+// combined full pack plus per-section downloads for the first selected statement.
+function ExportOptionsModal({
+  runIds,
+  combinedLabel,
+  onClose,
+  onCombined,
+}: {
+  runIds: string[];
+  combinedLabel: string;
+  onClose: () => void;
+  onCombined: () => void;
+}) {
+  const primaryRunId = runIds[0];
+  const multiple = runIds.length > 1;
+
+  return (
+    <div className="fixed inset-0 z-[60] flex items-end justify-center bg-navy-950/40 p-4 sm:items-center" onClick={onClose}>
+      <div className="max-h-[85vh] w-full max-w-lg overflow-auto rounded-2xl border border-slate-200 bg-white p-5 shadow-xl" onClick={(event) => event.stopPropagation()}>
+        <div className="flex items-start justify-between gap-3">
+          <div>
+            <h2 className="text-base font-bold text-navy-950">Export</h2>
+            <p className="mt-0.5 text-xs font-semibold text-slate-500">
+              {multiple ? `${runIds.length} statements selected` : "Choose what to download"}
+            </p>
+          </div>
+          <button type="button" onClick={onClose} aria-label="Close" className="text-slate-400">
+            <X className="h-5 w-5" />
+          </button>
+        </div>
+
+        <button
+          type="button"
+          onClick={() => {
+            if (multiple) {
+              onCombined();
+            } else {
+              window.location.href = exportHref(primaryRunId, "all");
+            }
+            onClose();
+          }}
+          className="mt-4 flex w-full items-center justify-between gap-3 rounded-xl border border-royal-200 bg-royal-50 px-4 py-3 text-left hover:bg-royal-100"
+        >
+          <span>
+            <span className="block text-sm font-bold text-royal-800">{multiple ? combinedLabel : "Full Accounting Pack"}</span>
+            <span className="mt-0.5 block text-xs font-semibold text-royal-600">Every section in one Excel workbook · XLSX</span>
+          </span>
+          <ArrowDownToLine className="h-5 w-5 shrink-0 text-royal-600" />
+        </button>
+
+        <p className="mt-4 px-1 text-[11px] font-black uppercase tracking-wide text-slate-400">
+          {multiple ? "Individual sections (first selected statement)" : "Individual sections"}
+        </p>
+        <div className="mt-2 space-y-1.5">
+          {EXPORT_OPTIONS.map((option) => (
+            <a
+              key={option.section}
+              href={exportHref(primaryRunId, option.section)}
+              onClick={onClose}
+              className="flex items-start gap-3 rounded-xl border border-slate-200 px-3 py-2.5 text-sm font-semibold text-navy-950 hover:border-royal-200 hover:bg-royal-50"
+            >
+              <FileText className="mt-0.5 h-4 w-4 shrink-0 text-slate-500" />
+              <span className="min-w-0">
+                {option.label}
+                <span className="mt-0.5 block truncate text-xs font-semibold text-slate-500">
+                  {option.detail} · {option.kind.toUpperCase()}
+                </span>
+              </span>
+            </a>
+          ))}
+        </div>
+      </div>
     </div>
   );
 }
