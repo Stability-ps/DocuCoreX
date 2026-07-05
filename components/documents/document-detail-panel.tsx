@@ -24,6 +24,7 @@ import type {
 } from "@/lib/types";
 import { DocumentStatusBadge, statusLabel } from "@/components/documents/document-status-badge";
 import { detectedTypeLabel, formatBytes, formatRelativeTime } from "@/components/documents/document-card";
+import { DocumentViewer, type DocumentViewerKind } from "@/components/document-viewer";
 
 type DetailData = {
   document?: DocumentRecord;
@@ -417,24 +418,9 @@ function OverviewTab({ doc, jobs }: { doc: DocumentRecord; jobs: ProcessingJob[]
 }
 
 function PreviewTab({ kind, downloadUrl, name }: { kind: string; downloadUrl: string; name: string }) {
-  return (
-    <section className="rounded-2xl border border-slate-200 bg-white p-4 sm:p-5">
-      {kind === "pdf" ? (
-        <iframe title={`Preview of ${name}`} src={downloadUrl} className="h-[70vh] w-full rounded-xl border border-slate-200" />
-      ) : kind === "image" ? (
-        // eslint-disable-next-line @next/next/no-img-element
-        <img src={downloadUrl} alt={name} className="mx-auto max-h-[70vh] rounded-xl border border-slate-200 object-contain" />
-      ) : (
-        <div className="flex flex-col items-center justify-center gap-3 py-16 text-center">
-          <FileText className="h-10 w-10 text-slate-300" />
-          <p className="text-sm font-bold text-navy-950">Preview not available for this file type</p>
-          <a href={downloadUrl} target="_blank" rel="noopener noreferrer" className="text-sm font-bold text-royal-700">
-            Download to view
-          </a>
-        </div>
-      )}
-    </section>
-  );
+  // Standard platform-wide viewer (same one used in the Statement Review Workspace).
+  const viewerKind: DocumentViewerKind = kind === "pdf" ? "pdf" : kind === "image" ? "image" : "other";
+  return <DocumentViewer sourceUrl={downloadUrl} fileName={name} kind={viewerKind} minHeightClass="min-h-[70vh]" />;
 }
 
 function OcrTab({ ocr, onRun, busy }: { ocr?: OcrResult; onRun: () => void; busy: boolean }) {

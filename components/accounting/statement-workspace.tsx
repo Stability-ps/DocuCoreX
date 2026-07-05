@@ -7,12 +7,8 @@ import {
   ArrowLeft,
   ChevronDown,
   Download,
-  Maximize2,
   RefreshCcw,
-  RotateCw,
   Search,
-  ZoomIn,
-  ZoomOut,
   FileWarning,
   Loader2,
   ListChecks,
@@ -24,9 +20,10 @@ import type {
   AccountingStatementRun,
   AccountingTransaction,
   AccountingTransactionPatch,
-  VatTreatment,
 } from "@/lib/accounting/types";
 import { buildAccountingModel } from "@/lib/accounting/model";
+import { detectDuplicates, detectUnusualTransactions, detectDirectorTransactions } from "@/lib/accounting/analytics";
+import { DocumentViewer } from "@/components/document-viewer";
 
 // ── Formatting helpers ───────────────────────────────────────────────────────
 
@@ -59,13 +56,15 @@ const EXPORT_OPTIONS: Array<{ label: string; section: string }> = [
   { label: "Cash Flow", section: "cash-flow" },
   { label: "Bank Reconciliation", section: "bank-reconciliation" },
   { label: "Review Queue", section: "review-queue" },
+  { label: "Transaction Insights Report", section: "transaction-insights" },
 ];
 
-type Tab = "transactions" | "review" | "difference" | "summary" | "reconciliation" | "vat" | "ledger" | "trial-balance";
+type Tab = "transactions" | "review" | "insights" | "difference" | "summary" | "reconciliation" | "vat" | "ledger" | "trial-balance";
 
 const TABS: Array<{ id: Tab; label: string }> = [
   { id: "transactions", label: "Transactions" },
   { id: "review", label: "Review" },
+  { id: "insights", label: "Transaction Insights" },
   { id: "difference", label: "Difference Inspector" },
   { id: "summary", label: "Summary" },
   { id: "reconciliation", label: "Bank Reconciliation" },
@@ -268,7 +267,7 @@ export function StatementWorkspace({ statementId }: { statementId: string }) {
             <button
               onClick={() => void reprocess()}
               disabled={busy === "reprocess"}
-              title="Runs the original PDF through the extraction engine again."
+              title="Re-reads the original PDF and extracts the transactions again."
               className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm font-bold text-slate-700 hover:bg-slate-50 disabled:opacity-60"
             >
               {busy === "reprocess" ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCcw className="h-4 w-4" />} Re-process Statement
@@ -359,9 +358,10 @@ export function StatementWorkspace({ statementId }: { statementId: string }) {
       {/* ── Three-column layout ─────────────────────────────────────────── */}
       <div className="mt-4 grid gap-4 lg:grid-cols-[300px_minmax(0,1fr)] xl:grid-cols-[300px_minmax(0,1fr)_460px]">
         <StatementSidebar run={run} totals={totals} reviewCount={reviewItems.length} dataQuality={dataQuality} onReview={() => setActiveTab("review")} />
-        <PdfViewer sourceUrl={sourceUrl} />
+        <DocumentViewer sourceUrl={sourceUrl} fileName={`${runTitle(run)}.pdf`} kind="pdf" />
         <div className="min-w-0 xl:row-span-1">
           <RightPanel
+            statementId={statementId}
             activeTab={activeTab}
             setActiveTab={setActiveTab}
             run={run}
@@ -445,117 +445,12 @@ function Row({ label, value, tone }: { label: string; value: string; tone?: "goo
   );
 }
 
-// ── PDF viewer ────────────────────────────────────────────────────────────────
-
-function PdfViewer({ sourceUrl }: { sourceUrl: string }) {
-  const containerRef = useRef<HTMLDivElement>(null);
-  const [scale, setScale] = useState(1);
-  const [rotate, setRotate] = useState(0);
-  const [page, setPage] = useState(1);
-  const [status, setStatus] = useState<"loading" | "ready" | "error">("loading");
-
-  const checkAvailability = useCallback(async () => {
-    setStatus("loading");
-    try {
-      const response = await fetch(sourceUrl, { method: "GET", redirect: "follow" });
-      setStatus(response.ok ? "ready" : "error");
-    } catch {
-      setStatus("error");
-    }
-  }, [sourceUrl]);
-
-  useEffect(() => {
-    void checkAvailability();
-  }, [checkAvailability]);
-
-  const fullscreen = () => {
-    if (containerRef.current) void containerRef.current.requestFullscreen?.();
-  };
-
-  const frameSrc = `${sourceUrl}#page=${page}&view=FitH`;
-
-  return (
-    <section ref={containerRef} className="flex min-h-[520px] flex-col overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">
-      <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-100 px-3 py-2">
-        <div className="flex items-center gap-1">
-          <ToolButton label="Previous page" onClick={() => setPage((p) => Math.max(1, p - 1))}>
-            ‹
-          </ToolButton>
-          <span className="min-w-14 text-center text-xs font-bold text-slate-600">Page {page}</span>
-          <ToolButton label="Next page" onClick={() => setPage((p) => p + 1)}>
-            ›
-          </ToolButton>
-        </div>
-        <div className="flex items-center gap-1">
-          <ToolButton label="Zoom out" onClick={() => setScale((s) => Math.max(0.5, +(s - 0.1).toFixed(2)))}>
-            <ZoomOut className="h-4 w-4" />
-          </ToolButton>
-          <span className="min-w-12 text-center text-xs font-bold text-slate-600">{Math.round(scale * 100)}%</span>
-          <ToolButton label="Zoom in" onClick={() => setScale((s) => Math.min(2.5, +(s + 0.1).toFixed(2)))}>
-            <ZoomIn className="h-4 w-4" />
-          </ToolButton>
-          <ToolButton label="Fit width" onClick={() => setScale(1)}>
-            Fit
-          </ToolButton>
-          <ToolButton label="Rotate" onClick={() => setRotate((r) => (r + 90) % 360)}>
-            <RotateCw className="h-4 w-4" />
-          </ToolButton>
-          <a href={sourceUrl} target="_blank" rel="noreferrer" className="rounded-md p-1.5 text-slate-500 hover:bg-slate-100 hover:text-royal-700" aria-label="Download original" title="Download original">
-            <Download className="h-4 w-4" />
-          </a>
-          <ToolButton label="Full screen" onClick={fullscreen}>
-            <Maximize2 className="h-4 w-4" />
-          </ToolButton>
-        </div>
-      </div>
-
-      <div className="relative flex-1 overflow-auto bg-slate-100">
-        {status === "loading" ? (
-          <div className="flex h-full min-h-[440px] items-center justify-center text-slate-400">
-            <Loader2 className="h-5 w-5 animate-spin" /> <span className="ml-2 text-sm font-bold">Loading preview…</span>
-          </div>
-        ) : status === "error" ? (
-          <div className="flex h-full min-h-[440px] flex-col items-center justify-center gap-3 p-6 text-center">
-            <FileWarning className="h-8 w-8 text-amber-500" />
-            <p className="text-sm font-bold text-slate-600">Preview unavailable</p>
-            <div className="flex items-center gap-2">
-              <button onClick={() => void checkAvailability()} className="rounded-lg bg-royal-600 px-3 py-2 text-sm font-bold text-white hover:bg-royal-700">
-                Retry
-              </button>
-              <a href={sourceUrl} target="_blank" rel="noreferrer" className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm font-bold text-slate-700 hover:bg-slate-50">
-                Download original
-              </a>
-            </div>
-          </div>
-        ) : (
-          <div className="flex min-h-[440px] justify-center p-2" style={{ transform: `rotate(${rotate}deg)`, transformOrigin: "center top" }}>
-            <iframe
-              key={`${page}-${rotate}`}
-              title="Statement PDF"
-              src={frameSrc}
-              className="h-[640px] w-full rounded border border-slate-200 bg-white"
-              style={{ width: `${Math.round(scale * 100)}%` }}
-            />
-          </div>
-        )}
-      </div>
-    </section>
-  );
-}
-
-function ToolButton({ label, onClick, children }: { label: string; onClick: () => void; children: React.ReactNode }) {
-  return (
-    <button type="button" onClick={onClick} aria-label={label} title={label} className="inline-flex h-8 min-w-8 items-center justify-center rounded-md px-2 text-sm font-bold text-slate-600 hover:bg-slate-100 hover:text-royal-700">
-      {children}
-    </button>
-  );
-}
-
 // ── Right panel (tabs) ────────────────────────────────────────────────────────
 
 type Model = ReturnType<typeof buildAccountingModel>;
 
 function RightPanel({
+  statementId,
   activeTab,
   setActiveTab,
   run,
@@ -565,6 +460,7 @@ function RightPanel({
   reviewItems,
   patchTransaction,
 }: {
+  statementId: string;
   activeTab: Tab;
   setActiveTab: (tab: Tab) => void;
   run: AccountingStatementRun;
@@ -593,6 +489,7 @@ function RightPanel({
       <div className="min-h-0 flex-1 overflow-auto p-3">
         {activeTab === "transactions" ? <TransactionsTab model={model} /> : null}
         {activeTab === "review" ? <ReviewTab reviewItems={reviewItems} patchTransaction={patchTransaction} /> : null}
+        {activeTab === "insights" ? <InsightsTab statementId={statementId} transactions={transactions} model={model} totals={totals} /> : null}
         {activeTab === "difference" ? <DifferenceTab totals={totals} model={model} /> : null}
         {activeTab === "summary" ? <SummaryTab run={run} model={model} totals={totals} reviewCount={reviewItems.length} /> : null}
         {activeTab === "reconciliation" ? <ReconciliationTab totals={totals} /> : null}
@@ -699,6 +596,79 @@ function ReviewTab({ reviewItems, patchTransaction }: { reviewItems: AccountingT
           </div>
         </div>
       ))}
+    </div>
+  );
+}
+
+function InsightsTab({
+  statementId,
+  transactions,
+  model,
+  totals,
+}: {
+  statementId: string;
+  transactions: AccountingTransaction[];
+  model: Model;
+  totals: { difference: number; reconciled: boolean };
+}) {
+  const duplicates = useMemo(() => detectDuplicates(transactions), [transactions]);
+  const unusual = useMemo(() => detectUnusualTransactions(transactions), [transactions]);
+  const directors = useMemo(() => detectDirectorTransactions(transactions), [transactions]);
+  const large = useMemo(() => model.transactions.filter((t) => (t.debit || t.credit) >= 25000), [model.transactions]);
+  const unresolved = useMemo(() => model.transactions.filter((t) => t.reviewReason), [model.transactions]);
+  const vatReview = useMemo(() => model.transactions.filter((t) => t.vatCode === "REV"), [model.transactions]);
+
+  const cards: Array<{ label: string; value: number }> = [
+    { label: "Duplicate payment groups", value: duplicates.length },
+    { label: "Unusual transactions", value: unusual.length },
+    { label: "Related-party / director", value: directors.length },
+    { label: "Large transactions", value: large.length },
+    { label: "Unresolved review items", value: unresolved.length },
+    { label: "VAT review items", value: vatReview.length },
+  ];
+
+  return (
+    <div className="space-y-3">
+      <div className="flex items-center justify-between">
+        <h3 className="text-sm font-black text-navy-950">Transaction Insights</h3>
+        <a
+          href={`/api/accounting/fnb/export/${statementId}?section=transaction-insights`}
+          className="inline-flex items-center gap-1.5 rounded-lg bg-royal-600 px-3 py-1.5 text-xs font-bold text-white hover:bg-royal-700"
+        >
+          <Download className="h-4 w-4" /> Download Report
+        </a>
+      </div>
+      <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
+        {cards.map((card) => (
+          <div key={card.label} className={`rounded-lg border p-2 text-center ${card.value ? "border-amber-200 bg-amber-50" : "border-slate-100 bg-slate-50"}`}>
+            <p className={`text-base font-black ${card.value ? "text-amber-800" : "text-slate-400"}`}>{card.value}</p>
+            <p className="text-[10px] font-bold text-slate-500">{card.label}</p>
+          </div>
+        ))}
+      </div>
+      <div className={`rounded-lg border p-2 text-xs font-bold ${totals.reconciled ? "border-emerald-100 bg-emerald-50 text-emerald-800" : "border-amber-200 bg-amber-50 text-amber-800"}`}>
+        {totals.reconciled ? "Reconciliation: balanced." : `Reconciliation: review required (off by ${fmtMoney(totals.difference)}).`}
+      </div>
+      {duplicates.length ? (
+        <InsightList title="Possible duplicates" items={duplicates.map((d) => `${d.transactions[0]?.description ?? "—"} — ${fmtMoney(d.amount)} ×${d.transactions.length}`)} />
+      ) : null}
+      {unusual.length ? <InsightList title="Unusual transactions" items={unusual.map((u) => `${u.transaction.description} — ${u.reason}`)} /> : null}
+      {directors.length ? <InsightList title="Related-party / director activity" items={directors.map((d) => `${d.transaction.description} — ${fmtMoney(d.transaction.debitAmount ?? d.transaction.creditAmount ?? 0)}`)} /> : null}
+      {unresolved.length ? <InsightList title="Unresolved review items" items={unresolved.slice(0, 20).map((t) => `${t.description} — ${t.reviewReason}`)} /> : null}
+      <p className="text-xs font-semibold text-slate-400">Review insights for the accountant. Download the report for the full breakdown.</p>
+    </div>
+  );
+}
+
+function InsightList({ title, items }: { title: string; items: string[] }) {
+  return (
+    <div className="rounded-lg border border-slate-100 p-2">
+      <p className="text-xs font-black uppercase tracking-wide text-slate-400">{title}</p>
+      <ul className="mt-1 space-y-0.5 text-xs font-semibold text-slate-600">
+        {items.map((item, index) => (
+          <li key={index} className="truncate" title={item}>• {item}</li>
+        ))}
+      </ul>
     </div>
   );
 }

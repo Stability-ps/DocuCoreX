@@ -10,6 +10,64 @@ const read = (p: string) => readFileSync(join(root, p), "utf8");
 // Guards for the Accounting Intelligence export fixes so they cannot silently
 // regress. (These read source text; the full XLSX is validated by pnpm build.)
 
+test("export menu includes the Transaction Insights Report and it is buildable", () => {
+  const src = read("lib/accounting/export.ts");
+  assert.match(src, /label: "Transaction Insights Report", section: "transaction-insights"/, "export menu must offer the insights report");
+  assert.match(src, /id: "transaction-insights"/, "the insights section must be built");
+  // Report content — no AI/internal wording, professional insight groupings.
+  assert.match(src, /Duplicate payment groups/);
+  assert.match(src, /Unusual transactions/);
+  assert.match(src, /Related-party & director activity/);
+  assert.match(src, /Large transactions/);
+  assert.match(src, /Unresolved review items/);
+  assert.match(src, /VAT review items/);
+});
+
+test("the shared document viewer uses an in-app fullscreen overlay, not browser fullscreen", () => {
+  const viewer = read("components/document-viewer.tsx");
+  assert.doesNotMatch(viewer, /requestFullscreen/, "must not use browser requestFullscreen (it froze the app)");
+  assert.match(viewer, /role="dialog"/, "fullscreen must be an in-app overlay");
+  assert.match(viewer, /setFullscreen\(false\)/, "overlay must have a close action");
+  assert.match(viewer, /event\.key === "Escape"/, "ESC must close the overlay");
+});
+
+test("the shared document viewer rotate keeps the page centred", () => {
+  const viewer = read("components/document-viewer.tsx");
+  assert.match(viewer, /rotate\(\$\{rotate\}deg\)/, "rotation transform must be applied");
+  assert.match(viewer, /transformOrigin: "center center"/, "rotation must be centred, not pushed out");
+  assert.match(viewer, /setRotate\(\(r\) => \(r \+ 90\) % 360\)/, "rotate must cycle 0/90/180/270");
+});
+
+test("no user-facing AI wording in the accounting UI", () => {
+  for (const file of ["components/accounting/statement-workspace.tsx", "components/accounting/accounting-intelligence.tsx"]) {
+    const src = read(file);
+    for (const banned of ['"AI Intelligence"', '"AI Transaction Intelligence"', '"AI Accountant Notes"', '"AI Notes"', '"OpenAI"', "extraction engine"]) {
+      assert.ok(!src.includes(banned), `${file} must not show ${banned}`);
+    }
+  }
+  assert.match(read("components/accounting/accounting-intelligence.tsx"), /label: "Transaction Insights"/, "AI Intelligence tab must be renamed to Transaction Insights");
+});
+
+test("one shared DocumentViewer is the standard viewer across the platform", () => {
+  // The shared component exists.
+  const viewer = read("components/document-viewer.tsx");
+  assert.match(viewer, /export function DocumentViewer/, "shared DocumentViewer must exist");
+  assert.doesNotMatch(viewer, /requestFullscreen/, "shared viewer must not use browser fullscreen");
+  assert.match(viewer, /role="dialog"/, "shared viewer uses an in-app fullscreen overlay");
+
+  // The Statement Review Workspace uses the shared viewer, not its own.
+  const workspace = read("components/accounting/statement-workspace.tsx");
+  assert.match(workspace, /import \{ DocumentViewer \} from "@\/components\/document-viewer"/, "workspace must import the shared viewer");
+  assert.match(workspace, /<DocumentViewer /, "workspace must render the shared viewer");
+  assert.doesNotMatch(workspace, /function PdfViewer\(/, "workspace must not define its own viewer");
+
+  // The Documents preview uses the shared viewer, not a bare iframe.
+  const docs = read("components/documents/document-detail-panel.tsx");
+  assert.match(docs, /import \{ DocumentViewer/, "documents preview must import the shared viewer");
+  assert.match(docs, /<DocumentViewer /, "documents preview must render the shared viewer");
+  assert.doesNotMatch(docs, /<iframe title=\{`Preview of/, "documents preview must not use a bare iframe");
+});
+
 test("no hardcoded ALLIANZ company name in the export path", () => {
   for (const file of [
     "lib/accounting/export.ts",

@@ -4,6 +4,7 @@ import {
   computeProfitLoss,
   detectDuplicates,
   detectDirectorTransactions,
+  detectUnusualTransactions,
   accountType,
   type AccountType,
 } from "@/lib/accounting/analytics";
@@ -48,6 +49,7 @@ export type ExportSectionId =
   | "balance-sheet"
   | "cash-flow"
   | "bank-reconciliation"
+  | "transaction-insights"
   | "assumptions";
 
 export type ExportSection = {
@@ -89,6 +91,7 @@ export const EXPORT_MENU: Array<{ key: string; label: string; section: ExportSec
   { key: "cash-flow", label: "Cash Flow", section: "cash-flow" },
   { key: "bank-reconciliation", label: "Bank Reconciliation", section: "bank-reconciliation" },
   { key: "review-queue", label: "Review Queue", section: "review-queue" },
+  { key: "transaction-insights", label: "Transaction Insights Report", section: "transaction-insights" },
 ];
 
 const VAT_RATE = 15 / 115;
@@ -622,6 +625,72 @@ export function buildExportSections(detail: AccountingRunDetail, resolvedCompany
           ])
         : [[GOOD("Nothing to review — all transactions are categorised with resolved VAT."), S(""), S(""), S(""), S(""), S(""), S("")]]),
     ],
+  });
+
+  // Transaction Insights Report — a standalone review report: duplicates,
+  // unusual activity, related-party/director movements, large transactions,
+  // unresolved review items, VAT review items, reconciliation issues and notes.
+  // No internal/AI wording — presented as professional review insights.
+  const unusual = detectUnusualTransactions(txns);
+  const largeTxns = model.transactions.filter((t) => (t.debit || t.credit) >= 25000);
+  const vatReview = model.transactions.filter((t) => t.vatCode === "REV");
+  const unresolvedItems = model.transactions.filter((t) => t.reviewReason);
+  const insightsRows: Cell[][] = [
+    [TITLE("Transaction Insights Report")],
+    [MUTE("Review insights compiled from the extracted statement data. For accountant review — verify before finalising.")],
+    [],
+    [HDR("Insight"), HDR("Count"), HDR("Detail")],
+    [S("Duplicate payment groups"), duplicates.length ? WARN(String(duplicates.length)) : GOOD("0"), S("Same amount and date appearing more than once")],
+    [S("Unusual transactions"), unusual.length ? WARN(String(unusual.length)) : GOOD("0"), S("Amounts well outside the typical range")],
+    [S("Related-party / director activity"), directors.length ? WARN(String(directors.length)) : GOOD("0"), S("Payments to owners or related parties to confirm")],
+    [S("Large transactions"), largeTxns.length ? WARN(String(largeTxns.length)) : GOOD("0"), S("Transactions of R25,000 or more")],
+    [S("Unresolved review items"), unresolvedItems.length ? WARN(String(unresolvedItems.length)) : GOOD("0"), S("Transactions still needing a decision")],
+    [S("VAT review items"), vatReview.length ? WARN(String(vatReview.length)) : GOOD("0"), S("VAT treatment not yet resolved")],
+    [S("Reconciliation"), meta.reconciled ? GOOD("Balanced") : WARN("Review Required"), meta.reconciled ? S("Statement reconciles") : MW(meta.reconciliationDifference)],
+    [],
+    [TITLE("Duplicate payment groups")],
+    [HDR("Description"), HDR("Amount"), HDR("Occurrences")],
+    ...(duplicates.length
+      ? duplicates.map((d) => [S(d.transactions[0]?.description ?? "—"), M(d.amount), INT(d.transactions.length)])
+      : [[GOOD("No duplicate payments detected."), S(""), S("")]]),
+    [],
+    [TITLE("Unusual transactions")],
+    [HDR("Date"), HDR("Description"), HDR("Amount"), HDR("Reason")],
+    ...(unusual.length
+      ? unusual.map((u) => [S(u.transaction.transactionDate ?? ""), S(u.transaction.description), M(u.transaction.debitAmount ?? u.transaction.creditAmount ?? 0), S(u.reason)])
+      : [[GOOD("No unusual transactions detected."), S(""), S(""), S("")]]),
+    [],
+    [TITLE("Related-party & director activity")],
+    [HDR("Date"), HDR("Description"), HDR("Amount")],
+    ...(directors.length
+      ? directors.map((d) => [S(d.transaction.transactionDate ?? ""), S(d.transaction.description), M(d.transaction.debitAmount ?? d.transaction.creditAmount ?? 0)])
+      : [[GOOD("No related-party or director activity detected."), S(""), S("")]]),
+    [],
+    [TITLE("Large transactions")],
+    [HDR("Date"), HDR("Description"), HDR("Amount")],
+    ...(largeTxns.length
+      ? largeTxns.map((t) => [S(t.date), S(t.description), M(t.debit || t.credit)])
+      : [[GOOD("No large transactions detected."), S(""), S("")]]),
+    [],
+    [TITLE("Unresolved review items")],
+    [HDR("Date"), HDR("Description"), HDR("Reason")],
+    ...(unresolvedItems.length
+      ? unresolvedItems.map((t) => [S(t.date), S(t.description), S(t.reviewReason)])
+      : [[GOOD("Nothing outstanding."), S(""), S("")]]),
+    [],
+    [TITLE("Summary notes")],
+    [MUTE(
+      meta.reconciled
+        ? `Statement reconciles. ${unresolvedItems.length} item(s) flagged for review, ${vatReview.length} with unresolved VAT.`
+        : `Statement does not reconcile (difference R${Math.abs(meta.reconciliationDifference).toFixed(2)}). Resolve the flagged items and re-check before relying on the financial statements.`,
+    )],
+  ];
+  sections.push({
+    id: "transaction-insights",
+    label: "Transaction Insights Report",
+    sheet: "Transaction Insights",
+    headerRow: 4,
+    rows: insightsRows,
   });
 
   // Notes & Assumptions — the single closing worksheet: accounting notes,

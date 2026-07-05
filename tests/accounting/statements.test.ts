@@ -283,8 +283,8 @@ test("no AI/engine terminology is exposed anywhere in the workbook", () => {
 });
 
 test("export selector lists every available export and each maps to a real section", () => {
-  // Full pack + 10 individual options = 11.
-  assert.equal(EXPORT_MENU.length, 11, "modal must offer 11 exports");
+  // Full pack + 11 individual options = 12.
+  assert.equal(EXPORT_MENU.length, 12, "modal must offer 12 exports");
   assert.equal(EXPORT_MENU[0].section, "all", "first option is the full pack");
   const all = buildExportSections(detail, "ACAPOLITE CONSULTING (PTY) LTD");
   const ids = new Set(all.map((s: { id: string }) => s.id));
@@ -297,7 +297,7 @@ test("export selector lists every available export and each maps to a real secti
   }
   // Every option label matches an approved export name.
   const labels = EXPORT_MENU.map((o) => o.label);
-  for (const expected of ["Full Accounting Pack", "Transactions", "Executive Summary", "VAT Working Paper", "General Ledger", "Trial Balance", "Profit & Loss", "Balance Sheet", "Cash Flow", "Bank Reconciliation", "Review Queue"]) {
+  for (const expected of ["Full Accounting Pack", "Transactions", "Executive Summary", "VAT Working Paper", "General Ledger", "Trial Balance", "Profit & Loss", "Balance Sheet", "Cash Flow", "Bank Reconciliation", "Review Queue", "Transaction Insights Report"]) {
     assert.ok(labels.includes(expected), `missing export option: ${expected}`);
   }
 });
@@ -308,6 +308,20 @@ test("cash deposits are excluded from final P&L revenue", () => {
   const excludedCats = pl.excluded.map((e: { category: string }) => e.category);
   assert.ok(!revenueCats.includes("Cash Deposits / Revenue"), "cash deposits are not final revenue");
   assert.ok(excludedCats.includes("Cash Deposits / Revenue"), "cash deposits go to excluded pending review");
+});
+
+test("Transaction Insights Report builds with real content and no AI wording", () => {
+  const sections = buildExportSections(detail, "ACAPOLITE CONSULTING (PTY) LTD");
+  const insights = sections.find((s: { id: string }) => s.id === "transaction-insights");
+  assert.ok(insights, "transaction-insights section must be built");
+  const text = insights.rows.map((r: unknown[]) => r.map(cellText).join(" ")).join("\n");
+  assert.match(text, /Transaction Insights Report/);
+  assert.match(text, /Duplicate payment groups/);
+  assert.match(text, /Related-party & director activity/);
+  assert.match(text, /Summary notes/);
+  for (const term of [/\bAI\b/, /GPT/, /OpenAI/i, /\bprompt\b/i, /confidence/i]) {
+    assert.doesNotMatch(text, term, `insights report must not expose ${term}`);
+  }
 });
 
 test("declared bank VAT appears in the VAT working paper", () => {
