@@ -378,11 +378,79 @@ def run_validation_diagnostics_case() -> None:
         raise AssertionError(f"{case_id}: validation must fail (not pass silently) when extraction is short")
 
 
+def run_april_missing_rows_case() -> None:
+    # April 2026 (ACAPOLITE) statement: three rows print an amount + running
+    # balance WITHOUT a Cr/Dr suffix (two Internal Debit Order / FnbFuneral rows
+    # and one "#Excess Item Fee") and were dropped, breaking reconciliation by
+    # R1,682.32. The parser must now capture them and the fee must be Bank Charges.
+    from decimal import Decimal as D
+
+    from main import parse_transactions, validate_statement, validation_summary
+
+    case_id = "april-missing-rows"
+    opening, closing = D("342.37"), D("368.96")
+    lines = ["Transactions in Rand (ZAR)"]
+    bal = opening
+
+    def money(value: D) -> str:
+        return f"{value:,.2f}"
+
+    # 7 credits summing 226,361.00 (Cr-suffixed).
+    for i, amt in enumerate([D("37000.00")] * 6 + [D("4361.00")]):
+        bal += amt
+        lines.append(f"0{(i % 9) + 1} Apr Eft Credit Customer {i:03d} {money(amt)}Cr {money(bal)} Cr")
+    # 57 ordinary debits summing 224,652.09 (Cr-suffixed balance).
+    for i, amt in enumerate([D("3900.00")] * 56 + [D("6252.09")]):
+        bal -= amt
+        lines.append(f"1{i % 9} Apr Card Purchase Merchant {i:03d} {money(amt)} {money(bal)} Cr")
+    # 3 rows with amount + balance but NO Cr/Dr suffix — the previously-dropped rows.
+    specials = [
+        ("01 Apr Internal Debit Order Fnbfuneral Fi11941792A Ex6460", D("676.02")),
+        ("01 Apr Internal Debit Order Fnbfuneral Fi11941792 Ex6462", D("696.30")),
+        ("02 Apr #Excess Item Fee 2 Items On 26/04/01", D("310.00")),
+    ]
+    for desc, amt in specials:
+        bal -= amt
+        lines.append(f"{desc} {money(amt)} {money(bal)}")
+    lines.append(f"Closing Balance {money(closing)}")
+
+    metadata = {
+        "opening_balance": 342.37, "closing_balance": 368.96,
+        "expected_transaction_count": 67, "expected_credit_count": 7, "expected_debit_count": 60,
+        "declared_credit_total": 226361.00, "declared_debit_total": 226334.41,
+    }
+    txns = parse_transactions([], metadata, "\n".join(lines))
+
+    assert_equal(len(txns), 67, f"{case_id} transaction count")
+    summary = validation_summary(txns)
+    assert_equal(summary["credit_count"], 7, f"{case_id} credit count")
+    assert_equal(summary["debit_count"], 60, f"{case_id} debit count")
+    assert_equal(str(summary["total_credits"]), "226361.00", f"{case_id} credit total")
+    assert_equal(str(summary["total_debits"]), "226334.41", f"{case_id} debit total")
+
+    # The three named rows must be present with the exact amounts.
+    extracted = {(t.description, f"{(t.debit_amount or 0):.2f}") for t in txns}
+    for desc, amount in [("Internal Debit Order Fnbfuneral Fi11941792A Ex6460", "676.02"),
+                         ("Internal Debit Order Fnbfuneral Fi11941792 Ex6462", "696.30")]:
+        if (desc, amount) not in extracted:
+            raise AssertionError(f"{case_id}: missing row {desc} R{amount}")
+    fee = next((t for t in txns if "excess item fee" in t.description.lower()), None)
+    if fee is None or not fee.bank_charge or fee.account_category != "Bank Charges":
+        raise AssertionError(f"{case_id}: #Excess Item Fee must be captured as Bank Charges, got {fee}")
+
+    # Reconciliation must be exactly R0.00 (validate_statement raises otherwise).
+    validation = validate_statement(metadata, txns)
+    if validation["calculated_closing"] != validation["closing_balance"]:
+        raise AssertionError(f"{case_id}: reconciliation not zero ({validation['calculated_closing']} vs {validation['closing_balance']})")
+    assert_equal(str(validation["closing_balance"]), "368.96", f"{case_id} closing balance")
+
+
 def run() -> None:
     run_fnb_extraction_case()
     run_statement_period_case()
     run_missing_column_fallback_case()
     run_validation_diagnostics_case()
+    run_april_missing_rows_case()
 
     manifest = json.loads(MANIFEST_PATH.read_text())
     cases = manifest.get("cases") if isinstance(manifest, dict) else None

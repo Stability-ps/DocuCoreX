@@ -554,7 +554,8 @@ def classify_transaction(description: str, debit: float | None, credit: float | 
         # is a bank charge.
         (("service fee", "#service fees", "# service fees", "monthly account fee", "#monthly account fee",
           "byc debit", "accrued bank charge", "cash deposit fee", "#cash deposit fee", "cash handling fee",
-          "admin fee", "card fee", "pos fee"), "Bank Charges", "standard", True, 97),
+          "admin fee", "card fee", "pos fee", "excess item fee", "excess item", "item fee", "unpaid item",
+          "excess fee", "declined fee", "penalty fee"), "Bank Charges", "standard", True, 97),
         # Interest
         (("credit interest", "interest received"), "Interest Income", "exempt", False, 90),
         (("debit interest", "interest charged", "overdraft interest"), "Finance Costs", "exempt", False, 88),
@@ -847,13 +848,59 @@ def parse_fnb_transaction_line(line: str, metadata: dict[str, Any], base_confide
     return transaction
 
 
+def parse_amount_balance_line(
+    line: str, metadata: dict[str, Any], previous_balance: Decimal | None
+) -> ParsedTransaction | None:
+    """Capture a dated row that prints an amount AND a running balance but with NO
+    Cr/Dr suffix on the balance (e.g. some Internal Debit Order / FnbFuneral and
+    "#" fee rows). The strict parser requires the suffix and drops these, so the
+    statement loses rows and fails to reconcile. Direction is taken from the
+    running-balance MOVEMENT (down = debit, up = credit) — reliable and general."""
+    line = strip_fnb_page_artifacts(line)
+    date_match = LOOSE_DATE.match(line)
+    if not date_match:
+        return None
+    matches = list(MONEY_TOKEN.finditer(line))
+    if len(matches) != 2:
+        return None
+    amount_match, balance_match = matches[0], matches[1]
+    amount = parse_money_cell(amount_match.group(0))
+    balance = parse_money_cell(balance_match.group(0))
+    if amount is None or balance is None or amount == 0:
+        return None
+
+    debit = credit = None
+    amount_suffix = (amount_match.group("suffix") or "").lower()
+    if amount_suffix == "cr":
+        credit = decimal_to_float(amount.copy_abs())
+    elif previous_balance is not None:
+        movement = (balance - previous_balance).quantize(CENT)
+        if movement > 0:
+            credit = decimal_to_float(amount.copy_abs())
+        else:
+            debit = decimal_to_float(amount.copy_abs())
+    else:
+        # No balance context — these unusual rows are debits (debit orders / fees).
+        debit = decimal_to_float(amount.copy_abs())
+
+    description = line[date_match.end():amount_match.start()].strip()
+    return build_transaction(
+        date_match.group("date"), description, debit, credit, decimal_to_float(balance), metadata, None, line, 84
+    )
+
+
 def parse_fnb_section_transactions(full_text: str, metadata: dict[str, Any]) -> list[ParsedTransaction]:
     transactions: list[ParsedTransaction] = []
+    previous_balance: Decimal | None = (
+        decimal_amount(metadata.get("opening_balance")) if metadata.get("opening_balance") is not None else None
+    )
 
     for line in transaction_candidate_lines(full_text):
         transaction = parse_fnb_transaction_line(line, metadata)
         if transaction:
             transactions.append(transaction)
+            if transaction.running_balance is not None:
+                previous_balance = decimal_amount(transaction.running_balance)
             continue
         # Fallback: some rows (debit orders, app payments, RTC transfers) print
         # the amount without a running balance, so the strict two-token parser
@@ -862,6 +909,15 @@ def parse_fnb_section_transactions(full_text: str, metadata: dict[str, Any]) -> 
         fallback = parse_single_amount_line(line, metadata)
         if fallback:
             transactions.append(fallback)
+            continue
+        # Fallback: a dated row with amount + running balance but NO Cr/Dr suffix
+        # (Internal Debit Order / FnbFuneral / "#" fee rows). Direction from the
+        # balance movement.
+        balance_row = parse_amount_balance_line(line, metadata, previous_balance)
+        if balance_row:
+            transactions.append(balance_row)
+            if balance_row.running_balance is not None:
+                previous_balance = decimal_amount(balance_row.running_balance)
 
     return transactions
 
@@ -907,6 +963,13 @@ FEE_HASH_KEYWORDS = (
     "admin fee",
     "card fee",
     "bank charge",
+    "excess item fee",
+    "excess item",
+    "item fee",
+    "unpaid item",
+    "excess fee",
+    "declined fee",
+    "penalty fee",
 )
 
 
