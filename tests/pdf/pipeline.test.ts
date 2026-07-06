@@ -77,6 +77,33 @@ test("migration adds the processing-metadata columns", () => {
   }
 });
 
+test("route surfaces the real reason and parser debug on worker failure", () => {
+  const route = read("app/api/accounting/fnb/process/route.ts");
+  // Passes the debug to the worker and logs it (with a text sample) before the call.
+  assert.match(route, /extraction_debug: debug/, "passes extraction debug to the worker");
+  assert.match(route, /preExtractedTextSample: workerInput\.preExtractedText\.slice\(0, 1000\)/, "logs first 1000 chars before the worker");
+  // Overrides the generic message with the real reason, and returns parserDebug.
+  assert.match(route, /pipelineDebug\?\.reasonNoTransactions/);
+  assert.match(route, /error = pipelineDebug\.reasonNoTransactions/);
+  assert.match(route, /parserDebug:/);
+  assert.match(route, /pre_extracted_text_length: pipelineDebug\.preExtractedTextLength/);
+});
+
+test("pipeline forces OCR on near-empty PDF.js and reports the real reason", () => {
+  const pipeline = read("lib/pdf/runExtractionPipeline.ts");
+  assert.match(pipeline, /route\.force_ocr/, "forces OCR when PDF.js returns almost no text");
+  assert.match(pipeline, /OCR completed but no readable text was found/, "specific OCR-empty reason");
+  assert.match(pipeline, /reasonNoTransactions/);
+});
+
+test("worker logs pre_extracted_text and adds parser_debug to the 422", () => {
+  const worker = read("workers/accounting_worker/main.py");
+  assert.match(worker, /worker\.pre_extracted_text_received/);
+  assert.match(worker, /worker\.pre_extracted_text_rejected/);
+  assert.match(worker, /"parser_debug": parser_debug/);
+  assert.match(worker, /"reason_no_transactions"/);
+});
+
 test("process route auto-runs the pipeline before the worker with a safe fallback", () => {
   const route = read("app/api/accounting/fnb/process/route.ts");
   assert.match(route, /runExtractionPipeline/, "route runs the extraction pipeline");

@@ -32,8 +32,10 @@ export type ProcessingExtractionMetadata = {
 export function buildWorkerInput(result: ExtractionPipelineResult): WorkerExtractionInput {
   const text = result.merged?.combinedText ?? "";
   const transactions = result.merged?.transactions ?? [];
-  // Only trust the provided text when there is a meaningful amount of it.
-  const useProvidedText = text.trim().length >= 200 && result.selection.confidence >= 40;
+  // Send the extracted text whenever there is a non-trivial amount of it; the
+  // worker makes the final call (it compares against its own native extraction),
+  // so we don't over-gate here on confidence.
+  const useProvidedText = text.trim().length >= 50;
   return {
     parser: result.parserMethod,
     useProvidedText,

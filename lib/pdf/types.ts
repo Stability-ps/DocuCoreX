@@ -118,6 +118,15 @@ export type BankStatementValidation = {
 // The full pipeline output surfaced to the API / UI.
 export type ParserMethod = "pdfjs" | "pdfplumber" | "ocr" | "hybrid";
 
+export type ExtractionDebug = {
+  pdfjsTextLength: number;
+  pdfplumberTextLength: number;
+  ocrTextLength: number;
+  preExtractedTextLength: number;
+  sampleText: string;
+  reasonNoTransactions: string | null;
+};
+
 export type ExtractionPipelineResult = {
   analysis: PdfAnalysis;
   ocrUsed: boolean;
@@ -128,4 +137,5 @@ export type ExtractionPipelineResult = {
   validation: BankStatementValidation | null;
   warnings: string[];
   requiresReview: boolean;
+  debug: ExtractionDebug;
 };

@@ -101,6 +101,7 @@ class ProcessRequest(BaseModel):
     extraction_source: str | None = None
     ocr_used: bool | None = None
     pre_extracted_text: str | None = None
+    extraction_debug: dict[str, Any] | None = None
 
 
 class CombineRequest(BaseModel):
@@ -3253,19 +3254,34 @@ def process_fnb_statement(payload: ProcessRequest, authorization: str | None = H
         # Prefer the Node pipeline's best extraction when it is meaningfully long;
         # the natively-extracted PDF text remains the fallback.
         provided = (payload.pre_extracted_text or "").strip()
+        log_event(
+            "worker.pre_extracted_text_received",
+            run_id=payload.run_id,
+            received=bool(provided),
+            length=len(provided),
+            sample=provided[:1000],
+            parser_method=payload.parser_method,
+            extraction_source=payload.extraction_source,
+            ocr_used=bool(payload.ocr_used),
+        )
         if provided and len(provided) >= max(200, len(native_text) // 2):
             full_text = provided
             log_event(
                 "worker.pre_extracted_text_used",
                 run_id=payload.run_id,
-                parser_method=payload.parser_method,
-                extraction_source=payload.extraction_source,
-                ocr_used=bool(payload.ocr_used),
                 provided_chars=len(provided),
                 native_chars=len(native_text),
             )
         else:
             full_text = native_text
+            if provided:
+                log_event(
+                    "worker.pre_extracted_text_rejected",
+                    run_id=payload.run_id,
+                    provided_chars=len(provided),
+                    native_chars=len(native_text),
+                    reason="provided text shorter than half the native text",
+                )
         parser = BankRegistry.detect(full_text[:4000], payload.storage_path)
         if parser is None:
             raise HTTPException(status_code=422, detail="No parser profile is registered for this statement.")
@@ -3332,12 +3348,26 @@ def process_fnb_statement(payload: ProcessRequest, authorization: str | None = H
 
         if not transactions:
             diagnostics = extraction_diagnostics(pages, full_text, metadata)
-            log_warning("worker.no_transactions_parsed", run_id=payload.run_id, diagnostics=diagnostics)
+            pipeline_debug = payload.extraction_debug if isinstance(payload.extraction_debug, dict) else {}
+            # Parser debug — surface the REAL reason, never hide it.
+            parser_debug = {
+                "selected_parser": pipeline_debug.get("selectedParser") or payload.parser_method,
+                "detected_pdf_type": pipeline_debug.get("detectedPdfType"),
+                "ocr_used": pipeline_debug.get("ocrUsed") if pipeline_debug.get("ocrUsed") is not None else bool(payload.ocr_used),
+                "pdfjs_text_length": pipeline_debug.get("pdfjsTextLength"),
+                "ocr_text_length": pipeline_debug.get("ocrTextLength"),
+                "pre_extracted_text_length": pipeline_debug.get("preExtractedTextLength", len((payload.pre_extracted_text or "").strip())),
+                "sample_text": (full_text or "")[:1000],
+                "reason_no_transactions": pipeline_debug.get("reasonNoTransactions"),
+            }
+            reason = parser_debug["reason_no_transactions"] or "No FNB transactions could be parsed from this PDF."
+            log_warning("worker.no_transactions_parsed", run_id=payload.run_id, diagnostics=diagnostics, parser_debug=parser_debug)
             raise HTTPException(
                 status_code=422,
                 detail={
-                    "message": "No FNB transactions could be parsed from this PDF.",
+                    "message": reason,
                     "diagnostics": diagnostics,
+                    "parser_debug": parser_debug,
                     "worker": worker_version(),
                 },
             )

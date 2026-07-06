@@ -1,4 +1,4 @@
-import type { ExtractionPipelineResult, ExtractionResult, ParserMethod, PdfAnalysis } from "@/lib/pdf/types";
+import type { ExtractionDebug, ExtractionPipelineResult, ExtractionResult, ParserMethod, PdfAnalysis } from "@/lib/pdf/types";
 import { analyzeExtraction } from "@/lib/pdf/analyzePdf";
 import { extractWithPdfjs } from "@/lib/pdf/extractWithPdfjs";
 import { extractWithPdfplumber } from "@/lib/pdf/extractWithPdfplumber";
@@ -53,8 +53,12 @@ export async function runExtractionPipeline(buffer: Uint8Array, fileName = "stat
     routeReason = `Digital PDF (${analysis.averageTextPerPage} chars/page, ${analysis.confidence}% confidence) → native parsers.`;
     pdfplumber = await extractWithPdfplumber(buffer, fileName);
   } else {
-    // 3. Scanned / weak text → still try native, then OCR fallback.
-    routeReason = `${analysis.kind} PDF (${analysis.confidence}% text confidence) → OCR fallback.`;
+    // 3. Scanned / weak text → still try native, then OCR fallback. Near-empty
+    // PDF.js text (e.g. 2 characters) forces OCR.
+    if (analysis.totalTextLength < 5) {
+      pdfLog("route.force_ocr", { pdfjsTextLength: analysis.totalTextLength, reason: "PDF.js returned almost no text — forcing OCR" });
+    }
+    routeReason = `${analysis.kind} PDF (${analysis.totalTextLength} chars, ${analysis.confidence}% text confidence) → OCR fallback.`;
     pdfplumber = analysis.kind === "weak-text" ? await extractWithPdfplumber(buffer, fileName) : null;
     ocr = await extractWithOcr(buffer, fileName);
   }
@@ -94,6 +98,30 @@ export async function runExtractionPipeline(buffer: Uint8Array, fileName = "stat
   const requiresReview = assembled.selection.requiresReview || assembled.validation.requiresReview;
   if (assembled.validation.requiresReview) warnings.push("Extraction completed but reconciliation needs review.");
 
+  // Extraction debug — the real reason nothing parsed, never hidden.
+  const pdfjsTextLength = pdfjs.combinedText.trim().length;
+  const pdfplumberTextLength = pdfplumber ? pdfplumber.combinedText.trim().length : 0;
+  const ocrTextLength = ocr ? ocr.combinedText.trim().length : 0;
+  const preExtractedTextLength = assembled.merged.combinedText.trim().length;
+  let reasonNoTransactions: string | null = null;
+  if (assembled.merged.transactions.length === 0) {
+    if ((analysis.kind === "scanned" || analysis.kind === "weak-text") && ocrTextLength === 0) {
+      reasonNoTransactions = "OCR completed but no readable text was found";
+    } else if (preExtractedTextLength < 20) {
+      reasonNoTransactions = "No readable text could be extracted from the PDF";
+    } else {
+      reasonNoTransactions = "Text was extracted but no transaction rows were detected";
+    }
+  }
+  const debug: ExtractionDebug = {
+    pdfjsTextLength,
+    pdfplumberTextLength,
+    ocrTextLength,
+    preExtractedTextLength,
+    sampleText: assembled.merged.combinedText.slice(0, 1000),
+    reasonNoTransactions,
+  };
+
   // 6. Log the parser decision clearly.
   pdfLog("route.decision", {
     parserMethod,
@@ -101,6 +129,11 @@ export async function runExtractionPipeline(buffer: Uint8Array, fileName = "stat
     confidence: assembled.selection.confidence,
     reconciled: assembled.validation.valid,
     requiresReview,
+    pdfjsTextLength,
+    pdfplumberTextLength,
+    ocrTextLength,
+    preExtractedTextLength,
+    reasonNoTransactions,
     reason: routeReason,
   });
 
@@ -114,5 +147,6 @@ export async function runExtractionPipeline(buffer: Uint8Array, fileName = "stat
     validation: assembled.validation,
     warnings: [...new Set(warnings)],
     requiresReview,
+    debug,
   };
 }

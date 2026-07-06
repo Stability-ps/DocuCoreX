@@ -12,15 +12,29 @@ import type { AccountingRunDetail } from "@/lib/accounting/types";
 // PDF, choose the best source, persist the summary, and hand the worker the best
 // extracted text (keeping the original PDF as a fallback). Fully defensive — any
 // failure here falls back to the original worker path with a recorded warning.
+type PipelineDebug = {
+  selectedParser: string;
+  parserMethod: string;
+  ocrUsed: boolean;
+  detectedPdfType: string;
+  extractionConfidence: number;
+  pdfjsTextLength: number;
+  pdfplumberTextLength: number;
+  ocrTextLength: number;
+  preExtractedTextLength: number;
+  sampleText: string;
+  reasonNoTransactions: string | null;
+};
+
 async function runPipelineBeforeWorker(
   context: WorkspaceContext,
   detail: AccountingRunDetail,
-): Promise<{ hints: Record<string, unknown>; warning: string | null }> {
+): Promise<{ hints: Record<string, unknown>; warning: string | null; debug: PipelineDebug | null }> {
   const runId = detail.run.id;
   try {
     const { data: file, error } = await context.supabase.storage.from("documents").download(detail.run.sourceStoragePath);
     if (error || !file) {
-      return { hints: {}, warning: `Extraction pipeline skipped: source unavailable (${error?.message ?? "no file"}).` };
+      return { hints: {}, warning: `Extraction pipeline skipped: source unavailable (${error?.message ?? "no file"}).`, debug: null };
     }
     const buffer = new Uint8Array(await file.arrayBuffer());
     const pipeline = await runExtractionPipeline(buffer, detail.run.sourceStoragePath.split("/").pop() || "statement.pdf");
@@ -50,17 +64,34 @@ async function runPipelineBeforeWorker(
       console.warn("[accounting/process] extraction metadata not persisted (migration 013 not applied?)", { runId, error: updateError.message });
     }
 
-    console.info("[accounting/process] extraction pipeline", {
+    const debug: PipelineDebug = {
+      selectedParser: meta.selectedParser,
+      parserMethod: meta.selectedParser,
+      ocrUsed: meta.ocrUsed,
+      detectedPdfType: meta.detectedPdfType,
+      extractionConfidence: meta.extractionConfidence,
+      pdfjsTextLength: pipeline.debug.pdfjsTextLength,
+      pdfplumberTextLength: pipeline.debug.pdfplumberTextLength,
+      ocrTextLength: pipeline.debug.ocrTextLength,
+      preExtractedTextLength: pipeline.debug.preExtractedTextLength,
+      sampleText: pipeline.debug.sampleText,
+      reasonNoTransactions: pipeline.debug.reasonNoTransactions,
+    };
+
+    // Detailed log immediately before handing off to the worker.
+    console.info("[accounting/process] extraction pipeline result", {
       runId,
       parserMethod: meta.selectedParser,
-      confidence: meta.extractionConfidence,
-      detectedPdfType: meta.detectedPdfType,
       ocrUsed: meta.ocrUsed,
-      validationStatus: meta.validationStatus,
-      reconciliationDifference: meta.reconciliationDifference,
-      requiresReview: pipeline.requiresReview,
-      combinedTextLength: workerInput.preExtractedText.length,
+      detectedPdfType: meta.detectedPdfType,
+      extractionConfidence: meta.extractionConfidence,
+      pdfjsTextLength: pipeline.debug.pdfjsTextLength,
+      pdfplumberTextLength: pipeline.debug.pdfplumberTextLength,
+      ocrTextLength: pipeline.debug.ocrTextLength,
+      preExtractedTextLength: workerInput.preExtractedText.length,
+      preExtractedTextSample: workerInput.preExtractedText.slice(0, 1000),
       transactionCandidates: workerInput.transactionCandidateCount,
+      reasonNoTransactions: pipeline.debug.reasonNoTransactions,
     });
 
     // Hand the worker the best source; it keeps the original PDF as a fallback.
@@ -68,15 +99,16 @@ async function runPipelineBeforeWorker(
       parser_method: meta.selectedParser,
       extraction_source: workerInput.parser,
       ocr_used: meta.ocrUsed,
+      extraction_debug: debug,
     };
     if (workerInput.useProvidedText && workerInput.preExtractedText.trim()) {
       hints.pre_extracted_text = workerInput.preExtractedText;
     }
-    return { hints, warning: null };
+    return { hints, warning: null, debug };
   } catch (pipelineError) {
     const message = pipelineError instanceof Error ? pipelineError.message : String(pipelineError);
     console.warn("[accounting/process] extraction pipeline failed — using original worker path", { runId, error: message });
-    return { hints: {}, warning: `Extraction pipeline error: ${message}` };
+    return { hints: {}, warning: `Extraction pipeline error: ${message}`, debug: null };
   }
 }
 
@@ -183,7 +215,7 @@ export async function POST(request: Request) {
     }
 
     // Auto-run the extraction pipeline first (analysis → best source → persist).
-    const { hints, warning: pipelineWarning } = await runPipelineBeforeWorker(context, detail);
+    const { hints, warning: pipelineWarning, debug: pipelineDebug } = await runPipelineBeforeWorker(context, detail);
 
     const workerPayload = {
       run_id: runId,
@@ -231,7 +263,12 @@ export async function POST(request: Request) {
     });
 
     if (!response.ok) {
-      const error = getWorkerError(result, responseText, response.status);
+      let error = getWorkerError(result, responseText, response.status);
+      // Do not hide the real reason behind "No FNB transactions could be parsed."
+      // Surface the pipeline's actual finding (e.g. OCR produced no text).
+      if (pipelineDebug?.reasonNoTransactions && /no fnb transactions|no transactions could be parsed/i.test(error)) {
+        error = pipelineDebug.reasonNoTransactions;
+      }
       await context.supabase
         .from("accounting_statement_runs")
         .update({ status: "failed", error, updated_at: new Date().toISOString() })
@@ -253,6 +290,21 @@ export async function POST(request: Request) {
           worker: result.worker ?? (result.detail && typeof result.detail === "object" ? (result.detail as { worker?: unknown }).worker : undefined),
           workerOrigin: getWorkerOrigin(workerUrl),
           workerRawBody: responseText.slice(0, 2000),
+          // Parser debug so the real reason is visible, never hidden.
+          parserDebug: pipelineDebug
+            ? {
+                selected_parser: pipelineDebug.selectedParser,
+                detected_pdf_type: pipelineDebug.detectedPdfType,
+                ocr_used: pipelineDebug.ocrUsed,
+                extraction_confidence: pipelineDebug.extractionConfidence,
+                pdfjs_text_length: pipelineDebug.pdfjsTextLength,
+                pdfplumber_text_length: pipelineDebug.pdfplumberTextLength,
+                ocr_text_length: pipelineDebug.ocrTextLength,
+                pre_extracted_text_length: pipelineDebug.preExtractedTextLength,
+                sample_text: pipelineDebug.sampleText,
+                reason_no_transactions: pipelineDebug.reasonNoTransactions,
+              }
+            : null,
           workerPayload: {
             runId,
             workspaceId: context.workspaceId,
