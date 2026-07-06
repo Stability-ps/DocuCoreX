@@ -17,7 +17,9 @@ const PREVIEW_SOURCES = ["/api/documents/:id/preview", "/api/accounting/fnb/runs
 const nextConfig: NextConfig = {
   reactStrictMode: true,
   // pdfjs-dist references an optional Node "canvas" module that is not used in the
-  // browser; stub it so the production build resolves.
+  // browser; stub it so the client viewer build resolves. (Server-side text
+  // extraction registers the worker on globalThis.pdfjsWorker instead of loading
+  // pdf.worker.mjs from disk — see lib/pdf/extractWithPdfjs.ts.)
   webpack: (config) => {
     config.resolve = config.resolve || {};
     config.resolve.alias = { ...(config.resolve.alias || {}), canvas: false };

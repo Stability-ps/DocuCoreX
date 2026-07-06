@@ -4,7 +4,9 @@ import { pdfLog } from "@/lib/pdf/log";
 
 // Calls the separate pdfplumber FastAPI service (PDF_PLUMBER_URL) which returns
 // text, words, tables, lines and coordinates per page. Degrades gracefully when
-// the service is not configured or unreachable.
+// the service is not configured or unreachable. Time-bounded at 20s.
+const PDFPLUMBER_TIMEOUT_MS = 20_000;
+
 export async function extractWithPdfplumber(buffer: Uint8Array, fileName = "statement.pdf"): Promise<ExtractionResult | null> {
   const baseUrl = process.env.PDF_PLUMBER_URL;
   if (!baseUrl) {
@@ -14,10 +16,12 @@ export async function extractWithPdfplumber(buffer: Uint8Array, fileName = "stat
 
   const started = Date.now();
   pdfLog("pdfplumber_started", { fileSize: buffer.byteLength });
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), PDFPLUMBER_TIMEOUT_MS);
   try {
     const form = new FormData();
     form.append("file", new Blob([buffer.slice() as unknown as BlobPart], { type: "application/pdf" }), fileName);
-    const response = await fetch(`${baseUrl.replace(/\/$/, "")}/extract`, { method: "POST", body: form });
+    const response = await fetch(`${baseUrl.replace(/\/$/, "")}/extract`, { method: "POST", body: form, signal: controller.signal });
     if (!response.ok) {
       pdfLog("pdfplumber_finished", { ok: false, status: response.status, ms: Date.now() - started });
       return {
@@ -56,7 +60,9 @@ export async function extractWithPdfplumber(buffer: Uint8Array, fileName = "stat
     pdfLog("pdfplumber_finished", { pages: result.pageCount, tables: pages.reduce((s, p) => s + p.tables.length, 0), chars: combinedText.length, transactions: result.transactions.length, ms: Date.now() - started });
     return result;
   } catch (error) {
-    pdfLog("pdfplumber_finished", { ok: false, error: error instanceof Error ? error.message : String(error), ms: Date.now() - started });
+    const aborted = error instanceof Error && error.name === "AbortError";
+    const message = aborted ? `timed out after ${PDFPLUMBER_TIMEOUT_MS}ms` : error instanceof Error ? error.message : String(error);
+    pdfLog("pdfplumber_finished", { ok: false, error: message, ms: Date.now() - started });
     return {
       parser: "pdfplumber",
       pageCount: 0,
@@ -64,7 +70,9 @@ export async function extractWithPdfplumber(buffer: Uint8Array, fileName = "stat
       combinedText: "",
       transactions: [],
       metadata: {},
-      warnings: [`pdfplumber unreachable: ${error instanceof Error ? error.message : String(error)}`],
+      warnings: [aborted ? "pdfplumber timed out" : `pdfplumber unreachable: ${message}`],
     };
+  } finally {
+    clearTimeout(timeout);
   }
 }

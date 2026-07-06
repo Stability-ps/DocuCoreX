@@ -49,12 +49,28 @@ export async function extractWithPdfjs(buffer: Uint8Array): Promise<ExtractionRe
   const pages: ExtractionPage[] = [];
   try {
     ensureNodeDomPolyfills();
+    // Register the worker's message handler on globalThis BEFORE importing pdf.js:
+    // in Node, pdf.js runs the worker on the main thread and uses
+    // globalThis.pdfjsWorker?.WorkerMessageHandler when present, skipping its
+    // internal `import("./pdf.worker.mjs")` — which fails in the Vercel bundle
+    // ("Cannot find module .../chunks/pdf.worker.mjs"). We never set the worker
+    // source path here (that belongs only to the client viewer).
+    const g = globalThis as unknown as Record<string, unknown>;
+    if (!g.pdfjsWorker) {
+      try {
+        g.pdfjsWorker = await import("pdfjs-dist/legacy/build/pdf.worker.mjs");
+      } catch (workerError) {
+        pdfLog("pdfjs_server_worker_register_failed", { error: workerError instanceof Error ? workerError.message : String(workerError) });
+      }
+    }
     const pdfjs = (await import("pdfjs-dist/legacy/build/pdf.mjs")) as unknown as PdfjsNode;
     pdfLog("pdfjs_loaded", {});
+    pdfLog("pdfjs_server_worker_disabled", { reason: "worker runs on the main thread via globalThis.pdfjsWorker — no pdf.worker.mjs disk load" });
     // Text-only options: no worker, no eval, no font-face / system fonts, so no
     // canvas / @napi-rs/canvas rasterisation backend is ever needed.
     const doc = await pdfjs.getDocument({
       data: buffer,
+      disableWorker: true,
       isEvalSupported: false,
       disableFontFace: true,
       useSystemFonts: false,

@@ -24,6 +24,7 @@ import type {
 import { buildAccountingModel } from "@/lib/accounting/model";
 import { statementDisplayName } from "@/lib/accounting/statement-name";
 import { parserMethodLabel } from "@/lib/pdf/workerHandoff";
+import { pollRunUntilTerminal } from "@/lib/accounting/poll-run";
 import { detectDuplicates, detectUnusualTransactions, detectDirectorTransactions } from "@/lib/accounting/analytics";
 import { DocumentViewer } from "@/components/document-viewer";
 
@@ -157,8 +158,14 @@ export function StatementWorkspace({ statementId }: { statementId: string }) {
       });
       const body = (await response.json().catch(() => ({}))) as { error?: string };
       if (!response.ok) throw new Error(body.error || "Re-processing failed.");
-      setBanner("Statement re-processed. Reloading latest extraction…");
+      // Processing runs in the background now — poll until the run is terminal.
+      setBanner("Re-processing… extracting and reconciling in the background.");
+      const outcome = await pollRunUntilTerminal(statementId, { onTick: () => void loadDetail().catch(() => undefined) });
       await loadDetail();
+      if (outcome.timedOut) setBanner("Still processing — taking longer than usual. Refresh to check the latest status.");
+      else if (outcome.status === "failed") setBanner(outcome.error || "Re-processing failed.");
+      else if (outcome.status === "review") setBanner("Review required — extraction and bank totals need review.");
+      else setBanner("Statement re-processed. Latest extraction loaded.");
     } catch (reprocessError) {
       setBanner(reprocessError instanceof Error ? reprocessError.message : "Re-processing failed.");
     } finally {

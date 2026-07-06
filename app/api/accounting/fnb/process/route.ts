@@ -1,4 +1,4 @@
-import { NextResponse } from "next/server";
+import { NextResponse, after } from "next/server";
 import { recordAuditLog } from "@/lib/audit";
 import { detectBankProfile } from "@/lib/accounting/engine/registry";
 import { getAccountingRunDetail } from "@/lib/accounting/server";
@@ -173,6 +173,130 @@ function getWorkerError(result: WorkerResponseBody, responseText: string, status
   return `Accounting worker returned HTTP ${status} without an error body. Check Render worker logs for this run.`;
 }
 
+const ACCOUNTING_WORKER_TIMEOUT_MS = 180_000;
+
+// Allow the background work (after the response is sent) to run beyond the default
+// so extraction + worker + reconciliation can finish off the request path.
+export const maxDuration = 300;
+
+function toParserDebug(pipelineDebug: PipelineDebug | null) {
+  if (!pipelineDebug) return null;
+  return {
+    selected_parser: pipelineDebug.selectedParser,
+    detected_pdf_type: pipelineDebug.detectedPdfType,
+    ocr_used: pipelineDebug.ocrUsed,
+    extraction_confidence: pipelineDebug.extractionConfidence,
+    pdfjs_text_length: pipelineDebug.pdfjsTextLength,
+    pdfplumber_text_length: pipelineDebug.pdfplumberTextLength,
+    ocr_text_length: pipelineDebug.ocrTextLength,
+    pre_extracted_text_length: pipelineDebug.preExtractedTextLength,
+    sample_text: pipelineDebug.sampleText,
+    reason_no_transactions: pipelineDebug.reasonNoTransactions,
+    ocr: pipelineDebug.ocr,
+    stages: pipelineDebug.stages,
+  };
+}
+
+// All heavy work — extraction pipeline (PDF.js / pdfplumber / OCR), the accounting
+// worker call, reconciliation and status updates — runs HERE, after the HTTP
+// response has already been returned. Nothing below blocks the user's request.
+async function processStatementInBackground(context: WorkspaceContext, detail: AccountingRunDetail, workerUrl: string, runId: string) {
+  const jobId = detail.run.processingJobId;
+  // The key parser-debug fields (parser_method, detected_pdf_type, ocr_used,
+  // validation_status, reconciliation_difference, requires_review, route_reason)
+  // are persisted on the run by runPipelineBeforeWorker; here we set the failure
+  // reason and log the full parserDebug.
+  const failRun = async (error: string, parserDebug: ReturnType<typeof toParserDebug>) => {
+    console.warn("[accounting/process] marking run failed", { runId, error, parserDebug });
+    await context.supabase
+      .from("accounting_statement_runs")
+      .update({ status: "failed", error, updated_at: new Date().toISOString() })
+      .eq("workspace_id", context.workspaceId)
+      .eq("id", runId);
+    if (jobId) {
+      await context.supabase
+        .from("processing_jobs")
+        .update({ status: "failed", progress: 100, message: error, error, updated_at: new Date().toISOString() })
+        .eq("id", jobId);
+    }
+  };
+
+  let pipelineDebug: PipelineDebug | null = null;
+  try {
+    // 1. Extraction pipeline (best-source + persist). Defensive: never throws.
+    const { hints, debug } = await runPipelineBeforeWorker(context, detail);
+    pipelineDebug = debug;
+
+    const workerPayload = {
+      run_id: runId,
+      workspace_id: context.workspaceId,
+      document_id: detail.run.documentId,
+      processing_job_id: jobId,
+      storage_path: detail.run.sourceStoragePath,
+      ...hints,
+    };
+    const parserProfile = detectBankProfile({ bank: detail.run.bank, fileName: detail.run.sourceStoragePath });
+    console.info("[accounting/process] sending worker payload", { runId, parserProfile, workerOrigin: getWorkerOrigin(workerUrl) });
+
+    // 2. Accounting worker (timeout-protected so it cannot hang the function).
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), ACCOUNTING_WORKER_TIMEOUT_MS);
+    let response: Response;
+    let responseText: string;
+    try {
+      response = await fetch(`${workerUrl.replace(/\/$/, "")}/process-statement`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          ...(process.env.ACCOUNTING_WORKER_TOKEN ? { Authorization: `Bearer ${process.env.ACCOUNTING_WORKER_TOKEN}` } : {}),
+        },
+        body: JSON.stringify(workerPayload),
+        signal: controller.signal,
+      });
+      responseText = await response.text();
+    } catch (fetchError) {
+      const aborted = fetchError instanceof Error && fetchError.name === "AbortError";
+      const message = aborted ? `Accounting worker timed out after ${ACCOUNTING_WORKER_TIMEOUT_MS / 1000}s.` : `Accounting worker unreachable: ${fetchError instanceof Error ? fetchError.message : String(fetchError)}`;
+      console.error("[accounting/process] worker fetch failed", { runId, message });
+      await failRun(message, toParserDebug(pipelineDebug));
+      return;
+    } finally {
+      clearTimeout(timer);
+    }
+
+    let result: WorkerResponseBody = {};
+    try {
+      result = responseText ? (JSON.parse(responseText) as WorkerResponseBody) : {};
+    } catch {
+      result = { detail: responseText };
+    }
+    console.info("[accounting/process] worker response", { runId, status: response.status, ok: response.ok });
+
+    if (!response.ok) {
+      let error = getWorkerError(result, responseText, response.status);
+      // Do not hide the real reason behind "No FNB transactions could be parsed."
+      if (pipelineDebug?.reasonNoTransactions && /no fnb transactions|no transactions could be parsed/i.test(error)) {
+        error = pipelineDebug.reasonNoTransactions;
+      }
+      console.warn("[accounting/process] worker failed", { runId, error, parserDebug: toParserDebug(pipelineDebug) });
+      await failRun(error, toParserDebug(pipelineDebug));
+      return;
+    }
+
+    // 3. Success — the worker has written the run result. Record the audit log.
+    await recordAuditLog({
+      action: "accounting_extraction_completed",
+      entityType: "accounting_run",
+      entityId: runId,
+      metadata: { bank: detail.run.bank, parserProfile, worker: "fastapi" },
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Unable to process accounting statement.";
+    console.error("[accounting/process] background failure", { runId, message });
+    await failRun(message, toParserDebug(pipelineDebug));
+  }
+}
+
 export async function POST(request: Request) {
   const body = (await request.json().catch(() => ({}))) as ProcessBody;
   const runId = body.runId;
@@ -203,9 +327,10 @@ export async function POST(request: Request) {
     // Duplicate-job protection: never start a second extraction for a run that is
     // already processing (unless this is an explicit manual re-process).
     if (detail.run.status === "processing" && !body.reprocess) {
-      return NextResponse.json({ ok: true, skipped: true, reason: "already_processing" });
+      return NextResponse.json({ ok: true, skipped: true, reason: "already_processing", status: "processing", runId, jobId: detail.run.processingJobId ?? null });
     }
 
+    // Mark queued/processing so the UI can start polling immediately.
     await context.supabase
       .from("accounting_statement_runs")
       .update({ status: "processing", error: null, updated_at: new Date().toISOString() })
@@ -215,127 +340,15 @@ export async function POST(request: Request) {
     if (detail.run.processingJobId) {
       await context.supabase
         .from("processing_jobs")
-        .update({ status: "running", progress: 25, message: "Sending statement to accounting worker", updated_at: new Date().toISOString() })
+        .update({ status: "running", progress: 10, message: "Queued for extraction", updated_at: new Date().toISOString() })
         .eq("id", detail.run.processingJobId);
     }
 
-    // Auto-run the extraction pipeline first (analysis → best source → persist).
-    const { hints, warning: pipelineWarning, debug: pipelineDebug } = await runPipelineBeforeWorker(context, detail);
+    // Run the extraction + worker call AFTER responding — never on the request path.
+    after(() => processStatementInBackground(context, detail, workerUrl, runId));
 
-    const workerPayload = {
-      run_id: runId,
-      workspace_id: context.workspaceId,
-      document_id: detail.run.documentId,
-      processing_job_id: detail.run.processingJobId,
-      storage_path: detail.run.sourceStoragePath,
-      ...hints,
-    };
-    const parserProfile = detectBankProfile({ bank: detail.run.bank, fileName: detail.run.sourceStoragePath });
-
-    console.info("[accounting/process] sending worker payload", {
-      runId,
-      workspaceId: context.workspaceId,
-      documentId: detail.run.documentId,
-      processingJobId: detail.run.processingJobId,
-      storagePath: detail.run.sourceStoragePath,
-      parserProfile,
-      workerUrlConfigured: Boolean(workerUrl),
-      workerOrigin: getWorkerOrigin(workerUrl),
-    });
-
-    const response = await fetch(`${workerUrl.replace(/\/$/, "")}/process-statement`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        ...(process.env.ACCOUNTING_WORKER_TOKEN ? { Authorization: `Bearer ${process.env.ACCOUNTING_WORKER_TOKEN}` } : {}),
-      },
-      body: JSON.stringify(workerPayload),
-    });
-
-    const responseText = await response.text();
-    let result: WorkerResponseBody = {};
-    try {
-      result = responseText ? (JSON.parse(responseText) as WorkerResponseBody) : {};
-    } catch {
-      result = { detail: responseText };
-    }
-
-    console.info("[accounting/process] worker response", {
-      runId,
-      status: response.status,
-      ok: response.ok,
-      body: result,
-    });
-
-    if (!response.ok) {
-      let error = getWorkerError(result, responseText, response.status);
-      // Do not hide the real reason behind "No FNB transactions could be parsed."
-      // Surface the pipeline's actual finding (e.g. OCR produced no text).
-      if (pipelineDebug?.reasonNoTransactions && /no fnb transactions|no transactions could be parsed/i.test(error)) {
-        error = pipelineDebug.reasonNoTransactions;
-      }
-      await context.supabase
-        .from("accounting_statement_runs")
-        .update({ status: "failed", error, updated_at: new Date().toISOString() })
-        .eq("workspace_id", context.workspaceId)
-        .eq("id", runId);
-
-      if (detail.run.processingJobId) {
-        await context.supabase
-          .from("processing_jobs")
-          .update({ status: "failed", progress: 100, message: error, error, updated_at: new Date().toISOString() })
-          .eq("id", detail.run.processingJobId);
-      }
-
-      return NextResponse.json(
-        {
-          error,
-          workerStatus: response.status,
-          workerDetail: result.detail ?? result,
-          worker: result.worker ?? (result.detail && typeof result.detail === "object" ? (result.detail as { worker?: unknown }).worker : undefined),
-          workerOrigin: getWorkerOrigin(workerUrl),
-          workerRawBody: responseText.slice(0, 2000),
-          // Parser debug so the real reason is visible, never hidden.
-          parserDebug: pipelineDebug
-            ? {
-                selected_parser: pipelineDebug.selectedParser,
-                detected_pdf_type: pipelineDebug.detectedPdfType,
-                ocr_used: pipelineDebug.ocrUsed,
-                extraction_confidence: pipelineDebug.extractionConfidence,
-                pdfjs_text_length: pipelineDebug.pdfjsTextLength,
-                pdfplumber_text_length: pipelineDebug.pdfplumberTextLength,
-                ocr_text_length: pipelineDebug.ocrTextLength,
-                pre_extracted_text_length: pipelineDebug.preExtractedTextLength,
-                sample_text: pipelineDebug.sampleText,
-                reason_no_transactions: pipelineDebug.reasonNoTransactions,
-                // OCR engine diagnostics — never return the generic empty message
-                // without these (task 8): ocr_endpoint, ocr_status, ocr_exit_code,
-                // ocr_stderr_sample, sidecar_exists, sidecar_size, ocr_text_length.
-                ocr: pipelineDebug.ocr,
-                // Per-extractor outcome: which succeeded, why the others failed.
-                stages: pipelineDebug.stages,
-              }
-            : null,
-          workerPayload: {
-            runId,
-            workspaceId: context.workspaceId,
-            documentId: detail.run.documentId,
-            processingJobId: detail.run.processingJobId,
-            storagePath: detail.run.sourceStoragePath,
-          },
-        },
-        { status: response.status },
-      );
-    }
-
-    await recordAuditLog({
-      action: "accounting_extraction_completed",
-      entityType: "accounting_run",
-      entityId: runId,
-      metadata: { bank: detail.run.bank, parserProfile, worker: "fastapi" },
-    });
-
-    return NextResponse.json({ ok: true, result, pipelineWarning });
+    // Return immediately (well under the 25s initial-response limit).
+    return NextResponse.json({ ok: true, status: "processing", runId, jobId: detail.run.processingJobId ?? null });
   } catch (error) {
     return NextResponse.json(
       { error: error instanceof Error ? error.message : "Unable to process accounting statement." },

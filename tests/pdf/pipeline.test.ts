@@ -236,15 +236,47 @@ test("extractWithPdfjs is text-only, polyfills DOMMatrix, and never throws", asy
   assert.notEqual(typeof g.Path2D, "undefined", "Path2D polyfilled");
   assert.notEqual(typeof g.ImageData, "undefined", "ImageData polyfilled");
 
-  // Source-level guarantees: text-only options, no rasterisation, staged logs.
+  // Source-level guarantees: text-only options, no worker, no rasterisation, logs.
   const src = read("lib/pdf/extractWithPdfjs.ts");
   assert.match(src, /ensureNodeDomPolyfills/);
   assert.match(src, /getTextContent/);
   assert.doesNotMatch(src, /\.render\(/, "must not rasterise / call page.render");
+  assert.match(src, /disableWorker: true/, "server worker disabled");
   assert.match(src, /isEvalSupported: false/);
   assert.match(src, /disableFontFace: true/);
-  assert.match(src, /pdfjs_renderer_failed/);
+  assert.doesNotMatch(src, /GlobalWorkerOptions\.workerSrc/, "must NOT set workerSrc in backend extraction");
+  // Registers the worker handler on globalThis so pdf.js skips its broken
+  // import("./pdf.worker.mjs") disk load in the serverless bundle.
+  assert.match(src, /g\.pdfjsWorker = await import\("pdfjs-dist\/legacy\/build\/pdf\.worker\.mjs"\)/);
+  assert.match(src, /pdfjs_server_worker_disabled/);
   assert.match(src, /pdfjs_text_extracted/);
+});
+
+test("process route returns immediately and runs extraction in the background", () => {
+  const route = read("app/api/accounting/fnb/process/route.ts");
+  // Heavy work is scheduled after the response, not awaited on the request path.
+  assert.match(route, /import \{ NextResponse, after \}/, "uses after() from next/server");
+  assert.match(route, /after\(\(\) => processStatementInBackground\(/, "schedules background work");
+  assert.match(route, /return NextResponse\.json\(\{ ok: true, status: "processing", runId, jobId/, "returns immediately with status/runId/jobId");
+  // The pipeline + worker call live INSIDE the background function, not the POST path.
+  assert.match(route, /async function processStatementInBackground/);
+  assert.match(route, /export const maxDuration = 300/, "allows background work to finish");
+  // Timeout protection.
+  assert.match(route, /ACCOUNTING_WORKER_TIMEOUT_MS = 180_000/, "accounting worker 180s timeout");
+  assert.match(read("lib/pdf/extractWithPdfplumber.ts"), /PDFPLUMBER_TIMEOUT_MS = 20_000/, "pdfplumber 20s timeout");
+  assert.match(read("lib/pdf/extractWithOcr.ts"), /OCR_FETCH_TIMEOUT_MS = 180_000/, "OCR 180s timeout");
+  // Failures mark the run failed with the real error.
+  assert.match(route, /failRun/, "updates run/job status to failed on error");
+});
+
+test("UI polls the run until a terminal state instead of holding the request", () => {
+  const poll = read("lib/accounting/poll-run.ts");
+  assert.match(poll, /pollRunUntilTerminal/);
+  assert.match(poll, /\/api\/accounting\/fnb\/runs\//, "polls the run status endpoint");
+  assert.match(poll, /"completed", "failed", "review", "cancelled"/, "stops on terminal states");
+  for (const f of ["components/accounting/accounting-intelligence.tsx", "components/accounting/statement-workspace.tsx"]) {
+    assert.match(read(f), /pollRunUntilTerminal/, `${f} polls for completion`);
+  }
 });
 
 test("pipeline is fault-tolerant: pdfplumber and OCR run even if PDF.js fails", () => {

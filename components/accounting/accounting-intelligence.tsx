@@ -65,6 +65,7 @@ import type {
 } from "@/lib/accounting/analytics";
 import { statementDisplayName, statementReferenceDate } from "@/lib/accounting/statement-name";
 import { parserMethodLabel } from "@/lib/pdf/workerHandoff";
+import { pollRunUntilTerminal } from "@/lib/accounting/poll-run";
 import type { AiCommentaryResult, AiCommentaryType } from "@/lib/accounting/ai-service";
 
 type AccountingTab = "transactions" | "review" | "difference" | "summary" | "bank-rec" | "vat" | "general-ledger" | "trial-balance";
@@ -716,15 +717,20 @@ export function AccountingIntelligence() {
         setDiagnostics(formatDiagnostics(data));
         throw new Error(formatApiError(data, "Processing failed."));
       }
-      if (data.result?.status === "review") {
-        const issue = data.result.review_issue;
-        // Show exactly which validation rules failed (extracted vs expected).
-        const detail = issue?.errors?.length ? issue.errors.join("; ") : issue?.message;
-        setMessage(detail ? `Review required — ${detail}.` : "Statement processed. Manual review is required before export.");
+      // Processing now runs in the background — poll the run until it is terminal.
+      setMessage("Processing… extracting and reconciling your statement.");
+      if (refreshAfter) await loadRuns(runId).catch(() => undefined);
+      const outcome = await pollRunUntilTerminal(runId, { onTick: () => void loadRuns(runId).catch(() => undefined) });
+      if (refreshAfter) await loadRuns(runId).catch(() => undefined);
+      if (outcome.timedOut) {
+        setMessage("Still processing — this is taking longer than usual. It will keep running; refresh to check.");
+      } else if (outcome.status === "failed") {
+        setError(outcome.error || "Processing failed.");
+      } else if (outcome.status === "review") {
+        setMessage("Review required — extraction and bank totals need review before export.");
       } else {
         setMessage("Statement processed successfully. You can now review and export.");
       }
-      if (refreshAfter) await loadRuns(runId);
     } catch (processError) {
       setError(processError instanceof Error ? processError.message : "Processing failed.");
       if (refreshAfter) await loadRuns(runId).catch(() => undefined);
