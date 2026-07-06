@@ -63,6 +63,7 @@ import type {
   ForecastData,
   AuditSummary,
 } from "@/lib/accounting/analytics";
+import { statementDisplayName, statementReferenceDate } from "@/lib/accounting/statement-name";
 import type { AiCommentaryResult, AiCommentaryType } from "@/lib/accounting/ai-service";
 
 type AccountingTab = "transactions" | "review" | "difference" | "summary" | "bank-rec" | "vat" | "general-ledger" | "trial-balance";
@@ -223,11 +224,8 @@ function fileNameFromPath(path: string) {
 }
 
 function runDisplayTitle(run: AccountingStatementRun) {
-  const source = run.statementPeriodStart || run.createdAt;
-  const date = new Date(source);
-  const month = new Intl.DateTimeFormat("en-ZA", { month: "long" }).format(date);
-  const year = new Intl.DateTimeFormat("en-ZA", { year: "numeric" }).format(date);
-  return `${month} ${year} Statement`;
+  // Name from the statement's own period end / date — never the upload date.
+  return statementDisplayName(run);
 }
 
 function formatApiError(data: { error?: string; workerDetail?: unknown; workerRawBody?: string; workerStatus?: number }, fallback: string) {
@@ -1877,9 +1875,9 @@ function StatementRuns({
     sorted.sort((a, b) => {
       if (sortBy === "oldest") return new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime();
       if (sortBy === "month") {
-        const keyA = `${new Date(a.createdAt).getFullYear()}-${new Date(a.createdAt).getMonth()}`;
-        const keyB = `${new Date(b.createdAt).getFullYear()}-${new Date(b.createdAt).getMonth()}`;
-        return keyB.localeCompare(keyA);
+        // Group by the statement's own month (period end / date), not upload date.
+        const keyFor = (run: AccountingStatementRun) => statementReferenceDate(run) ?? run.createdAt;
+        return new Date(keyFor(b)).getTime() - new Date(keyFor(a)).getTime();
       }
       if (sortBy === "status") return statusLabel(a.status).localeCompare(statusLabel(b.status));
       if (sortBy === "company") return (a.companyName || "").localeCompare(b.companyName || "");

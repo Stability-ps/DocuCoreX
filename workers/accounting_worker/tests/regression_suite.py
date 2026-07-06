@@ -93,10 +93,29 @@ from openpyxl import load_workbook
 from main import (
     ParsedTransaction,
     build_workbook,
+    parse_metadata,
     parse_transactions,
     validate_statement,
     validation_summary,
 )
+
+
+def run_statement_period_case() -> None:
+    # ALLIANZ 31 March 2026 statement: the period end and statement date must be
+    # read from the PDF so the app names it March 2026 (not the July upload date).
+    case_id = "allianz-statement-period"
+    text = (
+        "ALLIANZ HOLDINGS (PTY) LTD\n"
+        "Account Number: 63012589818\n"
+        "Statement Period: 28 February 2026 to 31 March 2026\n"
+        "Statement Date: 31 March 2026\n"
+    )
+    meta = parse_metadata(text)
+    assert_equal(meta["statement_period_start"], "2026-02-28", f"{case_id} period start")
+    assert_equal(meta["statement_period_end"], "2026-03-31", f"{case_id} period end")
+    assert_equal(meta["statement_date"], "2026-03-31", f"{case_id} statement date")
+    # Naming must come from period end (March), not the upload month.
+    assert_equal(meta["statement_period_end"][:7], "2026-03", f"{case_id} names to March 2026")
 
 
 ROOT = Path(__file__).resolve().parents[3]
@@ -264,6 +283,7 @@ def run_fnb_extraction_case() -> None:
 
 def run() -> None:
     run_fnb_extraction_case()
+    run_statement_period_case()
 
     manifest = json.loads(MANIFEST_PATH.read_text())
     cases = manifest.get("cases") if isinstance(manifest, dict) else None

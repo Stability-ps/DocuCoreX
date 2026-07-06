@@ -27,6 +27,7 @@ type AccountingRunRow = {
   account_number: string | null;
   statement_period_start: string | null;
   statement_period_end: string | null;
+  statement_date?: string | null;
   opening_balance: number | string | null;
   closing_balance: number | string | null;
   transaction_count: number;
@@ -103,6 +104,7 @@ function mapRun(row: AccountingRunRow): AccountingStatementRun {
     accountNumber: row.account_number,
     statementPeriodStart: row.statement_period_start,
     statementPeriodEnd: row.statement_period_end,
+    statementDate: row.statement_date ?? null,
     openingBalance: toNumber(row.opening_balance),
     closingBalance: toNumber(row.closing_balance),
     transactionCount: row.transaction_count,

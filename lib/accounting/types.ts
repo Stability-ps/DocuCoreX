@@ -16,6 +16,7 @@ export type AccountingStatementRun = {
   accountNumber: string | null;
   statementPeriodStart: string | null;
   statementPeriodEnd: string | null;
+  statementDate?: string | null;
   openingBalance: number | null;
   closingBalance: number | null;
   transactionCount: number;

@@ -9,6 +9,37 @@ register("./alias-hook.mjs", pathToFileURL(new URL(".", import.meta.url).pathnam
 const { computeProfitLoss, accountType } = await import("@/lib/accounting/analytics.ts");
 const { buildExportSections, buildStatementMetadata, resolveCompanyName, FULL_PACK_SECTIONS, EXPORT_MENU } = await import("@/lib/accounting/export.ts");
 const { buildAccountingModel, resolveAccount, CHART } = await import("@/lib/accounting/model.ts");
+const { statementDisplayName, statementReferenceDate } = await import("@/lib/accounting/statement-name.ts");
+
+// Regression: an ALLIANZ statement uploaded in July for a 31 March 2026 period
+// must be named from the statement metadata, never the upload/current date.
+test("statement name comes from the PDF period/date, not the upload date", () => {
+  const uploadedInJuly = {
+    statementPeriodStart: "2026-02-28",
+    statementPeriodEnd: "2026-03-31",
+    statementDate: "2026-03-31",
+    createdAt: "2026-07-06T09:00:00.000Z",
+    companyName: "ALLIANZ HOLDINGS (PTY) LTD",
+  };
+  assert.equal(statementDisplayName(uploadedInJuly), "March 2026 Statement");
+  assert.notEqual(statementDisplayName(uploadedInJuly), "July 2026 Statement");
+  assert.equal(statementReferenceDate(uploadedInJuly), "2026-03-31");
+
+  // Statement date only (no period) still names from the statement, not upload.
+  const dateOnly = { statementPeriodStart: null, statementPeriodEnd: null, statementDate: "2026-03-31", createdAt: "2026-07-06T09:00:00.000Z", companyName: "ALLIANZ HOLDINGS (PTY) LTD" };
+  assert.equal(statementDisplayName(dateOnly), "March 2026 Statement");
+
+  // Period end wins even if only the period is present.
+  const periodOnly = { statementPeriodStart: "2026-02-28", statementPeriodEnd: "2026-03-31", createdAt: "2026-07-06T09:00:00.000Z", companyName: null };
+  assert.equal(statementDisplayName(periodOnly), "March 2026 Statement");
+
+  // Only fall back to the upload date when the statement carries NO date at all.
+  const noStatementDate = { statementPeriodStart: null, statementPeriodEnd: null, statementDate: null, createdAt: "2026-07-06T09:00:00.000Z", companyName: "ALLIANZ HOLDINGS (PTY) LTD" };
+  assert.equal(statementDisplayName(noStatementDate), "July 2026 Statement");
+  // With neither statement date nor a valid upload date, fall back to the company.
+  const nothing = { statementPeriodStart: null, statementPeriodEnd: null, statementDate: null, createdAt: "", companyName: "ALLIANZ HOLDINGS (PTY) LTD" };
+  assert.equal(statementDisplayName(nothing), "ALLIANZ HOLDINGS (PTY) LTD Statement");
+});
 
 // The only sheet names allowed in the professional workbook.
 const APPROVED_SHEETS = new Set([

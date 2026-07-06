@@ -1770,6 +1770,7 @@ def statement_run_metadata(metadata: dict[str, Any]) -> dict[str, Any]:
         "account_number",
         "statement_period_start",
         "statement_period_end",
+        "statement_date",
         "opening_balance",
         "closing_balance",
         "parser_profile",

@@ -22,6 +22,7 @@ import type {
   AccountingTransactionPatch,
 } from "@/lib/accounting/types";
 import { buildAccountingModel } from "@/lib/accounting/model";
+import { statementDisplayName } from "@/lib/accounting/statement-name";
 import { detectDuplicates, detectUnusualTransactions, detectDirectorTransactions } from "@/lib/accounting/analytics";
 import { DocumentViewer } from "@/components/document-viewer";
 
@@ -74,10 +75,8 @@ const TABS: Array<{ id: Tab; label: string }> = [
 ];
 
 function runTitle(run: AccountingStatementRun): string {
-  const period = run.statementPeriodEnd ? new Date(run.statementPeriodEnd) : run.statementPeriodStart ? new Date(run.statementPeriodStart) : null;
-  const monthYear = period && !Number.isNaN(period.getTime()) ? period.toLocaleDateString("en-ZA", { month: "long", year: "numeric" }) : null;
-  if (monthYear) return `${monthYear} Statement`;
-  return run.companyName ? `${run.companyName} Statement` : "Bank Statement";
+  // Name from the statement's own period end / date — never the upload date.
+  return statementDisplayName(run);
 }
 
 function isReviewItem(t: AccountingTransaction): boolean {
