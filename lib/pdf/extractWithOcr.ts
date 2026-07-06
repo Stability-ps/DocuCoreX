@@ -2,10 +2,15 @@ import type { ExtractionResult } from "@/lib/pdf/types";
 import { parseStatementMetadata, parseTransactionsFromText } from "@/lib/pdf/metadata";
 import { pdfLog } from "@/lib/pdf/log";
 
+function readTimeoutMs(value: string | undefined, fallback: number) {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+}
+
 // OCR fallback for scanned / weak-text PDFs. Calls the conversion worker's
 // /api/ocr-text endpoint (ocrmypdf / tesseract). Runs ONLY when the caller
 // decides OCR is needed; time-bounded and degrades gracefully.
-const OCR_FETCH_TIMEOUT_MS = 120_000;
+const OCR_FETCH_TIMEOUT_MS = readTimeoutMs(process.env.CONVERSION_OCR_TIMEOUT_MS ?? process.env.ACCOUNTING_OCR_TIMEOUT_MS, 300_000);
 // A 502 means the conversion worker crashed / was momentarily unavailable (an
 // OOM restart, a cold instance). Retry ONCE after a short delay; a transient 502
 // usually clears once the instance is back (Req 9).
