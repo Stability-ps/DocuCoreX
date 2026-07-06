@@ -4,8 +4,10 @@ import { useState } from "react";
 import { AlertTriangle, CheckCircle2, Loader2, ScanLine } from "lucide-react";
 
 type PipelineSummary = {
-  analysis: { kind: string; needsOcr: boolean; averageCharsPerPage: number };
+  analysis: { kind: string; needsOcr: boolean; averageTextPerPage: number; isDigitalPdf: boolean; confidence: number };
   ocrUsed: boolean;
+  parserMethod: string;
+  routeReason: string;
   selection: { selectedParser: string; confidence: number; reasons: string[]; warnings: string[]; requiresReview: boolean };
   validation: null | {
     valid: boolean;
@@ -73,11 +75,12 @@ export function ExtractionSummary({ documentId }: { documentId: string }) {
       {state === "ready" && data ? (
         <div className="mt-3 space-y-3">
           <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
-            <Metric label="Selected parser" value={data.selection.selectedParser} />
+            <Metric label="Parser method" value={data.parserMethod} />
             <Metric label="Confidence" value={`${data.selection.confidence}%`} warn={data.selection.confidence < 60} />
             <Metric label="OCR used" value={data.ocrUsed ? "Yes" : "No"} />
             <Metric label="Detected type" value={data.analysis.kind} warn={data.analysis.needsOcr} />
           </div>
+          {data.routeReason ? <p className="text-xs font-semibold text-slate-500">{data.routeReason}</p> : null}
 
           <div className={`flex items-center gap-2 rounded-lg border p-2 text-xs font-bold ${data.requiresReview ? "border-amber-200 bg-amber-50 text-amber-800" : "border-emerald-100 bg-emerald-50 text-emerald-800"}`}>
             {data.requiresReview ? <AlertTriangle className="h-4 w-4" /> : <CheckCircle2 className="h-4 w-4" />}

@@ -27,16 +27,26 @@ function statementResult(parser: string, transactions: unknown[], metadata: Reco
   };
 }
 
-test("analyzeExtraction classifies digital vs scanned and decides OCR", () => {
+test("analyzeExtraction returns the full analysis shape and routes OCR", () => {
   const digital = { parser: "pdfjs", pageCount: 2, pages: [page("x".repeat(400)), page("y".repeat(400))], combinedText: "x".repeat(400) + "\n" + "y".repeat(400), transactions: [], metadata: {}, warnings: [] };
   const analysis = analyzeExtraction(digital as never);
   assert.equal(analysis.kind, "digital");
+  assert.equal(analysis.isDigitalPdf, true);
   assert.equal(analysis.needsOcr, false);
+  assert.equal(analysis.pageCount, 2);
+  assert.equal(analysis.totalTextLength, digital.combinedText.trim().length);
+  assert.ok(analysis.averageTextPerPage > 0);
+  assert.equal(analysis.pages.length, 2);
+  assert.equal(analysis.pages[0].hasText, true);
+  assert.ok(analysis.confidence >= 80, `digital confidence should be high, got ${analysis.confidence}`);
+  assert.equal(analysis.extractedText, digital.combinedText);
 
   const scanned = { parser: "pdfjs", pageCount: 3, pages: [page(""), page(""), page("")], combinedText: "", transactions: [], metadata: {}, warnings: [] };
   const scannedAnalysis = analyzeExtraction(scanned as never);
   assert.equal(scannedAnalysis.kind, "scanned");
+  assert.equal(scannedAnalysis.isDigitalPdf, false);
   assert.equal(scannedAnalysis.needsOcr, true);
+  assert.ok(scannedAnalysis.confidence <= 20, `scanned confidence should be low, got ${scannedAnalysis.confidence}`);
 });
 
 test("scoreExtraction rewards transaction rows, balances and coverage", () => {

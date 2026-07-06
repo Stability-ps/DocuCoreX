@@ -40,8 +40,10 @@ export async function GET(_request: Request, { params }: { params: Promise<{ doc
 
     // Trim the heavy page/word payload — the UI only needs the summary.
     return NextResponse.json({
-      analysis: result.analysis,
+      analysis: { ...result.analysis, extractedText: undefined, pages: result.analysis.pages },
       ocrUsed: result.ocrUsed,
+      parserMethod: result.parserMethod,
+      routeReason: result.routeReason,
       selection: result.selection,
       validation: result.validation,
       warnings: result.warnings,

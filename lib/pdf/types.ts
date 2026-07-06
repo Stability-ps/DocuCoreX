@@ -49,13 +49,22 @@ export type ExtractionMetadata = {
 // PDF.js analysis outcome — drives whether OCR is needed.
 export type PdfKind = "digital" | "weak-text" | "scanned";
 
+export type PdfPageSummary = { pageNumber: number; textLength: number; hasText: boolean };
+
 export type PdfAnalysis = {
   pageCount: number;
-  characters: number;
-  averageCharsPerPage: number;
+  totalTextLength: number;
+  averageTextPerPage: number;
+  pages: PdfPageSummary[];
+  isDigitalPdf: boolean;
   kind: PdfKind;
   needsOcr: boolean;
+  confidence: number; // 0..100 that the digital text is usable
+  extractedText: string;
   reasons: string[];
+  // Back-compat aliases (older callers).
+  characters: number;
+  averageCharsPerPage: number;
 };
 
 // Per-extraction quality score.
@@ -107,9 +116,13 @@ export type BankStatementValidation = {
 };
 
 // The full pipeline output surfaced to the API / UI.
+export type ParserMethod = "pdfjs" | "pdfplumber" | "ocr" | "hybrid";
+
 export type ExtractionPipelineResult = {
   analysis: PdfAnalysis;
   ocrUsed: boolean;
+  parserMethod: ParserMethod;
+  routeReason: string;
   selection: ParserSelection;
   merged: ExtractionResult;
   validation: BankStatementValidation | null;
