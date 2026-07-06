@@ -17,3 +17,14 @@ services:
         sync: false
       - key: SUPABASE_SERVICE_ROLE_KEY
         sync: false
+
+  # pdfplumber extraction service used by the multi-parser pipeline (lib/pdf).
+  # After deploy, set PDF_PLUMBER_URL on the Vercel app to this service's URL.
+  - type: web
+    name: docucorex-pdf-plumber
+    runtime: python
+    plan: starter
+    rootDir: services/pdf-plumber
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn app:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /health
