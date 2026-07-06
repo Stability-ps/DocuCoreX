@@ -66,10 +66,11 @@ import type {
 import { statementDisplayName, statementReferenceDate } from "@/lib/accounting/statement-name";
 import { parserMethodLabel } from "@/lib/pdf/workerHandoff";
 import { pollRunUntilTerminal } from "@/lib/accounting/poll-run";
-import { deriveEffectiveRunStatus } from "@/lib/accounting/run-status";
+import { deriveEffectiveRunStatus, isActiveRunStatus } from "@/lib/accounting/run-status";
 import { ProcessingSteps } from "@/components/accounting/processing-steps";
 import { FailedRunPanel } from "@/components/accounting/failed-run-panel";
 import type { AiCommentaryResult, AiCommentaryType } from "@/lib/accounting/ai-service";
+import { supabase } from "@/lib/supabase";
 
 type AccountingTab = "transactions" | "review" | "difference" | "summary" | "bank-rec" | "vat" | "general-ledger" | "trial-balance";
 type AccountingModule = "bank-statements" | "financial-statements" | "tax-vat" | "ai-intelligence" | "forecasting" | "audit-tools";
@@ -386,10 +387,12 @@ function fileNameFromContentDisposition(header: string | null) {
 }
 
 type CombineOverrideType = "account" | "continuity";
+type LiveRefreshState = "idle" | "processing" | "refreshing";
 
 export function AccountingIntelligence() {
   const inputRef = useRef<HTMLInputElement>(null);
   const autoProcessedRef = useRef<Set<string>>(new Set());
+  const selectedRunIdRef = useRef("");
   const [runs, setRuns] = useState<AccountingStatementRun[]>([]);
   const [uploadQueue, setUploadQueue] = useState<UploadQueueItem[]>([]);
   const [selectedRunIds, setSelectedRunIds] = useState<string[]>([]);
@@ -400,6 +403,7 @@ export function AccountingIntelligence() {
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
   const [diagnostics, setDiagnostics] = useState("");
+  const [liveRefreshState, setLiveRefreshState] = useState<LiveRefreshState>("idle");
   const [activeTab, setActiveTab] = useState<AccountingTab>("transactions");
   const [query, setQuery] = useState("");
   const [runSearch, setRunSearch] = useState("");
@@ -413,6 +417,109 @@ export function AccountingIntelligence() {
   const [deleteTargetIds, setDeleteTargetIds] = useState<string[]>([]);
   const selectedRun = useMemo(() => runs.find((run) => run.id === selectedRunId) ?? null, [runs, selectedRunId]);
   const runById = useMemo(() => new Map(runs.map((run) => [run.id, run])), [runs]);
+  const hasActiveRuns = useMemo(
+    () => runs.some((run) => isActiveRunStatus(run.status)) || isActiveRunStatus(detail?.run.status ?? null),
+    [detail?.run.status, runs],
+  );
+
+  useEffect(() => {
+    selectedRunIdRef.current = selectedRunId;
+  }, [selectedRunId]);
+
+  async function fetchRunsFromApi() {
+    const response = await fetch("/api/accounting/fnb/runs", { cache: "no-store" });
+    const data = (await response.json().catch(() => ({}))) as { runs?: AccountingStatementRun[]; error?: string };
+    if (!response.ok) throw new Error(data.error ?? "Unable to load accounting runs.");
+    return data.runs ?? [];
+  }
+
+  async function fetchRunDetailFromApi(runId: string) {
+    const response = await fetch(`/api/accounting/fnb/runs/${runId}`, { cache: "no-store" });
+    const data = (await response.json().catch(() => ({}))) as AccountingRunDetail & { error?: string };
+    if (!response.ok) throw new Error(data.error ?? "Unable to load accounting run.");
+    return { run: data.run, transactions: data.transactions } satisfies AccountingRunDetail;
+  }
+
+  async function refreshAccountingData(
+    preferredRunId?: string,
+    options?: { silent?: boolean; keepLiveState?: boolean },
+  ) {
+    const nextLiveState = options?.keepLiveState ? liveRefreshState : hasActiveRuns ? "processing" : "refreshing";
+    if (!options?.silent) setLiveRefreshState(nextLiveState);
+
+    const nextRuns = await fetchRunsFromApi();
+    setRuns(nextRuns);
+
+    const preferred = preferredRunId ?? selectedRunIdRef.current ?? "";
+    const nextRunId = preferred && nextRuns.some((run) => run.id === preferred) ? preferred : nextRuns[0]?.id ?? "";
+    setSelectedRunId(nextRunId);
+
+    if (!nextRunId) {
+      setDetail(null);
+      setLiveRefreshState("idle");
+      return;
+    }
+
+    const nextDetail = await fetchRunDetailFromApi(nextRunId);
+    setDetail(nextDetail);
+    setLiveRefreshState(isActiveRunStatus(nextDetail.run.status) || nextRuns.some((run) => isActiveRunStatus(run.status)) ? "processing" : "idle");
+  }
+
+  function applyRunRefreshState(runId: string) {
+    const nowIso = new Date().toISOString();
+    setRuns((current) =>
+      current.map((run) =>
+        run.id === runId
+          ? {
+              ...run,
+              status: "processing",
+              error: null,
+              transactionCount: 0,
+              parserMethod: null,
+              extractionConfidence: null,
+              detectedPdfType: null,
+              ocrUsed: null,
+              routeReason: null,
+              extractionWarnings: null,
+              validationStatus: null,
+              reconciliationDifference: null,
+              missingTransactionCount: null,
+              requiresReview: null,
+              processingStep: "Detecting PDF type",
+              processingStartedAt: nowIso,
+              updatedAt: nowIso,
+            }
+          : run,
+      ),
+    );
+    setDetail((current) =>
+      current && current.run.id === runId
+        ? {
+            run: {
+              ...current.run,
+              status: "processing",
+              error: null,
+              transactionCount: 0,
+              parserMethod: null,
+              extractionConfidence: null,
+              detectedPdfType: null,
+              ocrUsed: null,
+              routeReason: null,
+              extractionWarnings: null,
+              validationStatus: null,
+              reconciliationDifference: null,
+              missingTransactionCount: null,
+              requiresReview: null,
+              processingStep: "Detecting PDF type",
+              processingStartedAt: nowIso,
+              updatedAt: nowIso,
+              parserDebug: null,
+            },
+            transactions: [],
+          }
+        : current,
+    );
+  }
 
   // Keep upload-queue rows in sync with the DB run status (source of truth), so
   // processing state survives refreshes and reflects server progress.
@@ -451,26 +558,47 @@ export function AccountingIntelligence() {
     return "Process";
   }, [busy, runById, selectedRunIds]);
   async function loadRuns(preferredRunId?: string) {
-    const response = await fetch("/api/accounting/fnb/runs");
-    const data = (await response.json().catch(() => ({}))) as { runs?: AccountingStatementRun[]; error?: string };
-    if (!response.ok) throw new Error(data.error ?? "Unable to load accounting runs.");
-    setRuns(data.runs ?? []);
-    const nextRunId = preferredRunId ?? selectedRunId ?? data.runs?.[0]?.id ?? "";
-    setSelectedRunId(nextRunId);
-    if (nextRunId) await loadRunDetail(nextRunId);
+    await refreshAccountingData(preferredRunId);
   }
 
   async function loadRunDetail(runId: string) {
-    const response = await fetch(`/api/accounting/fnb/runs/${runId}`);
-    const data = (await response.json().catch(() => ({}))) as AccountingRunDetail & { error?: string };
-    if (!response.ok) throw new Error(data.error ?? "Unable to load accounting run.");
-    setDetail({ run: data.run, transactions: data.transactions });
+    const nextDetail = await fetchRunDetailFromApi(runId);
+    setDetail(nextDetail);
+    setLiveRefreshState(isActiveRunStatus(nextDetail.run.status) ? "processing" : "idle");
   }
 
   useEffect(() => {
     void loadRuns().catch((loadError) => setError(loadError instanceof Error ? loadError.message : "Unable to load Accounting Intelligence."));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  useEffect(() => {
+    if (!hasActiveRuns) return;
+    setLiveRefreshState("processing");
+    const interval = window.setInterval(() => {
+      void refreshAccountingData(selectedRunIdRef.current || undefined, { silent: true, keepLiveState: true }).catch(() => undefined);
+    }, 3000);
+    return () => window.clearInterval(interval);
+  }, [hasActiveRuns]);
+
+  useEffect(() => {
+    const browserSupabase = supabase;
+    if (!browserSupabase || !selectedRunId || !hasActiveRuns) return;
+    const channel = browserSupabase
+      .channel(`accounting-runs-${selectedRunId}`)
+      .on(
+        "postgres_changes",
+        { event: "*", schema: "public", table: "accounting_statement_runs", filter: `id=eq.${selectedRunId}` },
+        () => {
+          setLiveRefreshState("refreshing");
+          void refreshAccountingData(selectedRunId, { silent: true, keepLiveState: true }).catch(() => undefined);
+        },
+      )
+      .subscribe();
+    return () => {
+      void browserSupabase.removeChannel(channel);
+    };
+  }, [hasActiveRuns, selectedRunId]);
 
   useEffect(() => {
     if (!runs.length) return;
@@ -529,6 +657,7 @@ export function AccountingIntelligence() {
     setError("");
     setDiagnostics("");
     setMessage("");
+    setLiveRefreshState("refreshing");
     const formData = new FormData();
     formData.append("file", file);
 
@@ -538,7 +667,7 @@ export function AccountingIntelligence() {
       if (!response.ok || !data.run) throw new Error(data.error ?? "Upload failed.");
       setMessage("FNB statement uploaded and queued for extraction.");
       setUploadCollapsed(true);
-      await loadRuns(data.run.id);
+      await refreshAccountingData(data.run.id, { silent: true, keepLiveState: true });
       return data.run;
     } catch (uploadError) {
       if (queueItemId) {
@@ -712,7 +841,9 @@ export function AccountingIntelligence() {
     if (manageBusy) setBusy(`process:${runId}`);
     setError("");
     setDiagnostics("");
-    setMessage("");
+    setMessage("Processing… extracting and reconciling your statement.");
+    setLiveRefreshState("processing");
+    applyRunRefreshState(runId);
 
     try {
       const response = await fetch("/api/accounting/fnb/process", {
@@ -746,17 +877,17 @@ export function AccountingIntelligence() {
         throw new Error(formatApiError(data, "Processing failed."));
       }
       // Processing now runs in the background — poll the run until it is terminal.
-      setMessage("Processing… extracting and reconciling your statement.");
-      if (refreshAfter) await loadRuns(runId).catch(() => undefined);
+      if (refreshAfter) await refreshAccountingData(runId, { silent: true, keepLiveState: true }).catch(() => undefined);
       const outcome = await pollRunUntilTerminal(runId, { onTick: () => void loadRuns(runId).catch(() => undefined) });
       // Final cleanup once polling stops: refresh the list + selected statement +
       // summary cards, then retire the stale upload-queue entry (status-sync Req 5).
-      if (!outcome.timedOut) await loadRuns(runId).catch(() => undefined);
-      else if (refreshAfter) await loadRuns(runId).catch(() => undefined);
+      if (!outcome.timedOut) await refreshAccountingData(runId, { silent: true }).catch(() => undefined);
+      else if (refreshAfter) await refreshAccountingData(runId, { silent: true, keepLiveState: true }).catch(() => undefined);
       if (outcome.timedOut) {
         setMessage("Still processing — this is taking longer than usual. It will keep running; refresh to check.");
       } else if (outcome.status === "failed") {
         setError(outcome.error || "Processing failed.");
+        setLiveRefreshState("idle");
         // Keep the queue item so the user sees the failure and can retry.
         setUploadQueue((queue) => queue.map((item) => (item.runId === runId ? { ...item, status: "Failed", error: outcome.error ?? item.error } : item)));
       } else {
@@ -765,13 +896,15 @@ export function AccountingIntelligence() {
             ? "Review required — extraction and bank totals need review before export."
             : "Statement processed successfully. You can now review and export.",
         );
+        setLiveRefreshState("idle");
         // Remove the finished statement from the transient upload queue — it now
         // lives in the statements list (status-sync Req 3).
         setUploadQueue((queue) => queue.filter((item) => item.runId !== runId));
       }
     } catch (processError) {
       setError(processError instanceof Error ? processError.message : "Processing failed.");
-      if (refreshAfter) await loadRuns(runId).catch(() => undefined);
+      setLiveRefreshState("idle");
+      if (refreshAfter) await refreshAccountingData(runId, { silent: true }).catch(() => undefined);
     } finally {
       if (manageBusy) setBusy("");
     }
@@ -898,6 +1031,12 @@ export function AccountingIntelligence() {
       auditSummary: buildAuditSummary(txns, run, duplicates, unusuals, vatAnomalies, riskScore),
     };
   }, [detail, totals]);
+  const liveRefreshBanner =
+    liveRefreshState === "processing"
+      ? "Processing… waiting for the latest accounting results."
+      : liveRefreshState === "refreshing"
+        ? "Refreshing latest results…"
+        : "";
 
   return (
     <div className={`space-y-4 p-4 sm:p-6 lg:space-y-5 lg:p-8 ${detail ? "pb-[calc(11rem+env(safe-area-inset-bottom))] md:pb-6 lg:pb-8" : ""}`}>
@@ -1244,6 +1383,12 @@ export function AccountingIntelligence() {
         </section>
       ) : null}
 
+      {liveRefreshBanner ? (
+        <div className="flex items-center gap-2 rounded-lg border border-blue-200 bg-blue-50 px-4 py-3 text-sm font-bold text-blue-800">
+          <Loader2 className="h-4 w-4 animate-spin" />
+          <span>{liveRefreshBanner}</span>
+        </div>
+      ) : null}
       {message ? <div className="rounded-lg border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm font-bold text-emerald-800">{message}</div> : null}
       {error ? (
         <div className="rounded-lg border border-rose-200 bg-rose-50 px-4 py-3 text-sm font-bold text-rose-800">
@@ -1277,7 +1422,10 @@ export function AccountingIntelligence() {
           onSetSelected={setSelectedRunIds}
           onSearchChange={setRunSearch}
           onSortChange={setRunSort}
-          onRefresh={() => void loadRuns().catch((loadError) => setError(loadError instanceof Error ? loadError.message : "Refresh failed."))}
+          onRefresh={() =>
+            void refreshAccountingData(undefined, { keepLiveState: hasActiveRuns })
+              .catch((loadError) => setError(loadError instanceof Error ? loadError.message : "Refresh failed."))
+          }
           onSelect={(runId) => {
             setSelectedRunId(runId);
             setActiveTab("transactions");

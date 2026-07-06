@@ -8,7 +8,7 @@ export type PollRunResult = { status: AccountingRunStatus | null; error: string 
 
 type RunDetailResponse = {
   run?: {
-    status?: AccountingRunStatus;
+    status?: AccountingRunStatus | "error" | "pending";
     error?: string | null;
     transactionCount?: number | null;
     requiresReview?: boolean | null;
@@ -42,7 +42,7 @@ export async function pollRunUntilTerminal(
         const effective = run ? deriveEffectiveRunStatus(run, txCount) : null;
         options.onTick?.(effective);
         if (isTerminalRunStatus(effective)) {
-          return { status: effective, error: run?.error ?? null, timedOut: false };
+          return { status: effective === "failed" ? "failed" : effective, error: run?.error ?? null, timedOut: false };
         }
       }
     } catch {
