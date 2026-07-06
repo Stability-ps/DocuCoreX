@@ -771,7 +771,19 @@ def transaction_section_lines(full_text: str) -> list[str]:
             if "transactions in rand" in lowered:
                 awaiting_section_reopen = False
                 in_section = True
-            continue
+                continue
+            if "turnover for statement period" in lowered:
+                break
+            if "balance brought forward" in lowered or "balance carried forward" in lowered:
+                continue
+            # If the next meaningful line after an intermediate closing line is
+            # another dated transaction row, keep parsing the same section.
+            if LOOSE_DATE.match(line):
+                awaiting_section_reopen = False
+                in_section = True
+            else:
+                # Footer / summary content after the final closing balance.
+                break
         # Section start: the "Transactions in RAND (ZAR)" heading, with or without
         # the account number / colon (e.g. "Transactions in RAND (ZAR) : 62905786151").
         # It repeats on every page — re-entering the section is harmless. "(ZAR)"
@@ -1781,18 +1793,38 @@ def extraction_diagnostics(pages: list[dict[str, Any]], full_text: str, metadata
     section = transaction_section_lines(full_text) if full_text else []
     candidates = transaction_candidate_lines(full_text) if full_text else []
 
-    parsed = 0
-    rejected: list[dict[str, str]] = []
-    for candidate in candidates:
-        if (
+    def candidate_parsed(candidate: str) -> bool:
+        return bool(
             parse_fnb_transaction_line(candidate, metadata)
             or parse_single_amount_line(candidate, metadata)
             or parse_amount_balance_line(candidate, metadata)
-        ):
+        )
+
+    parsed = 0
+    rejected: list[dict[str, str]] = []
+    for candidate in candidates:
+        if candidate_parsed(candidate):
             parsed += 1
         else:
             if len(rejected) < 20:
                 rejected.append({"line": candidate[:160], "reason": explain_line_rejection(candidate, metadata)})
+
+    page_texts = [str(page.get("text") or "") for page in pages if str(page.get("text") or "").strip()]
+    if not page_texts and full_text:
+        page_texts = [chunk for chunk in re.split(r"\f+", full_text) if chunk.strip()] or [full_text]
+    page_diagnostics: list[dict[str, Any]] = []
+    for idx, page_text in enumerate(page_texts, start=1):
+        page_candidates = transaction_candidate_lines(page_text)
+        page_parsed = sum(1 for candidate in page_candidates if candidate_parsed(candidate))
+        page_diagnostics.append(
+            {
+                "page": idx,
+                "candidate_line_count": len(page_candidates),
+                "parsed_candidate_count": page_parsed,
+                "rejected_candidate_count": max(len(page_candidates) - page_parsed, 0),
+                "candidate_lines_sample": [candidate[:120] for candidate in page_candidates[:6]],
+            }
+        )
 
     sample_lines = []
     for line in full_text.splitlines():
@@ -1813,6 +1845,7 @@ def extraction_diagnostics(pages: list[dict[str, Any]], full_text: str, metadata
         "rejected_candidate_count": len(candidates) - parsed,
         "rejected_samples": rejected,
         "table_count": sum(len(page.get("tables", []) or []) for page in pages),
+        "page_diagnostics": page_diagnostics,
         "sample_lines": sample_lines,
         "extracted_metadata": {key: str(value) for key, value in metadata.items() if value is not None},
     }
@@ -2527,7 +2560,7 @@ def month_summary(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return summary
 
 
-def build_workbook(metadata: dict[str, Any], transactions: list[ParsedTransaction]) -> bytes:
+def build_workbook(metadata: dict[str, Any], transactions: list[ParsedTransaction], allow_ai: bool = True) -> bytes:
     workbook = Workbook()
     totals = validation_summary(transactions)
     status, calculated_closing = validation_status(metadata, transactions)
@@ -2540,7 +2573,11 @@ def build_workbook(metadata: dict[str, Any], transactions: list[ParsedTransactio
     source_file = metadata.get("source_file") or ""
     rows = [professional_transaction_row(transaction, source_file) for transaction in transactions]
     ai_started = time.perf_counter()
-    ai_stats = apply_ai_classifications(rows)
+    if allow_ai:
+        ai_stats = apply_ai_classifications(rows)
+    else:
+        ai_stats = ai_diagnostics(enabled=bool(os.getenv("OPENAI_API_KEY")))
+        ai_stats["ai_skipped"] = "extraction_incomplete"
     ai_duration_ms = round((time.perf_counter() - ai_started) * 1000, 2)
     ai_stats["ai_classification_duration_ms"] = ai_duration_ms
     log_event("worker.ai_classification_duration", duration_ms=ai_duration_ms, parser_profile=WORKER_PARSER_VERSION)
@@ -3506,7 +3543,16 @@ def process_fnb_statement(payload: ProcessRequest, authorization: str | None = H
         rows = [transaction_insert_row(transaction, payload.run_id, payload.workspace_id) for transaction in transactions]
         supabase.table("accounting_transactions").insert(rows).execute()
 
-        workbook_bytes = build_workbook(metadata, transactions)
+        # General extraction validation (count / totals / reconciliation vs the
+        # statement's own declared figures). Bank charges come from the declared
+        # fee summary, not from cash-deposit amounts.
+        extraction_check = validate_extraction(metadata, transactions)
+        extraction_incomplete = extraction_check["status"] != "ok"
+        workbook_bytes = build_workbook(
+            metadata,
+            transactions,
+            allow_ai=not extraction_incomplete and review_issue is None,
+        )
         ai_stats = metadata.get("_ai_diagnostics") or ai_diagnostics(enabled=False)
         workbook_path = f"{payload.workspace_id}/accounting/fnb/exports/{payload.run_id}.xlsx"
         export_started = time.perf_counter()
@@ -3524,11 +3570,6 @@ def process_fnb_statement(payload: ProcessRequest, authorization: str | None = H
         export_duration_ms = round((time.perf_counter() - export_started) * 1000, 2)
         log_event("worker.workbook_exported", run_id=payload.run_id, duration_ms=export_duration_ms, parser_profile=WORKER_PARSER_VERSION)
 
-        # General extraction validation (count / totals / reconciliation vs the
-        # statement's own declared figures). Bank charges come from the declared
-        # fee summary, not from cash-deposit amounts.
-        extraction_check = validate_extraction(metadata, transactions)
-        extraction_incomplete = extraction_check["status"] != "ok"
         bank_charges_total = float(bank_charges_from_statement(metadata, transactions))
         avg_confidence = sum(transaction.confidence for transaction in transactions) / len(transactions)
         status = "review" if (
@@ -3536,9 +3577,20 @@ def process_fnb_statement(payload: ProcessRequest, authorization: str | None = H
             or extraction_incomplete
             or any(transaction.review_status == "needs_review" for transaction in transactions)
         ) else "completed"
-        run_error = review_error_message(review_issue) or (
-            f"Extraction validation failed: {', '.join(extraction_check['failures'])}" if extraction_incomplete else None
-        )
+        if review_issue:
+            run_error = review_error_message(review_issue)
+        elif extraction_incomplete:
+            expected_count = extraction_check.get("expected_transaction_count")
+            extracted_count = extraction_check.get("extracted_transaction_count")
+            recon_diff = extraction_check.get("reconciliation_difference")
+            run_error = (
+                "Extraction incomplete — "
+                f"extracted {extracted_count} of {expected_count} transactions; "
+                f"reconciliation difference {recon_diff}; "
+                f"failed checks: {', '.join(extraction_check.get('failures') or [])}."
+            )
+        else:
+            run_error = None
         processing_duration_ms = round((time.perf_counter() - process_started) * 1000, 2)
         review_required = status == "review"
         validation = {**(validation or {}), **{f"extraction_{k}": v for k, v in extraction_check.items() if k != "checks"}}

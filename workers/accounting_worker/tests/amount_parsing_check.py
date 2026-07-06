@@ -130,6 +130,7 @@ from main import (
     parse_money_cell,
     parse_transaction_amount_cell,
     parse_transactions,
+    extraction_diagnostics,
     service_fee_candidate_lines,
     strip_fnb_page_artifacts,
     transaction_candidate_lines,
@@ -443,6 +444,18 @@ def run():
     merged_transactions = parse_transactions([], metadata, outside_section_text)
     assert_equal(len(merged_transactions), 5, "merged section plus fee transaction count")
     assert_equal(sum(Decimal(str(row.debit_amount or 0)) for row in merged_transactions), Decimal("695.00"), "merged fee total")
+    diag = extraction_diagnostics(
+        [
+            {"page": 1, "text": "Transactions in RAND (ZAR)\n09 Feb FNB OB Pmt Rmsp 10129 25,000.00Cr 58,343.76Cr\nClosing Balance 11,196.46Cr"},
+            {"page": 2, "text": "Transactions in RAND (ZAR)\n11 Feb #Service Fees Intl Pmt Fee-Google Xiao 1.44 58,342.32Cr"},
+        ],
+        outside_section_text,
+        metadata,
+    )
+    if not isinstance(diag.get("page_diagnostics"), list) or len(diag["page_diagnostics"]) < 2:
+        raise AssertionError("page-level diagnostics must include one entry per page")
+    if not any(int(page.get("parsed_candidate_count") or 0) > 0 for page in diag["page_diagnostics"]):
+        raise AssertionError("page-level diagnostics must report parsed candidates")
 
     first_gap_transactions = parse_fnb_section_transactions(
         """
