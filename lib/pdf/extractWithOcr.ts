@@ -19,8 +19,9 @@ export async function extractWithOcr(buffer: Uint8Array, fileName = "statement.p
   const endpoint = `${baseUrl.replace(/\/$/, "")}/api/ocr-text`;
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), OCR_FETCH_TIMEOUT_MS);
+  const started = Date.now();
 
-  pdfLog("ocr.request_started", { endpoint, fileName, fileSize: buffer.byteLength });
+  pdfLog("ocr_started", { endpoint, fileName, fileSize: buffer.byteLength });
   try {
     const form = new FormData();
     form.append("file", new Blob([buffer.slice() as unknown as BlobPart], { type: "application/pdf" }), fileName);
@@ -54,15 +55,17 @@ export async function extractWithOcr(buffer: Uint8Array, fileName = "statement.p
       ocrDebug?: Record<string, unknown>;
     };
     const combinedText = data.text ?? "";
-    pdfLog("ocr.response", {
+    pdfLog("ocr_finished", {
       endpoint,
       status: response.status,
       textLength: combinedText.trim().length,
       pages: data.pages ?? 0,
+      transactions: parseTransactionsFromText(combinedText).length,
       confidence: data.confidence ?? null,
       reason: data.reason ?? null,
       ocrDebug: data.ocrDebug ?? null,
       sample: combinedText.trim().slice(0, 500),
+      ms: Date.now() - started,
     });
 
     const result: ExtractionResult = {

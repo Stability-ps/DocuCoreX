@@ -12,12 +12,14 @@ export async function extractWithPdfplumber(buffer: Uint8Array, fileName = "stat
     return null;
   }
 
+  const started = Date.now();
+  pdfLog("pdfplumber_started", { fileSize: buffer.byteLength });
   try {
     const form = new FormData();
     form.append("file", new Blob([buffer.slice() as unknown as BlobPart], { type: "application/pdf" }), fileName);
     const response = await fetch(`${baseUrl.replace(/\/$/, "")}/extract`, { method: "POST", body: form });
     if (!response.ok) {
-      pdfLog("pdfplumber.error", { status: response.status });
+      pdfLog("pdfplumber_finished", { ok: false, status: response.status, ms: Date.now() - started });
       return {
         parser: "pdfplumber",
         pageCount: 0,
@@ -51,10 +53,10 @@ export async function extractWithPdfplumber(buffer: Uint8Array, fileName = "stat
       metadata: parseStatementMetadata(combinedText),
       warnings: [],
     };
-    pdfLog("pdfplumber.extract", { pages: result.pageCount, tables: pages.reduce((s, p) => s + p.tables.length, 0), transactions: result.transactions.length });
+    pdfLog("pdfplumber_finished", { pages: result.pageCount, tables: pages.reduce((s, p) => s + p.tables.length, 0), chars: combinedText.length, transactions: result.transactions.length, ms: Date.now() - started });
     return result;
   } catch (error) {
-    pdfLog("pdfplumber.error", { error: error instanceof Error ? error.message : String(error) });
+    pdfLog("pdfplumber_finished", { ok: false, error: error instanceof Error ? error.message : String(error), ms: Date.now() - started });
     return {
       parser: "pdfplumber",
       pageCount: 0,

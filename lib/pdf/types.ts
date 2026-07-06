@@ -118,6 +118,19 @@ export type BankStatementValidation = {
 // The full pipeline output surfaced to the API / UI.
 export type ParserMethod = "pdfjs" | "pdfplumber" | "ocr" | "hybrid";
 
+// Per-extractor diagnostics — which stage ran, succeeded, and why others failed.
+export type ExtractionStageDiag = {
+  stage: "pdfjs" | "pdfplumber" | "ocr";
+  attempted: boolean;
+  ok: boolean; // produced usable text/transactions
+  ms: number;
+  pages: number;
+  chars: number;
+  transactions: number;
+  skippedReason?: string | null;
+  failureReason?: string | null;
+};
+
 export type ExtractionDebug = {
   pdfjsTextLength: number;
   pdfplumberTextLength: number;
@@ -128,6 +141,8 @@ export type ExtractionDebug = {
   // OCR engine diagnostics (ocr_endpoint, ocr_status, ocr_exit_code,
   // ocr_stderr_sample, sidecar_exists, sidecar_size, ocr_text_length, attempts).
   ocr: Record<string, unknown> | null;
+  // One entry per extractor: pdfjs, pdfplumber, ocr.
+  stages: ExtractionStageDiag[];
 };
 
 export type ExtractionPipelineResult = {

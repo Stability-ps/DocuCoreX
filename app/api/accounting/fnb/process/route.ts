@@ -25,6 +25,7 @@ type PipelineDebug = {
   sampleText: string;
   reasonNoTransactions: string | null;
   ocr: Record<string, unknown> | null;
+  stages: unknown[];
 };
 
 async function runPipelineBeforeWorker(
@@ -78,6 +79,7 @@ async function runPipelineBeforeWorker(
       sampleText: pipeline.debug.sampleText,
       reasonNoTransactions: pipeline.debug.reasonNoTransactions,
       ocr: pipeline.debug.ocr,
+      stages: pipeline.debug.stages,
     };
 
     // Detailed log immediately before handing off to the worker.
@@ -310,6 +312,8 @@ export async function POST(request: Request) {
                 // without these (task 8): ocr_endpoint, ocr_status, ocr_exit_code,
                 // ocr_stderr_sample, sidecar_exists, sidecar_size, ocr_text_length.
                 ocr: pipelineDebug.ocr,
+                // Per-extractor outcome: which succeeded, why the others failed.
+                stages: pipelineDebug.stages,
               }
             : null,
           workerPayload: {

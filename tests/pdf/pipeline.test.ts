@@ -184,7 +184,7 @@ test("weak-text / scanned PDFs route to OCR", () => {
 test("OCR extractor calls /api/ocr-text with logging and a timeout", () => {
   const ocr = read("lib/pdf/extractWithOcr.ts");
   assert.match(ocr, /\/api\/ocr-text/, "must call the /api/ocr-text endpoint (not /ocr-text)");
-  assert.match(ocr, /ocr\.request_started/, "logs request started, endpoint, file size");
+  assert.match(ocr, /ocr_started/, "logs request started, endpoint, file size");
   assert.match(ocr, /textLength: combinedText\.trim\(\)\.length/, "logs OCR text length");
   assert.match(ocr, /sample: combinedText\.trim\(\)\.slice\(0, 500\)/, "logs first 500 chars");
   assert.match(ocr, /errorBody/, "logs OCR error body on failure");
@@ -219,6 +219,56 @@ test("OCR endpoint: binary health, fallback chain, exact reasons, full debug", (
   const dockerfile = read("workers/conversion_worker/Dockerfile");
   assert.match(dockerfile, /ocrmypdf/);
   assert.match(dockerfile, /tesseract-ocr/);
+});
+
+test("extractWithPdfjs is text-only, polyfills DOMMatrix, and never throws", async () => {
+  const { extractWithPdfjs } = await import("@/lib/pdf/extractWithPdfjs.ts");
+  // A non-PDF buffer must NOT throw — it returns an empty normalized result so the
+  // pipeline can continue to pdfplumber / OCR (renderer-unavailable resilience).
+  const result = await extractWithPdfjs(new Uint8Array([1, 2, 3, 4, 5]));
+  assert.equal(result.parser, "pdfjs");
+  assert.ok(Array.isArray(result.pages));
+  assert.ok(Array.isArray(result.transactions));
+  // DOMMatrix / Path2D / ImageData are polyfilled so pdf.js module init cannot
+  // crash with "DOMMatrix is not defined" / "Cannot load @napi-rs/canvas".
+  const g = globalThis as unknown as Record<string, unknown>;
+  assert.notEqual(typeof g.DOMMatrix, "undefined", "DOMMatrix polyfilled");
+  assert.notEqual(typeof g.Path2D, "undefined", "Path2D polyfilled");
+  assert.notEqual(typeof g.ImageData, "undefined", "ImageData polyfilled");
+
+  // Source-level guarantees: text-only options, no rasterisation, staged logs.
+  const src = read("lib/pdf/extractWithPdfjs.ts");
+  assert.match(src, /ensureNodeDomPolyfills/);
+  assert.match(src, /getTextContent/);
+  assert.doesNotMatch(src, /\.render\(/, "must not rasterise / call page.render");
+  assert.match(src, /isEvalSupported: false/);
+  assert.match(src, /disableFontFace: true/);
+  assert.match(src, /pdfjs_renderer_failed/);
+  assert.match(src, /pdfjs_text_extracted/);
+});
+
+test("pipeline is fault-tolerant: pdfplumber and OCR run even if PDF.js fails", () => {
+  const pipeline = read("lib/pdf/runExtractionPipeline.ts");
+  // pdfplumber is ALWAYS attempted, not gated on PDF.js's classification.
+  assert.match(pipeline, /Stage 2 — pdfplumber\. ALWAYS attempted/);
+  assert.match(pipeline, /const pdfplumber = await extractWithPdfplumber\(buffer, fileName\);/);
+  // OCR runs when native extraction is poor (0 tx / <20 chars) OR analysis says so.
+  assert.match(pipeline, /nativeTransactions === 0 \|\| nativeChars < 20/);
+  // Per-stage diagnostics + completion log, never abort early.
+  assert.match(pipeline, /stages\.push\(stageDiag\("pdfjs"/);
+  assert.match(pipeline, /stages\.push\(stageDiag\("pdfplumber"/);
+  assert.match(pipeline, /stages\.push\(stageDiag\("ocr"/);
+  assert.match(pipeline, /pipeline_completed/);
+  // Stage logs from each extractor.
+  assert.match(read("lib/pdf/extractWithPdfplumber.ts"), /pdfplumber_started/);
+  assert.match(read("lib/pdf/extractWithPdfplumber.ts"), /pdfplumber_finished/);
+  assert.match(read("lib/pdf/extractWithOcr.ts"), /ocr_started/);
+  assert.match(read("lib/pdf/extractWithOcr.ts"), /ocr_finished/);
+});
+
+test("parserDebug reports which extractor succeeded and why others failed", () => {
+  const route = read("app/api/accounting/fnb/process/route.ts");
+  assert.match(route, /stages: pipelineDebug\.stages/, "parserDebug carries per-stage outcomes");
 });
 
 test("OCR debug propagates through the extractor and process route", () => {
