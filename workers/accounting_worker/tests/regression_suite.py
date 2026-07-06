@@ -451,12 +451,95 @@ def run_april_missing_rows_case() -> None:
     assert_equal(str(validation["closing_balance"]), "368.96", f"{case_id} closing balance")
 
 
+def run_freight_aces_case() -> None:
+    # FNBBSJAN2026 (FREIGHT ACES) Gold Business statement: header
+    # "Transactions in RAND (ZAR) : 62905786151", transactions across several
+    # pages, "#" fee rows and rows whose description is lost (date + amount +
+    # balance). Previously returned "No FNB transactions could be parsed".
+    from decimal import Decimal as D
+
+    from main import extraction_diagnostics, parse_transactions, validate_statement, validation_summary
+
+    case_id = "freight-aces-jan"
+    opening, closing = D("1869.10"), D("295242.68")
+
+    def money(v: D) -> str:
+        return f"{v:,.2f}"
+
+    def balance_cell(v: D) -> str:
+        return f"{money(v)} Cr" if v >= 0 else money(v.copy_abs())
+
+    rows: list[tuple[str, D, bool]] = []
+    # 24 credits summing 909,530.63.
+    for i, amt in enumerate([D("39000.00")] * 23 + [D("12530.63")]):
+        rows.append((f"Eft Credit Customer {i:03d}", amt, True))
+    # 116 debits summing 616,157.05: two "#" fee rows (= declared service fees
+    # 1,168.52) plus 114 others, ~11 of which lose their description.
+    rows.append(("#Monthly Account Fee", D("349.00"), False))
+    rows.append(("#Service Fees", D("819.52"), False))
+    for i, amt in enumerate([D("5400.00")] * 113 + [D("4788.53")]):
+        desc = "" if i % 10 == 0 else f"Card Purchase Merchant {i:03d}"
+        rows.append((desc, amt, False))
+
+    lines = [
+        "FREIGHT ACES (PTY)LTD",
+        "Account Number : 62905786151",
+        "Opening Balance 1,869.10 Cr",
+        "Closing Balance 295,242.68 Cr",
+        "Transactions in RAND (ZAR) : 62905786151",
+    ]
+    bal = opening
+    for idx, (desc, amt, is_credit) in enumerate(rows):
+        day = f"{(idx % 28) + 1:02d} Jan"
+        if is_credit:
+            bal += amt
+            lines.append(f"{day} {desc} {money(amt)}Cr {balance_cell(bal)}")
+        else:
+            bal -= amt
+            lines.append(f"{day} {desc} {money(amt)} {balance_cell(bal)}".replace("  ", " "))
+        if idx in (39, 79, 119):  # page breaks: carried-forward line + repeated header
+            lines.append(f"Balance Brought Forward {balance_cell(bal)}")
+            lines.append("Transactions in RAND (ZAR) : 62905786151")
+    lines.append(f"Closing Balance {money(closing)} Cr")
+    lines.append("Turnover for Statement Period")
+    text = "\n".join(lines)
+
+    metadata = {
+        "opening_balance": 1869.10, "closing_balance": 295242.68,
+        "expected_transaction_count": 140, "expected_credit_count": 24, "expected_debit_count": 116,
+        "declared_credit_total": 909530.63, "declared_debit_total": 616157.05,
+    }
+    txns = parse_transactions([], metadata, text)
+
+    # Must NOT be rejected as unparseable; diagnostics must see the section.
+    diagnostics = extraction_diagnostics([], text, metadata)
+    if not diagnostics["transaction_section_found"]:
+        raise AssertionError(f"{case_id}: transaction section not detected")
+
+    assert_equal(len(txns), 140, f"{case_id} transaction count")
+    summary = validation_summary(txns)
+    assert_equal(summary["credit_count"], 24, f"{case_id} credit count")
+    assert_equal(summary["debit_count"], 116, f"{case_id} debit count")
+    assert_equal(str(summary["total_credits"]), "909530.63", f"{case_id} credit total")
+    assert_equal(str(summary["total_debits"]), "616157.05", f"{case_id} debit total")
+
+    fees = [t for t in txns if t.description.startswith("#") and t.bank_charge]
+    if len(fees) < 2:
+        raise AssertionError(f"{case_id}: fee rows not captured as bank charges ({len(fees)})")
+
+    validation = validate_statement(metadata, txns)
+    if validation["calculated_closing"] != validation["closing_balance"]:
+        raise AssertionError(f"{case_id}: reconciliation not zero ({validation['calculated_closing']} vs {validation['closing_balance']})")
+    assert_equal(str(validation["closing_balance"]), "295242.68", f"{case_id} closing balance")
+
+
 def run() -> None:
     run_fnb_extraction_case()
     run_statement_period_case()
     run_missing_column_fallback_case()
     run_validation_diagnostics_case()
     run_april_missing_rows_case()
+    run_freight_aces_case()
 
     manifest = json.loads(MANIFEST_PATH.read_text())
     cases = manifest.get("cases") if isinstance(manifest, dict) else None

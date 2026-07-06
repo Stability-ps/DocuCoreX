@@ -678,8 +678,13 @@ def build_transaction(
     base_confidence: float,
 ) -> ParsedTransaction | None:
     normalized_description = re.sub(r"\s+", " ", description).strip(" -|")
-    if not normalized_description or is_noise_transaction(normalized_description):
+    if is_noise_transaction(normalized_description):
         return None
+    if not normalized_description:
+        # FNB "#" fee rows sometimes lose their description in text extraction,
+        # leaving only date + amount + balance. Keep the row (it still moves the
+        # balance) with a placeholder rather than dropping it and failing recon.
+        normalized_description = "Unlabelled transaction"
 
     for label, amount in (("debit", debit), ("credit", credit), ("balance", balance)):
         if amount is not None and Decimal(str(amount)).copy_abs() > MAX_DATABASE_AMOUNT:
@@ -723,6 +728,7 @@ def build_transaction(
 def transaction_section_lines(full_text: str) -> list[str]:
     lines = [re.sub(r"\s+", " ", line).strip() for line in full_text.splitlines()]
     in_section = False
+    seen_transaction = False
     section: list[str] = []
 
     for line in lines:
@@ -730,13 +736,27 @@ def transaction_section_lines(full_text: str) -> list[str]:
         if is_fnb_page_artifact(line):
             continue
         lowered = line.lower()
-        if "transactions in rand" in lowered and "zar" in lowered:
+        # Section start: the "Transactions in RAND (ZAR)" heading, with or without
+        # the account number / colon (e.g. "Transactions in RAND (ZAR) : 62905786151").
+        # It repeats on every page — re-entering the section is harmless. "(ZAR)"
+        # may wrap onto its own line, so it is not required on the heading line.
+        if "transactions in rand" in lowered:
             in_section = True
             continue
-        if in_section and "closing balance" in lowered:
+        if not in_section:
+            continue
+        # Section end: the true statement end only. A summary "Closing Balance" or a
+        # per-page "Balance Brought/Carried Forward" must NOT end it early, so the
+        # closing-balance break requires at least one transaction row to have been
+        # seen. "Turnover for Statement Period" always ends the section.
+        if "turnover for statement period" in lowered:
             break
-        if in_section and line:
+        if "closing balance" in lowered and seen_transaction:
+            break
+        if line:
             section.append(line)
+            if LOOSE_DATE.match(line):
+                seen_transaction = True
 
     return section
 
@@ -1672,7 +1692,45 @@ def review_error_message(issue: dict[str, Any] | None) -> str | None:
     return str(issue["message"])
 
 
-def extraction_diagnostics(pages: list[dict[str, Any]], full_text: str) -> dict[str, Any]:
+def explain_line_rejection(line: str, metadata: dict[str, Any]) -> str:
+    """Why did this candidate transaction line not produce a transaction?"""
+    stripped = strip_fnb_page_artifacts(line)
+    if not LOOSE_DATE.match(stripped):
+        return "no leading date"
+    money = list(MONEY_TOKEN.finditer(stripped))
+    if not money:
+        return "no money amount"
+    if parse_fnb_transaction_line(stripped, metadata) is not None:
+        return "parsed (unexpected)"
+    if parse_single_amount_line(stripped, metadata) is not None:
+        return "parsed (unexpected)"
+    if parse_amount_balance_line(stripped, metadata) is not None:
+        return "parsed (unexpected)"
+    if len(money) >= 3:
+        return "3+ money tokens without a Cr/Dr balance suffix"
+    if len(money) == 2:
+        return "amount + balance without a Cr/Dr suffix (unhandled)"
+    return "unrecognised line shape"
+
+
+def extraction_diagnostics(pages: list[dict[str, Any]], full_text: str, metadata: dict[str, Any] | None = None) -> dict[str, Any]:
+    metadata = metadata or {}
+    section = transaction_section_lines(full_text) if full_text else []
+    candidates = transaction_candidate_lines(full_text) if full_text else []
+
+    parsed = 0
+    rejected: list[dict[str, str]] = []
+    for candidate in candidates:
+        if (
+            parse_fnb_transaction_line(candidate, metadata)
+            or parse_single_amount_line(candidate, metadata)
+            or parse_amount_balance_line(candidate, metadata)
+        ):
+            parsed += 1
+        else:
+            if len(rejected) < 20:
+                rejected.append({"line": candidate[:160], "reason": explain_line_rejection(candidate, metadata)})
+
     sample_lines = []
     for line in full_text.splitlines():
         cleaned = re.sub(r"\s+", " ", line).strip()
@@ -1681,25 +1739,19 @@ def extraction_diagnostics(pages: list[dict[str, Any]], full_text: str) -> dict[
         if len(sample_lines) >= 30:
             break
 
-    sample_tables = []
-    for page in pages:
-        for table in page.get("tables", []) or []:
-            preview_rows = []
-            for row in (table or [])[:5]:
-                preview_rows.append([normalize_cell(cell) for cell in row or []])
-            if preview_rows:
-                sample_tables.append({"page": page.get("page"), "rows": preview_rows})
-            if len(sample_tables) >= 3:
-                break
-        if len(sample_tables) >= 3:
-            break
-
     return {
-        "pages": len(pages),
+        "pages_scanned": len(pages),
         "characters": len(full_text),
+        "transaction_section_found": bool(section),
+        "section_line_count": len(section),
+        "candidate_line_count": len(candidates),
+        "candidate_lines_sample": [c[:160] for c in candidates[:20]],
+        "parsed_candidate_count": parsed,
+        "rejected_candidate_count": len(candidates) - parsed,
+        "rejected_samples": rejected,
         "table_count": sum(len(page.get("tables", []) or []) for page in pages),
         "sample_lines": sample_lines,
-        "sample_tables": sample_tables,
+        "extracted_metadata": {key: str(value) for key, value in metadata.items() if value is not None},
     }
 
 
@@ -3244,7 +3296,7 @@ def process_fnb_statement(payload: ProcessRequest, authorization: str | None = H
         )
 
         if not transactions:
-            diagnostics = extraction_diagnostics(pages, full_text)
+            diagnostics = extraction_diagnostics(pages, full_text, metadata)
             log_warning("worker.no_transactions_parsed", run_id=payload.run_id, diagnostics=diagnostics)
             raise HTTPException(
                 status_code=422,
