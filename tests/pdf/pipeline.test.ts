@@ -157,6 +157,44 @@ test("analyzeExtraction returns the full analysis shape and routes OCR", () => {
   assert.ok(scannedAnalysis.confidence <= 20, `scanned confidence should be low, got ${scannedAnalysis.confidence}`);
 });
 
+test("weak-text / scanned PDFs route to OCR", () => {
+  // Weak-text: sparse text (avg 25–200 chars/page) -> OCR needed.
+  const weakText = "x".repeat(150);
+  const weak = { parser: "pdfjs", pageCount: 3, pages: [page(weakText), page(""), page("")], combinedText: weakText, transactions: [], metadata: {}, warnings: [] };
+  const weakAnalysis = analyzeExtraction(weak as never);
+  assert.equal(weakAnalysis.kind, "weak-text");
+  assert.equal(weakAnalysis.needsOcr, true);
+
+  // Near-empty (e.g. 2 characters) -> scanned -> OCR forced.
+  const scanned = { parser: "pdfjs", pageCount: 4, pages: [page("hi"), page(""), page(""), page("")], combinedText: "hi", transactions: [], metadata: {}, warnings: [] };
+  const scannedAnalysis = analyzeExtraction(scanned as never);
+  assert.equal(scannedAnalysis.kind, "scanned");
+  assert.equal(scannedAnalysis.needsOcr, true);
+});
+
+test("OCR extractor calls /api/ocr-text with logging and a timeout", () => {
+  const ocr = read("lib/pdf/extractWithOcr.ts");
+  assert.match(ocr, /\/api\/ocr-text/, "must call the /api/ocr-text endpoint (not /ocr-text)");
+  assert.match(ocr, /ocr\.request_started/, "logs request started, endpoint, file size");
+  assert.match(ocr, /textLength: combinedText\.trim\(\)\.length/, "logs OCR text length");
+  assert.match(ocr, /sample: combinedText\.trim\(\)\.slice\(0, 500\)/, "logs first 500 chars");
+  assert.match(ocr, /errorBody/, "logs OCR error body on failure");
+  assert.match(ocr, /AbortController/, "has a timeout");
+});
+
+test("conversion worker exposes an /api/ocr-text endpoint returning { text, pages, confidence, warnings }", () => {
+  const route = read("app/api/ocr-text/route.ts");
+  assert.match(route, /ocrmypdf/, "uses ocrmypdf");
+  assert.match(route, /--sidecar/, "extracts OCR text via sidecar");
+  assert.match(route, /NextResponse\.json\(\{ text, pages, confidence, warnings \}\)/, "returns the required shape");
+  assert.match(route, /OCR_TIMEOUT_MS/, "time-bounded so processing cannot hang");
+  assert.match(route, /x-docucorex-worker-secret/, "worker-mode auth");
+  // Dependencies are installed on the conversion worker.
+  const dockerfile = read("workers/conversion_worker/Dockerfile");
+  assert.match(dockerfile, /ocrmypdf/);
+  assert.match(dockerfile, /tesseract-ocr/);
+});
+
 test("scoreExtraction rewards transaction rows, balances and coverage", () => {
   const score = scoreExtraction(statementResult("pdfplumber", [{ date: "01 Jan", debit: 100, balance: 900 }], { openingBalance: 1000, closingBalance: 900 }) as never);
   assert.ok(score.transactionRows >= 1, "detects a transaction row");
