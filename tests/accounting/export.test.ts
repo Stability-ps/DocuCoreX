@@ -31,10 +31,15 @@ test("the shared document viewer uses an in-app fullscreen overlay, not browser 
   assert.match(viewer, /event\.key === "Escape"/, "ESC must close the overlay");
 });
 
-test("the shared document viewer rotate keeps the page centred", () => {
+test("the shared document viewer renders PDFs on canvas via pdf.js (no iframe)", () => {
   const viewer = read("components/document-viewer.tsx");
-  assert.match(viewer, /rotate\(\$\{rotate\}deg\)/, "rotation transform must be applied");
-  assert.match(viewer, /transformOrigin: "center center"/, "rotation must be centred, not pushed out");
+  assert.match(viewer, /pdfjs-dist\/build\/pdf\.worker\.min\.mjs/, "must set the pdf.js worker path");
+  assert.match(viewer, /import\("pdfjs-dist"\)/, "must load pdf.js");
+  assert.match(viewer, /<canvas /, "PDF pages render on a canvas");
+  assert.doesNotMatch(viewer, /<iframe/, "must not use an iframe preview");
+  // Fit-width default, rotation via viewport, and a 90-degree rotate cycle.
+  assert.match(viewer, /useState\(true\)/, "fit-width is the default");
+  assert.match(viewer, /rotation: rotate/, "rotation is applied via the pdf.js viewport");
   assert.match(viewer, /setRotate\(\(r\) => \(r \+ 90\) % 360\)/, "rotate must cycle 0/90/180/270");
 });
 
@@ -112,39 +117,26 @@ test("preview serves inline, download serves attachment (separate logic)", () =>
   // download URL only for the Download button.
   const docs = read("components/documents/document-detail-panel.tsx");
   assert.match(docs, /const previewUrl = `\/api\/documents\/\$\{documentId\}\/preview`/, "documents must build an inline preview URL");
-  assert.match(docs, /previewUrl=\{previewUrl\} downloadUrl=\{downloadUrl\}/, "preview inline, download separately");
+  assert.match(docs, /sourceUrl=\{previewUrl\} downloadUrl=\{downloadUrl\}/, "preview inline, download separately");
 });
 
-test("Documents preview fits width and previews inline (no auto-download)", () => {
-  const preview = read("components/documents/document-preview.tsx");
-  assert.match(preview, /view=FitH/, "Documents preview must default to Fit Width");
-  assert.match(preview, /h-full w-full/, "the frame must fill the container width");
-  assert.match(preview, /src=\{previewUrl\}|src=\{frameSrc\}/, "preview must use the inline preview URL, not the download URL");
-  assert.match(preview, /href=\{downloadUrl\}/, "Download button uses the download URL");
-  assert.match(preview, /transformOrigin: "center center"/, "rotate must keep the document centred");
-  assert.match(preview, /const fitWidth = \(\)/, "Fit button resets to Fit Width");
-  // Tall, responsive height (viewport-based) — not a short fixed height.
-  assert.match(preview, /h-\[calc\(100vh-13rem\)\]/, "preview must fill the remaining viewport height");
-  assert.match(preview, /min-h-\[78vh\]/, "preview must stay tall on short layouts");
-  assert.doesNotMatch(preview, /min-h-\[70vh\]" /, "must not keep the short fixed height");
-  // The Documents panel renders the width-fitting preview, not the shared viewer.
+test("Documents uses the shared pdf.js viewer (no separate preview component)", () => {
   const docs = read("components/documents/document-detail-panel.tsx");
-  assert.match(docs, /<DocumentPreview /, "Documents must render the Fit-Width preview");
+  assert.match(docs, /<DocumentViewer /, "Documents must render the shared pdf.js viewer");
+  assert.match(docs, /import \{ DocumentViewer/, "Documents imports the shared viewer");
+  // Tall, responsive height so the document is readable immediately.
+  assert.match(docs, /h-\[calc\(100vh-13rem\)\]/, "Documents preview fills the viewport height");
 });
 
 test("the shared document viewer separates preview and download and handles errors", () => {
   const viewer = read("components/document-viewer.tsx");
   assert.match(viewer, /downloadUrl\?: string/, "viewer must accept a separate download URL");
   assert.match(viewer, /const resolvedDownloadUrl = downloadUrl \?\? sourceUrl/, "download button uses downloadUrl");
-  // Error handling: title, actual message, Retry, Download Original.
-  assert.match(viewer, /Unable to preview document/);
+  // Error handling: fallback message, Retry, Download Original — never a blank pane.
+  assert.match(viewer, /Unable to display document/);
   assert.match(viewer, /Download Original/);
-  assert.match(viewer, /onError=\{onFrameError\}/, "frame errors must be handled, not left blank");
-  assert.match(viewer, /RENDER_TIMEOUT_MS/, "a render timeout must surface an error instead of a blank viewer");
-  // Dev-only diagnostics.
-  assert.match(viewer, /viewer diagnostics/);
-  assert.match(viewer, /renderStarted|renderCompleted|renderFailed/);
-  assert.match(viewer, /process\.env\.NODE_ENV !== "production"/, "diagnostics must be development-only");
+  assert.match(viewer, /setStatus\("error"\)/, "render/load failures must surface an error");
+  assert.match(viewer, /Retry/, "must offer a retry");
 });
 
 test("shared DocumentViewer stays intact and is used by the statement workspace", () => {

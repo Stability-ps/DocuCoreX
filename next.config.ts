@@ -16,6 +16,13 @@ const PREVIEW_SOURCES = ["/api/documents/:id/preview", "/api/accounting/fnb/runs
 
 const nextConfig: NextConfig = {
   reactStrictMode: true,
+  // pdfjs-dist references an optional Node "canvas" module that is not used in the
+  // browser; stub it so the production build resolves.
+  webpack: (config) => {
+    config.resolve = config.resolve || {};
+    config.resolve.alias = { ...(config.resolve.alias || {}), canvas: false };
+    return config;
+  },
   async headers() {
     return [
       // Base security headers everywhere.
