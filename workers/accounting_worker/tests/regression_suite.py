@@ -395,23 +395,29 @@ def run_april_missing_rows_case() -> None:
     def money(value: D) -> str:
         return f"{value:,.2f}"
 
-    # 7 credits summing 226,361.00 (Cr-suffixed).
-    for i, amt in enumerate([D("37000.00")] * 6 + [D("4361.00")]):
-        bal += amt
-        lines.append(f"0{(i % 9) + 1} Apr Eft Credit Customer {i:03d} {money(amt)}Cr {money(bal)} Cr")
-    # 57 ordinary debits summing 224,652.09 (Cr-suffixed balance).
-    for i, amt in enumerate([D("3900.00")] * 56 + [D("6252.09")]):
-        bal -= amt
-        lines.append(f"1{i % 9} Apr Card Purchase Merchant {i:03d} {money(amt)} {money(bal)} Cr")
-    # 3 rows with amount + balance but NO Cr/Dr suffix — the previously-dropped rows.
+    def balance_cell(value: D) -> str:
+        # FNB prints Cr for a positive balance; overdrawn balances print without
+        # "Cr" (magnitude only) — exactly the case the parser must handle.
+        return f"{money(value)} Cr" if value >= 0 else money(value.copy_abs())
+
+    # 3 rows FIRST, pushing the account overdrawn, with amount + balance and NO
+    # Cr/Dr suffix on the (negative) balance — the previously-dropped rows.
     specials = [
         ("01 Apr Internal Debit Order Fnbfuneral Fi11941792A Ex6460", D("676.02")),
         ("01 Apr Internal Debit Order Fnbfuneral Fi11941792 Ex6462", D("696.30")),
         ("02 Apr #Excess Item Fee 2 Items On 26/04/01", D("310.00")),
     ]
     for desc, amt in specials:
+        bal -= amt  # now negative
+        lines.append(f"{desc} {money(amt)} {money(bal.copy_abs())}")
+    # 7 credits summing 226,361.00 (Cr-suffixed amount) — recover the balance.
+    for i, amt in enumerate([D("37000.00")] * 6 + [D("4361.00")]):
+        bal += amt
+        lines.append(f"0{(i % 9) + 1} Apr Eft Credit Customer {i:03d} {money(amt)}Cr {balance_cell(bal)}")
+    # 57 ordinary debits summing 224,652.09.
+    for i, amt in enumerate([D("3900.00")] * 56 + [D("6252.09")]):
         bal -= amt
-        lines.append(f"{desc} {money(amt)} {money(bal)}")
+        lines.append(f"1{i % 9} Apr Card Purchase Merchant {i:03d} {money(amt)} {balance_cell(bal)}")
     lines.append(f"Closing Balance {money(closing)}")
 
     metadata = {

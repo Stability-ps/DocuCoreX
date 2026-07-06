@@ -848,14 +848,16 @@ def parse_fnb_transaction_line(line: str, metadata: dict[str, Any], base_confide
     return transaction
 
 
-def parse_amount_balance_line(
-    line: str, metadata: dict[str, Any], previous_balance: Decimal | None
-) -> ParsedTransaction | None:
+def parse_amount_balance_line(line: str, metadata: dict[str, Any]) -> ParsedTransaction | None:
     """Capture a dated row that prints an amount AND a running balance but with NO
-    Cr/Dr suffix on the balance (e.g. some Internal Debit Order / FnbFuneral and
-    "#" fee rows). The strict parser requires the suffix and drops these, so the
-    statement loses rows and fails to reconcile. Direction is taken from the
-    running-balance MOVEMENT (down = debit, up = credit) — reliable and general."""
+    Cr/Dr suffix on the balance (e.g. Internal Debit Order / FnbFuneral and "#"
+    fee rows, often when the account is overdrawn so FNB prints the balance
+    magnitude without "Cr"). The strict parser requires the suffix and drops these.
+
+    Direction comes from the AMOUNT, never the balance magnitude: FNB marks credits
+    with "Cr" on the amount, so an unsuffixed amount is a DEBIT. A Dr balance is
+    printed as a positive number, so the running-balance value must NOT be used to
+    infer direction (that flipped the R696.30 debit into a credit)."""
     line = strip_fnb_page_artifacts(line)
     date_match = LOOSE_DATE.match(line)
     if not date_match:
@@ -870,37 +872,30 @@ def parse_amount_balance_line(
         return None
 
     debit = credit = None
-    amount_suffix = (amount_match.group("suffix") or "").lower()
-    if amount_suffix == "cr":
+    if (amount_match.group("suffix") or "").lower() == "cr":
         credit = decimal_to_float(amount.copy_abs())
-    elif previous_balance is not None:
-        movement = (balance - previous_balance).quantize(CENT)
-        if movement > 0:
-            credit = decimal_to_float(amount.copy_abs())
-        else:
-            debit = decimal_to_float(amount.copy_abs())
     else:
-        # No balance context — these unusual rows are debits (debit orders / fees).
         debit = decimal_to_float(amount.copy_abs())
+
+    # Sign the running balance: no "Cr" with a "Dr" suffix means an overdrawn
+    # (negative) balance. Direction above does not depend on this.
+    signed_balance = balance.copy_abs()
+    if (balance_match.group("suffix") or "").lower() == "dr":
+        signed_balance = -balance.copy_abs()
 
     description = line[date_match.end():amount_match.start()].strip()
     return build_transaction(
-        date_match.group("date"), description, debit, credit, decimal_to_float(balance), metadata, None, line, 84
+        date_match.group("date"), description, debit, credit, decimal_to_float(signed_balance), metadata, None, line, 84
     )
 
 
 def parse_fnb_section_transactions(full_text: str, metadata: dict[str, Any]) -> list[ParsedTransaction]:
     transactions: list[ParsedTransaction] = []
-    previous_balance: Decimal | None = (
-        decimal_amount(metadata.get("opening_balance")) if metadata.get("opening_balance") is not None else None
-    )
 
     for line in transaction_candidate_lines(full_text):
         transaction = parse_fnb_transaction_line(line, metadata)
         if transaction:
             transactions.append(transaction)
-            if transaction.running_balance is not None:
-                previous_balance = decimal_amount(transaction.running_balance)
             continue
         # Fallback: some rows (debit orders, app payments, RTC transfers) print
         # the amount without a running balance, so the strict two-token parser
@@ -911,13 +906,11 @@ def parse_fnb_section_transactions(full_text: str, metadata: dict[str, Any]) -> 
             transactions.append(fallback)
             continue
         # Fallback: a dated row with amount + running balance but NO Cr/Dr suffix
-        # (Internal Debit Order / FnbFuneral / "#" fee rows). Direction from the
-        # balance movement.
-        balance_row = parse_amount_balance_line(line, metadata, previous_balance)
+        # (Internal Debit Order / FnbFuneral / "#" fee rows, common when the
+        # account is overdrawn). Direction comes from the amount, not the balance.
+        balance_row = parse_amount_balance_line(line, metadata)
         if balance_row:
             transactions.append(balance_row)
-            if balance_row.running_balance is not None:
-                previous_balance = decimal_amount(balance_row.running_balance)
 
     return transactions
 
