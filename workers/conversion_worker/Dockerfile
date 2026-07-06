@@ -1,21 +1,18 @@
-# Preferred Render settings:
+# Render settings:
 # - Root Directory: empty / repository root
 # - Dockerfile Path: workers/conversion_worker/Dockerfile
 # - Docker Context: .
 #
-# Compatibility mode:
-# This Dockerfile also works when Render is accidentally configured with
-# Root Directory = workers/conversion_worker. In that case the Docker build
-# context cannot see package.json/pnpm-lock.yaml, so the image checks out the
-# full repository before building the worker.
+# The build uses Render's checked-out commit via the build context (COPY .), NOT
+# an in-image `git clone`. Cloning inside the image produced a constant layer that
+# Docker cached forever, so new commits (e.g. /api/ocr-text) never reached the
+# deployed build. COPY invalidates whenever any source file changes, so the build
+# always matches the checked-out commit.
 FROM node:22-bookworm-slim AS base
 
 ENV NODE_ENV=production \
     NEXT_TELEMETRY_DISABLED=1 \
     CONVERSION_WORKER_MODE=true
-
-ARG DOCUCOREX_REPO_URL=https://github.com/Stability-ps/DocuCoreX.git
-ARG DOCUCOREX_GIT_REF=main
 
 RUN apt-get update \
   && apt-get install -y --no-install-recommends \
@@ -33,7 +30,16 @@ RUN apt-get update \
 
 WORKDIR /app
 
-RUN git clone --depth 1 --branch "$DOCUCOREX_GIT_REF" "$DOCUCOREX_REPO_URL" /app
+# Copy the checked-out commit from Render's build context (no git clone).
+COPY . /app
+
+# Build provenance + a HARD guard: fail the build if the new code is not present,
+# so stale cache / wrong context can never deploy an old app silently.
+RUN echo "=== conversion-worker build provenance ===" \
+  && (git rev-parse HEAD 2>/dev/null || echo "commit: unavailable (.git not in build context)") \
+  && echo "--- app/api/ocr-text ---" \
+  && ls -la app/api/ocr-text \
+  && test -f app/api/ocr-text/route.ts
 
 RUN corepack enable \
   && corepack prepare pnpm@10.28.0 --activate \
