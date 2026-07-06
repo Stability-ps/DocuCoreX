@@ -6,6 +6,8 @@ import {
   LONG_PROCESSING_THRESHOLD_MS,
   PROCESSING_STEP_LABELS,
   PROCESSING_STEP_ORDER,
+  STALE_PROCESSING_NOTICE,
+  STALE_PROCESSING_THRESHOLD_MS,
 } from "@/lib/pdf/processingSteps";
 
 function formatElapsed(ms: number): string {
@@ -31,6 +33,7 @@ export function ProcessingSteps({ step, startedAt }: { step?: string | null; sta
   const startMs = startedAt ? new Date(startedAt).getTime() : null;
   const elapsedMs = startMs !== null && now !== null ? Math.max(0, now - startMs) : 0;
   const showLongNotice = elapsedMs >= LONG_PROCESSING_THRESHOLD_MS;
+  const showStaleNotice = elapsedMs >= STALE_PROCESSING_THRESHOLD_MS;
 
   // Current step index; default to the first step until the server reports one.
   const currentIndex = Math.max(
@@ -70,7 +73,11 @@ export function ProcessingSteps({ step, startedAt }: { step?: string | null; sta
         })}
       </ol>
 
-      {showLongNotice ? <p className="mt-2 text-[11px] font-semibold text-blue-700">{LONG_PROCESSING_NOTICE}</p> : null}
+      {showStaleNotice ? (
+        <p className="mt-2 text-[11px] font-semibold text-amber-700">{STALE_PROCESSING_NOTICE}</p>
+      ) : showLongNotice ? (
+        <p className="mt-2 text-[11px] font-semibold text-blue-700">{LONG_PROCESSING_NOTICE}</p>
+      ) : null}
     </div>
   );
 }

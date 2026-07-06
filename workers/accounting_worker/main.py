@@ -2005,7 +2005,7 @@ def statement_run_metadata(metadata: dict[str, Any]) -> dict[str, Any]:
 
 # Columns that may not exist yet if their migration has not been applied to the
 # live database. They are dropped (with a warning) rather than failing the job.
-OPTIONAL_RUN_COLUMNS = ("statement_date",)
+OPTIONAL_RUN_COLUMNS = ("statement_date", "processing_step")
 
 
 def is_missing_column_error(message: str) -> bool:
@@ -2031,6 +2031,36 @@ def update_statement_run(supabase: Client, run_id: str, workspace_id: str, field
         safe_fields = {key: value for key, value in fields.items() if key not in OPTIONAL_RUN_COLUMNS}
         log_warning("worker.run_update_dropped_optional_columns", run_id=run_id, dropped=droppable, error=str(exc))
         supabase.table("accounting_statement_runs").update(safe_fields).eq("id", run_id).eq("workspace_id", workspace_id).execute()
+
+
+def heartbeat_step(
+    supabase: Client,
+    *,
+    run_id: str,
+    workspace_id: str,
+    processing_job_id: str | None,
+    step_label: str,
+    progress: int,
+) -> None:
+    now_iso = datetime.utcnow().isoformat()
+    update_statement_run(
+        supabase,
+        run_id,
+        workspace_id,
+        {
+            "processing_step": step_label,
+            "updated_at": now_iso,
+        },
+    )
+    if processing_job_id:
+        supabase.table("processing_jobs").update(
+            {
+                "status": "running",
+                "progress": progress,
+                "message": step_label,
+                "updated_at": now_iso,
+            }
+        ).eq("id", processing_job_id).execute()
 
 
 def review_reason(transaction: ParsedTransaction) -> str:
@@ -3386,8 +3416,24 @@ def process_fnb_statement(payload: ProcessRequest, authorization: str | None = H
     )
 
     try:
+        heartbeat_step(
+            supabase,
+            run_id=payload.run_id,
+            workspace_id=payload.workspace_id,
+            processing_job_id=payload.processing_job_id,
+            step_label="Detecting PDF type",
+            progress=20,
+        )
         pdf_bytes = supabase.storage.from_(bucket).download(payload.storage_path)
         log_event("worker.storage_downloaded", run_id=payload.run_id, bytes=len(pdf_bytes or b""))
+        heartbeat_step(
+            supabase,
+            run_id=payload.run_id,
+            workspace_id=payload.workspace_id,
+            processing_job_id=payload.processing_job_id,
+            step_label="Running OCR",
+            progress=45,
+        )
         pages = extract_statement_text(pdf_bytes) or []
         native_text = "\n".join((page.get("text") or "") for page in pages)
         # Prefer the Node pipeline's best extraction when it is meaningfully long;
@@ -3459,6 +3505,14 @@ def process_fnb_statement(payload: ProcessRequest, authorization: str | None = H
             service_fee_candidate_samples=service_fee_candidates[:6],
             parser_version=parser_version,
         )
+        heartbeat_step(
+            supabase,
+            run_id=payload.run_id,
+            workspace_id=payload.workspace_id,
+            processing_job_id=payload.processing_job_id,
+            step_label="Parsing transactions",
+            progress=70,
+        )
         transactions = parse_transactions(pages, metadata, full_text) or []
         classification_rules = fetch_classification_rules(supabase, payload.workspace_id) or []
         learned_rules_applied = apply_learned_classification_rules(transactions, classification_rules)
@@ -3513,6 +3567,14 @@ def process_fnb_statement(payload: ProcessRequest, authorization: str | None = H
 
         validation: dict[str, Any] | None = None
         review_issue: dict[str, Any] | None = None
+        heartbeat_step(
+            supabase,
+            run_id=payload.run_id,
+            workspace_id=payload.workspace_id,
+            processing_job_id=payload.processing_job_id,
+            step_label="Reconciling",
+            progress=90,
+        )
         try:
             validation_started = time.perf_counter()
             validation = validate_statement(metadata, transactions)
@@ -3539,6 +3601,29 @@ def process_fnb_statement(payload: ProcessRequest, authorization: str | None = H
                 if transaction.review_status == "ready":
                     transaction.review_status = "needs_review"
 
+        run_state = (
+            supabase.table("accounting_statement_runs")
+            .select("status")
+            .eq("id", payload.run_id)
+            .eq("workspace_id", payload.workspace_id)
+            .maybe_single()
+            .execute()
+        )
+        if (run_state.data or {}).get("status") == "cancelled":
+            log_warning("worker.run_cancelled_before_write", run_id=payload.run_id)
+            return {
+                "status": "cancelled",
+                "transactions": 0,
+                "workbook_storage_path": None,
+                "confidence": 0,
+                "validation": None,
+                "review_issue": None,
+                "ai_diagnostics": ai_diagnostics(enabled=False),
+                "parser_profile": parser_profile,
+                "processing_duration_ms": round((time.perf_counter() - process_started) * 1000, 2),
+                "worker": worker_version(),
+            }
+
         supabase.table("accounting_transactions").delete().eq("run_id", payload.run_id).execute()
         rows = [transaction_insert_row(transaction, payload.run_id, payload.workspace_id) for transaction in transactions]
         supabase.table("accounting_transactions").insert(rows).execute()
@@ -3548,6 +3633,14 @@ def process_fnb_statement(payload: ProcessRequest, authorization: str | None = H
         # fee summary, not from cash-deposit amounts.
         extraction_check = validate_extraction(metadata, transactions)
         extraction_incomplete = extraction_check["status"] != "ok"
+        heartbeat_step(
+            supabase,
+            run_id=payload.run_id,
+            workspace_id=payload.workspace_id,
+            processing_job_id=payload.processing_job_id,
+            step_label="Generating workbook",
+            progress=97,
+        )
         workbook_bytes = build_workbook(
             metadata,
             transactions,

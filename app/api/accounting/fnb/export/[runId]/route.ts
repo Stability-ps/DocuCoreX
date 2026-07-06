@@ -22,8 +22,11 @@ function pickSections(all: ExportSection[], ids: ExportSectionId[]): ExportSecti
   return ids.map((id) => byId.get(id)).filter((s): s is ExportSection => Boolean(s));
 }
 
-function finalExportBlocked(detail: Awaited<ReturnType<typeof getAccountingRunDetail>>) {
-  return Boolean(detail?.run.requiresReview || detail?.run.validationStatus === "review_required" || detail?.run.status === "review");
+function exportHardBlocked(detail: Awaited<ReturnType<typeof getAccountingRunDetail>>) {
+  if (!detail) return true;
+  const status = (detail.run.status || "").toLowerCase();
+  if (status === "queued" || status === "processing" || status === "pending") return true;
+  return (detail.transactions?.length ?? 0) === 0;
 }
 
 export async function GET(request: Request, { params }: { params: Promise<{ runId: string }> }) {
@@ -40,9 +43,9 @@ export async function GET(request: Request, { params }: { params: Promise<{ runI
     if (!detail) {
       return NextResponse.json({ error: "Accounting run not found." }, { status: 404 });
     }
-    if (section === "all" && finalExportBlocked(detail)) {
+    if (exportHardBlocked(detail)) {
       return NextResponse.json(
-        { error: "Final export is blocked until reconciliation and transaction-count review items are resolved. Download individual sections for draft review." },
+        { error: "Export is blocked while processing is running or when no transactions were extracted yet." },
         { status: 409 },
       );
     }

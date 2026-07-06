@@ -74,15 +74,12 @@ export async function POST(request: Request) {
   if (invalidStatus) {
     return NextResponse.json({ error: "Only completed or review-ready statements can be combined." }, { status: 422 });
   }
-  const reviewBlocked = validDetails.some(
-    (detail) => detail.run.requiresReview || detail.run.validationStatus === "review_required" || detail.run.status === "review",
-  );
-  if (reviewBlocked) {
+  const emptyStatements = validDetails.filter((detail) => (detail.transactions?.length ?? 0) === 0);
+  if (emptyStatements.length) {
     return NextResponse.json(
       {
-        error:
-          "Final combined export is blocked until every selected statement reconciles and clears transaction-count review items. Resolve review-required statements first.",
-        status: "review_required",
+        error: "Combined export is blocked when one or more selected statements have zero extracted transactions.",
+        status: "empty_statement",
       },
       { status: 409 },
     );

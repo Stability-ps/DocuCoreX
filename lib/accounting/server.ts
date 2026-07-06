@@ -14,6 +14,8 @@ import type {
 import type { AccountingActionAuditInput, ReviewQueueItem, ReviewQueueStatus } from "@/lib/accounting/engine/types";
 
 const accountingMaxUploadBytes = 200 * 1024 * 1024;
+const PROCESSING_HEARTBEAT_STALE_MS = 10 * 60 * 1000;
+const PROCESSING_TIMEOUT_MS = 30 * 60 * 1000;
 
 type AccountingRunRow = {
   id: string;
@@ -148,6 +150,70 @@ function mapRun(row: AccountingRunRow): AccountingStatementRun {
     error: row.error,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
+  };
+}
+
+function isProcessingLikeStatus(status: string | null | undefined) {
+  return status === "processing" || status === "queued";
+}
+
+function processingStuckReason(row: Pick<AccountingRunRow, "processing_started_at" | "updated_at">): string | null {
+  const now = Date.now();
+  const startedAtMs = Date.parse(row.processing_started_at || "") || Date.parse(row.updated_at || "");
+  const updatedAtMs = Date.parse(row.updated_at || "");
+  if (!Number.isFinite(startedAtMs) || !Number.isFinite(updatedAtMs)) return null;
+
+  const elapsedSinceStartMs = now - startedAtMs;
+  if (elapsedSinceStartMs >= PROCESSING_TIMEOUT_MS) {
+    const minutes = Math.max(1, Math.round(elapsedSinceStartMs / 60_000));
+    return `Processing timed out after ${minutes} minutes. Marked as stuck — retry or force reprocess.`;
+  }
+
+  const elapsedSinceHeartbeatMs = now - updatedAtMs;
+  if (elapsedSinceHeartbeatMs >= PROCESSING_HEARTBEAT_STALE_MS) {
+    const minutes = Math.max(1, Math.round(elapsedSinceHeartbeatMs / 60_000));
+    return `Processing stale — no heartbeat update for ${minutes} minutes. Marked as stuck — retry or force reprocess.`;
+  }
+  return null;
+}
+
+async function markRunStuckIfNeeded(context: NonNullable<Awaited<ReturnType<typeof getWorkspaceContext>>>, row: AccountingRunRow): Promise<AccountingRunRow> {
+  if (!isProcessingLikeStatus(row.status)) return row;
+  const reason = processingStuckReason(row);
+  if (!reason) return row;
+
+  const nowIso = new Date().toISOString();
+  const { error } = await context.supabase
+    .from("accounting_statement_runs")
+    .update({
+      status: "failed",
+      error: reason,
+      processing_step: "Stuck / Needs retry",
+      updated_at: nowIso,
+    })
+    .eq("workspace_id", context.workspaceId)
+    .eq("id", row.id);
+  if (error) return row;
+
+  if (row.processing_job_id) {
+    await context.supabase
+      .from("processing_jobs")
+      .update({
+        status: "failed",
+        progress: 100,
+        message: reason,
+        error: reason,
+        updated_at: nowIso,
+      })
+      .eq("id", row.processing_job_id);
+  }
+
+  return {
+    ...row,
+    status: "failed",
+    error: reason,
+    processing_step: "Stuck / Needs retry",
+    updated_at: nowIso,
   };
 }
 
@@ -362,7 +428,8 @@ export async function listAccountingRuns() {
     throw new Error(error.message);
   }
 
-  return ((data ?? []) as AccountingRunRow[]).map(mapRun);
+  const healed = await Promise.all(((data ?? []) as AccountingRunRow[]).map((row) => markRunStuckIfNeeded(context, row)));
+  return healed.map(mapRun);
 }
 
 export async function getAccountingRunDetail(runId: string): Promise<AccountingRunDetail | null> {
@@ -379,6 +446,7 @@ export async function getAccountingRunDetail(runId: string): Promise<AccountingR
   if (runError || !run) {
     return null;
   }
+  const healedRun = await markRunStuckIfNeeded(context, run as AccountingRunRow);
 
   const { data: transactions, error: transactionError } = await context.supabase
     .from("accounting_transactions")
@@ -393,9 +461,38 @@ export async function getAccountingRunDetail(runId: string): Promise<AccountingR
   }
 
   return {
-    run: mapRun(run as AccountingRunRow),
+    run: mapRun(healedRun),
     transactions: ((transactions ?? []) as AccountingTransactionRow[]).map(mapTransaction),
   };
+}
+
+export async function repairStuckAccountingRuns(options?: { runId?: string }) {
+  const context = await getWorkspaceContext();
+  if (!context) {
+    throw new Error("Unauthorized");
+  }
+
+  let query = context.supabase
+    .from("accounting_statement_runs")
+    .select("*")
+    .eq("workspace_id", context.workspaceId)
+    .in("status", ["queued", "processing"]);
+  if (options?.runId) {
+    query = query.eq("id", options.runId);
+  }
+  const { data, error } = await query;
+  if (error) {
+    throw new Error(error.message);
+  }
+
+  const rows = (data ?? []) as AccountingRunRow[];
+  const repaired: string[] = [];
+  for (const row of rows) {
+    const next = await markRunStuckIfNeeded(context, row);
+    if (next.status === "failed" && row.status !== "failed") repaired.push(row.id);
+  }
+
+  return { checked: rows.length, repairedRunIds: repaired };
 }
 
 export async function deleteAccountingRuns(runIds: string[]) {

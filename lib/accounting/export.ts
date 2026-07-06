@@ -220,6 +220,17 @@ export function buildExportSections(detail: AccountingRunDetail, resolvedCompany
   const meta = buildStatementMetadata(detail, resolvedCompany);
   const txns = detail.transactions;
   const run = detail.run;
+  const missingTransactionCount = Math.max(0, Number(run.missingTransactionCount ?? 0) || 0);
+  const lowConfidenceCount = txns.filter((t) => t.confidence < 80).length;
+  const draftNeedsReview = Boolean(
+    !meta.reconciled ||
+      meta.reviewCount > 0 ||
+      missingTransactionCount > 0 ||
+      run.requiresReview ||
+      run.validationStatus === "review_required" ||
+      run.status === "review",
+  );
+  const exportStatusLabel = draftNeedsReview ? "Draft / Needs Review" : "Final Export";
 
   // ONE canonical accounting model — every ledger-based sheet consumes this.
   const model = buildAccountingModel(detail);
@@ -232,9 +243,9 @@ export function buildExportSections(detail: AccountingRunDetail, resolvedCompany
 
   // When the statement does not reconcile, extraction is incomplete and every
   // derived statement must be watermarked as unreliable — never silently shown.
-  const unreliableBanner: Cell[] | null = meta.reconciled
-    ? null
-    : [WARN("REVIEW REQUIRED — the statement does not reconcile, so figures may be incomplete. Do not use for filing until resolved. See Executive Summary.")];
+  const unreliableBanner: Cell[] | null = draftNeedsReview
+    ? [WARN("REVIEW REQUIRED — statement does not reconcile or still contains unreviewed items. Exported as draft for manual corrections; do not file as final.")]
+    : null;
 
   // Status badge: Complete / Review Required / Unable to Verify.
   const dataQualityStatus = meta.reconciled ? "Complete" : meta.closingBalance === 0 && meta.openingBalance === 0 ? "Unable to Verify" : "Review Required";
@@ -248,9 +259,9 @@ export function buildExportSections(detail: AccountingRunDetail, resolvedCompany
     rows: [
       [TITLE(meta.title)],
       [],
-      meta.reconciled
-        ? [GOOD("Status: Complete — the statement reconciles.")]
-        : [WARN(`Status: Review Required — reconciliation difference of R${Math.abs(meta.reconciliationDifference).toFixed(2)}. See Executive Summary.`)],
+      draftNeedsReview
+        ? [WARN(`Status: Draft / Needs Review — reconciliation difference of R${Math.abs(meta.reconciliationDifference).toFixed(2)}. See Executive Summary.`)]
+        : [GOOD("Status: Final Export — reconciliation and review checks are clear.")],
       [],
       [B("Company / account holder"), S(meta.company || "Not detected")],
       [B("Bank"), S(meta.bank)],
@@ -262,6 +273,9 @@ export function buildExportSections(detail: AccountingRunDetail, resolvedCompany
       [B("Total payments"), M(meta.totalPayments)],
       [B("Transactions processed"), INT(meta.transactionCount)],
       [B("Items requiring review"), INT(meta.reviewCount)],
+      [B("Missing transaction count warning"), missingTransactionCount > 0 ? WARN(String(missingTransactionCount)) : GOOD("0")],
+      [B("Low-certainty categorisation"), lowConfidenceCount > 0 ? WARN(String(lowConfidenceCount)) : GOOD("0")],
+      [B("Export status"), draftNeedsReview ? WARN(exportStatusLabel) : GOOD(exportStatusLabel)],
       [B("Prepared"), S(new Date().toISOString().slice(0, 10))],
       [],
       [MUTE(DISCLAIMER)],
@@ -283,7 +297,10 @@ export function buildExportSections(detail: AccountingRunDetail, resolvedCompany
       [S("Bank"), S(meta.bank)],
       [S("Account number"), S(meta.accountNumber)],
       [S("Transactions processed"), INT(meta.transactionCount)],
-      [S("Reconciliation status"), meta.reconciled ? GOOD("Reconciled") : WARN("Review Required")],
+      [S("Reconciliation status"), meta.reconciled ? GOOD("Reconciled") : WARN("Needs Review")],
+      [S("Export status"), draftNeedsReview ? WARN("Draft / Needs Review") : GOOD("Final Export")],
+      [S("Missing transaction count warning"), missingTransactionCount > 0 ? WARN(String(missingTransactionCount)) : GOOD("0")],
+      [S("Low-certainty categorisation"), lowConfidenceCount > 0 ? WARN(String(lowConfidenceCount)) : GOOD("0")],
       [],
       [B("Income (receipts)"), MT(meta.totalReceipts)],
       [B("Expenses (payments)"), MT(meta.totalPayments)],
@@ -299,7 +316,12 @@ export function buildExportSections(detail: AccountingRunDetail, resolvedCompany
       [],
       [B("Items requiring review"), meta.reviewCount === 0 ? GOOD("0") : WARN(String(meta.reviewCount))],
       [B("Data quality status"), statusCell],
-      ...(meta.reconciled ? [] : [[MUTE(`Reconciliation difference of R${Math.abs(meta.reconciliationDifference).toFixed(2)} — resolve before relying on the financial statements.`)]]),
+      ...(draftNeedsReview
+        ? [
+            [WARN("DRAFT / NEEDS REVIEW — this workbook includes unreconciled or unreviewed items. Export is allowed for manual correction in Excel.")],
+            [MUTE(`Reconciliation difference of R${Math.abs(meta.reconciliationDifference).toFixed(2)} — statement does not reconcile; resolve before relying on the financial statements.`)],
+          ]
+        : []),
     ],
   });
 
