@@ -557,6 +557,17 @@ export function AccountingIntelligence() {
     if (statuses.every((status) => status === "failed")) return "Retry";
     return "Process";
   }, [busy, runById, selectedRunIds]);
+  const selectedRuns = useMemo(
+    () => selectedRunIds.map((runId) => runById.get(runId)).filter((run): run is AccountingStatementRun => Boolean(run)),
+    [runById, selectedRunIds],
+  );
+  const fullPackBlockedReason = useMemo(() => {
+    if (!selectedRuns.length) return "";
+    const blocked = selectedRuns.some(
+      (run) => run.requiresReview || run.validationStatus === "review_required" || run.status === "review",
+    );
+    return blocked ? "Resolve reconciliation and transaction-count review items before final export." : "";
+  }, [selectedRuns]);
   async function loadRuns(preferredRunId?: string) {
     await refreshAccountingData(preferredRunId);
   }
@@ -743,7 +754,10 @@ export function AccountingIntelligence() {
   }
 
   async function createCombinedWorkbookWithPrecheck() {
-    const selectedRuns = runs.filter((run) => selectedRunIds.includes(run.id));
+    if (fullPackBlockedReason) {
+      setError(fullPackBlockedReason);
+      return;
+    }
     const keys = new Set(selectedRuns.map(runAccountKey));
     if (keys.size > 1) {
       setOverrideType("account");
@@ -1653,6 +1667,7 @@ export function AccountingIntelligence() {
         <ExportOptionsModal
           runIds={selectedRunIds}
           combinedLabel="Combined Full Pack"
+          fullPackBlockedReason={fullPackBlockedReason}
           onClose={() => setShowExportModal(false)}
           onCombined={() => void createCombinedWorkbookWithPrecheck()}
         />
@@ -1756,11 +1771,13 @@ function ExportDropdown({
 function ExportOptionsModal({
   runIds,
   combinedLabel,
+  fullPackBlockedReason,
   onClose,
   onCombined,
 }: {
   runIds: string[];
   combinedLabel: string;
+  fullPackBlockedReason?: string;
   onClose: () => void;
   onCombined: () => void;
 }) {
@@ -1784,6 +1801,7 @@ function ExportOptionsModal({
 
         <button
           type="button"
+          disabled={Boolean(fullPackBlockedReason)}
           onClick={() => {
             if (multiple) {
               onCombined();
@@ -1792,11 +1810,13 @@ function ExportOptionsModal({
             }
             onClose();
           }}
-          className="mt-4 flex w-full items-center justify-between gap-3 rounded-xl border border-royal-200 bg-royal-50 px-4 py-3 text-left hover:bg-royal-100"
+          className="mt-4 flex w-full items-center justify-between gap-3 rounded-xl border border-royal-200 bg-royal-50 px-4 py-3 text-left hover:bg-royal-100 disabled:cursor-not-allowed disabled:border-amber-200 disabled:bg-amber-50"
         >
           <span>
             <span className="block text-sm font-bold text-royal-800">{multiple ? combinedLabel : "Full Accounting Pack"}</span>
-            <span className="mt-0.5 block text-xs font-semibold text-royal-600">Every section in one Excel workbook · XLSX</span>
+            <span className="mt-0.5 block text-xs font-semibold text-royal-600">
+              {fullPackBlockedReason || "Every section in one Excel workbook · XLSX"}
+            </span>
           </span>
           <ArrowDownToLine className="h-5 w-5 shrink-0 text-royal-600" />
         </button>

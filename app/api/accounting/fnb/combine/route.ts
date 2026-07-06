@@ -74,6 +74,19 @@ export async function POST(request: Request) {
   if (invalidStatus) {
     return NextResponse.json({ error: "Only completed or review-ready statements can be combined." }, { status: 422 });
   }
+  const reviewBlocked = validDetails.some(
+    (detail) => detail.run.requiresReview || detail.run.validationStatus === "review_required" || detail.run.status === "review",
+  );
+  if (reviewBlocked) {
+    return NextResponse.json(
+      {
+        error:
+          "Final combined export is blocked until every selected statement reconciles and clears transaction-count review items. Resolve review-required statements first.",
+        status: "review_required",
+      },
+      { status: 409 },
+    );
+  }
 
   if (!body.combineDifferentAccounts) {
     const keys = new Set(validDetails.map(sameAccountKey));

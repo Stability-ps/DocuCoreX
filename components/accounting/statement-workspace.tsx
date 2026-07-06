@@ -239,6 +239,7 @@ export function StatementWorkspace({ statementId }: { statementId: string }) {
   }
 
   const dataQuality = totals.reconciled ? "Complete" : totals.opening === 0 && totals.closing === 0 ? "Unable to Verify" : "Review Required";
+  const fullPackBlocked = Boolean(run.requiresReview || run.validationStatus === "review_required" || run.status === "review");
 
   return (
     <div className="px-4 py-4 sm:px-6 lg:px-8">
@@ -308,16 +309,32 @@ export function StatementWorkspace({ statementId }: { statementId: string }) {
               {exportOpen ? (
                 <div className="absolute right-0 z-20 mt-1 w-60 rounded-xl border border-slate-200 bg-white p-1 shadow-lg">
                   {EXPORT_OPTIONS.map((option, index) => (
-                    <a
-                      key={option.section}
-                      href={`/api/accounting/fnb/export/${statementId}?section=${option.section}`}
-                      onClick={() => setExportOpen(false)}
-                      className={`block rounded-lg px-3 py-2 text-sm font-bold text-slate-700 hover:bg-royal-50 hover:text-royal-700 ${
-                        index === 0 ? "border-b border-slate-100" : ""
-                      }`}
-                    >
-                      {option.label}
-                    </a>
+                    option.section === "all" && fullPackBlocked ? (
+                      <button
+                        key={option.section}
+                        type="button"
+                        disabled
+                        className={`block w-full rounded-lg px-3 py-2 text-left text-sm font-bold text-slate-300 ${
+                          index === 0 ? "border-b border-slate-100" : ""
+                        }`}
+                      >
+                        {option.label}
+                        <span className="mt-1 block text-[11px] font-semibold text-amber-700">
+                          Resolve reconciliation and count review items before final export.
+                        </span>
+                      </button>
+                    ) : (
+                      <a
+                        key={option.section}
+                        href={`/api/accounting/fnb/export/${statementId}?section=${option.section}`}
+                        onClick={() => setExportOpen(false)}
+                        className={`block rounded-lg px-3 py-2 text-sm font-bold text-slate-700 hover:bg-royal-50 hover:text-royal-700 ${
+                          index === 0 ? "border-b border-slate-100" : ""
+                        }`}
+                      >
+                        {option.label}
+                      </a>
+                    )
                   ))}
                 </div>
               ) : null}

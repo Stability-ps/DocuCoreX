@@ -256,9 +256,25 @@ test("export route serves the full pack and every individual export", () => {
   assert.match(route, /SECTION_BY_KEY/, "route resolves each export key to a section");
 });
 
+test("final full-pack export is blocked until review-required statements are resolved", () => {
+  const route = read("app/api/accounting/fnb/export/[runId]/route.ts");
+  assert.match(route, /Final export is blocked until reconciliation and transaction-count review items are resolved/, "single-statement full pack must be blocked");
+  const combine = read("app/api/accounting/fnb/combine/route.ts");
+  assert.match(combine, /Final combined export is blocked until every selected statement reconciles/, "combined full pack must also be blocked");
+});
+
 test("accounting UI has a sticky action bar and an export selector modal", () => {
   const ui = read("components/accounting/accounting-intelligence.tsx");
   assert.match(ui, /sticky top-2 z-40/, "selected-run action bar must be sticky");
   assert.match(ui, /function ExportOptionsModal/, "export selector modal must exist");
   assert.match(ui, /Full Accounting Pack/, "modal must offer the full pack");
+});
+
+test("export UI disables final-pack actions while reconciliation or count review is outstanding", () => {
+  const workspace = read("components/accounting/statement-workspace.tsx");
+  assert.match(workspace, /const fullPackBlocked = Boolean\(run\.requiresReview \|\| run\.validationStatus === "review_required" \|\| run\.status === "review"\)/);
+  assert.match(workspace, /Resolve reconciliation and count review items before final export\./);
+  const ui = read("components/accounting/accounting-intelligence.tsx");
+  assert.match(ui, /const fullPackBlockedReason = useMemo/);
+  assert.match(ui, /Resolve reconciliation and transaction-count review items before final export\./);
 });
