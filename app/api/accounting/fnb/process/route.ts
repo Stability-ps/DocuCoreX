@@ -177,6 +177,41 @@ function getWorkerError(result: WorkerResponseBody, responseText: string, status
   return `Accounting worker returned HTTP ${status} without an error body. Check Render worker logs for this run.`;
 }
 
+function asRecord(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : null;
+}
+
+function describeWorkerVersion(worker: unknown) {
+  const record = asRecord(worker);
+  if (!record) return null;
+  const service = typeof record.service === "string" ? record.service : null;
+  const commit = typeof record.commit === "string" ? record.commit : null;
+  const serviceId = typeof record.render_service_id === "string" ? record.render_service_id : null;
+  if (!service && !commit && !serviceId) return null;
+  return { service, commit, serviceId };
+}
+
+function normalizeWorkerFailure(input: {
+  status: number;
+  message: string;
+  workerUrl: string;
+  workerEndpoint: string;
+  worker: unknown;
+}) {
+  const detail = input.message.trim();
+  const isNotFound = input.status === 404 && (detail === "Not Found" || detail.toLowerCase() === "not found");
+  const workerMeta = describeWorkerVersion(input.worker);
+  const workerMetaSuffix = workerMeta
+    ? ` Worker reported service=${workerMeta.service ?? "unknown"} commit=${workerMeta.commit ?? "unknown"} service_id=${workerMeta.serviceId ?? "unknown"}.`
+    : "";
+
+  if (isNotFound) {
+    return `Accounting worker endpoint not found at ${input.workerEndpoint}. ACCOUNTING_WORKER_URL is misconfigured (current: ${input.workerUrl}).${workerMetaSuffix}`;
+  }
+
+  return `${detail || `Accounting worker returned HTTP ${input.status}.`} (endpoint: ${input.workerEndpoint}).${workerMetaSuffix}`;
+}
+
 const ACCOUNTING_WORKER_TIMEOUT_MS = 120_000;
 
 // Allow the background work (after the response is sent) to run beyond the default
@@ -329,6 +364,13 @@ async function processStatementInBackground(context: WorkspaceContext, detail: A
 
     if (!response.ok) {
       let error = getWorkerError(result, responseText, response.status);
+      error = normalizeWorkerFailure({
+        status: response.status,
+        message: error,
+        workerUrl,
+        workerEndpoint,
+        worker: result.worker ?? asRecord(result.detail)?.worker ?? null,
+      });
       // Do not hide the real reason behind "No FNB transactions could be parsed."
       if (pipelineDebug?.reasonNoTransactions && /no fnb transactions|no transactions could be parsed/i.test(error)) {
         error = pipelineDebug.reasonNoTransactions;
@@ -393,7 +435,24 @@ export async function POST(request: Request) {
     const nowIso = new Date().toISOString();
     const { error: markError } = await context.supabase
       .from("accounting_statement_runs")
-      .update({ status: "processing", error: null, processing_step: PROCESSING_STEP_LABELS.detecting, processing_started_at: nowIso, updated_at: nowIso })
+      .update({
+        status: "processing",
+        error: null,
+        parser_method: null,
+        extraction_confidence: null,
+        detected_pdf_type: null,
+        ocr_used: null,
+        route_reason: null,
+        extraction_warnings: [],
+        validation_status: null,
+        reconciliation_difference: null,
+        missing_transaction_count: null,
+        requires_review: null,
+        parser_debug: null,
+        processing_step: PROCESSING_STEP_LABELS.detecting,
+        processing_started_at: nowIso,
+        updated_at: nowIso,
+      })
       .eq("workspace_id", context.workspaceId)
       .eq("id", runId);
     if (markError) {
