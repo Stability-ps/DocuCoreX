@@ -68,7 +68,7 @@ import type { AiCommentaryResult, AiCommentaryType } from "@/lib/accounting/ai-s
 
 type AccountingTab = "transactions" | "review" | "difference" | "summary" | "bank-rec" | "vat" | "general-ledger" | "trial-balance";
 type AccountingModule = "bank-statements" | "financial-statements" | "tax-vat" | "ai-intelligence" | "forecasting" | "audit-tools";
-type UploadQueueStatus = "Queued" | "Uploading" | "Uploaded" | "Processing" | "Completed" | "Review Required" | "Failed";
+type UploadQueueStatus = "Queued" | "Uploading" | "Uploaded" | "Processing" | "Ready" | "Review Required" | "Failed";
 type UploadQueueItem = {
   id: string;
   name: string;
@@ -203,7 +203,7 @@ function processLabelForRunStatus(status: AccountingStatementRun["status"]) {
 function queueStatusFromRunStatus(status: AccountingStatementRun["status"]): UploadQueueStatus {
   if (status === "queued") return "Queued";
   if (status === "processing") return "Processing";
-  if (status === "completed") return "Completed";
+  if (status === "completed") return "Ready";
   if (status === "review") return "Review Required";
   if (status === "failed" || status === "cancelled") return "Failed";
   return "Queued";
@@ -366,6 +366,7 @@ type CombineOverrideType = "account" | "continuity";
 
 export function AccountingIntelligence() {
   const inputRef = useRef<HTMLInputElement>(null);
+  const autoProcessedRef = useRef<Set<string>>(new Set());
   const [runs, setRuns] = useState<AccountingStatementRun[]>([]);
   const [uploadQueue, setUploadQueue] = useState<UploadQueueItem[]>([]);
   const [selectedRunIds, setSelectedRunIds] = useState<string[]>([]);
@@ -389,6 +390,24 @@ export function AccountingIntelligence() {
   const [deleteTargetIds, setDeleteTargetIds] = useState<string[]>([]);
   const selectedRun = useMemo(() => runs.find((run) => run.id === selectedRunId) ?? null, [runs, selectedRunId]);
   const runById = useMemo(() => new Map(runs.map((run) => [run.id, run])), [runs]);
+
+  // Keep upload-queue rows in sync with the DB run status (source of truth), so
+  // processing state survives refreshes and reflects server progress.
+  useEffect(() => {
+    setUploadQueue((queue) => {
+      let changed = false;
+      const next = queue.map((item) => {
+        if (!item.runId) return item;
+        const run = runById.get(item.runId);
+        if (!run) return item;
+        const mapped = queueStatusFromRunStatus(run.status);
+        if (item.status === mapped) return item;
+        changed = true;
+        return { ...item, status: mapped };
+      });
+      return changed ? next : queue;
+    });
+  }, [runById]);
   const processableRunIds = useMemo(() => runs.filter((run) => canProcessRunStatus(run.status)).map((run) => run.id), [runs]);
   const selectedProcessableRunIds = useMemo(
     () => selectedRunIds.filter((runId) => canProcessRunStatus(runById.get(runId)?.status ?? "queued")),
@@ -462,8 +481,20 @@ export function AccountingIntelligence() {
         setUploadQueue((queue) =>
           queue.map((queuedItem) => (queuedItem.id === item.id ? { ...queuedItem, status: "Uploaded", runId: run.id, file: undefined } : queuedItem)),
         );
+        // Processing starts automatically after upload — no manual Process click.
+        void autoProcess(run.id, item.id);
       }
     }
+  }
+
+  // Kick off extraction automatically once a statement is uploaded. Guarded so a
+  // run is only auto-processed once (no duplicate jobs), and only while it is
+  // still queued (the server also rejects a second in-flight job).
+  async function autoProcess(runId: string, queueItemId: string) {
+    if (autoProcessedRef.current.has(runId)) return;
+    autoProcessedRef.current.add(runId);
+    setUploadQueue((queue) => queue.map((item) => (item.id === queueItemId ? { ...item, status: "Processing", error: undefined } : item)));
+    await processRun(runId, { manageBusy: false, refreshAfter: true }).catch(() => undefined);
   }
 
   async function uploadFile(file: File, queueItemId?: string) {
@@ -647,7 +678,7 @@ export function AccountingIntelligence() {
     }
   }
 
-  async function processRun(runId: string, options?: { manageBusy?: boolean; refreshAfter?: boolean }) {
+  async function processRun(runId: string, options?: { manageBusy?: boolean; refreshAfter?: boolean; reprocess?: boolean }) {
     const manageBusy = options?.manageBusy ?? true;
     const refreshAfter = options?.refreshAfter ?? true;
 
@@ -660,7 +691,7 @@ export function AccountingIntelligence() {
       const response = await fetch("/api/accounting/fnb/process", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ runId }),
+        body: JSON.stringify({ runId, reprocess: options?.reprocess ?? false }),
       });
       const data = (await response.json().catch(() => ({}))) as {
         error?: string;
@@ -1016,10 +1047,10 @@ export function AccountingIntelligence() {
           </button>
           <button
             type="button"
-            disabled={!uploadQueue.some((item) => item.status === "Completed")}
+            disabled={!uploadQueue.some((item) => item.status === "Ready" || item.status === "Review Required")}
             onClick={() => {
-              setUploadQueue((queue) => queue.filter((item) => item.status !== "Completed"));
-              setMessage("Completed queue items cleared.");
+              setUploadQueue((queue) => queue.filter((item) => item.status !== "Ready" && item.status !== "Review Required"));
+              setMessage("Finished queue items cleared.");
             }}
             className="inline-flex min-h-10 items-center justify-center rounded-lg border border-slate-200 bg-white px-3 text-xs font-black text-slate-700 disabled:text-slate-300"
           >
@@ -1078,16 +1109,26 @@ export function AccountingIntelligence() {
               <div key={item.id} className="relative box-border h-auto w-full rounded-lg border border-slate-200 bg-slate-50 p-3">
                 <div className="grid grid-cols-[minmax(0,1fr)_auto] items-start gap-2">
                   <div className="min-w-0">
-                    <p className="truncate text-sm font-black text-navy-950" title={item.name}>
-                      {item.name}
-                    </p>
-                    <p className="mt-0.5 text-xs font-semibold text-slate-500">{fileSize(item.size)}</p>
+                    {(() => {
+                      // Show the extracted statement name once its date is known;
+                      // before then show the file name (never a guessed month).
+                      const run = item.runId ? runById.get(item.runId) : null;
+                      const named = run && statementReferenceDate(run) ? statementDisplayName(run) : null;
+                      return (
+                        <>
+                          <p className="truncate text-sm font-black text-navy-950" title={named ?? item.name}>
+                            {named ?? item.name}
+                          </p>
+                          <p className="mt-0.5 truncate text-xs font-semibold text-slate-500">{named ? `${item.name} · ${fileSize(item.size)}` : fileSize(item.size)}</p>
+                        </>
+                      );
+                    })()}
                   </div>
                   <span
                     className={`max-w-full shrink-0 whitespace-nowrap rounded-full px-2 py-1 text-[11px] font-black ${
                       item.status === "Failed"
                         ? "bg-rose-50 text-rose-700"
-                        : item.status === "Uploaded" || item.status === "Completed"
+                        : item.status === "Uploaded" || item.status === "Ready"
                           ? "bg-emerald-50 text-emerald-700"
                           : item.status === "Review Required"
                             ? "bg-amber-50 text-amber-700"
@@ -1102,8 +1143,9 @@ export function AccountingIntelligence() {
                     <div className="h-full w-2/3 animate-pulse rounded-full bg-royal-500" />
                   </div>
                 ) : null}
-                {item.status === "Uploaded" ? <p className="mt-2 break-words text-xs font-semibold text-slate-600">Uploaded and ready to process.</p> : null}
-                {item.status === "Completed" ? <p className="mt-2 break-words text-xs font-semibold text-emerald-700">Completed. Ready for export.</p> : null}
+                {item.status === "Uploaded" ? <p className="mt-2 break-words text-xs font-semibold text-slate-600">Uploaded. Starting processing…</p> : null}
+                {item.status === "Processing" ? <p className="mt-2 break-words text-xs font-semibold text-blue-700">Processing — extracting transactions and validating…</p> : null}
+                {item.status === "Ready" ? <p className="mt-2 break-words text-xs font-semibold text-emerald-700">Ready for review and export.</p> : null}
                 {item.status === "Review Required" ? <p className="mt-2 break-words text-xs font-semibold text-amber-700">Review required before final export.</p> : null}
                 {item.error ? <p className="mt-2 break-words text-xs font-semibold text-rose-700">{item.error}</p> : null}
                 <div className="mt-3 flex flex-wrap gap-2">

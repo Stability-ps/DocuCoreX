@@ -6,6 +6,9 @@ import { getWorkspaceContext } from "@/lib/server-documents";
 
 type ProcessBody = {
   runId?: string;
+  // Set by manual Re-process to rerun extraction even if a job is in flight or the
+  // run already completed. Auto-processing after upload leaves this false.
+  reprocess?: boolean;
 };
 
 type WorkerResponseBody = {
@@ -82,6 +85,12 @@ export async function POST(request: Request) {
     const detail = await getAccountingRunDetail(runId);
     if (!detail) {
       return NextResponse.json({ error: "Accounting run not found." }, { status: 404 });
+    }
+
+    // Duplicate-job protection: never start a second extraction for a run that is
+    // already processing (unless this is an explicit manual re-process).
+    if (detail.run.status === "processing" && !body.reprocess) {
+      return NextResponse.json({ ok: true, skipped: true, reason: "already_processing" });
     }
 
     await context.supabase

@@ -152,7 +152,7 @@ export function StatementWorkspace({ statementId }: { statementId: string }) {
       const response = await fetch("/api/accounting/fnb/process", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ runId: statementId }),
+        body: JSON.stringify({ runId: statementId, reprocess: true }),
       });
       const body = (await response.json().catch(() => ({}))) as { error?: string };
       if (!response.ok) throw new Error(body.error || "Re-processing failed.");

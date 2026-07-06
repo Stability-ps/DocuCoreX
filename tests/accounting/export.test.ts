@@ -48,6 +48,26 @@ test("no user-facing AI wording in the accounting UI", () => {
   assert.match(read("components/accounting/accounting-intelligence.tsx"), /label: "Transaction Insights"/, "AI Intelligence tab must be renamed to Transaction Insights");
 });
 
+test("statement processing starts automatically after upload with duplicate protection", () => {
+  const ui = read("components/accounting/accounting-intelligence.tsx");
+  // Upload auto-triggers processing (no manual click needed).
+  assert.match(ui, /void autoProcess\(run\.id, item\.id\)/, "upload must auto-start processing");
+  assert.match(ui, /async function autoProcess/, "autoProcess must exist");
+  // Duplicate-job guard on the client (a run is only auto-processed once).
+  assert.match(ui, /autoProcessedRef\.current\.has\(runId\)/, "client must guard against duplicate auto-processing");
+  // Manual Process/Re-process kept for reruns.
+  assert.match(ui, /async function processSelectedRuns/, "manual Process Selected kept for reruns");
+
+  // Server-side duplicate protection: never start a second in-flight job.
+  const route = read("app/api/accounting/fnb/process/route.ts");
+  assert.match(route, /detail\.run\.status === "processing" && !body\.reprocess/, "server must reject a duplicate in-flight job");
+  assert.match(route, /reprocess\?: boolean/, "process route accepts a reprocess flag");
+
+  // Re-process from the workspace forces a rerun.
+  const ws = read("components/accounting/statement-workspace.tsx");
+  assert.match(ws, /reprocess: true/, "Re-process must force a rerun");
+});
+
 test("preview routes are framable same-origin (not blocked by X-Frame-Options)", () => {
   const cfg = read("next.config.ts");
   // Global DENY must no longer apply to every path (that blocked the preview iframe).

@@ -26,19 +26,34 @@ test("statement name comes from the PDF period/date, not the upload date", () =>
   assert.equal(statementReferenceDate(uploadedInJuly), "2026-03-31");
 
   // Statement date only (no period) still names from the statement, not upload.
-  const dateOnly = { statementPeriodStart: null, statementPeriodEnd: null, statementDate: "2026-03-31", createdAt: "2026-07-06T09:00:00.000Z", companyName: "ALLIANZ HOLDINGS (PTY) LTD" };
+  const dateOnly = { statementPeriodStart: null, statementPeriodEnd: null, statementDate: "2026-03-31", companyName: "ALLIANZ HOLDINGS (PTY) LTD" };
   assert.equal(statementDisplayName(dateOnly), "March 2026 Statement");
 
   // Period end wins even if only the period is present.
-  const periodOnly = { statementPeriodStart: "2026-02-28", statementPeriodEnd: "2026-03-31", createdAt: "2026-07-06T09:00:00.000Z", companyName: null };
+  const periodOnly = { statementPeriodStart: "2026-02-28", statementPeriodEnd: "2026-03-31", companyName: null };
   assert.equal(statementDisplayName(periodOnly), "March 2026 Statement");
 
-  // Only fall back to the upload date when the statement carries NO date at all.
-  const noStatementDate = { statementPeriodStart: null, statementPeriodEnd: null, statementDate: null, createdAt: "2026-07-06T09:00:00.000Z", companyName: "ALLIANZ HOLDINGS (PTY) LTD" };
-  assert.equal(statementDisplayName(noStatementDate), "July 2026 Statement");
-  // With neither statement date nor a valid upload date, fall back to the company.
-  const nothing = { statementPeriodStart: null, statementPeriodEnd: null, statementDate: null, createdAt: "", companyName: "ALLIANZ HOLDINGS (PTY) LTD" };
-  assert.equal(statementDisplayName(nothing), "ALLIANZ HOLDINGS (PTY) LTD Statement");
+  // The reference date NEVER comes from the upload date.
+  const noDatesJulyUpload = { statementPeriodStart: null, statementPeriodEnd: null, statementDate: null, companyName: null };
+  assert.equal(statementReferenceDate(noDatesJulyUpload), null);
+});
+
+// Before processing, the name must be a neutral placeholder — never a guessed
+// month and never the upload month (the "July 2026 Statement" bug).
+test("statement name is a neutral placeholder before processing", () => {
+  const queued = { statementPeriodStart: null, statementPeriodEnd: null, statementDate: null, companyName: "ALLIANZ HOLDINGS (PTY) LTD", status: "queued" as const };
+  assert.equal(statementDisplayName(queued), "Processing Statement…");
+  assert.doesNotMatch(statementDisplayName(queued), /2026 Statement$/, "must not show a month before processing");
+
+  const processing = { statementPeriodStart: null, statementPeriodEnd: null, statementDate: null, companyName: null, status: "processing" as const };
+  assert.equal(statementDisplayName(processing), "Processing Statement…");
+
+  const unknownNoCompany = { statementPeriodStart: null, statementPeriodEnd: null, statementDate: null, companyName: null };
+  assert.equal(statementDisplayName(unknownNoCompany), "Statement (Awaiting Processing)");
+
+  // Once processed, the same run renames to its statement month.
+  const processed = { statementPeriodStart: "2026-02-28", statementPeriodEnd: "2026-03-31", statementDate: "2026-03-31", companyName: "ALLIANZ HOLDINGS (PTY) LTD", status: "completed" as const };
+  assert.equal(statementDisplayName(processed), "March 2026 Statement");
 });
 
 // The only sheet names allowed in the professional workbook.
