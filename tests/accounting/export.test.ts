@@ -88,6 +88,10 @@ test("Documents preview fits width and previews inline (no auto-download)", () =
   assert.match(preview, /href=\{downloadUrl\}/, "Download button uses the download URL");
   assert.match(preview, /transformOrigin: "center center"/, "rotate must keep the document centred");
   assert.match(preview, /const fitWidth = \(\)/, "Fit button resets to Fit Width");
+  // Tall, responsive height (viewport-based) — not a short fixed height.
+  assert.match(preview, /h-\[calc\(100vh-13rem\)\]/, "preview must fill the remaining viewport height");
+  assert.match(preview, /min-h-\[78vh\]/, "preview must stay tall on short layouts");
+  assert.doesNotMatch(preview, /min-h-\[70vh\]" /, "must not keep the short fixed height");
   // The Documents panel renders the width-fitting preview, not the shared viewer.
   const docs = read("components/documents/document-detail-panel.tsx");
   assert.match(docs, /<DocumentPreview /, "Documents must render the Fit-Width preview");

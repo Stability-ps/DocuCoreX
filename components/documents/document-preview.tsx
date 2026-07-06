@@ -135,7 +135,9 @@ export function DocumentPreview({
 
   return (
     <>
-      <section className="flex min-h-[70vh] flex-col overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
+      {/* Fill the remaining viewport height after the app header, document info
+          and tabs; responsive to window resize via viewport units. */}
+      <section className="flex h-[calc(100vh-13rem)] max-h-[90vh] min-h-[78vh] flex-col overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
         {toolbar}
         {stage("")}
       </section>
