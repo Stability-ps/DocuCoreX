@@ -125,6 +125,9 @@ export type ExtractionDebug = {
   preExtractedTextLength: number;
   sampleText: string;
   reasonNoTransactions: string | null;
+  // OCR engine diagnostics (ocr_endpoint, ocr_status, ocr_exit_code,
+  // ocr_stderr_sample, sidecar_exists, sidecar_size, ocr_text_length, attempts).
+  ocr: Record<string, unknown> | null;
 };
 
 export type ExtractionPipelineResult = {

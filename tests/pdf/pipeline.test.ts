@@ -182,17 +182,45 @@ test("OCR extractor calls /api/ocr-text with logging and a timeout", () => {
   assert.match(ocr, /AbortController/, "has a timeout");
 });
 
-test("conversion worker exposes an /api/ocr-text endpoint returning { text, pages, confidence, warnings }", () => {
+test("OCR endpoint: binary health, fallback chain, exact reasons, full debug", () => {
   const route = read("app/api/ocr-text/route.ts");
-  assert.match(route, /ocrmypdf/, "uses ocrmypdf");
-  assert.match(route, /--sidecar/, "extracts OCR text via sidecar");
-  assert.match(route, /NextResponse\.json\(\{ text, pages, confidence, warnings \}\)/, "returns the required shape");
+  // Returns the required response shape (text, pages, confidence, warnings, ...).
+  assert.match(route, /text,\s*\n?\s*pages,\s*\n?\s*confidence,\s*\n?\s*warnings/, "returns text/pages/confidence/warnings");
   assert.match(route, /OCR_TIMEOUT_MS/, "time-bounded so processing cannot hang");
   assert.match(route, /x-docucorex-worker-secret/, "worker-mode auth");
+  // Task 3: GET binary health (which ocrmypdf/tesseract/gs + --list-langs).
+  assert.match(route, /export async function GET/);
+  assert.match(route, /--list-langs/);
+  assert.match(route, /ghostscript: which\("gs"\)/);
+  // Task 5: fallback chain force-ocr -> skip-text -> redo-ocr.
+  assert.match(route, /--force-ocr/);
+  assert.match(route, /--skip-text/);
+  assert.match(route, /--redo-ocr/);
+  // Task 6: exact reason for encrypted / malformed / ghostscript.
+  assert.match(route, /encrypted \/ password-protected/);
+  assert.match(route, /malformed or unreadable/);
+  // Task 8: full debug block with the required fields.
+  for (const field of ["ocr_endpoint", "ocr_status", "ocr_exit_code", "ocr_stderr_sample", "sidecar_exists", "sidecar_size", "ocr_text_length"]) {
+    assert.match(route, new RegExp(field), `ocrDebug must include ${field}`);
+  }
+  // Task 4: logs content-type, file size, temp path, exit code, stderr, sidecar.
+  assert.match(route, /request received/);
+  assert.match(route, /wrote temp input/);
   // Dependencies are installed on the conversion worker.
   const dockerfile = read("workers/conversion_worker/Dockerfile");
   assert.match(dockerfile, /ocrmypdf/);
   assert.match(dockerfile, /tesseract-ocr/);
+});
+
+test("OCR debug propagates through the extractor and process route", () => {
+  const extractor = read("lib/pdf/extractWithOcr.ts");
+  assert.match(extractor, /_ocrDebug/, "extractor carries the OCR engine debug");
+  assert.match(extractor, /_ocrReason/, "extractor carries the OCR reason");
+  const pipeline = read("lib/pdf/runExtractionPipeline.ts");
+  assert.match(pipeline, /ocr: ocrDebug/, "pipeline surfaces the OCR debug");
+  assert.match(pipeline, /reasonNoTransactions = ocrReason \|\|/, "prefers the OCR engine's exact reason");
+  const route = read("app/api/accounting/fnb/process/route.ts");
+  assert.match(route, /ocr: pipelineDebug\.ocr/, "parserDebug includes the OCR engine diagnostics");
 });
 
 test("scoreExtraction rewards transaction rows, balances and coverage", () => {

@@ -34,10 +34,25 @@ export async function extractWithOcr(buffer: Uint8Array, fileName = "statement.p
     if (!response.ok) {
       const errorBody = await response.text().catch(() => "");
       pdfLog("ocr.error", { endpoint, status: response.status, errorBody: errorBody.slice(0, 500) });
-      return { parser: "ocr", pageCount: 0, pages: [], combinedText: "", transactions: [], metadata: {}, warnings: [`OCR service returned HTTP ${response.status}: ${errorBody.slice(0, 200)}`] };
+      return {
+        parser: "ocr",
+        pageCount: 0,
+        pages: [],
+        combinedText: "",
+        transactions: [],
+        metadata: { _ocrDebug: { ocr_endpoint: endpoint, ocr_status: response.status, ocr_stderr_sample: errorBody.slice(0, 2000) }, _ocrReason: `OCR service returned HTTP ${response.status}` },
+        warnings: [`OCR service returned HTTP ${response.status}: ${errorBody.slice(0, 200)}`],
+      };
     }
 
-    const data = (await response.json().catch(() => ({}))) as { text?: string; pages?: number; confidence?: number; warnings?: string[] };
+    const data = (await response.json().catch(() => ({}))) as {
+      text?: string;
+      pages?: number;
+      confidence?: number;
+      warnings?: string[];
+      reason?: string | null;
+      ocrDebug?: Record<string, unknown>;
+    };
     const combinedText = data.text ?? "";
     pdfLog("ocr.response", {
       endpoint,
@@ -45,6 +60,8 @@ export async function extractWithOcr(buffer: Uint8Array, fileName = "statement.p
       textLength: combinedText.trim().length,
       pages: data.pages ?? 0,
       confidence: data.confidence ?? null,
+      reason: data.reason ?? null,
+      ocrDebug: data.ocrDebug ?? null,
       sample: combinedText.trim().slice(0, 500),
     });
 
@@ -54,14 +71,24 @@ export async function extractWithOcr(buffer: Uint8Array, fileName = "statement.p
       pages: combinedText ? [{ pageNumber: 1, text: combinedText, words: [], tables: [], lines: [] }] : [],
       combinedText,
       transactions: parseTransactionsFromText(combinedText),
-      metadata: parseStatementMetadata(combinedText),
+      // Carry the OCR engine diagnostics + endpoint so the reason is never hidden.
+      metadata: { ...parseStatementMetadata(combinedText), _ocrDebug: { ocr_endpoint: endpoint, ...(data.ocrDebug ?? {}) }, _ocrReason: data.reason ?? null },
       warnings: Array.isArray(data.warnings) ? data.warnings : [],
     };
     return result;
   } catch (error) {
     const aborted = error instanceof Error && error.name === "AbortError";
-    pdfLog("ocr.error", { endpoint, error: aborted ? `timed out after ${OCR_FETCH_TIMEOUT_MS}ms` : error instanceof Error ? error.message : String(error) });
-    return { parser: "ocr", pageCount: 0, pages: [], combinedText: "", transactions: [], metadata: {}, warnings: [aborted ? "OCR timed out" : `OCR unreachable: ${error instanceof Error ? error.message : String(error)}`] };
+    const message = aborted ? `timed out after ${OCR_FETCH_TIMEOUT_MS}ms` : error instanceof Error ? error.message : String(error);
+    pdfLog("ocr.error", { endpoint, error: message });
+    return {
+      parser: "ocr",
+      pageCount: 0,
+      pages: [],
+      combinedText: "",
+      transactions: [],
+      metadata: { _ocrDebug: { ocr_endpoint: endpoint, ocr_stderr_sample: message }, _ocrReason: aborted ? "OCR timed out" : `OCR unreachable: ${message}` },
+      warnings: [aborted ? "OCR timed out" : `OCR unreachable: ${message}`],
+    };
   } finally {
     clearTimeout(timeout);
   }

@@ -24,6 +24,7 @@ type PipelineDebug = {
   preExtractedTextLength: number;
   sampleText: string;
   reasonNoTransactions: string | null;
+  ocr: Record<string, unknown> | null;
 };
 
 async function runPipelineBeforeWorker(
@@ -76,6 +77,7 @@ async function runPipelineBeforeWorker(
       preExtractedTextLength: pipeline.debug.preExtractedTextLength,
       sampleText: pipeline.debug.sampleText,
       reasonNoTransactions: pipeline.debug.reasonNoTransactions,
+      ocr: pipeline.debug.ocr,
     };
 
     // Detailed log immediately before handing off to the worker.
@@ -92,6 +94,7 @@ async function runPipelineBeforeWorker(
       preExtractedTextSample: workerInput.preExtractedText.slice(0, 1000),
       transactionCandidates: workerInput.transactionCandidateCount,
       reasonNoTransactions: pipeline.debug.reasonNoTransactions,
+      ocr: pipeline.debug.ocr,
     });
 
     // Hand the worker the best source; it keeps the original PDF as a fallback.
@@ -303,6 +306,10 @@ export async function POST(request: Request) {
                 pre_extracted_text_length: pipelineDebug.preExtractedTextLength,
                 sample_text: pipelineDebug.sampleText,
                 reason_no_transactions: pipelineDebug.reasonNoTransactions,
+                // OCR engine diagnostics — never return the generic empty message
+                // without these (task 8): ocr_endpoint, ocr_status, ocr_exit_code,
+                // ocr_stderr_sample, sidecar_exists, sidecar_size, ocr_text_length.
+                ocr: pipelineDebug.ocr,
               }
             : null,
           workerPayload: {

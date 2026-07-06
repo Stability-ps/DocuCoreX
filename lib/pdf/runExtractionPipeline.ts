@@ -103,10 +103,13 @@ export async function runExtractionPipeline(buffer: Uint8Array, fileName = "stat
   const pdfplumberTextLength = pdfplumber ? pdfplumber.combinedText.trim().length : 0;
   const ocrTextLength = ocr ? ocr.combinedText.trim().length : 0;
   const preExtractedTextLength = assembled.merged.combinedText.trim().length;
+  const ocrDebug = ocr && ocr.metadata && typeof ocr.metadata._ocrDebug === "object" ? (ocr.metadata._ocrDebug as Record<string, unknown>) : null;
+  const ocrReason = ocr && typeof ocr.metadata?._ocrReason === "string" ? (ocr.metadata._ocrReason as string) : null;
   let reasonNoTransactions: string | null = null;
   if (assembled.merged.transactions.length === 0) {
     if ((analysis.kind === "scanned" || analysis.kind === "weak-text") && ocrTextLength === 0) {
-      reasonNoTransactions = "OCR completed but no readable text was found";
+      // Prefer the OCR engine's exact reason (encrypted / malformed / etc.).
+      reasonNoTransactions = ocrReason || "OCR completed but no readable text was found";
     } else if (preExtractedTextLength < 20) {
       reasonNoTransactions = "No readable text could be extracted from the PDF";
     } else {
@@ -120,6 +123,7 @@ export async function runExtractionPipeline(buffer: Uint8Array, fileName = "stat
     preExtractedTextLength,
     sampleText: assembled.merged.combinedText.slice(0, 1000),
     reasonNoTransactions,
+    ocr: ocrDebug,
   };
 
   // 6. Log the parser decision clearly.
