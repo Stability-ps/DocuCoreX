@@ -48,6 +48,18 @@ test("no user-facing AI wording in the accounting UI", () => {
   assert.match(read("components/accounting/accounting-intelligence.tsx"), /label: "Transaction Insights"/, "AI Intelligence tab must be renamed to Transaction Insights");
 });
 
+test("preview routes are framable same-origin (not blocked by X-Frame-Options)", () => {
+  const cfg = read("next.config.ts");
+  // Global DENY must no longer apply to every path (that blocked the preview iframe).
+  assert.doesNotMatch(cfg, /source: "\/\(\.\*\)", headers: securityHeaders/, "must not apply X-Frame-Options: DENY to all routes");
+  // X-Frame-Options: DENY is scoped to page routes only (excludes /api).
+  assert.match(cfg, /source: "\/\(\(\?!api\/\)\.\*\)"/, "DENY must target page routes, excluding /api");
+  // Preview routes allow same-origin framing via CSP.
+  assert.match(cfg, /frame-ancestors 'self'/, "preview routes must allow same-origin framing");
+  assert.match(cfg, /api\/documents\/:id\/preview/, "documents preview route is framable");
+  assert.match(cfg, /api\/accounting\/fnb\/runs\/:id\/source/, "statement source route is framable");
+});
+
 test("preview serves inline, download serves attachment (separate logic)", () => {
   // Documents: dedicated inline preview endpoint, separate attachment download.
   const preview = read("app/api/documents/[id]/preview/route.ts");

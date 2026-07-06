@@ -22,7 +22,7 @@ export async function HEAD(_request: Request, { params }: { params: Promise<{ id
   const { id } = await params;
   const resolved = await resolvePath(id);
   if ("error" in resolved) return new NextResponse(null, { status: resolved.status });
-  return new NextResponse(null, { status: 200 });
+  return new NextResponse(null, { status: 200, headers: { "content-type": "application/pdf" } });
 }
 
 export async function GET(request: Request, { params }: { params: Promise<{ id: string }> }) {

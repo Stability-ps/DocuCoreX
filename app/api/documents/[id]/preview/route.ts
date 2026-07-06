@@ -37,7 +37,8 @@ export async function HEAD(_request: Request, { params }: { params: Promise<{ id
   const { id } = await params;
   const resolved = await resolve(id);
   if ("error" in resolved) return new NextResponse(null, { status: resolved.status });
-  return new NextResponse(null, { status: 200 });
+  const contentType = "demoName" in resolved ? "text/plain" : resolved.row.mime_type || "application/octet-stream";
+  return new NextResponse(null, { status: 200, headers: { "content-type": contentType } });
 }
 
 export async function GET(_request: Request, { params }: { params: Promise<{ id: string }> }) {

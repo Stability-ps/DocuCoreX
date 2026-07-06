@@ -100,10 +100,19 @@ export function DocumentViewer({
         setDiag((d) => ({ ...d, renderFailed: true }));
         return;
       }
+      // A page/error body served where a document is expected (e.g. an HTML
+      // error page) must surface an error, not a blank or garbled frame.
+      const contentType = (response.headers.get("content-type") || "").toLowerCase();
+      if (kind === "pdf" && contentType.includes("text/html")) {
+        setStatus("error");
+        setErrorMsg("The preview URL returned a page instead of a document.");
+        setDiag((d) => ({ ...d, renderFailed: true }));
+        return;
+      }
     } catch {
       setDiag((d) => ({ ...d, availabilityChecked: true }));
     }
-  }, [sourceUrl, previewable]);
+  }, [sourceUrl, previewable, kind]);
 
   // Run the availability check on mount / when the source changes / on retry.
   useEffect(() => {
