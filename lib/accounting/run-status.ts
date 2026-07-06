@@ -2,16 +2,34 @@ import type { AccountingRunStatus } from "@/lib/accounting/types";
 
 // Terminal run states — polling stops and the UI shows a final status here.
 const TERMINAL_STATUSES: AccountingRunStatus[] = ["completed", "failed", "review", "cancelled"];
+const ACTIVE_STATUSES = new Set(["queued", "processing", "pending"]);
 
-export function isTerminalRunStatus(status: AccountingRunStatus | null | undefined): boolean {
-  return Boolean(status) && TERMINAL_STATUSES.includes(status as AccountingRunStatus);
+export function normalizeRunStatus(status: string | null | undefined): AccountingRunStatus | "pending" | "error" | null {
+  if (!status) return null;
+  const normalized = status.toLowerCase();
+  if (normalized === "error") return "error";
+  if (normalized === "pending") return "pending";
+  if (normalized === "queued" || normalized === "processing" || normalized === "review" || normalized === "completed" || normalized === "failed" || normalized === "cancelled") {
+    return normalized;
+  }
+  return null;
+}
+
+export function isTerminalRunStatus(status: string | null | undefined): boolean {
+  const normalized = normalizeRunStatus(status);
+  return normalized === "error" || (Boolean(normalized) && TERMINAL_STATUSES.includes(normalized as AccountingRunStatus));
+}
+
+export function isActiveRunStatus(status: string | null | undefined): boolean {
+  const normalized = normalizeRunStatus(status);
+  return typeof normalized === "string" && ACTIVE_STATUSES.has(normalized);
 }
 
 // Signals used to decide a run has really finished even if its status row still
 // reads "processing" for a moment (the worker writes transactions/validation
 // before the status flip, or the status update lagged).
 export type RunStatusSignals = {
-  status?: AccountingRunStatus | null;
+  status?: AccountingRunStatus | "pending" | "error" | null;
   transactionCount?: number | null;
   requiresReview?: boolean | null;
   validationStatus?: string | null;
@@ -24,7 +42,9 @@ export type RunStatusSignals = {
 //   • validationStatus is failed / review / completed
 // Returns null when the run is genuinely still processing/queued.
 export function deriveEffectiveRunStatus(run: RunStatusSignals, transactionCount?: number): AccountingRunStatus | null {
-  const status = run.status ?? null;
+  const status = normalizeRunStatus(run.status ?? null);
+  if (status === "error") return "failed";
+  if (status === "pending") return "processing";
   if (isTerminalRunStatus(status)) return status;
 
   const vs = (run.validationStatus ?? "").toLowerCase();
