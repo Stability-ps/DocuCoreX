@@ -25,6 +25,7 @@ import type {
 import { DocumentStatusBadge, statusLabel } from "@/components/documents/document-status-badge";
 import { detectedTypeLabel, formatBytes, formatRelativeTime } from "@/components/documents/document-card";
 import { DocumentViewer, type DocumentViewerKind } from "@/components/document-viewer";
+import { ExtractionSummary } from "@/components/pdf/extraction-summary";
 
 type DetailData = {
   document?: DocumentRecord;
@@ -349,6 +350,7 @@ function ActionButton({
 }
 
 function OverviewTab({ doc, jobs }: { doc: DocumentRecord; jobs: ProcessingJob[] }) {
+  const isPdf = (doc.mimeType || "").toLowerCase().includes("pdf");
   const metadata: Array<{ label: string; value: string }> = [
     { label: "Status", value: statusLabel(doc.status) },
     { label: "Detected type", value: detectedTypeLabel(doc.detectedType) },
@@ -361,7 +363,9 @@ function OverviewTab({ doc, jobs }: { doc: DocumentRecord; jobs: ProcessingJob[]
   ];
 
   return (
-    <div className="grid gap-4 lg:grid-cols-2">
+    <div className="space-y-4">
+      {isPdf ? <ExtractionSummary documentId={doc.id} /> : null}
+      <div className="grid gap-4 lg:grid-cols-2">
       <section className="rounded-2xl border border-slate-200 bg-white p-4 sm:p-5">
         <h2 className="text-sm font-black uppercase tracking-wide text-slate-500">Metadata</h2>
         <dl className="mt-3 grid grid-cols-2 gap-x-4 gap-y-3">
@@ -414,6 +418,7 @@ function OverviewTab({ doc, jobs }: { doc: DocumentRecord; jobs: ProcessingJob[]
           <p className="mt-3 text-sm font-semibold text-slate-500">No processing jobs yet.</p>
         )}
       </section>
+      </div>
     </div>
   );
 }

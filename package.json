@@ -10,6 +10,7 @@
     "test": "playwright test",
     "test:security": "node --test tests/security/*.test.ts",
     "test:export": "node --test tests/accounting/*.test.ts",
+    "test:pdf": "node --test tests/pdf/*.test.ts",
     "test:accounting-regression": "./workers/accounting_worker/tests/run_regression.sh"
   },
   "dependencies": {
