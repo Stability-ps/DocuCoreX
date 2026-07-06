@@ -100,7 +100,7 @@ export function StatementWorkspace({ statementId }: { statementId: string }) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<Tab>("transactions");
-  const [busy, setBusy] = useState<null | "reprocess" | "regenerate">(null);
+  const [busy, setBusy] = useState<null | "reprocess" | "regenerate" | "cancel">(null);
   const [banner, setBanner] = useState<string | null>(null);
   const [exportOpen, setExportOpen] = useState(false);
   const [moreOpen, setMoreOpen] = useState(false);
@@ -170,6 +170,22 @@ export function StatementWorkspace({ statementId }: { statementId: string }) {
       else setBanner("Statement re-processed. Latest extraction loaded.");
     } catch (reprocessError) {
       setBanner(reprocessError instanceof Error ? reprocessError.message : "Re-processing failed.");
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function cancelProcessing() {
+    setBusy("cancel");
+    setBanner(null);
+    try {
+      const response = await fetch(`/api/accounting/fnb/runs/${statementId}/cancel`, { method: "POST" });
+      const body = (await response.json().catch(() => ({}))) as { error?: string };
+      if (!response.ok) throw new Error(body.error || "Unable to cancel processing.");
+      await loadDetail();
+      setBanner("Processing cancelled. You can retry when ready.");
+    } catch (cancelError) {
+      setBanner(cancelError instanceof Error ? cancelError.message : "Unable to cancel processing.");
     } finally {
       setBusy(null);
     }
@@ -282,12 +298,22 @@ export function StatementWorkspace({ statementId }: { statementId: string }) {
           <div className="flex flex-wrap items-center gap-2">
             <button
               onClick={() => void reprocess()}
-              disabled={busy === "reprocess"}
+              disabled={busy === "reprocess" || busy === "cancel"}
               title="Re-reads the original PDF and extracts the transactions again."
               className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm font-bold text-slate-700 hover:bg-slate-50 disabled:opacity-60"
             >
               {busy === "reprocess" ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCcw className="h-4 w-4" />} Re-process Statement
             </button>
+            {(run.status === "processing" || run.status === "queued") ? (
+              <button
+                onClick={() => void cancelProcessing()}
+                disabled={busy === "reprocess" || busy === "cancel"}
+                className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm font-bold text-slate-700 hover:bg-slate-50 disabled:opacity-60"
+              >
+                {busy === "cancel" ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
+                Cancel Processing
+              </button>
+            ) : null}
             <button
               onClick={regenerateWorkbook}
               disabled={busy === "regenerate"}
@@ -388,8 +414,8 @@ export function StatementWorkspace({ statementId }: { statementId: string }) {
         {detail?.run.status === "processing" || busy === "reprocess" ? (
           <ProcessingSteps step={detail?.run.processingStep ?? null} startedAt={detail?.run.processingStartedAt ?? null} />
         ) : null}
-        {detail?.run.status === "failed" && busy !== "reprocess" ? (
-          <FailedRunPanel run={detail.run} busy={false} onRetry={() => void reprocess()} />
+        {detail?.run.status === "failed" ? (
+          <FailedRunPanel run={detail.run} busy={busy === "reprocess" || busy === "cancel"} onRetryWithoutForce={() => void reprocess()} onRetry={() => void reprocess()} />
         ) : null}
       </div>
 

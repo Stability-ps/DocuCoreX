@@ -279,14 +279,14 @@ async function processStatementInBackground(context: WorkspaceContext, detail: A
     // without it so the run is still correctly marked failed.
     const { error: failError } = await context.supabase
       .from("accounting_statement_runs")
-      .update({ status: "failed", error, parser_debug: parserDebug ?? null, updated_at: nowIso })
+      .update({ status: "failed", error, parser_debug: parserDebug ?? null, processing_step: "Stuck / Needs retry", updated_at: nowIso })
       .eq("workspace_id", context.workspaceId)
       .eq("id", runId);
     if (failError) {
       console.warn("[accounting/process] parser_debug not persisted (migration 015 not applied?)", { runId, error: failError.message });
       await context.supabase
         .from("accounting_statement_runs")
-        .update({ status: "failed", error, updated_at: nowIso })
+        .update({ status: "failed", error, processing_step: "Stuck / Needs retry", updated_at: nowIso })
         .eq("workspace_id", context.workspaceId)
         .eq("id", runId);
     }

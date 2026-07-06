@@ -890,6 +890,7 @@ export function AccountingIntelligence() {
         setDiagnostics(formatDiagnostics(data));
         throw new Error(formatApiError(data, "Processing failed."));
       }
+
       // Processing now runs in the background — poll the run until it is terminal.
       if (refreshAfter) await refreshAccountingData(runId, { silent: true, keepLiveState: true }).catch(() => undefined);
       const outcome = await pollRunUntilTerminal(runId, { onTick: () => void loadRuns(runId).catch(() => undefined) });
@@ -915,12 +916,32 @@ export function AccountingIntelligence() {
         // lives in the statements list (status-sync Req 3).
         setUploadQueue((queue) => queue.filter((item) => item.runId !== runId));
       }
+
     } catch (processError) {
       setError(processError instanceof Error ? processError.message : "Processing failed.");
       setLiveRefreshState("idle");
       if (refreshAfter) await refreshAccountingData(runId, { silent: true }).catch(() => undefined);
     } finally {
       if (manageBusy) setBusy("");
+    }
+
+  }
+
+  async function cancelRun(runId: string) {
+    setBusy(`cancel:${runId}`);
+    setError("");
+    setDiagnostics("");
+    try {
+      const response = await fetch(`/api/accounting/fnb/runs/${runId}/cancel`, { method: "POST" });
+      const data = (await response.json().catch(() => ({}))) as { error?: string };
+      if (!response.ok) throw new Error(data.error || "Unable to cancel processing.");
+      await refreshAccountingData(runId, { silent: true });
+      setMessage("Processing cancelled. You can retry when ready.");
+      setLiveRefreshState("idle");
+    } catch (cancelError) {
+      setError(cancelError instanceof Error ? cancelError.message : "Unable to cancel processing.");
+    } finally {
+      setBusy("");
     }
   }
 
@@ -1467,8 +1488,45 @@ export function AccountingIntelligence() {
                 <FailedRunPanel
                   run={detail.run}
                   busy={busy === `process:${detail.run.id}`}
+                  onRetryWithoutForce={() => void processRun(detail.run.id)}
                   onRetry={() => void processRun(detail.run.id, { reprocess: true })}
+                  onCancel={isActiveRunStatus(detail.run.status) ? () => void cancelRun(detail.run.id) : undefined}
                 />
+              ) : null}
+
+              {isActiveRunStatus(detail.run.status) ? (
+                <section className="rounded-xl border border-blue-200 bg-blue-50/60 p-4">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <p className="text-sm font-bold text-blue-800">Processing in progress</p>
+                    <div className="flex flex-wrap items-center gap-2">
+                      <button
+                        type="button"
+                        onClick={() => void processRun(detail.run.id)}
+                        disabled={busy === `process:${detail.run.id}` || busy === `cancel:${detail.run.id}`}
+                        className="rounded-lg border border-blue-300 bg-white px-3 py-1.5 text-xs font-bold text-blue-800 hover:bg-blue-100 disabled:opacity-50"
+                      >
+                        Retry
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => void processRun(detail.run.id, { reprocess: true })}
+                        disabled={busy === `process:${detail.run.id}` || busy === `cancel:${detail.run.id}`}
+                        className="rounded-lg bg-blue-700 px-3 py-1.5 text-xs font-bold text-white hover:bg-blue-800 disabled:opacity-50"
+                      >
+                        Force Reprocess
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => void cancelRun(detail.run.id)}
+                        disabled={busy === `process:${detail.run.id}` || busy === `cancel:${detail.run.id}`}
+                        className="rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-xs font-bold text-slate-700 hover:bg-slate-100 disabled:opacity-50"
+                      >
+                        Cancel processing
+                      </button>
+                    </div>
+                  </div>
+                  <ProcessingSteps step={detail.run.processingStep ?? null} startedAt={detail.run.processingStartedAt ?? null} />
+                </section>
               ) : null}
 
               {detail.run.status === "review" && detail.run.error ? (
