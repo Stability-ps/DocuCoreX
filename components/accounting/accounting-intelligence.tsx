@@ -233,7 +233,10 @@ function runDisplayTitle(run: AccountingStatementRun) {
   return statementDisplayName(run);
 }
 
-function formatApiError(data: { error?: string; workerDetail?: unknown; workerRawBody?: string; workerStatus?: number }, fallback: string) {
+function formatApiError(
+  data: { error?: string; workerDetail?: unknown; workerRawBody?: string; workerStatus?: number; workerUrl?: string; requestId?: string },
+  fallback: string,
+) {
   const workerDetail = data.workerDetail && typeof data.workerDetail === "object" ? (data.workerDetail as Record<string, unknown>) : null;
   const detail = workerDetail && "message" in workerDetail ? String(workerDetail.message) : data.error;
 
@@ -245,16 +248,30 @@ function formatApiError(data: { error?: string; workerDetail?: unknown; workerRa
   }
 
   if (data.workerStatus) {
-    return `${detail || fallback} Worker HTTP ${data.workerStatus}.`;
+    const requestMeta = data.requestId ? ` Request ID ${data.requestId}.` : "";
+    const workerMeta = data.workerUrl ? ` Worker URL ${data.workerUrl}.` : "";
+    return `${detail || fallback} Worker HTTP ${data.workerStatus}.${workerMeta}${requestMeta}`;
   }
 
   return detail || fallback;
 }
 
-function formatDiagnostics(data: { workerDetail?: unknown; workerRawBody?: string; workerStatus?: number }) {
+function formatDiagnostics(data: {
+  workerDetail?: unknown;
+  workerRawBody?: string;
+  workerStatus?: number;
+  workerUrl?: string;
+  workerEndpoint?: string;
+  requestId?: string;
+  worker?: unknown;
+}) {
   return JSON.stringify(
     {
+      workerUrl: data.workerUrl,
+      workerEndpoint: data.workerEndpoint,
+      requestId: data.requestId,
       workerStatus: data.workerStatus,
+      worker: data.worker,
       workerDetail: data.workerDetail,
       workerRawBody: data.workerRawBody,
     },
@@ -719,6 +736,10 @@ export function AccountingIntelligence() {
         workerDetail?: unknown;
         workerRawBody?: string;
         workerStatus?: number;
+        workerUrl?: string;
+        workerEndpoint?: string;
+        requestId?: string;
+        worker?: unknown;
       };
       if (!response.ok) {
         setDiagnostics(formatDiagnostics(data));

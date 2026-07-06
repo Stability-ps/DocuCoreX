@@ -76,7 +76,7 @@ def worker_version() -> dict[str, str]:
     )
     return {
         "status": "ok",
-        "service": "docucorex-accounting-worker",
+        "service": os.getenv("RENDER_SERVICE_NAME") or os.getenv("WORKER_SERVICE_NAME") or "accounting-worker",
         "parser_version": WORKER_PARSER_VERSION,
         "commit": commit,
         "render_service_id": os.getenv("RENDER_SERVICE_ID", ""),
