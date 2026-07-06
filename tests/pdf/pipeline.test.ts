@@ -538,6 +538,36 @@ test("status sync: poll stops on effective terminal; UI refreshes list and clear
   assert.match(intel, /if \(!outcome\.timedOut\) await loadRuns\(runId\)/, "refreshes the list + summary on terminal");
 });
 
+// ── Failed-run visibility + diagnostics ──────────────────────────────────────
+
+test("failed runs surface the real error + diagnostics with retry (not just 'Failed 0%')", () => {
+  // parser/OCR debug is persisted on failure so the workspace can show WHY.
+  const route = read("app/api/accounting/fnb/process/route.ts");
+  assert.match(route, /parser_debug: parserDebug \?\? null/, "persists parser/OCR debug on failure");
+  assert.match(route, /migration 015 not applied/, "falls back if the column is missing");
+  assert.match(read("supabase/migrations/015_parser_debug.sql"), /add column if not exists parser_debug jsonb/);
+  assert.match(read("lib/accounting/server.ts"), /parserDebug: \(row\.parser_debug/, "run mapping exposes parserDebug");
+
+  // The panel shows error, last step, selected parser, detected type, and both
+  // debug blobs, plus a Retry / Force Reprocess control.
+  const panel = read("components/accounting/failed-run-panel.tsx");
+  assert.match(panel, /run\.error/);
+  assert.match(panel, /Last processing step/);
+  assert.match(panel, /Selected parser/);
+  assert.match(panel, /Detected PDF type/);
+  assert.match(panel, /OCR debug/);
+  assert.match(panel, /Parser debug/);
+  assert.match(panel, /Retry \/ Force Reprocess/);
+
+  // Dashboard renders the failed panel (not the empty state), a "View error"
+  // affordance, and retry force-reprocesses. Failed runs stay selectable.
+  const intel = read("components/accounting/accounting-intelligence.tsx");
+  assert.match(intel, /detail\.run\.status === "failed" \? \(/, "failed status renders the panel");
+  assert.match(intel, /<FailedRunPanel/);
+  assert.match(intel, /onRetry=\{\(\) => void processRun\(detail\.run\.id, \{ reprocess: true \}\)\}/, "retry force-reprocesses");
+  assert.match(intel, /View error/, "list exposes a View error affordance on failed runs");
+});
+
 // ── PDF viewer render-race fix ────────────────────────────────────────────────
 
 test("document viewer cancels the previous render before starting a new one", () => {

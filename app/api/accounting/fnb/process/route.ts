@@ -244,11 +244,24 @@ async function processStatementInBackground(context: WorkspaceContext, detail: A
   // reason and log the full parserDebug.
   const failRun = async (error: string, parserDebug: ReturnType<typeof toParserDebug>) => {
     console.warn("[accounting/process] marking run failed", { runId, error, parserDebug });
-    await context.supabase
+    const nowIso = new Date().toISOString();
+    // Persist the full parser/OCR debug alongside the failure so the workspace can
+    // show the real reason (not just "Failed 0%"). Best-effort: if migration 015
+    // (parser_debug) is not yet applied, retry the essential status/error update
+    // without it so the run is still correctly marked failed.
+    const { error: failError } = await context.supabase
       .from("accounting_statement_runs")
-      .update({ status: "failed", error, updated_at: new Date().toISOString() })
+      .update({ status: "failed", error, parser_debug: parserDebug ?? null, updated_at: nowIso })
       .eq("workspace_id", context.workspaceId)
       .eq("id", runId);
+    if (failError) {
+      console.warn("[accounting/process] parser_debug not persisted (migration 015 not applied?)", { runId, error: failError.message });
+      await context.supabase
+        .from("accounting_statement_runs")
+        .update({ status: "failed", error, updated_at: nowIso })
+        .eq("workspace_id", context.workspaceId)
+        .eq("id", runId);
+    }
     if (jobId) {
       await context.supabase
         .from("processing_jobs")

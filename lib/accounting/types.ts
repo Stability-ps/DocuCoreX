@@ -44,6 +44,9 @@ export type AccountingStatementRun = {
   // Live processing step + start time (migration 014) for the UI stepper.
   processingStep?: string | null;
   processingStartedAt?: string | null;
+  // Full parser/OCR debug blob (migration 015) — shown on failed runs so the
+  // real reason + OCR diagnostics are visible, not just "Failed 0%".
+  parserDebug?: Record<string, unknown> | null;
   confidence: number;
   error: string | null;
   createdAt: string;

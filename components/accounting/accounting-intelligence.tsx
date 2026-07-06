@@ -68,6 +68,7 @@ import { parserMethodLabel } from "@/lib/pdf/workerHandoff";
 import { pollRunUntilTerminal } from "@/lib/accounting/poll-run";
 import { deriveEffectiveRunStatus } from "@/lib/accounting/run-status";
 import { ProcessingSteps } from "@/components/accounting/processing-steps";
+import { FailedRunPanel } from "@/components/accounting/failed-run-panel";
 import type { AiCommentaryResult, AiCommentaryType } from "@/lib/accounting/ai-service";
 
 type AccountingTab = "transactions" | "review" | "difference" | "summary" | "bank-rec" | "vat" | "general-ledger" | "trial-balance";
@@ -1279,6 +1280,14 @@ export function AccountingIntelligence() {
                 <div className="hidden md:block" />
               </div>
 
+              {detail.run.status === "failed" ? (
+                <FailedRunPanel
+                  run={detail.run}
+                  busy={busy === `process:${detail.run.id}`}
+                  onRetry={() => void processRun(detail.run.id, { reprocess: true })}
+                />
+              ) : null}
+
               {detail.run.status === "review" && detail.run.error ? (
                 <ReviewRequiredPanel
                   run={detail.run}
@@ -2085,7 +2094,20 @@ function StatementRuns({
                   </div>
                   <div className="mt-1 flex items-center justify-between gap-2 text-[11px] font-semibold text-slate-500">
                     <span className="truncate">{run.accountNumber || run.companyName || compactDateTime(run.createdAt)}</span>
-                    <span>{run.status === "processing" || run.status === "queued" ? "Calculating..." : `${Math.round(run.confidence)}%`}</span>
+                    {run.status === "failed" ? (
+                      <button
+                        type="button"
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          onSelect(run.id);
+                        }}
+                        className="shrink-0 rounded-md px-1.5 py-0.5 text-[11px] font-black text-rose-700 hover:bg-rose-50"
+                      >
+                        View error
+                      </button>
+                    ) : (
+                      <span>{run.status === "processing" || run.status === "queued" ? "Calculating..." : `${Math.round(run.confidence)}%`}</span>
+                    )}
                   </div>
                 </div>
                 <Link

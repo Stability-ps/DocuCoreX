@@ -53,6 +53,7 @@ type AccountingRunRow = {
   requires_review?: boolean | null;
   processing_step?: string | null;
   processing_started_at?: string | null;
+  parser_debug?: Record<string, unknown> | null;
   confidence: number | string;
   error: string | null;
   created_at: string;
@@ -142,6 +143,7 @@ function mapRun(row: AccountingRunRow): AccountingStatementRun {
     requiresReview: row.requires_review ?? null,
     processingStep: row.processing_step ?? null,
     processingStartedAt: row.processing_started_at ?? null,
+    parserDebug: (row.parser_debug as Record<string, unknown> | null) ?? null,
     confidence: toNumber(row.confidence) ?? 0,
     error: row.error,
     createdAt: row.created_at,
