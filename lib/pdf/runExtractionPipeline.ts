@@ -20,6 +20,14 @@ function stageDiag(stage: ExtractionStageDiag["stage"], result: ExtractionResult
   return { stage, attempted: true, ok, ms, pages: result.pageCount, chars, transactions: result.transactions.length, failureReason: ok ? null : failure };
 }
 
+// Fresh Uint8Array backed by a NEW ArrayBuffer. A consumer that detaches or
+// transfers its buffer (PDF.js does) can never affect the original or siblings.
+function copyBuffer(src: Uint8Array): Uint8Array {
+  const copy = new Uint8Array(src.byteLength);
+  copy.set(src);
+  return copy;
+}
+
 function assemble(analysis: PdfAnalysis, inputs: { pdfjs?: ExtractionResult; pdfplumber?: ExtractionResult | null; ocr?: ExtractionResult | null }) {
   const { selection, merged } = mergeExtractionResults(analysis, {
     pdfjs: inputs.pdfjs,
@@ -38,12 +46,20 @@ function assemble(analysis: PdfAnalysis, inputs: { pdfjs?: ExtractionResult; pdf
 // available extractors have been attempted, and returns per-stage diagnostics.
 export async function runExtractionPipeline(buffer: Uint8Array, fileName = "statement.pdf"): Promise<ExtractionPipelineResult> {
   const pipelineStart = Date.now();
-  pdfLog("start", { fileName, bytes: buffer.byteLength });
+  // Keep the ORIGINAL buffer immutable and hand every extractor its own fresh copy.
+  // PDF.js detaches/transfers the ArrayBuffer it processes, which would otherwise
+  // leave pdfplumber / OCR with a detached buffer ("...slice on a detached
+  // ArrayBuffer"). copyBuffer guarantees each stage gets a valid full PDF.
+  const original = buffer;
+  const originalBytes = original.byteLength;
+  pdfLog("start", { fileName, bytes: originalBytes, original_bytes: originalBytes });
   const stages: ExtractionStageDiag[] = [];
 
   // Stage 1 — PDF.js text extraction (never throws; empty result on failure).
   const t1 = Date.now();
-  const pdfjs = await extractWithPdfjs(buffer);
+  const pdfjsBuf = copyBuffer(original);
+  const pdfjsBytes = pdfjsBuf.byteLength;
+  const pdfjs = await extractWithPdfjs(pdfjsBuf);
   stages.push(stageDiag("pdfjs", pdfjs, Date.now() - t1));
   const analysis = analyzeExtraction(pdfjs);
   pdfLog("route.analysis", {
@@ -60,7 +76,9 @@ export async function runExtractionPipeline(buffer: Uint8Array, fileName = "stat
   // classification), so a PDF.js failure can never skip it. Returns null only when
   // PDF_PLUMBER_URL is not configured.
   const t2 = Date.now();
-  const pdfplumber = await extractWithPdfplumber(buffer, fileName);
+  const pdfplumberBuf = copyBuffer(original);
+  const pdfplumberBytes = pdfplumberBuf.byteLength;
+  const pdfplumber = await extractWithPdfplumber(pdfplumberBuf, fileName);
   stages.push(stageDiag("pdfplumber", pdfplumber, Date.now() - t2, pdfplumber === null ? "PDF_PLUMBER_URL not configured" : undefined));
 
   // Decide whether OCR is needed: analysis flagged it, OR neither native extractor
@@ -72,11 +90,14 @@ export async function runExtractionPipeline(buffer: Uint8Array, fileName = "stat
   // Stage 3 — OCR fallback. Returns null only when CONVERSION_WORKER_URL is unset.
   let ocr: ExtractionResult | null = null;
   let ocrAttempted = false;
+  let ocrBytes = 0;
   if (needsOcr) {
     if (pdfjs.combinedText.trim().length < 5) pdfLog("route.force_ocr", { pdfjsTextLength: pdfjs.combinedText.trim().length, reason: "PDF.js returned almost no text" });
     ocrAttempted = true;
     const t3 = Date.now();
-    ocr = await extractWithOcr(buffer, fileName);
+    const ocrBuf = copyBuffer(original);
+    ocrBytes = ocrBuf.byteLength;
+    ocr = await extractWithOcr(ocrBuf, fileName);
     stages.push(stageDiag("ocr", ocr, Date.now() - t3, ocr === null ? "CONVERSION_WORKER_URL not configured" : undefined));
   } else {
     stages.push({ stage: "ocr", attempted: false, ok: false, ms: 0, pages: 0, chars: 0, transactions: 0, skippedReason: "native extraction sufficient" });
@@ -90,13 +111,18 @@ export async function runExtractionPipeline(buffer: Uint8Array, fileName = "stat
     pdfLog("route.ocr_retry", { reason: "reconciliation failed on native parse", difference: assembled.validation.difference });
     ocrAttempted = true;
     const tR = Date.now();
-    ocr = await extractWithOcr(buffer, fileName);
+    const ocrBuf = copyBuffer(original);
+    ocrBytes = ocrBuf.byteLength;
+    ocr = await extractWithOcr(ocrBuf, fileName);
     stages.push(stageDiag("ocr", ocr, Date.now() - tR, ocr === null ? "CONVERSION_WORKER_URL not configured" : undefined));
     if (ocr && (ocr.combinedText.length > 0 || ocr.transactions.length > 0)) {
       const retry = assemble(analysis, { pdfjs, pdfplumber, ocr });
       if (retry.validation.valid || retry.selection.confidence > assembled.selection.confidence) assembled = retry;
     }
   }
+
+  // Each extractor received a valid full-size buffer (original never detached).
+  pdfLog("buffers", { original_bytes: originalBytes, pdfjs_bytes: pdfjsBytes, pdfplumber_bytes: pdfplumberBytes, ocr_bytes: ocrBytes });
 
   const routeReason = describeRoute(analysis, stages);
   const ocrTextLength = ocr ? ocr.combinedText.trim().length : 0;

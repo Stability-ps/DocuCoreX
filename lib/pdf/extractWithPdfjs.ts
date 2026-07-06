@@ -66,10 +66,14 @@ export async function extractWithPdfjs(buffer: Uint8Array): Promise<ExtractionRe
     const pdfjs = (await import("pdfjs-dist/legacy/build/pdf.mjs")) as unknown as PdfjsNode;
     pdfLog("pdfjs_loaded", {});
     pdfLog("pdfjs_server_worker_disabled", { reason: "worker runs on the main thread via globalThis.pdfjsWorker — no pdf.worker.mjs disk load" });
+    // IMPORTANT: pdf.js detaches/transfers the ArrayBuffer it is given. Pass it a
+    // FRESH private copy so the caller's buffer stays valid for pdfplumber / OCR.
+    const pdfData = new Uint8Array(buffer);
+    pdfLog("pdfjs_bytes", { pdfjs_bytes: pdfData.byteLength });
     // Text-only options: no worker, no eval, no font-face / system fonts, so no
     // canvas / @napi-rs/canvas rasterisation backend is ever needed.
     const doc = await pdfjs.getDocument({
-      data: buffer,
+      data: pdfData,
       disableWorker: true,
       isEvalSupported: false,
       disableFontFace: true,
@@ -92,7 +96,13 @@ export async function extractWithPdfjs(buffer: Uint8Array): Promise<ExtractionRe
       const text = parts.join(" ").replace(/\s{2,}/g, " ").trim();
       pages.push({ pageNumber, text, words, tables: [], lines: [] });
     }
-    void doc.destroy();
+    // Best-effort cleanup — never let a cleanup error taint a successful extraction
+    // (the minified proxy may not expose destroy()).
+    try {
+      if (typeof doc.destroy === "function") await doc.destroy();
+    } catch {
+      /* ignore cleanup errors */
+    }
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     warnings.push(`PDF.js extraction failed: ${message}`);

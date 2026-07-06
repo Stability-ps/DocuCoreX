@@ -252,6 +252,29 @@ test("extractWithPdfjs is text-only, polyfills DOMMatrix, and never throws", asy
   assert.match(src, /pdfjs_text_extracted/);
 });
 
+test("buffer handoff: PDF.js does not detach the caller's buffer (OCR runs after)", async () => {
+  const { extractWithPdfjs } = await import("@/lib/pdf/extractWithPdfjs.ts");
+  // %PDF header + junk. PDF.js runs first and may transfer/detach ITS buffer, but
+  // it must receive a private copy so the caller's buffer stays valid for OCR.
+  const original = new Uint8Array([0x25, 0x50, 0x44, 0x46, 1, 2, 3, 4, 5]);
+  await extractWithPdfjs(original);
+  assert.equal(original.byteLength, 9, "PDF.js must NOT detach the caller's buffer");
+  // The OCR/pdfplumber handoff builds a Blob from a fresh copy — must not throw
+  // "slice on a detached ArrayBuffer".
+  assert.doesNotThrow(() => new Blob([new Uint8Array(original)]), "OCR handoff must not throw on the reused buffer");
+
+  // Source guarantees: fresh copies per extractor + byte logs.
+  const pipeline = read("lib/pdf/runExtractionPipeline.ts");
+  assert.match(pipeline, /function copyBuffer/);
+  assert.match(pipeline, /extractWithPdfjs\(pdfjsBuf\)/);
+  assert.match(pipeline, /extractWithPdfplumber\(pdfplumberBuf/);
+  assert.match(pipeline, /extractWithOcr\(ocrBuf/);
+  assert.match(pipeline, /original_bytes: originalBytes, pdfjs_bytes: pdfjsBytes, pdfplumber_bytes: pdfplumberBytes, ocr_bytes: ocrBytes/);
+  assert.match(read("lib/pdf/extractWithPdfjs.ts"), /const pdfData = new Uint8Array\(buffer\)/, "PDF.js copies before getDocument");
+  assert.match(read("lib/pdf/extractWithOcr.ts"), /const ocrBytes = new Uint8Array\(buffer\)/, "OCR builds body from a fresh copy");
+  assert.doesNotMatch(read("lib/pdf/extractWithOcr.ts"), /buffer\.slice\(\)/, "OCR must not slice a possibly-detached buffer");
+});
+
 test("process route returns immediately and runs extraction in the background", () => {
   const route = read("app/api/accounting/fnb/process/route.ts");
   // Heavy work is scheduled after the response, not awaited on the request path.
@@ -283,7 +306,7 @@ test("pipeline is fault-tolerant: pdfplumber and OCR run even if PDF.js fails", 
   const pipeline = read("lib/pdf/runExtractionPipeline.ts");
   // pdfplumber is ALWAYS attempted, not gated on PDF.js's classification.
   assert.match(pipeline, /Stage 2 — pdfplumber\. ALWAYS attempted/);
-  assert.match(pipeline, /const pdfplumber = await extractWithPdfplumber\(buffer, fileName\);/);
+  assert.match(pipeline, /const pdfplumber = await extractWithPdfplumber\(pdfplumberBuf, fileName\);/);
   // OCR runs when native extraction is poor (0 tx / <20 chars) OR analysis says so.
   assert.match(pipeline, /nativeTransactions === 0 \|\| nativeChars < 20/);
   // Per-stage diagnostics + completion log, never abort early.

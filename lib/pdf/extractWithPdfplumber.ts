@@ -15,12 +15,14 @@ export async function extractWithPdfplumber(buffer: Uint8Array, fileName = "stat
   }
 
   const started = Date.now();
-  pdfLog("pdfplumber_started", { fileSize: buffer.byteLength });
+  // Fresh copy for the multipart body — never a previously-consumed / detached view.
+  const plumberBytes = new Uint8Array(buffer);
+  pdfLog("pdfplumber_started", { fileSize: buffer.byteLength, pdfplumber_bytes: plumberBytes.byteLength });
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), PDFPLUMBER_TIMEOUT_MS);
   try {
     const form = new FormData();
-    form.append("file", new Blob([buffer.slice() as unknown as BlobPart], { type: "application/pdf" }), fileName);
+    form.append("file", new Blob([plumberBytes], { type: "application/pdf" }), fileName);
     const response = await fetch(`${baseUrl.replace(/\/$/, "")}/extract`, { method: "POST", body: form, signal: controller.signal });
     if (!response.ok) {
       pdfLog("pdfplumber_finished", { ok: false, status: response.status, ms: Date.now() - started });

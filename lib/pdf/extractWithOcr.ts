@@ -21,10 +21,13 @@ export async function extractWithOcr(buffer: Uint8Array, fileName = "statement.p
   const timeout = setTimeout(() => controller.abort(), OCR_FETCH_TIMEOUT_MS);
   const started = Date.now();
 
-  pdfLog("ocr_started", { endpoint, fileName, fileSize: buffer.byteLength });
+  // Build the multipart body from a FRESH copy — never a previously-consumed /
+  // possibly-detached Uint8Array (PDF.js detaches the buffers it processes).
+  const ocrBytes = new Uint8Array(buffer);
+  pdfLog("ocr_started", { endpoint, fileName, fileSize: buffer.byteLength, ocr_bytes: ocrBytes.byteLength });
   try {
     const form = new FormData();
-    form.append("file", new Blob([buffer.slice() as unknown as BlobPart], { type: "application/pdf" }), fileName);
+    form.append("file", new Blob([ocrBytes], { type: "application/pdf" }), fileName);
     const response = await fetch(endpoint, {
       method: "POST",
       body: form,
