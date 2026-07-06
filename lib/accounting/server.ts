@@ -51,6 +51,8 @@ type AccountingRunRow = {
   reconciliation_difference?: number | string | null;
   missing_transaction_count?: number | null;
   requires_review?: boolean | null;
+  processing_step?: string | null;
+  processing_started_at?: string | null;
   confidence: number | string;
   error: string | null;
   created_at: string;
@@ -138,6 +140,8 @@ function mapRun(row: AccountingRunRow): AccountingStatementRun {
     reconciliationDifference: toNumber(row.reconciliation_difference ?? null) ?? null,
     missingTransactionCount: row.missing_transaction_count ?? null,
     requiresReview: row.requires_review ?? null,
+    processingStep: row.processing_step ?? null,
+    processingStartedAt: row.processing_started_at ?? null,
     confidence: toNumber(row.confidence) ?? 0,
     error: row.error,
     createdAt: row.created_at,

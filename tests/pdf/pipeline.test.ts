@@ -15,6 +15,8 @@ const { analyzeExtraction } = await import("@/lib/pdf/analyzePdf.ts");
 const { mergeExtractionResults } = await import("@/lib/pdf/mergeExtractionResults.ts");
 const { validateBankStatement } = await import("@/lib/accounting/validateBankStatement.ts");
 const { buildWorkerInput, extractionProcessingMetadata, parserMethodLabel } = await import("@/lib/pdf/workerHandoff.ts");
+const { computeFileHash, getCachedExtraction, setCachedExtraction, clearExtractionCache } = await import("@/lib/pdf/extractionCache.ts");
+const { deriveEffectiveRunStatus, isTerminalRunStatus } = await import("@/lib/accounting/run-status.ts");
 
 function pipelineResult(over: Record<string, unknown> = {}) {
   return {
@@ -116,7 +118,7 @@ test("worker logs pre_extracted_text and adds parser_debug to the 422", () => {
 test("process route auto-runs the pipeline before the worker with a safe fallback", () => {
   const route = read("app/api/accounting/fnb/process/route.ts");
   assert.match(route, /runExtractionPipeline/, "route runs the extraction pipeline");
-  assert.match(route, /runPipelineBeforeWorker\(context, detail\)/, "pipeline runs before the worker call");
+  assert.match(route, /runPipelineBeforeWorker\(context, detail,/, "pipeline runs before the worker call");
   // Persists the metadata columns.
   assert.match(route, /parser_method: meta\.selectedParser/);
   assert.match(route, /requires_review: pipeline\.requiresReview/);
@@ -284,10 +286,10 @@ test("process route returns immediately and runs extraction in the background", 
   // The pipeline + worker call live INSIDE the background function, not the POST path.
   assert.match(route, /async function processStatementInBackground/);
   assert.match(route, /export const maxDuration = 300/, "allows background work to finish");
-  // Timeout protection.
-  assert.match(route, /ACCOUNTING_WORKER_TIMEOUT_MS = 180_000/, "accounting worker 180s timeout");
-  assert.match(read("lib/pdf/extractWithPdfplumber.ts"), /PDFPLUMBER_TIMEOUT_MS = 20_000/, "pdfplumber 20s timeout");
-  assert.match(read("lib/pdf/extractWithOcr.ts"), /OCR_FETCH_TIMEOUT_MS = 180_000/, "OCR 180s timeout");
+  // Timeout protection / parser time budgets (Req 2).
+  assert.match(route, /ACCOUNTING_WORKER_TIMEOUT_MS = 120_000/, "accounting worker 120s timeout");
+  assert.match(read("lib/pdf/extractWithPdfplumber.ts"), /PDFPLUMBER_TIMEOUT_MS = 15_000/, "pdfplumber 15s timeout");
+  assert.match(read("lib/pdf/extractWithOcr.ts"), /OCR_FETCH_TIMEOUT_MS = 120_000/, "OCR 120s timeout");
   // Failures mark the run failed with the real error.
   assert.match(route, /failRun/, "updates run/job status to failed on error");
 });
@@ -304,9 +306,10 @@ test("UI polls the run until a terminal state instead of holding the request", (
 
 test("pipeline is fault-tolerant: pdfplumber and OCR run even if PDF.js fails", () => {
   const pipeline = read("lib/pdf/runExtractionPipeline.ts");
-  // pdfplumber is ALWAYS attempted, not gated on PDF.js's classification.
-  assert.match(pipeline, /Stage 2 — pdfplumber\. ALWAYS attempted/);
-  assert.match(pipeline, /const pdfplumber = await extractWithPdfplumber\(pdfplumberBuf, fileName\);/);
+  // pdfplumber is attempted for everything except the clearly-scanned fast path
+  // (no text layer), so a PDF.js failure can never silently skip native parsing.
+  assert.match(pipeline, /Stage 2 — pdfplumber\. Attempted for everything EXCEPT the clearly-scanned fast/);
+  assert.match(pipeline, /pdfplumber = await extractWithPdfplumber\(pdfplumberBuf, fileName\);/);
   // OCR runs when native extraction is poor (0 tx / <20 chars) OR analysis says so.
   assert.match(pipeline, /nativeTransactions === 0 \|\| nativeChars < 20/);
   // Per-stage diagnostics + completion log, never abort early.
@@ -324,6 +327,16 @@ test("pipeline is fault-tolerant: pdfplumber and OCR run even if PDF.js fails", 
 test("parserDebug reports which extractor succeeded and why others failed", () => {
   const route = read("app/api/accounting/fnb/process/route.ts");
   assert.match(route, /stages: pipelineDebug\.stages/, "parserDebug carries per-stage outcomes");
+});
+
+test("conversion worker Dockerfile builds the checked-out commit (no stale git clone)", () => {
+  const dockerfile = read("workers/conversion_worker/Dockerfile");
+  assert.doesNotMatch(dockerfile, /git clone/, "must not clone the repo inside the image (permanent cache layer)");
+  assert.match(dockerfile, /COPY \. \/app/, "uses Render's build context so new commits invalidate the layer");
+  assert.match(dockerfile, /ls -la app\/api\/ocr-text/, "logs the route dir at build time");
+  assert.match(dockerfile, /test -f app\/api\/ocr-text\/route\.ts/, "hard guard: build fails if /api/ocr-text is missing");
+  assert.match(dockerfile, /pnpm install --frozen-lockfile/);
+  assert.match(dockerfile, /pnpm build/);
 });
 
 test("OCR debug propagates through the extractor and process route", () => {
@@ -355,6 +368,190 @@ test("validateBankStatement reconciles and flags review when it does not", () =>
   assert.equal(bad.requiresReview, true);
   assert.equal(bad.difference, 400); // calculated 900 vs declared 500
   assert.ok(bad.checks.some((c: { rule: string; ok: boolean }) => c.rule === "reconciliation" && !c.ok));
+});
+
+// ── Speed-optimisation: fast routing, budgets, cache, OCR cost, fallback ──────
+
+test("digital PDF (>500 chars) skips OCR; scanned (<=20 chars) routes straight to OCR", () => {
+  // Analysis-level: a dense digital PDF needs no OCR; an empty scanned one does.
+  const digital = { parser: "pdfjs", pageCount: 2, pages: [page("x".repeat(400)), page("y".repeat(400))], combinedText: "x".repeat(400) + "\n" + "y".repeat(400), transactions: [], metadata: {}, warnings: [] };
+  assert.equal(analyzeExtraction(digital as never).needsOcr, false, "digital text layer skips OCR");
+  const scanned = { parser: "pdfjs", pageCount: 3, pages: [page(""), page(""), page("")], combinedText: "", transactions: [], metadata: {}, warnings: [] };
+  assert.equal(analyzeExtraction(scanned as never).kind, "scanned");
+
+  // Pipeline source: the fast-routing thresholds + skip decisions.
+  const pipeline = read("lib/pdf/runExtractionPipeline.ts");
+  assert.match(pipeline, /DIGITAL_TEXT_LAYER_MIN_CHARS = 500/);
+  assert.match(pipeline, /SCANNED_TEXT_LAYER_MAX_CHARS = 20/);
+  assert.match(pipeline, /const skipOcrFastPath = pdfjsChars > DIGITAL_TEXT_LAYER_MIN_CHARS/);
+  assert.match(pipeline, /const scannedFastPath = pdfjsChars <= SCANNED_TEXT_LAYER_MAX_CHARS && analysis\.kind === "scanned"/);
+  // Scanned fast path skips pdfplumber and records WHY, then goes to OCR.
+  assert.match(pipeline, /scanned \/ no text layer — routed directly to OCR/);
+  assert.match(pipeline, /digital text layer \(>500 chars\) — OCR skipped/);
+});
+
+test("pipeline enforces per-parser time budgets (Req 2)", () => {
+  const pipeline = read("lib/pdf/runExtractionPipeline.ts");
+  assert.match(pipeline, /PDFJS_BUDGET_MS = 10_000/, "PDF.js 10s budget");
+  assert.match(pipeline, /withTimeout\(extractWithPdfjs\(pdfjsBuf\)/, "PDF.js is time-boxed");
+  assert.match(read("lib/pdf/extractWithPdfplumber.ts"), /PDFPLUMBER_TIMEOUT_MS = 15_000/, "pdfplumber 15s");
+  assert.match(read("lib/pdf/extractWithOcr.ts"), /OCR_FETCH_TIMEOUT_MS = 120_000/, "OCR 120s");
+  assert.match(read("app/api/accounting/fnb/process/route.ts"), /ACCOUNTING_WORKER_TIMEOUT_MS = 120_000/, "accounting worker 120s");
+});
+
+test("extraction cache reuses by document_id + file_hash; Force reprocess bypasses it", () => {
+  clearExtractionCache();
+  const hash = computeFileHash(new Uint8Array([1, 2, 3, 4]));
+  assert.equal(hash, computeFileHash(new Uint8Array([1, 2, 3, 4])), "hash is stable for identical bytes");
+  assert.notEqual(hash, computeFileHash(new Uint8Array([1, 2, 3, 5])), "hash differs for different bytes");
+  assert.equal(getCachedExtraction("doc1", hash), null, "cold cache misses");
+
+  const result = { parserMethod: "ocr", ocrUsed: true } as never;
+  setCachedExtraction("doc1", hash, result);
+  assert.equal(getCachedExtraction("doc1", hash), result, "reuses the cached OCR/extraction result");
+  assert.equal(getCachedExtraction("doc2", hash), null, "different document misses");
+  assert.equal(getCachedExtraction("doc1", "deadbeef"), null, "different bytes miss");
+  assert.equal(getCachedExtraction("doc1", null), null, "missing hash never hits");
+
+  // Force reprocess re-extracts: the pipeline only reads the cache when !force.
+  const pipeline = read("lib/pdf/runExtractionPipeline.ts");
+  assert.match(pipeline, /if \(!force\)/, "cache is consulted only when not forced");
+  assert.match(pipeline, /getCachedExtraction\(documentId, fileHash\)/);
+  assert.match(pipeline, /setCachedExtraction\(documentId, fileHash, result\)/);
+  const route = read("app/api/accounting/fnb/process/route.ts");
+  assert.match(route, /computeFileHash\(buffer\)/, "route derives the file hash");
+  assert.match(route, /force: options\.force/, "route threads force into the pipeline");
+  assert.match(route, /Boolean\(body\.reprocess\)/, "Force reprocess maps to force");
+});
+
+test("optimized path falls back to the full pipeline (Req 6)", () => {
+  const pipeline = read("lib/pdf/runExtractionPipeline.ts");
+  // Scanned fast path skipped pdfplumber — if OCR is empty, run it after all.
+  assert.match(pipeline, /route\.fallback_pdfplumber/);
+  assert.match(pipeline, /scanned fast path OCR empty — running skipped native parser/);
+  // PDF.js is raced against a budget so a hang can never block the fallback.
+  assert.match(pipeline, /function withTimeout/);
+  // parserDebug is preserved end-to-end (stages carry the skip/failure reasons).
+  assert.match(pipeline, /const debug: ExtractionDebug = \{/);
+});
+
+test("OCR worker runs the fastest mode first and escalates only on failure (Req 4)", () => {
+  const route = read("app/api/ocr-text/route.ts");
+  const skipIdx = route.indexOf("--skip-text");
+  const forceIdx = route.indexOf("--force-ocr");
+  const redoIdx = route.indexOf("--redo-ocr");
+  assert.ok(skipIdx > 0, "uses --skip-text");
+  assert.ok(forceIdx > skipIdx, "--force-ocr comes after --skip-text (heavier recovery mode)");
+  assert.ok(redoIdx > forceIdx, "--redo-ocr comes last");
+  assert.match(route, /OCR_TOTAL_BUDGET_MS = 120_000/, "total OCR budget is 120s");
+  assert.match(route, /total OCR budget exhausted/, "stops escalating once the budget is spent");
+  // Only escalates when the previous attempt produced no text.
+  assert.match(route, /if \(sidecarText\.trim\(\)\.length > 0\) \{\s*\n\s*text = sidecarText;\s*\n\s*break;/);
+});
+
+test("UI shows the processing steps, elapsed time, and long-processing notice (Req 5)", () => {
+  const steps = read("lib/pdf/processingSteps.ts");
+  for (const label of ["Detecting PDF type", "Running OCR", "Parsing transactions", "Reconciling"]) {
+    assert.match(steps, new RegExp(label), `step label: ${label}`);
+  }
+  assert.match(steps, /Still processing — scanned PDFs can take longer/);
+  const component = read("components/accounting/processing-steps.tsx");
+  assert.match(component, /formatElapsed/, "renders an elapsed timer");
+  assert.match(component, /LONG_PROCESSING_NOTICE/, "shows the long-processing notice");
+  assert.match(component, /PROCESSING_STEP_ORDER/, "renders the ordered steps");
+});
+
+// ── OCR reliability (502 handling, controlled timeout, logging, caching) ──────
+
+test("OCR worker runs the plain single-threaded command first (Req 5)", () => {
+  const route = read("app/api/ocr-text/route.ts");
+  // First attempt: ocrmypdf -l eng --jobs 1 --sidecar ... (no mode flag).
+  assert.match(route, /\["-l", "eng", "--jobs", "1", "--sidecar"/, "plain --jobs 1 --sidecar command runs first");
+  // --jobs 1 caps memory to avoid an OOM-triggered raw 502.
+  assert.match(route, /--jobs 1 caps memory/);
+});
+
+test("OCR endpoint returns a controlled 504 on timeout instead of crashing (Req 3/7/8)", () => {
+  const route = read("app/api/ocr-text/route.ts");
+  // Detects a spawnSync timeout (SIGTERM / ETIMEDOUT) and returns JSON, not a 502.
+  assert.match(route, /result\.signal === "SIGTERM" \|\| \(result\.error as NodeJS\.ErrnoException \| undefined\)\?\.code === "ETIMEDOUT"/);
+  assert.match(route, /ocr_status: 504/, "controlled 504 status in ocrDebug");
+  assert.match(route, /OCR timed out — the PDF is too large/, "timeout reason returned as JSON");
+  assert.match(route, /status: 504 \}/, "responds 504, never a raw crash");
+  // Does not escalate to heavier modes after a timeout (Req 6).
+  assert.match(route, /A timeout is not a "clear content failure"/);
+});
+
+test("OCR endpoint logs the full lifecycle (Req 2)", () => {
+  const route = read("app/api/ocr-text/route.ts");
+  for (const phrase of ["request received", "wrote temp input", "OCR command started", "OCR command finished"]) {
+    assert.match(route, new RegExp(phrase), `logs "${phrase}"`);
+  }
+  // exit code, stderr, sidecar size, text length are all logged on finish.
+  assert.match(route, /exitCode: result\.status/);
+  assert.match(route, /stderrSample: lastStderr/);
+  assert.match(route, /sidecarSize: sidecarSizeNow/);
+  assert.match(route, /textLength: sidecarText\.trim\(\)\.length/);
+});
+
+test("OCR client retries once on 502 then flags review (Req 9)", () => {
+  const ocr = read("lib/pdf/extractWithOcr.ts");
+  assert.match(ocr, /OCR_RETRY_ON_502_DELAY_MS = 5_000/, "retries after 5s");
+  assert.match(ocr, /OCR_MAX_ATTEMPTS = 2/, "initial attempt + one retry");
+  assert.match(ocr, /response\.status === 502 && attempt < OCR_MAX_ATTEMPTS/, "retry gated on 502");
+  assert.match(ocr, /_ocrRequiresReview/, "persistent 502 is flagged for review");
+  assert.match(ocr, /ocr\.retry/, "logs the retry");
+  // Pipeline honours the review flag and surfaces it with parserDebug.ocr.
+  const pipeline = read("lib/pdf/runExtractionPipeline.ts");
+  assert.match(pipeline, /const ocrUnavailable = Boolean\(ocr\?\.metadata\?\._ocrRequiresReview\)/);
+  assert.match(pipeline, /requiresReview = assembled\.selection\.requiresReview \|\| assembled\.validation\.requiresReview \|\| ocrUnavailable/);
+});
+
+test("successful OCR is cached; unavailable OCR is not (so it can retry) (Req 10)", () => {
+  const pipeline = read("lib/pdf/runExtractionPipeline.ts");
+  assert.match(pipeline, /const extractionSucceeded = assembled\.merged\.combinedText\.trim\(\)\.length > 0 \|\| assembled\.merged\.transactions\.length > 0/);
+  assert.match(pipeline, /if \(extractionSucceeded && !ocrUnavailable\) setCachedExtraction/, "caches only successful extractions");
+  assert.match(pipeline, /pipeline_cache_skipped/, "logs when a failed OCR is intentionally not cached");
+});
+
+// ── Status synchronization ────────────────────────────────────────────────────
+
+test("deriveEffectiveRunStatus stops showing Processing once a run is really done", () => {
+  assert.equal(deriveEffectiveRunStatus({ status: "processing", transactionCount: 5 }), "completed", "transactions ⇒ completed");
+  assert.equal(deriveEffectiveRunStatus({ status: "processing", requiresReview: true }), "review", "requires_review ⇒ review");
+  assert.equal(deriveEffectiveRunStatus({ status: "processing", validationStatus: "failed" }), "failed");
+  assert.equal(deriveEffectiveRunStatus({ status: "processing", validationStatus: "review" }), "review");
+  assert.equal(deriveEffectiveRunStatus({ status: "processing", validationStatus: "completed" }), "completed");
+  assert.equal(deriveEffectiveRunStatus({ status: "processing", transactionCount: 0 }), "processing", "genuinely still processing");
+  assert.equal(deriveEffectiveRunStatus({ status: "completed" }), "completed", "terminal passes through");
+  assert.equal(isTerminalRunStatus("processing"), false);
+  assert.equal(isTerminalRunStatus("review"), true);
+});
+
+test("status sync: poll stops on effective terminal; UI refreshes list and clears stale queue item", () => {
+  const poll = read("lib/accounting/poll-run.ts");
+  assert.match(poll, /deriveEffectiveRunStatus/, "poll uses the effective terminal state");
+  assert.match(poll, /isTerminalRunStatus\(effective\)/);
+  const intel = read("components/accounting/accounting-intelligence.tsx");
+  assert.match(intel, /deriveEffectiveRunStatus\(run, run\.transactionCount\)/, "queue status uses the effective run status");
+  assert.match(intel, /queue\.filter\(\(item\) => item\.runId !== runId\)/, "removes the stale upload-queue item once terminal");
+  assert.match(intel, /if \(!outcome\.timedOut\) await loadRuns\(runId\)/, "refreshes the list + summary on terminal");
+});
+
+// ── PDF viewer render-race fix ────────────────────────────────────────────────
+
+test("document viewer cancels the previous render before starting a new one", () => {
+  const viewer = read("components/document-viewer.tsx");
+  assert.match(viewer, /renderSeqRef/, "incrementing render sequence id");
+  assert.match(viewer, /const seq = \+\+renderSeqRef\.current/, "each render claims the latest id");
+  assert.match(viewer, /previous\.cancel\(\)/, "cancels the in-flight render task");
+  assert.match(viewer, /await previous\.promise/, "awaits the cancellation before re-rendering");
+  assert.match(viewer, /isRenderingCancelled/, "ignores RenderingCancelledException");
+  assert.match(viewer, /if \(seq !== renderSeqRef\.current\) return/, "only the latest render mutates canvas/state");
+  assert.match(viewer, /disabled=\{rendering\}/, "Retry disabled while a render is running");
+  // Unmount cleanup cancels the task and destroys the document.
+  assert.match(viewer, /renderTaskRef\.current\?\.cancel\(\)/);
+  assert.match(viewer, /void pdfRef\.current\?\.destroy\(\)/);
 });
 
 test("mergeExtractionResults prefers pdfplumber transactions and flags disagreement", () => {

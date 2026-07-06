@@ -35,6 +35,12 @@ function loadPdfjs(): Promise<PdfjsModule> {
   return pdfjsPromise;
 }
 
+// pdf.js rejects a cancelled render with a RenderingCancelledException — a normal
+// part of superseding a render, never a real error.
+function isRenderingCancelled(error: unknown): boolean {
+  return Boolean(error && typeof error === "object" && "name" in error && (error as { name: string }).name === "RenderingCancelledException");
+}
+
 function ToolButton({ label, onClick, disabled, children }: { label: string; onClick: () => void; disabled?: boolean; children: React.ReactNode }) {
   return (
     <button
@@ -118,7 +124,11 @@ function PdfCanvasViewer({
   const containerRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const pdfRef = useRef<PdfDoc | null>(null);
-  const renderTaskRef = useRef<{ cancel: () => void } | null>(null);
+  const renderTaskRef = useRef<PdfRenderTask | null>(null);
+  // Monotonic render id — only the LATEST render may mutate the canvas/state, so
+  // overlapping triggers (zoom, fit-width resize, page change, retry, React
+  // StrictMode double-effects) can never race on the one shared <canvas>.
+  const renderSeqRef = useRef(0);
   const textCacheRef = useRef<Map<number, string>>(new Map());
 
   const [status, setStatus] = useState<"loading" | "ready" | "error">(kind === "pdf" ? "loading" : "ready");
@@ -134,6 +144,7 @@ function PdfCanvasViewer({
   const [matchPages, setMatchPages] = useState<number[]>([]);
   const [matchIdx, setMatchIdx] = useState(0);
   const [searching, setSearching] = useState(false);
+  const [rendering, setRendering] = useState(false);
 
   // ── Load the PDF document ──────────────────────────────────────────────────
   useEffect(() => {
@@ -163,7 +174,11 @@ function PdfCanvasViewer({
     })();
     return () => {
       cancelled = true;
+      // Invalidate any in-flight render so it cannot touch a destroyed document,
+      // cancel the active render task, then destroy the PDF document.
+      renderSeqRef.current += 1;
       renderTaskRef.current?.cancel();
+      renderTaskRef.current = null;
       void pdfRef.current?.destroy();
       pdfRef.current = null;
     };
@@ -174,9 +189,31 @@ function PdfCanvasViewer({
     const pdf = pdfRef.current;
     const canvas = canvasRef.current;
     if (!pdf || !canvas) return;
+
+    // Claim the latest render id up-front; any earlier in-flight render becomes
+    // stale and must not touch the canvas or state after this point.
+    const seq = ++renderSeqRef.current;
+
+    // Cancel the previous render and WAIT for it to settle before we touch the
+    // shared canvas — pdf.js throws "Cannot use the same canvas during multiple
+    // render() operations" if a new render starts before the old one finished.
+    const previous = renderTaskRef.current;
+    if (previous) {
+      previous.cancel();
+      try {
+        await previous.promise;
+      } catch (error) {
+        if (!isRenderingCancelled(error)) throw error;
+      }
+      renderTaskRef.current = null;
+    }
+    // A newer render superseded us while we awaited the cancellation.
+    if (seq !== renderSeqRef.current) return;
+
+    setRendering(true);
     try {
-      renderTaskRef.current?.cancel();
       const pdfPage = await pdf.getPage(page);
+      if (seq !== renderSeqRef.current) return;
       const unscaled = pdfPage.getViewport({ scale: 1, rotation: rotate });
       let renderScale = scale;
       if (fitMode) {
@@ -187,20 +224,30 @@ function PdfCanvasViewer({
       const outputScale = typeof window !== "undefined" ? window.devicePixelRatio || 1 : 1;
       const context = canvas.getContext("2d");
       if (!context) return;
+      // Now that the previous render is fully cancelled/completed and we own the
+      // canvas, resize (which clears it) and clear any residual pixels.
       canvas.width = Math.floor(viewport.width * outputScale);
       canvas.height = Math.floor(viewport.height * outputScale);
       canvas.style.width = `${Math.floor(viewport.width)}px`;
       canvas.style.height = `${Math.floor(viewport.height)}px`;
+      context.clearRect(0, 0, canvas.width, canvas.height);
       const transform = outputScale !== 1 ? [outputScale, 0, 0, outputScale, 0, 0] : undefined;
       const task = pdfPage.render({ canvas, canvasContext: context, viewport, transform });
       renderTaskRef.current = task;
       await task.promise;
+      if (seq !== renderSeqRef.current) return;
       setZoomPercent(Math.round(renderScale * 100));
     } catch (error) {
-      // Cancelled renders throw a RenderingCancelledException — ignore those.
-      if (error && typeof error === "object" && "name" in error && (error as { name: string }).name === "RenderingCancelledException") return;
+      // Cancelled renders throw a RenderingCancelledException — ignore those, and
+      // ignore any error from a render that has since been superseded.
+      if (isRenderingCancelled(error) || seq !== renderSeqRef.current) return;
       setErrorMsg(error instanceof Error ? error.message : "Failed to render this page.");
       setStatus("error");
+    } finally {
+      if (seq === renderSeqRef.current) {
+        renderTaskRef.current = null;
+        setRendering(false);
+      }
     }
   }, [page, scale, fitMode, rotate]);
 
@@ -366,12 +413,14 @@ function PdfCanvasViewer({
       {errorMsg ? <p className="max-w-md break-words text-xs font-semibold text-slate-400">{errorMsg}</p> : null}
       <div className="flex items-center gap-2">
         <button
+          disabled={rendering}
           onClick={() => {
+            if (rendering) return; // never start a reload while a render is in flight
             setErrorMsg(null);
             setStatus(kind === "pdf" ? "loading" : "ready");
             setReloadKey((k) => k + 1);
           }}
-          className="rounded-lg bg-royal-600 px-3 py-2 text-sm font-bold text-white hover:bg-royal-700"
+          className="rounded-lg bg-royal-600 px-3 py-2 text-sm font-bold text-white hover:bg-royal-700 disabled:opacity-40"
         >
           Retry
         </button>

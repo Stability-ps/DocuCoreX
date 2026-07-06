@@ -17,7 +17,11 @@ export const dynamic = "force-dynamic";
 //     -H "x-docucorex-worker-secret: $CONVERSION_WORKER_SECRET" \
 //     https://<conversion-worker-url>/api/ocr-text
 //   GET the same URL to check the OCR binaries.
-const OCR_TIMEOUT_MS = 170_000;
+// Per-attempt cap and a total budget (Req 2/4): OCR must not exceed ~120s. The
+// pipeline aborts its fetch at 120s, so keep the worker within that envelope and
+// stop escalating through fallback modes once the budget is spent.
+const OCR_TIMEOUT_MS = 120_000;
+const OCR_TOTAL_BUDGET_MS = 120_000;
 
 function bin(envKey: string, fallback: string): string {
   return (process.env[envKey] && process.env[envKey]!.trim()) || fallback;
@@ -85,36 +89,83 @@ export async function POST(request: Request) {
     writeFileSync(inputPath, fileBytes);
     console.info("[ocr-text] wrote temp input", { inputPath, bytes: fileBytes.byteLength });
 
-    // Fallback chain — try force-ocr, then skip-text, then redo-ocr (task 5).
+    // Cost-minimised OCR (Req 4/5/6): run ONE plain single-threaded pass first —
+    //   ocrmypdf -l eng --jobs 1 --sidecar sidecar.txt input.pdf output.pdf
+    // (--jobs 1 caps memory so Ghostscript/Tesseract cannot OOM the instance and
+    // trigger a raw 502). Only escalate to the heavier recovery modes when the
+    // previous attempt failed CLEARLY with no text — never after a timeout.
     const flagSets: string[][] = [
-      ["-l", "eng", "--force-ocr", "--sidecar", sidecarPath, "--output-type", "pdf", "--jobs", "1", inputPath, outputPath],
-      ["-l", "eng", "--skip-text", "--sidecar", sidecarPath, "--output-type", "pdf", "--jobs", "1", inputPath, outputPath],
-      ["-l", "eng", "--redo-ocr", "--sidecar", sidecarPath, "--output-type", "pdf", "--jobs", "1", inputPath, outputPath],
+      ["-l", "eng", "--jobs", "1", "--sidecar", sidecarPath, "--output-type", "pdf", inputPath, outputPath],
+      ["-l", "eng", "--jobs", "1", "--skip-text", "--sidecar", sidecarPath, "--output-type", "pdf", inputPath, outputPath],
+      ["-l", "eng", "--jobs", "1", "--force-ocr", "--sidecar", sidecarPath, "--output-type", "pdf", inputPath, outputPath],
+      ["-l", "eng", "--jobs", "1", "--redo-ocr", "--sidecar", sidecarPath, "--output-type", "pdf", inputPath, outputPath],
     ];
 
     const attempts: OcrAttempt[] = [];
+    const ocrStarted = Date.now();
     let text = "";
     let lastExit: number | null = null;
     let lastStderr = "";
+    let timedOut = false;
     for (const flags of flagSets) {
+      // Do not start another fallback mode once the total OCR budget is spent.
+      if (attempts.length > 0 && Date.now() - ocrStarted >= OCR_TOTAL_BUDGET_MS) {
+        console.warn("[ocr-text] total OCR budget exhausted — not escalating further", { elapsedMs: Date.now() - ocrStarted, attempts: attempts.length });
+        break;
+      }
       rmSync(sidecarPath, { force: true });
-      const result = spawnSync(ocrmypdf, flags, { cwd: tempDir, encoding: "utf8", timeout: OCR_TIMEOUT_MS, maxBuffer: 64 * 1024 * 1024 });
+      const perAttemptTimeout = Math.max(1, Math.min(OCR_TIMEOUT_MS, OCR_TOTAL_BUDGET_MS - (Date.now() - ocrStarted)));
+      const flagStr = flags.filter((f) => !f.startsWith("/")).join(" ");
+      console.info("[ocr-text] OCR command started", { flags: flagStr, perAttemptTimeoutMs: perAttemptTimeout, attempt: attempts.length + 1 });
+      const attemptStarted = Date.now();
+      const result = spawnSync(ocrmypdf, flags, { cwd: tempDir, encoding: "utf8", timeout: perAttemptTimeout, maxBuffer: 64 * 1024 * 1024 });
       lastExit = result.status;
       lastStderr = (result.stderr || result.error?.message || "").toString();
+      // spawnSync kills a timed-out child with SIGTERM and sets error.code ETIMEDOUT.
+      const attemptTimedOut = result.signal === "SIGTERM" || (result.error as NodeJS.ErrnoException | undefined)?.code === "ETIMEDOUT";
       const sidecarText = existsSync(sidecarPath) ? readFileSync(sidecarPath, "utf8") : "";
+      const sidecarSizeNow = existsSync(sidecarPath) ? statSync(sidecarPath).size : 0;
       attempts.push({ flags: flags.filter((f) => !f.startsWith("/")), exitCode: result.status, stderrSample: lastStderr.slice(0, 2000), textLength: sidecarText.trim().length });
-      console.info("[ocr-text] ocrmypdf attempt", {
-        flags: flags.filter((f) => !f.startsWith("/")).join(" "),
+      console.info("[ocr-text] OCR command finished", {
+        flags: flagStr,
         exitCode: result.status,
+        signal: result.signal ?? null,
+        timedOut: attemptTimedOut,
+        durationMs: Date.now() - attemptStarted,
         stderrSample: lastStderr.slice(0, 2000),
         sidecarExists: existsSync(sidecarPath),
-        sidecarSize: existsSync(sidecarPath) ? statSync(sidecarPath).size : 0,
+        sidecarSize: sidecarSizeNow,
         textLength: sidecarText.trim().length,
       });
       if (sidecarText.trim().length > 0) {
         text = sidecarText;
         break;
       }
+      // A timeout is not a "clear content failure" — heavier modes are only slower,
+      // so stop and return a controlled 504 rather than risk OOM/raw 502 (Req 3/6).
+      if (attemptTimedOut) {
+        timedOut = true;
+        break;
+      }
+    }
+
+    // Controlled timeout response — always JSON, never a crash / raw 502 (Req 3/7).
+    if (timedOut && text.trim().length === 0) {
+      const ocrDebug = {
+        ocr_endpoint: endpoint,
+        ocr_status: 504,
+        ocr_exit_code: lastExit,
+        ocr_stderr_sample: lastStderr.slice(0, 2000),
+        sidecar_exists: existsSync(sidecarPath),
+        sidecar_size: existsSync(sidecarPath) ? statSync(sidecarPath).size : 0,
+        ocr_text_length: 0,
+        attempts,
+      };
+      console.warn("[ocr-text] OCR timed out — returning controlled 504", { fileName, elapsedMs: Date.now() - ocrStarted, ocrDebug });
+      return NextResponse.json(
+        { text: "", pages: 0, confidence: 0, warnings: ["OCR timed out before completing."], reason: "OCR timed out — the PDF is too large or complex to OCR within the time budget.", ocrDebug },
+        { status: 504 },
+      );
     }
 
     const sidecarExists = existsSync(sidecarPath);

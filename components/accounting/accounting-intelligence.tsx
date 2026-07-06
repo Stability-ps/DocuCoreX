@@ -66,6 +66,8 @@ import type {
 import { statementDisplayName, statementReferenceDate } from "@/lib/accounting/statement-name";
 import { parserMethodLabel } from "@/lib/pdf/workerHandoff";
 import { pollRunUntilTerminal } from "@/lib/accounting/poll-run";
+import { deriveEffectiveRunStatus } from "@/lib/accounting/run-status";
+import { ProcessingSteps } from "@/components/accounting/processing-steps";
 import type { AiCommentaryResult, AiCommentaryType } from "@/lib/accounting/ai-service";
 
 type AccountingTab = "transactions" | "review" | "difference" | "summary" | "bank-rec" | "vat" | "general-ledger" | "trial-balance";
@@ -459,7 +461,11 @@ export function AccountingIntelligence() {
         if (!item.runId) return item;
         const run = runById.get(item.runId);
         if (!run) return item;
-        const nextStatus = queueStatusFromRunStatus(run.status);
+        // Use the EFFECTIVE status so a run that has actually finished (transactions
+        // written / review flagged / validation resolved) never sticks on
+        // "Processing" just because its status row still reads processing.
+        const effective = deriveEffectiveRunStatus(run, run.transactionCount) ?? run.status;
+        const nextStatus = queueStatusFromRunStatus(effective);
         if (nextStatus === item.status) return item;
         return { ...item, status: nextStatus, error: nextStatus === "Failed" ? run.error ?? item.error : item.error };
       }),
@@ -721,15 +727,25 @@ export function AccountingIntelligence() {
       setMessage("Processing… extracting and reconciling your statement.");
       if (refreshAfter) await loadRuns(runId).catch(() => undefined);
       const outcome = await pollRunUntilTerminal(runId, { onTick: () => void loadRuns(runId).catch(() => undefined) });
-      if (refreshAfter) await loadRuns(runId).catch(() => undefined);
+      // Final cleanup once polling stops: refresh the list + selected statement +
+      // summary cards, then retire the stale upload-queue entry (status-sync Req 5).
+      if (!outcome.timedOut) await loadRuns(runId).catch(() => undefined);
+      else if (refreshAfter) await loadRuns(runId).catch(() => undefined);
       if (outcome.timedOut) {
         setMessage("Still processing — this is taking longer than usual. It will keep running; refresh to check.");
       } else if (outcome.status === "failed") {
         setError(outcome.error || "Processing failed.");
-      } else if (outcome.status === "review") {
-        setMessage("Review required — extraction and bank totals need review before export.");
+        // Keep the queue item so the user sees the failure and can retry.
+        setUploadQueue((queue) => queue.map((item) => (item.runId === runId ? { ...item, status: "Failed", error: outcome.error ?? item.error } : item)));
       } else {
-        setMessage("Statement processed successfully. You can now review and export.");
+        setMessage(
+          outcome.status === "review"
+            ? "Review required — extraction and bank totals need review before export."
+            : "Statement processed successfully. You can now review and export.",
+        );
+        // Remove the finished statement from the transient upload queue — it now
+        // lives in the statements list (status-sync Req 3).
+        setUploadQueue((queue) => queue.filter((item) => item.runId !== runId));
       }
     } catch (processError) {
       setError(processError instanceof Error ? processError.message : "Processing failed.");
@@ -1165,7 +1181,12 @@ export function AccountingIntelligence() {
                   </div>
                 ) : null}
                 {item.status === "Uploaded" ? <p className="mt-2 break-words text-xs font-semibold text-slate-600">Uploaded. Starting processing…</p> : null}
-                {item.status === "Processing" ? <p className="mt-2 break-words text-xs font-semibold text-blue-700">Processing — extracting transactions and validating…</p> : null}
+                {item.status === "Processing" ? (
+                  <ProcessingSteps
+                    step={item.runId ? runById.get(item.runId)?.processingStep ?? null : null}
+                    startedAt={item.runId ? runById.get(item.runId)?.processingStartedAt ?? null : null}
+                  />
+                ) : null}
                 {item.status === "Ready" ? <p className="mt-2 break-words text-xs font-semibold text-emerald-700">Ready for review and export.</p> : null}
                 {item.status === "Review Required" ? <p className="mt-2 break-words text-xs font-semibold text-amber-700">Review required before final export.</p> : null}
                 {item.error ? <p className="mt-2 break-words text-xs font-semibold text-rose-700">{item.error}</p> : null}

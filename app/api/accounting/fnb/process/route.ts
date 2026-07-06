@@ -4,6 +4,8 @@ import { detectBankProfile } from "@/lib/accounting/engine/registry";
 import { getAccountingRunDetail } from "@/lib/accounting/server";
 import { getWorkspaceContext } from "@/lib/server-documents";
 import { runExtractionPipeline } from "@/lib/pdf/runExtractionPipeline";
+import { computeFileHash } from "@/lib/pdf/extractionCache";
+import { PROCESSING_STEP_LABELS, PROCESSING_STEP_PROGRESS, type ProcessingStep } from "@/lib/pdf/processingSteps";
 import { buildWorkerInput, extractionProcessingMetadata } from "@/lib/pdf/workerHandoff";
 import type { WorkspaceContext } from "@/lib/server-documents";
 import type { AccountingRunDetail } from "@/lib/accounting/types";
@@ -31,6 +33,7 @@ type PipelineDebug = {
 async function runPipelineBeforeWorker(
   context: WorkspaceContext,
   detail: AccountingRunDetail,
+  options: { force: boolean; onStage: (step: ProcessingStep) => void },
 ): Promise<{ hints: Record<string, unknown>; warning: string | null; debug: PipelineDebug | null }> {
   const runId = detail.run.id;
   try {
@@ -39,7 +42,15 @@ async function runPipelineBeforeWorker(
       return { hints: {}, warning: `Extraction pipeline skipped: source unavailable (${error?.message ?? "no file"}).`, debug: null };
     }
     const buffer = new Uint8Array(await file.arrayBuffer());
-    const pipeline = await runExtractionPipeline(buffer, detail.run.sourceStoragePath.split("/").pop() || "statement.pdf");
+    // Cache identity: same document + identical bytes reuses the prior extraction
+    // (incl. OCR text) unless this is a Force reprocess (Req 3).
+    const fileHash = computeFileHash(buffer);
+    const pipeline = await runExtractionPipeline(buffer, detail.run.sourceStoragePath.split("/").pop() || "statement.pdf", {
+      documentId: detail.run.documentId,
+      fileHash,
+      force: options.force,
+      onStage: options.onStage,
+    });
     const meta = extractionProcessingMetadata(pipeline);
     const workerInput = buildWorkerInput(pipeline);
 
@@ -173,7 +184,7 @@ function getWorkerError(result: WorkerResponseBody, responseText: string, status
   return `Accounting worker returned HTTP ${status} without an error body. Check Render worker logs for this run.`;
 }
 
-const ACCOUNTING_WORKER_TIMEOUT_MS = 180_000;
+const ACCOUNTING_WORKER_TIMEOUT_MS = 120_000;
 
 // Allow the background work (after the response is sent) to run beyond the default
 // so extraction + worker + reconciliation can finish off the request path.
@@ -200,8 +211,33 @@ function toParserDebug(pipelineDebug: PipelineDebug | null) {
 // All heavy work — extraction pipeline (PDF.js / pdfplumber / OCR), the accounting
 // worker call, reconciliation and status updates — runs HERE, after the HTTP
 // response has already been returned. Nothing below blocks the user's request.
-async function processStatementInBackground(context: WorkspaceContext, detail: AccountingRunDetail, workerUrl: string, runId: string) {
+async function processStatementInBackground(context: WorkspaceContext, detail: AccountingRunDetail, workerUrl: string, runId: string, force: boolean) {
   const jobId = detail.run.processingJobId;
+
+  // Report the current processing step so the UI can show it with an elapsed
+  // timer. Writes the human label to the run (processing_step) and mirrors it to
+  // the processing job's message/progress. Best-effort: a missing column (Req:
+  // migration 014 not yet applied) or transient error never blocks processing.
+  const updateStep = (step: ProcessingStep) => {
+    const label = PROCESSING_STEP_LABELS[step];
+    const progress = PROCESSING_STEP_PROGRESS[step];
+    void context.supabase
+      .from("accounting_statement_runs")
+      .update({ processing_step: label, updated_at: new Date().toISOString() })
+      .eq("workspace_id", context.workspaceId)
+      .eq("id", runId)
+      .then(({ error }) => {
+        if (error) console.warn("[accounting/process] processing_step not persisted (migration 014 not applied?)", { runId, step: label, error: error.message });
+      });
+    if (jobId) {
+      void context.supabase
+        .from("processing_jobs")
+        .update({ status: "running", progress, message: label, updated_at: new Date().toISOString() })
+        .eq("id", jobId)
+        .then(() => undefined);
+    }
+  };
+
   // The key parser-debug fields (parser_method, detected_pdf_type, ocr_used,
   // validation_status, reconciliation_difference, requires_review, route_reason)
   // are persisted on the run by runPipelineBeforeWorker; here we set the failure
@@ -224,8 +260,11 @@ async function processStatementInBackground(context: WorkspaceContext, detail: A
   let pipelineDebug: PipelineDebug | null = null;
   try {
     // 1. Extraction pipeline (best-source + persist). Defensive: never throws.
-    const { hints, debug } = await runPipelineBeforeWorker(context, detail);
+    // The pipeline reports "Detecting PDF type" / "Running OCR"; the later
+    // "Parsing transactions" / "Reconciling" steps are reported around the worker.
+    const { hints, debug } = await runPipelineBeforeWorker(context, detail, { force, onStage: updateStep });
     pipelineDebug = debug;
+    updateStep("parsing");
 
     const workerPayload = {
       run_id: runId,
@@ -271,6 +310,8 @@ async function processStatementInBackground(context: WorkspaceContext, detail: A
       result = { detail: responseText };
     }
     console.info("[accounting/process] worker response", { runId, status: response.status, ok: response.ok });
+
+    if (response.ok) updateStep("reconciling");
 
     if (!response.ok) {
       let error = getWorkerError(result, responseText, response.status);
@@ -330,12 +371,23 @@ export async function POST(request: Request) {
       return NextResponse.json({ ok: true, skipped: true, reason: "already_processing", status: "processing", runId, jobId: detail.run.processingJobId ?? null });
     }
 
-    // Mark queued/processing so the UI can start polling immediately.
-    await context.supabase
+    // Mark queued/processing so the UI can start polling immediately. Stamp the
+    // start time + first step so the UI stepper/elapsed timer can begin. Best
+    // effort on the new columns — the update must not fail if migration 014 is
+    // not yet applied, so retry without them on error.
+    const nowIso = new Date().toISOString();
+    const { error: markError } = await context.supabase
       .from("accounting_statement_runs")
-      .update({ status: "processing", error: null, updated_at: new Date().toISOString() })
+      .update({ status: "processing", error: null, processing_step: PROCESSING_STEP_LABELS.detecting, processing_started_at: nowIso, updated_at: nowIso })
       .eq("workspace_id", context.workspaceId)
       .eq("id", runId);
+    if (markError) {
+      await context.supabase
+        .from("accounting_statement_runs")
+        .update({ status: "processing", error: null, updated_at: nowIso })
+        .eq("workspace_id", context.workspaceId)
+        .eq("id", runId);
+    }
 
     if (detail.run.processingJobId) {
       await context.supabase
@@ -345,7 +397,8 @@ export async function POST(request: Request) {
     }
 
     // Run the extraction + worker call AFTER responding — never on the request path.
-    after(() => processStatementInBackground(context, detail, workerUrl, runId));
+    // `reprocess` (Force reprocess) bypasses the extraction cache.
+    after(() => processStatementInBackground(context, detail, workerUrl, runId, Boolean(body.reprocess)));
 
     // Return immediately (well under the 25s initial-response limit).
     return NextResponse.json({ ok: true, status: "processing", runId, jobId: detail.run.processingJobId ?? null });

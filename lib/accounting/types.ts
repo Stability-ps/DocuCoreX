@@ -41,6 +41,9 @@ export type AccountingStatementRun = {
   reconciliationDifference?: number | null;
   missingTransactionCount?: number | null;
   requiresReview?: boolean | null;
+  // Live processing step + start time (migration 014) for the UI stepper.
+  processingStep?: string | null;
+  processingStartedAt?: string | null;
   confidence: number;
   error: string | null;
   createdAt: string;

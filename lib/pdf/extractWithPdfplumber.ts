@@ -4,8 +4,8 @@ import { pdfLog } from "@/lib/pdf/log";
 
 // Calls the separate pdfplumber FastAPI service (PDF_PLUMBER_URL) which returns
 // text, words, tables, lines and coordinates per page. Degrades gracefully when
-// the service is not configured or unreachable. Time-bounded at 20s.
-const PDFPLUMBER_TIMEOUT_MS = 20_000;
+// the service is not configured or unreachable. Time-bounded at 15s (Req 2).
+const PDFPLUMBER_TIMEOUT_MS = 15_000;
 
 export async function extractWithPdfplumber(buffer: Uint8Array, fileName = "statement.pdf"): Promise<ExtractionResult | null> {
   const baseUrl = process.env.PDF_PLUMBER_URL;

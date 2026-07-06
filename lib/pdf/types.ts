@@ -156,4 +156,7 @@ export type ExtractionPipelineResult = {
   warnings: string[];
   requiresReview: boolean;
   debug: ExtractionDebug;
+  // True when this result was served from the extraction cache (document_id +
+  // file_hash) rather than freshly extracted — the expensive OCR/parse was reused.
+  cached?: boolean;
 };

@@ -27,6 +27,7 @@ import { parserMethodLabel } from "@/lib/pdf/workerHandoff";
 import { pollRunUntilTerminal } from "@/lib/accounting/poll-run";
 import { detectDuplicates, detectUnusualTransactions, detectDirectorTransactions } from "@/lib/accounting/analytics";
 import { DocumentViewer } from "@/components/document-viewer";
+import { ProcessingSteps } from "@/components/accounting/processing-steps";
 
 // ── Formatting helpers ───────────────────────────────────────────────────────
 
@@ -366,6 +367,9 @@ export function StatementWorkspace({ statementId }: { statementId: string }) {
           </div>
         </div>
         {banner ? <div className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm font-bold text-amber-900">{banner}</div> : null}
+        {detail?.run.status === "processing" || busy === "reprocess" ? (
+          <ProcessingSteps step={detail?.run.processingStep ?? null} startedAt={detail?.run.processingStartedAt ?? null} />
+        ) : null}
       </div>
 
       {/* ── Three-column layout ─────────────────────────────────────────── */}

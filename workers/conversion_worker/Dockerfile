@@ -4,10 +4,10 @@
 # - Docker Context: .
 #
 # The build uses Render's checked-out commit via the build context (COPY .), NOT
-# an in-image `git clone`. Cloning inside the image produced a constant layer that
-# Docker cached forever, so new commits (e.g. /api/ocr-text) never reached the
-# deployed build. COPY invalidates whenever any source file changes, so the build
-# always matches the checked-out commit.
+# an in-image repo checkout. Cloning inside the image produced a constant layer
+# that Docker cached forever, so new commits (e.g. /api/ocr-text) never reached
+# the deployed build. COPY invalidates whenever any source file changes, so the
+# build always matches the checked-out commit.
 FROM node:22-bookworm-slim AS base
 
 ENV NODE_ENV=production \
@@ -30,7 +30,7 @@ RUN apt-get update \
 
 WORKDIR /app
 
-# Copy the checked-out commit from Render's build context (no git clone).
+# Copy the checked-out commit from Render's build context (no in-image checkout).
 COPY . /app
 
 # Build provenance + a HARD guard: fail the build if the new code is not present,
