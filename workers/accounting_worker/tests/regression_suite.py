@@ -281,9 +281,60 @@ def run_fnb_extraction_case() -> None:
     assert_equal(str(validation["closing_balance"]), FNB_EXPECTED["closing_balance"], f"{case_id} closing balance")
 
 
+def run_missing_column_fallback_case() -> None:
+    # If the DB schema lacks an optional column (e.g. statement_date before its
+    # migration is applied), the run update must drop it and still save — never
+    # fail the whole processing job with HTTP 422.
+    from main import update_statement_run
+
+    case_id = "missing-statement-date-column"
+    calls: list[dict] = []
+
+    class Query:
+        def __init__(self, fields, fail_on):
+            self.fields = fields
+            self.fail_on = fail_on
+
+        def eq(self, *args, **kwargs):
+            return self
+
+        def execute(self):
+            calls.append(self.fields)
+            if self.fail_on and self.fail_on(self.fields):
+                raise RuntimeError(self.fail_on(self.fields))
+            return None
+
+    def make_supabase(fail_on):
+        class Table:
+            def update(self, fields):
+                return Query(fields, fail_on)
+
+        class Supabase:
+            def table(self, _name):
+                return Table()
+
+        return Supabase()
+
+    schema_error = "Could not find the 'statement_date' column of 'accounting_statement_runs' in the schema cache"
+    supabase = make_supabase(lambda fields: schema_error if "statement_date" in fields else None)
+    update_statement_run(supabase, "run-1", "ws-1", {"statement_date": "2026-03-31", "status": "completed", "confidence": 90})
+    assert_equal(len(calls), 2, f"{case_id} retried once without the optional column")
+    assert_equal("statement_date" in calls[1], False, f"{case_id} dropped the missing column")
+    assert_equal(calls[1]["status"], "completed", f"{case_id} core fields preserved")
+
+    # Non-schema errors must still propagate (not silently swallowed).
+    raised = False
+    try:
+        update_statement_run(make_supabase(lambda _fields: "permission denied"), "run-1", "ws-1", {"statement_date": "2026-03-31", "status": "completed"})
+    except RuntimeError:
+        raised = True
+    assert_equal(raised, True, f"{case_id} non-schema errors propagate")
+
+
 def run() -> None:
     run_fnb_extraction_case()
     run_statement_period_case()
+    run_missing_column_fallback_case()
 
     manifest = json.loads(MANIFEST_PATH.read_text())
     cases = manifest.get("cases") if isinstance(manifest, dict) else None

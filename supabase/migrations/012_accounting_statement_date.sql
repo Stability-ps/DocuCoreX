@@ -5,3 +5,7 @@ alter table if exists public.accounting_statement_runs
 
 comment on column public.accounting_statement_runs.statement_date is
   'Statement date read from the PDF (fallback for naming when no period end exists). Never the upload date.';
+
+-- Refresh the PostgREST schema cache so the new column is recognised immediately
+-- (avoids "Could not find the 'statement_date' column ... in the schema cache").
+notify pgrst, 'reload schema';

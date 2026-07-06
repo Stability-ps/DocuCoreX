@@ -1779,6 +1779,36 @@ def statement_run_metadata(metadata: dict[str, Any]) -> dict[str, Any]:
     return {key: metadata.get(key) for key in allowed if key in metadata}
 
 
+# Columns that may not exist yet if their migration has not been applied to the
+# live database. They are dropped (with a warning) rather than failing the job.
+OPTIONAL_RUN_COLUMNS = ("statement_date",)
+
+
+def is_missing_column_error(message: str) -> bool:
+    lowered = message.lower()
+    return (
+        "schema cache" in lowered
+        or "could not find" in lowered
+        or ("column" in lowered and ("does not exist" in lowered or "not found" in lowered))
+    )
+
+
+def update_statement_run(supabase: Client, run_id: str, workspace_id: str, fields: dict[str, Any]) -> None:
+    """Update the run record, retrying without OPTIONAL columns when the DB schema
+    is missing them (e.g. statement_date before migration 012 is applied), so a
+    missing migration never fails the whole processing job with HTTP 422."""
+    try:
+        supabase.table("accounting_statement_runs").update(fields).eq("id", run_id).eq("workspace_id", workspace_id).execute()
+        return
+    except Exception as exc:  # noqa: BLE001 — degrade gracefully on schema mismatch only
+        droppable = [column for column in OPTIONAL_RUN_COLUMNS if column in fields]
+        if not droppable or not is_missing_column_error(str(exc)):
+            raise
+        safe_fields = {key: value for key, value in fields.items() if key not in OPTIONAL_RUN_COLUMNS}
+        log_warning("worker.run_update_dropped_optional_columns", run_id=run_id, dropped=droppable, error=str(exc))
+        supabase.table("accounting_statement_runs").update(safe_fields).eq("id", run_id).eq("workspace_id", workspace_id).execute()
+
+
 def review_reason(transaction: ParsedTransaction) -> str:
     reasons: list[str] = []
     text = transaction.description.lower()
@@ -3218,7 +3248,10 @@ def process_fnb_statement(payload: ProcessRequest, authorization: str | None = H
         review_required = status == "review"
         validation = {**(validation or {}), **{f"extraction_{k}": v for k, v in extraction_check.items() if k != "checks"}}
 
-        supabase.table("accounting_statement_runs").update(
+        update_statement_run(
+            supabase,
+            payload.run_id,
+            payload.workspace_id,
             {
                 **statement_run_metadata(metadata),
                 "status": status,
@@ -3235,8 +3268,8 @@ def process_fnb_statement(payload: ProcessRequest, authorization: str | None = H
                 "confidence": round(avg_confidence, 2),
                 "error": run_error,
                 "updated_at": datetime.utcnow().isoformat(),
-            }
-        ).eq("id", payload.run_id).eq("workspace_id", payload.workspace_id).execute()
+            },
+        )
 
         refresh_statement_analytics(supabase, payload.workspace_id, bank_name, parser_profile, parser_version)
 
