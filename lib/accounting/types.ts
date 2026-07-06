@@ -30,6 +30,17 @@ export type AccountingStatementRun = {
   reviewReason?: string | null;
   processingDurationMs?: number | null;
   extractionAccuracy?: number | null;
+  // Multi-parser extraction pipeline metadata (migration 013).
+  parserMethod?: string | null;
+  extractionConfidence?: number | null;
+  detectedPdfType?: string | null;
+  ocrUsed?: boolean | null;
+  routeReason?: string | null;
+  extractionWarnings?: string[] | null;
+  validationStatus?: string | null;
+  reconciliationDifference?: number | null;
+  missingTransactionCount?: number | null;
+  requiresReview?: boolean | null;
   confidence: number;
   error: string | null;
   createdAt: string;

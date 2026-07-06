@@ -64,6 +64,7 @@ import type {
   AuditSummary,
 } from "@/lib/accounting/analytics";
 import { statementDisplayName, statementReferenceDate } from "@/lib/accounting/statement-name";
+import { parserMethodLabel } from "@/lib/pdf/workerHandoff";
 import type { AiCommentaryResult, AiCommentaryType } from "@/lib/accounting/ai-service";
 
 type AccountingTab = "transactions" | "review" | "difference" | "summary" | "bank-rec" | "vat" | "general-ledger" | "trial-balance";
@@ -1643,16 +1644,30 @@ function ReviewRequiredPanel({
     <section className="rounded-xl border border-amber-200 bg-amber-50/60 p-4">
       <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
         <div>
-          <div className="inline-flex items-center gap-2 rounded-full bg-white px-3 py-1 text-xs font-black text-amber-700 shadow-sm ring-1 ring-amber-200">
-            <AlertTriangle className="h-4 w-4" />
-            Review required
+          <div className="flex flex-wrap items-center gap-2">
+            <div className="inline-flex items-center gap-2 rounded-full bg-white px-3 py-1 text-xs font-black text-amber-700 shadow-sm ring-1 ring-amber-200">
+              <AlertTriangle className="h-4 w-4" />
+              Review required
+            </div>
+            {run.parserMethod ? (
+              <span className="inline-flex items-center rounded-full bg-white px-3 py-1 text-xs font-black text-slate-600 shadow-sm ring-1 ring-slate-200">
+                {parserMethodLabel(run.parserMethod)}
+              </span>
+            ) : null}
           </div>
           <h3 className="mt-3 text-xl font-semibold text-navy-950">Review required</h3>
           <p className="mt-1 max-w-3xl text-sm font-semibold leading-6 text-slate-600">
-            {run.reviewReason?.trim() ||
-              run.error?.trim() ||
-              "We extracted a draft workbook, but this statement does not reconcile with its declared figures. Review before final export."}
+            {run.requiresReview || run.validationStatus === "review_required"
+              ? "Review required — extraction and bank totals do not reconcile."
+              : run.reviewReason?.trim() ||
+                run.error?.trim() ||
+                "We extracted a draft workbook, but this statement does not reconcile with its declared figures. Review before final export."}
           </p>
+          {run.missingTransactionCount ? (
+            <p className="mt-1 text-xs font-bold text-amber-700">
+              Suspected {run.missingTransactionCount} missing transaction(s){run.reconciliationDifference ? ` · difference R${Math.abs(run.reconciliationDifference).toFixed(2)}` : ""}.
+            </p>
+          ) : null}
         </div>
         <div className="grid gap-2 sm:grid-cols-3 lg:min-w-[420px]">
           {[

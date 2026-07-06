@@ -23,6 +23,7 @@ import type {
 } from "@/lib/accounting/types";
 import { buildAccountingModel } from "@/lib/accounting/model";
 import { statementDisplayName } from "@/lib/accounting/statement-name";
+import { parserMethodLabel } from "@/lib/pdf/workerHandoff";
 import { detectDuplicates, detectUnusualTransactions, detectDirectorTransactions } from "@/lib/accounting/analytics";
 import { DocumentViewer } from "@/components/document-viewer";
 
@@ -252,7 +253,13 @@ export function StatementWorkspace({ statementId }: { statementId: string }) {
               >
                 {dataQuality}
               </span>
+              {run.parserMethod ? (
+                <span className="rounded-full bg-slate-100 px-2.5 py-1 text-[11px] font-black text-slate-600">{parserMethodLabel(run.parserMethod)}</span>
+              ) : null}
             </div>
+            {run.requiresReview || run.validationStatus === "review_required" ? (
+              <p className="mt-1 text-xs font-bold text-amber-700">Review required — extraction and bank totals do not reconcile.</p>
+            ) : null}
             <p className="mt-0.5 text-xs font-semibold text-slate-500">
               {run.bank} · Account {run.accountNumber || "—"} ·{" "}
               {run.statementPeriodStart || run.statementPeriodEnd

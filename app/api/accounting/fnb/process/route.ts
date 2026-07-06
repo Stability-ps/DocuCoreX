@@ -3,6 +3,82 @@ import { recordAuditLog } from "@/lib/audit";
 import { detectBankProfile } from "@/lib/accounting/engine/registry";
 import { getAccountingRunDetail } from "@/lib/accounting/server";
 import { getWorkspaceContext } from "@/lib/server-documents";
+import { runExtractionPipeline } from "@/lib/pdf/runExtractionPipeline";
+import { buildWorkerInput, extractionProcessingMetadata } from "@/lib/pdf/workerHandoff";
+import type { WorkspaceContext } from "@/lib/server-documents";
+import type { AccountingRunDetail } from "@/lib/accounting/types";
+
+// Auto-run the multi-parser extraction pipeline before the worker: analyse the
+// PDF, choose the best source, persist the summary, and hand the worker the best
+// extracted text (keeping the original PDF as a fallback). Fully defensive — any
+// failure here falls back to the original worker path with a recorded warning.
+async function runPipelineBeforeWorker(
+  context: WorkspaceContext,
+  detail: AccountingRunDetail,
+): Promise<{ hints: Record<string, unknown>; warning: string | null }> {
+  const runId = detail.run.id;
+  try {
+    const { data: file, error } = await context.supabase.storage.from("documents").download(detail.run.sourceStoragePath);
+    if (error || !file) {
+      return { hints: {}, warning: `Extraction pipeline skipped: source unavailable (${error?.message ?? "no file"}).` };
+    }
+    const buffer = new Uint8Array(await file.arrayBuffer());
+    const pipeline = await runExtractionPipeline(buffer, detail.run.sourceStoragePath.split("/").pop() || "statement.pdf");
+    const meta = extractionProcessingMetadata(pipeline);
+    const workerInput = buildWorkerInput(pipeline);
+
+    // Persist the pipeline summary (separate update so a missing migration never
+    // blocks worker processing — the metadata is simply not stored until applied).
+    const { error: updateError } = await context.supabase
+      .from("accounting_statement_runs")
+      .update({
+        parser_method: meta.selectedParser,
+        extraction_confidence: meta.extractionConfidence,
+        detected_pdf_type: meta.detectedPdfType,
+        ocr_used: meta.ocrUsed,
+        route_reason: pipeline.routeReason,
+        extraction_warnings: meta.warnings,
+        validation_status: meta.validationStatus,
+        reconciliation_difference: meta.reconciliationDifference,
+        missing_transaction_count: meta.missingTransactionCount,
+        requires_review: pipeline.requiresReview,
+        updated_at: new Date().toISOString(),
+      })
+      .eq("workspace_id", context.workspaceId)
+      .eq("id", runId);
+    if (updateError) {
+      console.warn("[accounting/process] extraction metadata not persisted (migration 013 not applied?)", { runId, error: updateError.message });
+    }
+
+    console.info("[accounting/process] extraction pipeline", {
+      runId,
+      parserMethod: meta.selectedParser,
+      confidence: meta.extractionConfidence,
+      detectedPdfType: meta.detectedPdfType,
+      ocrUsed: meta.ocrUsed,
+      validationStatus: meta.validationStatus,
+      reconciliationDifference: meta.reconciliationDifference,
+      requiresReview: pipeline.requiresReview,
+      combinedTextLength: workerInput.preExtractedText.length,
+      transactionCandidates: workerInput.transactionCandidateCount,
+    });
+
+    // Hand the worker the best source; it keeps the original PDF as a fallback.
+    const hints: Record<string, unknown> = {
+      parser_method: meta.selectedParser,
+      extraction_source: workerInput.parser,
+      ocr_used: meta.ocrUsed,
+    };
+    if (workerInput.useProvidedText && workerInput.preExtractedText.trim()) {
+      hints.pre_extracted_text = workerInput.preExtractedText;
+    }
+    return { hints, warning: null };
+  } catch (pipelineError) {
+    const message = pipelineError instanceof Error ? pipelineError.message : String(pipelineError);
+    console.warn("[accounting/process] extraction pipeline failed — using original worker path", { runId, error: message });
+    return { hints: {}, warning: `Extraction pipeline error: ${message}` };
+  }
+}
 
 type ProcessBody = {
   runId?: string;
@@ -106,12 +182,16 @@ export async function POST(request: Request) {
         .eq("id", detail.run.processingJobId);
     }
 
+    // Auto-run the extraction pipeline first (analysis → best source → persist).
+    const { hints, warning: pipelineWarning } = await runPipelineBeforeWorker(context, detail);
+
     const workerPayload = {
       run_id: runId,
       workspace_id: context.workspaceId,
       document_id: detail.run.documentId,
       processing_job_id: detail.run.processingJobId,
       storage_path: detail.run.sourceStoragePath,
+      ...hints,
     };
     const parserProfile = detectBankProfile({ bank: detail.run.bank, fileName: detail.run.sourceStoragePath });
 
@@ -192,7 +272,7 @@ export async function POST(request: Request) {
       metadata: { bank: detail.run.bank, parserProfile, worker: "fastapi" },
     });
 
-    return NextResponse.json({ ok: true, result });
+    return NextResponse.json({ ok: true, result, pipelineWarning });
   } catch (error) {
     return NextResponse.json(
       { error: error instanceof Error ? error.message : "Unable to process accounting statement." },

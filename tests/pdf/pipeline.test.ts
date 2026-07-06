@@ -1,14 +1,95 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { register } from "node:module";
-import { pathToFileURL } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
+import { dirname, join } from "node:path";
 
 register("./alias-hook.mjs", pathToFileURL(new URL(".", import.meta.url).pathname));
+
+const root = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
+const read = (p: string) => readFileSync(join(root, p), "utf8");
 
 const { scoreExtraction } = await import("@/lib/pdf/scoreExtraction.ts");
 const { analyzeExtraction } = await import("@/lib/pdf/analyzePdf.ts");
 const { mergeExtractionResults } = await import("@/lib/pdf/mergeExtractionResults.ts");
 const { validateBankStatement } = await import("@/lib/accounting/validateBankStatement.ts");
+const { buildWorkerInput, extractionProcessingMetadata, parserMethodLabel } = await import("@/lib/pdf/workerHandoff.ts");
+
+function pipelineResult(over: Record<string, unknown> = {}) {
+  return {
+    analysis: { kind: "digital", isDigitalPdf: true, confidence: 90, needsOcr: false, pageCount: 4, totalTextLength: 4000, averageTextPerPage: 1000, pages: [], reasons: [], characters: 4000, averageCharsPerPage: 1000 },
+    ocrUsed: false,
+    parserMethod: "pdfplumber",
+    routeReason: "Digital PDF → native parsers.",
+    selection: { selectedParser: "pdfplumber", confidence: 85, reasons: [], warnings: [], requiresReview: false, extractionScores: {} },
+    merged: { parser: "pdfplumber", pageCount: 4, pages: [], combinedText: "x".repeat(500), transactions: [{ debit: 100 }, { debit: 50 }], metadata: { openingBalance: 1000, closingBalance: 850 }, warnings: [] },
+    validation: { valid: true, requiresReview: false, checks: [], expectedClosingBalance: 850, calculatedClosingBalance: 850, difference: 0, missingTransactionCount: 0 },
+    warnings: [],
+    requiresReview: false,
+    ...over,
+  };
+}
+
+test("buildWorkerInput hands the worker the best source and keeps PDF fallback", () => {
+  const input = buildWorkerInput(pipelineResult() as never);
+  assert.equal(input.parser, "pdfplumber");
+  assert.equal(input.useProvidedText, true, "trusts substantial high-confidence text");
+  assert.equal(input.transactionCandidateCount, 2);
+  assert.ok(input.preExtractedText.length >= 200);
+
+  // Thin / low-confidence text -> do not trust the provided text (PDF fallback).
+  const thin = buildWorkerInput(pipelineResult({ merged: { parser: "pdfjs", pageCount: 1, pages: [], combinedText: "short", transactions: [], metadata: {}, warnings: [] }, selection: { selectedParser: "pdfjs", confidence: 20, reasons: [], warnings: [], requiresReview: true, extractionScores: {} } }) as never);
+  assert.equal(thin.useProvidedText, false);
+});
+
+test("extractionProcessingMetadata maps the stored fields", () => {
+  const ok = extractionProcessingMetadata(pipelineResult() as never);
+  assert.equal(ok.selectedParser, "pdfplumber");
+  assert.equal(ok.extractionConfidence, 85);
+  assert.equal(ok.detectedPdfType, "digital");
+  assert.equal(ok.validationStatus, "valid");
+  assert.equal(ok.reconciliationDifference, 0);
+
+  const review = extractionProcessingMetadata(pipelineResult({
+    ocrUsed: true,
+    parserMethod: "ocr",
+    validation: { valid: false, requiresReview: true, checks: [], expectedClosingBalance: 850, calculatedClosingBalance: 1200, difference: 350, missingTransactionCount: 3 },
+    requiresReview: true,
+  }) as never);
+  assert.equal(review.validationStatus, "review_required");
+  assert.equal(review.ocrUsed, true);
+  assert.equal(review.reconciliationDifference, 350);
+  assert.equal(review.missingTransactionCount, 3);
+});
+
+test("parserMethodLabel renders the Processed-with message", () => {
+  assert.equal(parserMethodLabel("pdfjs"), "Processed with PDF.js");
+  assert.equal(parserMethodLabel("pdfplumber"), "Processed with pdfplumber");
+  assert.equal(parserMethodLabel("ocr"), "Processed with OCR");
+  assert.equal(parserMethodLabel("hybrid"), "Processed with hybrid extraction");
+});
+
+test("migration adds the processing-metadata columns", () => {
+  const sql = read("supabase/migrations/013_extraction_pipeline_metadata.sql");
+  for (const column of ["parser_method", "extraction_confidence", "detected_pdf_type", "ocr_used", "route_reason", "extraction_warnings", "validation_status", "reconciliation_difference", "missing_transaction_count", "requires_review"]) {
+    assert.match(sql, new RegExp(`add column if not exists ${column}\\b`), `migration must add ${column}`);
+  }
+});
+
+test("process route auto-runs the pipeline before the worker with a safe fallback", () => {
+  const route = read("app/api/accounting/fnb/process/route.ts");
+  assert.match(route, /runExtractionPipeline/, "route runs the extraction pipeline");
+  assert.match(route, /runPipelineBeforeWorker\(context, detail\)/, "pipeline runs before the worker call");
+  // Persists the metadata columns.
+  assert.match(route, /parser_method: meta\.selectedParser/);
+  assert.match(route, /requires_review: pipeline\.requiresReview/);
+  // Passes the best text to the worker, keeping the PDF as fallback.
+  assert.match(route, /hints\.pre_extracted_text = workerInput\.preExtractedText/);
+  // Safe fallback: pipeline failure records a warning and continues.
+  assert.match(route, /Extraction pipeline error/);
+  assert.match(route, /using original worker path/);
+});
 
 function page(text: string, tables: string[][][] = []) {
   return { pageNumber: 1, text, words: [], tables: tables.map((rows) => ({ rows })), lines: [] };

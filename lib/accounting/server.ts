@@ -41,6 +41,16 @@ type AccountingRunRow = {
   review_reason?: string | null;
   processing_duration_ms?: number | null;
   extraction_accuracy?: number | string | null;
+  parser_method?: string | null;
+  extraction_confidence?: number | string | null;
+  detected_pdf_type?: string | null;
+  ocr_used?: boolean | null;
+  route_reason?: string | null;
+  extraction_warnings?: string[] | null;
+  validation_status?: string | null;
+  reconciliation_difference?: number | string | null;
+  missing_transaction_count?: number | null;
+  requires_review?: boolean | null;
   confidence: number | string;
   error: string | null;
   created_at: string;
@@ -118,6 +128,16 @@ function mapRun(row: AccountingRunRow): AccountingStatementRun {
     reviewReason: row.review_reason ?? null,
     processingDurationMs: row.processing_duration_ms ?? null,
     extractionAccuracy: toNumber(row.extraction_accuracy ?? null) ?? null,
+    parserMethod: row.parser_method ?? null,
+    extractionConfidence: toNumber(row.extraction_confidence ?? null) ?? null,
+    detectedPdfType: row.detected_pdf_type ?? null,
+    ocrUsed: row.ocr_used ?? null,
+    routeReason: row.route_reason ?? null,
+    extractionWarnings: Array.isArray(row.extraction_warnings) ? row.extraction_warnings : null,
+    validationStatus: row.validation_status ?? null,
+    reconciliationDifference: toNumber(row.reconciliation_difference ?? null) ?? null,
+    missingTransactionCount: row.missing_transaction_count ?? null,
+    requiresReview: row.requires_review ?? null,
     confidence: toNumber(row.confidence) ?? 0,
     error: row.error,
     createdAt: row.created_at,

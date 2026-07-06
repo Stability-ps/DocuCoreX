@@ -20,7 +20,7 @@ import type { DocumentRecord, DocumentStatus, DocumentType } from "@/lib/types";
 
 type SupabaseServer = NonNullable<Awaited<ReturnType<typeof createSupabaseServerClient>>>;
 
-type WorkspaceContext = {
+export type WorkspaceContext = {
   supabase: SupabaseServer;
   userId: string;
   workspaceId: string;

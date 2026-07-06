@@ -94,6 +94,13 @@ class ProcessRequest(BaseModel):
     document_id: str | None = None
     processing_job_id: str | None = None
     storage_path: str
+    # Optional hints from the Node extraction pipeline. When pre_extracted_text is
+    # provided (from the selected parser: pdfjs/pdfplumber/ocr/hybrid) it is used
+    # as the statement text; the original PDF remains the fallback.
+    parser_method: str | None = None
+    extraction_source: str | None = None
+    ocr_used: bool | None = None
+    pre_extracted_text: str | None = None
 
 
 class CombineRequest(BaseModel):
@@ -3240,9 +3247,25 @@ def process_fnb_statement(payload: ProcessRequest, authorization: str | None = H
 
     try:
         pdf_bytes = supabase.storage.from_(bucket).download(payload.storage_path)
-        log_event("worker.storage_downloaded", run_id=payload.run_id, bytes=len(pdf_bytes))
-        pages = extract_statement_text(pdf_bytes)
-        full_text = "\n".join(page["text"] for page in pages)
+        log_event("worker.storage_downloaded", run_id=payload.run_id, bytes=len(pdf_bytes or b""))
+        pages = extract_statement_text(pdf_bytes) or []
+        native_text = "\n".join((page.get("text") or "") for page in pages)
+        # Prefer the Node pipeline's best extraction when it is meaningfully long;
+        # the natively-extracted PDF text remains the fallback.
+        provided = (payload.pre_extracted_text or "").strip()
+        if provided and len(provided) >= max(200, len(native_text) // 2):
+            full_text = provided
+            log_event(
+                "worker.pre_extracted_text_used",
+                run_id=payload.run_id,
+                parser_method=payload.parser_method,
+                extraction_source=payload.extraction_source,
+                ocr_used=bool(payload.ocr_used),
+                provided_chars=len(provided),
+                native_chars=len(native_text),
+            )
+        else:
+            full_text = native_text
         parser = BankRegistry.detect(full_text[:4000], payload.storage_path)
         if parser is None:
             raise HTTPException(status_code=422, detail="No parser profile is registered for this statement.")
@@ -3281,9 +3304,21 @@ def process_fnb_statement(payload: ProcessRequest, authorization: str | None = H
             service_fee_candidate_samples=service_fee_candidates[:6],
             parser_version=parser_version,
         )
-        transactions = parse_transactions(pages, metadata, full_text)
-        classification_rules = fetch_classification_rules(supabase, payload.workspace_id)
+        transactions = parse_transactions(pages, metadata, full_text) or []
+        classification_rules = fetch_classification_rules(supabase, payload.workspace_id) or []
         learned_rules_applied = apply_learned_classification_rules(transactions, classification_rules)
+        # Accounting-parser diagnostics (null-safe).
+        _summary = validation_summary(transactions)
+        log_event(
+            "worker.accounting_parser",
+            run_id=payload.run_id,
+            opening_balance_found=metadata.get("opening_balance") is not None,
+            closing_balance_found=metadata.get("closing_balance") is not None,
+            transactions_parsed=len(transactions),
+            credit_count=_summary.get("credit_count"),
+            debit_count=_summary.get("debit_count"),
+            parser_method=payload.parser_method,
+        )
         log_event(
             "worker.statement_parsed",
             worker=worker_version(),

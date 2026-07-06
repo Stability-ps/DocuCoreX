@@ -34,7 +34,15 @@ export async function runExtractionPipeline(buffer: Uint8Array, fileName = "stat
   // 1. PDF.js analysis (also yields the digital text extraction).
   const pdfjs = await extractWithPdfjs(buffer);
   const analysis = analyzeExtraction(pdfjs);
-  pdfLog("route.analysis", { kind: analysis.kind, isDigital: analysis.isDigitalPdf, confidence: analysis.confidence, needsOcr: analysis.needsOcr });
+  pdfLog("route.analysis", {
+    pageCount: analysis.pageCount,
+    totalTextLength: analysis.totalTextLength,
+    averageTextPerPage: analysis.averageTextPerPage,
+    kind: analysis.kind,
+    isDigitalPdf: analysis.isDigitalPdf,
+    needsOcr: analysis.needsOcr,
+    confidence: analysis.confidence,
+  });
 
   let routeReason: string;
   let pdfplumber: ExtractionResult | null = null;
@@ -70,6 +78,14 @@ export async function runExtractionPipeline(buffer: Uint8Array, fileName = "stat
   }
 
   const ocrUsed = Boolean(ocr && (ocr.combinedText.length > 0 || ocr.transactions.length > 0) && assembled.merged.parser !== "pdfjs");
+
+  // Merge log: selected parser, per-parser scores and the reasons for selection.
+  pdfLog("route.merge", {
+    selectedParser: assembled.selection.selectedParser,
+    confidence: assembled.selection.confidence,
+    extractionScores: assembled.selection.extractionScores,
+    reasons: assembled.selection.reasons,
+  });
 
   // 5. Parser method used.
   const parserMethod: ParserMethod = assembled.selection.selectedParser;
