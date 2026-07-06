@@ -331,10 +331,58 @@ def run_missing_column_fallback_case() -> None:
     assert_equal(raised, True, f"{case_id} non-schema errors propagate")
 
 
+def run_validation_diagnostics_case() -> None:
+    # When extraction does not match the statement's declared figures, validation
+    # must fail with the SPECIFIC rules and extracted-vs-declared values (not a
+    # generic "layout needs review"), and must never pass silently.
+    from main import HTTPException, ParsedTransaction, validate_statement
+
+    case_id = "validation-diagnostics"
+
+    def txn(debit=None, credit=None):
+        return ParsedTransaction(
+            transaction_date="2026-03-10", description="x", debit_amount=debit, credit_amount=credit,
+            running_balance=None, bank_charge=False, account_category="X", vat_treatment="review",
+            supported_by_invoice=False, confidence=90, review_status="ready", source_page=1, raw_text="r",
+        )
+
+    # Declares 143 (15 credits / 128 debits) but only 137 extracted (6 debits missing).
+    meta = {
+        "opening_balance": 3390.09, "closing_balance": 342.37,
+        "expected_transaction_count": 143, "expected_credit_count": 15, "expected_debit_count": 128,
+        "declared_credit_total": 419700.00, "declared_debit_total": 422747.72,
+    }
+    txns = [txn(credit=419700.00 / 15) for _ in range(15)] + [txn(debit=392835.18 / 122) for _ in range(122)]
+
+    raised = False
+    try:
+        validate_statement(meta, txns)
+    except HTTPException as exc:
+        raised = True
+        detail = exc.detail
+        for rule in ("reconciliation", "transaction_count", "debit_count", "debit_total"):
+            if rule not in detail["failed_rules"]:
+                raise AssertionError(f"{case_id}: expected failed rule {rule}, got {detail['failed_rules']}")
+        assert_equal(detail["suspected_missing_rows"], 6, f"{case_id} suspected missing rows")
+        assert_equal(detail["extracted_transaction_count"], 137, f"{case_id} extracted count")
+        assert_equal(detail["expected_transaction_count"], 143, f"{case_id} expected count")
+        joined = " ".join(detail["errors"])
+        if "extracted 137 vs declared 143" not in joined:
+            raise AssertionError(f"{case_id}: error must show extracted vs declared, got {detail['errors']}")
+        # Must not hardcode a specific statement's expected figures.
+        import inspect
+        import main as worker_main
+        if "111600.56" in inspect.getsource(worker_main.validate_statement):
+            raise AssertionError(f"{case_id}: validate_statement must not hardcode a per-statement expectation")
+    if not raised:
+        raise AssertionError(f"{case_id}: validation must fail (not pass silently) when extraction is short")
+
+
 def run() -> None:
     run_fnb_extraction_case()
     run_statement_period_case()
     run_missing_column_fallback_case()
+    run_validation_diagnostics_case()
 
     manifest = json.loads(MANIFEST_PATH.read_text())
     cases = manifest.get("cases") if isinstance(manifest, dict) else None

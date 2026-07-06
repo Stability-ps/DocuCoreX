@@ -48,6 +48,21 @@ test("no user-facing AI wording in the accounting UI", () => {
   assert.match(read("components/accounting/accounting-intelligence.tsx"), /label: "Transaction Insights"/, "AI Intelligence tab must be renamed to Transaction Insights");
 });
 
+test("validation failures surface the specific rule + extracted vs declared, not a generic message", () => {
+  // Worker: general per-rule validation with extracted/expected, no hardcode.
+  const worker = read("workers/accounting_worker/main.py");
+  assert.doesNotMatch(worker, /Decimal\("111600\.56"\)/, "must not hardcode a per-statement expectation");
+  assert.match(worker, /"failed_rules":/, "422 detail must list the failed rules");
+  assert.match(worker, /"suspected_missing_rows":/, "must report suspected missing rows");
+  assert.match(worker, /extracted \{extracted\} vs declared \{expected\}|extracted .* vs declared/, "errors show extracted vs declared");
+
+  // Client: no generic "statement layout needs review"; show the specific errors.
+  const ui = read("components/accounting/accounting-intelligence.tsx");
+  assert.doesNotMatch(ui, /this statement needs review before final export/, "generic message must be removed");
+  assert.match(ui, /Review required — \$\{errors\.slice/, "client must show the specific failed rules");
+  assert.match(ui, /suspected_missing_rows/, "client reads suspected missing rows");
+});
+
 test("statement processing starts automatically after upload with duplicate protection", () => {
   const ui = read("components/accounting/accounting-intelligence.tsx");
   // Upload auto-triggers processing (no manual click needed).

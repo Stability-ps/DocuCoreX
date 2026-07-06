@@ -229,13 +229,14 @@ function runDisplayTitle(run: AccountingStatementRun) {
 }
 
 function formatApiError(data: { error?: string; workerDetail?: unknown; workerRawBody?: string; workerStatus?: number }, fallback: string) {
-  const detail =
-    data.workerDetail && typeof data.workerDetail === "object" && "message" in data.workerDetail
-      ? String((data.workerDetail as { message?: unknown }).message)
-      : data.error;
+  const workerDetail = data.workerDetail && typeof data.workerDetail === "object" ? (data.workerDetail as Record<string, unknown>) : null;
+  const detail = workerDetail && "message" in workerDetail ? String(workerDetail.message) : data.error;
 
-  if (detail?.toLowerCase().includes("parser validation failed")) {
-    return "Review required. We extracted a draft workbook, but this statement needs review before final export. Some transactions or bank charges may need correction.";
+  // Surface the SPECIFIC failed validation rules (extracted vs declared) instead
+  // of a generic "statement layout needs review" message.
+  const errors = workerDetail && Array.isArray(workerDetail.errors) ? (workerDetail.errors as unknown[]).map(String) : [];
+  if (errors.length) {
+    return `Review required — ${errors.slice(0, 6).join("; ")}.`;
   }
 
   if (data.workerStatus) {
@@ -695,7 +696,17 @@ export function AccountingIntelligence() {
       });
       const data = (await response.json().catch(() => ({}))) as {
         error?: string;
-        result?: { status?: AccountingStatementRun["status"]; review_issue?: { message?: string; errors?: string[] } };
+        result?: {
+          status?: AccountingStatementRun["status"];
+          review_issue?: {
+            message?: string;
+            errors?: string[];
+            extracted_transaction_count?: number | null;
+            expected_transaction_count?: number | null;
+            suspected_missing_rows?: number | null;
+            reconciliation_difference?: string | null;
+          };
+        };
         workerDetail?: unknown;
         workerRawBody?: string;
         workerStatus?: number;
@@ -705,7 +716,10 @@ export function AccountingIntelligence() {
         throw new Error(formatApiError(data, "Processing failed."));
       }
       if (data.result?.status === "review") {
-        setMessage(data.result.review_issue?.message ?? "Statement processed. Manual review is required before export.");
+        const issue = data.result.review_issue;
+        // Show exactly which validation rules failed (extracted vs expected).
+        const detail = issue?.errors?.length ? issue.errors.join("; ") : issue?.message;
+        setMessage(detail ? `Review required — ${detail}.` : "Statement processed. Manual review is required before export.");
       } else {
         setMessage("Statement processed successfully. You can now review and export.");
       }
@@ -1635,7 +1649,9 @@ function ReviewRequiredPanel({
           </div>
           <h3 className="mt-3 text-xl font-semibold text-navy-950">Review required</h3>
           <p className="mt-1 max-w-3xl text-sm font-semibold leading-6 text-slate-600">
-            We extracted a draft workbook, but this statement needs review before final export. Some transactions or bank charges may need correction.
+            {run.reviewReason?.trim() ||
+              run.error?.trim() ||
+              "We extracted a draft workbook, but this statement does not reconcile with its declared figures. Review before final export."}
           </p>
         </div>
         <div className="grid gap-2 sm:grid-cols-3 lg:min-w-[420px]">

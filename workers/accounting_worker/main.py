@@ -1416,13 +1416,13 @@ def validate_extraction(metadata: dict[str, Any], transactions: list[ParsedTrans
     Returns a structured report; status is 'ok' only when everything ties out."""
     summary = validation_summary(transactions)
     checks: list[dict[str, Any]] = []
+    failures: list[str] = []
 
-    def check(name: str, ok: bool, detail: str) -> None:
-        checks.append({"name": name, "ok": bool(ok), "detail": detail})
+    def check(name: str, ok: bool, detail: str, extracted: Any = None, expected: Any = None) -> None:
+        checks.append({"name": name, "ok": bool(ok), "detail": detail, "extracted": extracted, "expected": expected})
         if not ok:
             failures.append(name)
 
-    failures: list[str] = []
     tolerance = Decimal("0.05")
 
     opening = metadata.get("opening_balance")
@@ -1431,26 +1431,28 @@ def validate_extraction(metadata: dict[str, Any], transactions: list[ParsedTrans
     if opening is not None and closing is not None:
         expected_close = (decimal_amount(opening) + summary["total_credits"] - summary["total_debits"]).quantize(CENT)
         recon_diff = (expected_close - decimal_amount(closing)).quantize(CENT)
-        check("reconciliation", abs(recon_diff) <= tolerance, f"difference {recon_diff}")
+        check("reconciliation", abs(recon_diff) <= tolerance, f"difference {recon_diff}", str(expected_close), str(decimal_amount(closing)))
 
     expected_count = metadata.get("expected_transaction_count")
     if expected_count is not None:
         actual = len(transactions)
-        check("transaction_count", actual == expected_count, f"extracted {actual} of {expected_count}")
+        check("transaction_count", actual == expected_count, f"extracted {actual} of {expected_count}", actual, expected_count)
 
     if metadata.get("expected_credit_count") is not None:
         check("credit_count", summary["credit_count"] == metadata["expected_credit_count"],
-              f"{summary['credit_count']} of {metadata['expected_credit_count']}")
+              f"extracted {summary['credit_count']} of {metadata['expected_credit_count']}", summary["credit_count"], metadata["expected_credit_count"])
     if metadata.get("expected_debit_count") is not None:
         check("debit_count", summary["debit_count"] == metadata["expected_debit_count"],
-              f"{summary['debit_count']} of {metadata['expected_debit_count']}")
+              f"extracted {summary['debit_count']} of {metadata['expected_debit_count']}", summary["debit_count"], metadata["expected_debit_count"])
 
     if metadata.get("declared_credit_total") is not None:
-        diff = (summary["total_credits"] - decimal_amount(metadata["declared_credit_total"])).quantize(CENT)
-        check("credit_total", abs(diff) <= tolerance, f"variance {diff}")
+        declared = decimal_amount(metadata["declared_credit_total"])
+        diff = (summary["total_credits"] - declared).quantize(CENT)
+        check("credit_total", abs(diff) <= tolerance, f"variance {diff}", str(summary["total_credits"]), str(declared))
     if metadata.get("declared_debit_total") is not None:
-        diff = (summary["total_debits"] - decimal_amount(metadata["declared_debit_total"])).quantize(CENT)
-        check("debit_total", abs(diff) <= tolerance, f"variance {diff}")
+        declared = decimal_amount(metadata["declared_debit_total"])
+        diff = (summary["total_debits"] - declared).quantize(CENT)
+        check("debit_total", abs(diff) <= tolerance, f"variance {diff}", str(summary["total_debits"]), str(declared))
 
     bank_charges = bank_charges_from_statement(metadata, transactions)
     return {
@@ -1506,38 +1508,40 @@ def balance_gap_diagnostics(metadata: dict[str, Any], transactions: list[ParsedT
     return gaps
 
 
+# Human-readable names for each validation rule, surfaced in the UI and logs.
+FRIENDLY_RULE = {
+    "reconciliation": "Reconciliation",
+    "transaction_count": "Transaction count",
+    "credit_count": "Credit count",
+    "debit_count": "Debit count",
+    "credit_total": "Credit total",
+    "debit_total": "Debit total",
+}
+
+
+def format_check_error(check: dict[str, Any]) -> str:
+    label = FRIENDLY_RULE.get(check["name"], check["name"])
+    extracted = check.get("extracted")
+    expected = check.get("expected")
+    if check["name"] == "reconciliation":
+        return f"Reconciliation: expected closing {expected}, calculated {extracted} (difference {check['detail'].replace('difference ', '')})"
+    if extracted is not None and expected is not None:
+        return f"{label}: extracted {extracted} vs declared {expected}"
+    return f"{label}: {check['detail']}"
+
+
 def validate_statement(metadata: dict[str, Any], transactions: list[ParsedTransaction]) -> dict[str, Any]:
+    # General, bank-agnostic validation against the statement's OWN declared
+    # figures (no hardcoded per-statement expectations). Every failed rule is
+    # surfaced with its extracted vs declared values.
+    extraction = validate_extraction(metadata, transactions)
     summary = validation_summary(transactions)
     opening = decimal_amount(metadata.get("opening_balance"))
     closing = decimal_amount(metadata.get("closing_balance"))
     calculated_closing = (opening + summary["total_credits"] - summary["total_debits"]).quantize(CENT)
-    errors: list[str] = []
 
-    if metadata.get("opening_balance") is not None and metadata.get("closing_balance") is not None and calculated_closing != closing:
-        errors.append(
-            f"Bank reconciliation failed: opening {opening} + credits {summary['total_credits']} - debits {summary['total_debits']} = {calculated_closing}, expected closing {closing}."
-        )
-
-    expected_statement = {
-        "opening_balance": Decimal("111600.56"),
-        "total_credits": Decimal("209375.00"),
-        "total_debits": Decimal("309779.10"),
-        "closing_balance": Decimal("11196.46"),
-        "credit_count": 4,
-        "debit_count": 58,
-        "transaction_count": 62,
-    }
-    if opening == expected_statement["opening_balance"] and closing == expected_statement["closing_balance"]:
-        if summary["total_credits"] != expected_statement["total_credits"]:
-            errors.append(f"Expected total credits {expected_statement['total_credits']}, parsed {summary['total_credits']}.")
-        if summary["total_debits"] != expected_statement["total_debits"]:
-            errors.append(f"Expected total debits {expected_statement['total_debits']}, parsed {summary['total_debits']}.")
-        if summary["credit_count"] != expected_statement["credit_count"]:
-            errors.append(f"Expected {expected_statement['credit_count']} credit transactions, parsed {summary['credit_count']}.")
-        if summary["debit_count"] != expected_statement["debit_count"]:
-            errors.append(f"Expected {expected_statement['debit_count']} debit transactions, parsed {summary['debit_count']}.")
-        if len(transactions) != expected_statement["transaction_count"]:
-            errors.append(f"Expected {expected_statement['transaction_count']} transactions, parsed {len(transactions)}.")
+    failed_checks = [check for check in extraction["checks"] if not check["ok"]]
+    errors = [format_check_error(check) for check in failed_checks]
 
     result = {
         "opening_balance": opening,
@@ -1547,6 +1551,8 @@ def validate_statement(metadata: dict[str, Any], transactions: list[ParsedTransa
         "transaction_count": len(transactions),
     }
     if errors:
+        expected_count = metadata.get("expected_transaction_count")
+        suspected_missing = max(0, int(expected_count) - len(transactions)) if expected_count is not None else None
         balance_gaps = balance_gap_diagnostics(metadata, transactions)
         sample_transactions = [
             {
@@ -1564,6 +1570,12 @@ def validate_statement(metadata: dict[str, Any], transactions: list[ParsedTransa
             detail=with_worker_version({
                 "message": "FNB parser validation failed.",
                 "errors": errors,
+                "failed_rules": [check["name"] for check in failed_checks],
+                "checks": extraction["checks"],
+                "reconciliation_difference": extraction.get("reconciliation_difference"),
+                "extracted_transaction_count": len(transactions),
+                "expected_transaction_count": expected_count,
+                "suspected_missing_rows": suspected_missing,
                 "summary": {key: str(value) for key, value in result.items()},
                 "balance_gaps": balance_gaps[:20],
                 "sample_transactions": sample_transactions,
@@ -1579,10 +1591,17 @@ def review_validation_issue(exc: HTTPException) -> dict[str, Any] | None:
     errors = detail.get("errors") if isinstance(detail.get("errors"), list) else []
     summary = detail.get("summary") if isinstance(detail.get("summary"), dict) else {}
     balance_gaps = detail.get("balance_gaps") if isinstance(detail.get("balance_gaps"), list) else []
+    checks = detail.get("checks") if isinstance(detail.get("checks"), list) else []
     return {
-        "message": "Parser validation failed. The statement layout needs review.",
+        "message": "Review required — extraction does not reconcile with the declared statement figures.",
         "errors": [str(error) for error in errors],
+        "failed_rules": detail.get("failed_rules") if isinstance(detail.get("failed_rules"), list) else [],
+        "checks": checks,
         "summary": summary,
+        "reconciliation_difference": detail.get("reconciliation_difference"),
+        "extracted_transaction_count": detail.get("extracted_transaction_count"),
+        "expected_transaction_count": detail.get("expected_transaction_count"),
+        "suspected_missing_rows": detail.get("suspected_missing_rows"),
         "balance_gaps": balance_gaps,
     }
 
@@ -1592,7 +1611,8 @@ def review_error_message(issue: dict[str, Any] | None) -> str | None:
         return None
     errors = issue.get("errors") if isinstance(issue.get("errors"), list) else []
     if errors:
-        return f"{issue['message']} {' '.join(str(error) for error in errors[:2])}"
+        # Detailed, specific reason (which rules failed + extracted vs declared).
+        return "Review required — " + "; ".join(str(error) for error in errors[:6]) + "."
     return str(issue["message"])
 
 
