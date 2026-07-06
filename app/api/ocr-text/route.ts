@@ -7,6 +7,11 @@ import { join } from "node:path";
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
+function readTimeoutMs(value: string | undefined, fallback: number) {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+}
+
 // OCR text-extraction endpoint for the multi-parser pipeline. Runs on the
 // conversion worker (ships ocrmypdf / tesseract / ghostscript) and returns
 // { text, pages, confidence, warnings, ocrDebug } for a PDF. Time-bounded and
@@ -17,11 +22,10 @@ export const dynamic = "force-dynamic";
 //     -H "x-docucorex-worker-secret: $CONVERSION_WORKER_SECRET" \
 //     https://<conversion-worker-url>/api/ocr-text
 //   GET the same URL to check the OCR binaries.
-// Per-attempt cap and a total budget (Req 2/4): OCR must not exceed ~120s. The
-// pipeline aborts its fetch at 120s, so keep the worker within that envelope and
-// stop escalating through fallback modes once the budget is spent.
-const OCR_TIMEOUT_MS = 120_000;
-const OCR_TOTAL_BUDGET_MS = 120_000;
+// Per-attempt cap and total budget are configurable so production can raise OCR
+// time limits for high-resolution scanned bank statements without code changes.
+const OCR_TIMEOUT_MS = readTimeoutMs(process.env.CONVERSION_OCR_TIMEOUT_MS ?? process.env.ACCOUNTING_OCR_TIMEOUT_MS, 300_000);
+const OCR_TOTAL_BUDGET_MS = readTimeoutMs(process.env.CONVERSION_OCR_TOTAL_BUDGET_MS ?? process.env.ACCOUNTING_OCR_TOTAL_BUDGET_MS, OCR_TIMEOUT_MS);
 
 function bin(envKey: string, fallback: string): string {
   return (process.env[envKey] && process.env[envKey]!.trim()) || fallback;
