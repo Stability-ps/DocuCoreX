@@ -8,7 +8,10 @@
     "start": "next start",
     "lint": "tsc --noEmit -p tsconfig.lint.json",
     "test": "playwright test",
-    "test:accounting-regression": "./workers/accounting_worker/tests/run_regression.sh"
+    "test:accounting-regression": "./workers/accounting_worker/tests/run_regression.sh",
+    "test:pdf": "playwright test tests/e2e/conversion-engine.spec.ts --project=desktop",
+    "test:export": "./workers/accounting_worker/tests/run_regression.sh",
+    "test:security": "playwright test tests/e2e/app-smoke.spec.ts --project=desktop"
   },
   "dependencies": {
     "@supabase/ssr": "^0.12.0",

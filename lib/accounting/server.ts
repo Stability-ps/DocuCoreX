@@ -38,8 +38,15 @@ type AccountingRunRow = {
   parser_version?: string | null;
   review_required?: boolean | null;
   review_reason?: string | null;
+  requires_review?: boolean | null;
   processing_duration_ms?: number | null;
   extraction_accuracy?: number | string | null;
+  error_message?: string | null;
+  parser_debug?: Record<string, unknown> | null;
+  ocr_debug?: Record<string, unknown> | null;
+  last_step?: string | null;
+  selected_parser?: string | null;
+  detected_pdf_type?: string | null;
   confidence: number | string;
   error: string | null;
   created_at: string;
@@ -114,8 +121,15 @@ function mapRun(row: AccountingRunRow): AccountingStatementRun {
     parserVersion: row.parser_version ?? undefined,
     reviewRequired: Boolean(row.review_required),
     reviewReason: row.review_reason ?? null,
+    requiresReview: Boolean(row.requires_review ?? row.review_required),
     processingDurationMs: row.processing_duration_ms ?? null,
     extractionAccuracy: toNumber(row.extraction_accuracy ?? null) ?? null,
+    errorMessage: row.error_message ?? row.error ?? null,
+    parserDebug: row.parser_debug ?? null,
+    ocrDebug: row.ocr_debug ?? null,
+    lastStep: row.last_step ?? null,
+    selectedParser: row.selected_parser ?? row.parser_profile ?? null,
+    detectedPdfType: row.detected_pdf_type ?? null,
     confidence: toNumber(row.confidence) ?? 0,
     error: row.error,
     createdAt: row.created_at,
@@ -291,6 +305,12 @@ export async function createFnbAccountingRun(file: File) {
       parser_profile: parserProfile,
       parser_version: parserProfile,
       status: "queued",
+      last_step: "queued",
+      selected_parser: parserProfile,
+      detected_pdf_type: "unknown",
+      parser_debug: {},
+      ocr_debug: {},
+      requires_review: false,
       source_storage_path: storagePath,
       created_by: context.userId,
     })

@@ -27,8 +27,15 @@ export type AccountingStatementRun = {
   parserVersion?: string;
   reviewRequired?: boolean;
   reviewReason?: string | null;
+  requiresReview?: boolean;
   processingDurationMs?: number | null;
   extractionAccuracy?: number | null;
+  errorMessage?: string | null;
+  parserDebug?: Record<string, unknown> | null;
+  ocrDebug?: Record<string, unknown> | null;
+  lastStep?: string | null;
+  selectedParser?: string | null;
+  detectedPdfType?: string | null;
   confidence: number;
   error: string | null;
   createdAt: string;

@@ -185,10 +185,6 @@ function formatApiError(data: { error?: string; workerDetail?: unknown; workerRa
       ? String((data.workerDetail as { message?: unknown }).message)
       : data.error;
 
-  if (detail?.toLowerCase().includes("parser validation failed")) {
-    return "Review required. We extracted a draft workbook, but this statement needs review before final export. Some transactions or bank charges may need correction.";
-  }
-
   if (data.workerStatus) {
     return `${detail || fallback} Worker HTTP ${data.workerStatus}.`;
   }
@@ -385,13 +381,29 @@ export function AccountingIntelligence() {
       queue.map((item) => {
         if (!item.runId) return item;
         const run = runById.get(item.runId);
-        if (!run) return item;
+        if (!run) {
+          if (item.status === "Processing" || item.status === "Uploaded") {
+            return { ...item, status: "Failed", error: item.error ?? "This run was removed before processing completed." };
+          }
+          return item;
+        }
         const nextStatus = queueStatusFromRunStatus(run.status);
         if (nextStatus === item.status) return item;
         return { ...item, status: nextStatus, error: nextStatus === "Failed" ? run.error ?? item.error : item.error };
       }),
     );
   }, [runById, runs.length]);
+
+  useEffect(() => {
+    const hasActiveRuns = runs.some((run) => run.status === "processing" || run.status === "queued");
+    if (!hasActiveRuns) return;
+
+    const interval = window.setInterval(() => {
+      void loadRuns(selectedRunId || undefined).catch(() => undefined);
+    }, 4000);
+
+    return () => window.clearInterval(interval);
+  }, [runs, selectedRunId]);
 
   async function uploadFiles(files: File[]) {
     if (!files.length) return;
@@ -604,11 +616,12 @@ export function AccountingIntelligence() {
     void createCombinedWorkbookWithPrecheck();
   }
 
-  async function processRun(runId: string, options?: { manageBusy?: boolean; refreshAfter?: boolean }) {
+  async function processRun(runId: string, options?: { manageBusy?: boolean; refreshAfter?: boolean; forceReprocess?: boolean }) {
     const manageBusy = options?.manageBusy ?? true;
     const refreshAfter = options?.refreshAfter ?? true;
+    const forceReprocess = options?.forceReprocess ?? false;
 
-    if (manageBusy) setBusy(`process:${runId}`);
+    if (manageBusy) setBusy(`${forceReprocess ? "force:" : "process:"}${runId}`);
     setError("");
     setDiagnostics("");
     setMessage("");
@@ -617,7 +630,7 @@ export function AccountingIntelligence() {
       const response = await fetch("/api/accounting/fnb/process", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ runId }),
+        body: JSON.stringify({ runId, forceReprocess }),
       });
       const data = (await response.json().catch(() => ({}))) as {
         error?: string;
@@ -633,7 +646,7 @@ export function AccountingIntelligence() {
       if (data.result?.status === "review") {
         setMessage(data.result.review_issue?.message ?? "Statement processed. Manual review is required before export.");
       } else {
-        setMessage("Statement processed successfully. You can now review and export.");
+        setMessage(forceReprocess ? "Statement reprocessed successfully." : "Statement processed successfully. You can now review and export.");
       }
       if (refreshAfter) await loadRuns(runId);
     } catch (processError) {
@@ -1081,7 +1094,15 @@ export function AccountingIntelligence() {
                   }}
                   onViewDifference={() => setActiveTab("difference")}
                   onRegenerate={() => void processRun(detail.run.id)}
-                  busy={busy === `process:${detail.run.id}`}
+                  busy={busy === `process:${detail.run.id}` || busy === `force:${detail.run.id}`}
+                />
+              ) : null}
+              {detail.run.status === "failed" ? (
+                <FailedRunPanel
+                  run={detail.run}
+                  busy={busy === `process:${detail.run.id}` || busy === `force:${detail.run.id}`}
+                  onRetry={() => void processRun(detail.run.id)}
+                  onForceReprocess={() => void processRun(detail.run.id, { forceReprocess: true })}
                 />
               ) : null}
 
@@ -1164,6 +1185,13 @@ export function AccountingIntelligence() {
               {activeTab === "vat" ? <VatPanel rows={vatRows} /> : null}
               {activeTab === "general-ledger" ? <GeneralLedgerPanel rows={accountRows} /> : null}
               {activeTab === "trial-balance" ? <TrialBalancePanel rows={accountRows} /> : null}
+            </div>
+          ) : selectedRunId ? (
+            <div className="p-6">
+              <div className="rounded-lg border border-slate-200 bg-slate-50 p-8 text-center">
+                <p className="text-lg font-semibold text-navy-950">Unable to load selected statement</p>
+                <p className="mx-auto mt-2 max-w-md text-sm font-medium text-slate-500">Refresh the statement list or select another run to view details.</p>
+              </div>
             </div>
           ) : (
             <EmptyWorkspace />
@@ -1387,6 +1415,71 @@ function ReviewRequiredPanel({
       </div>
 
       {canShowTechnicalDetails ? <TechnicalDetails diagnostics={diagnostics} /> : null}
+    </section>
+  );
+}
+
+function FailedRunPanel({
+  run,
+  busy,
+  onRetry,
+  onForceReprocess,
+}: {
+  run: AccountingStatementRun;
+  busy: boolean;
+  onRetry: () => void;
+  onForceReprocess: () => void;
+}) {
+  const parserDebug = run.parserDebug ? JSON.stringify(run.parserDebug, null, 2) : null;
+  const ocrDebug = run.ocrDebug ? JSON.stringify(run.ocrDebug, null, 2) : null;
+
+  return (
+    <section className="rounded-xl border border-rose-200 bg-rose-50/60 p-4">
+      <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+        <div>
+          <div className="inline-flex items-center gap-2 rounded-full bg-white px-3 py-1 text-xs font-black text-rose-700 shadow-sm ring-1 ring-rose-200">
+            <AlertTriangle className="h-4 w-4" />
+            Processing failed
+          </div>
+          <h3 className="mt-3 text-xl font-semibold text-navy-950">Statement failed with actionable details</h3>
+          <p className="mt-1 text-sm font-semibold leading-6 text-slate-700">{run.errorMessage || run.error || "No error details were captured."}</p>
+        </div>
+        <div className="flex flex-wrap gap-2">
+          <button type="button" onClick={onRetry} disabled={busy} className="inline-flex min-h-10 items-center gap-2 rounded-lg bg-royal-600 px-4 text-sm font-black text-white disabled:bg-slate-300">
+            {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCcw className="h-4 w-4" />}
+            Retry
+          </button>
+          <button type="button" onClick={onForceReprocess} disabled={busy} className="min-h-10 rounded-lg border border-slate-200 bg-white px-4 text-sm font-black text-slate-700 disabled:text-slate-300">
+            Force Reprocess
+          </button>
+        </div>
+      </div>
+
+      <div className="mt-3 grid gap-2 sm:grid-cols-3">
+        <ReviewMetric label="Last step" value={run.lastStep || "-"} tone="text-rose-700" />
+        <ReviewMetric label="Parser" value={run.selectedParser || run.parserProfile || "-"} tone="text-navy-950" />
+        <ReviewMetric label="PDF type" value={run.detectedPdfType || "-"} tone="text-navy-950" />
+      </div>
+
+      {canShowTechnicalDetails ? (
+        <details className="mt-4 rounded-lg border border-rose-200 bg-white p-3">
+          <summary className="cursor-pointer text-sm font-black text-navy-950">Failure diagnostics</summary>
+          <div className="mt-3 grid gap-3">
+            {parserDebug ? (
+              <div>
+                <p className="text-[11px] font-black uppercase tracking-[0.08em] text-slate-400">Parser debug</p>
+                <pre className="mt-1 max-h-52 overflow-auto rounded bg-slate-950 p-3 text-[11px] font-medium leading-5 text-slate-100">{parserDebug}</pre>
+              </div>
+            ) : null}
+            {ocrDebug ? (
+              <div>
+                <p className="text-[11px] font-black uppercase tracking-[0.08em] text-slate-400">OCR debug</p>
+                <pre className="mt-1 max-h-52 overflow-auto rounded bg-slate-950 p-3 text-[11px] font-medium leading-5 text-slate-100">{ocrDebug}</pre>
+              </div>
+            ) : null}
+          </div>
+        </details>
+      ) : null}
     </section>
   );
 }

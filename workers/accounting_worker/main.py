@@ -3,6 +3,7 @@ import json
 import logging
 import os
 import re
+import shutil
 import subprocess
 import tempfile
 import time
@@ -94,6 +95,14 @@ class ProcessRequest(BaseModel):
     document_id: str | None = None
     processing_job_id: str | None = None
     storage_path: str
+    force_reprocess: bool = False
+
+
+class OcrTextRequest(BaseModel):
+    workspace_id: str
+    storage_path: str
+    document_id: str | None = None
+    force_reprocess: bool = False
 
 
 class CombineRequest(BaseModel):
@@ -127,6 +136,58 @@ def get_supabase() -> Client:
     if not url or not key:
         raise RuntimeError("SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY are required")
     return create_client(url, key)
+
+
+def get_cached_ocr_result(supabase: Client, document_id: str | None) -> dict[str, Any] | None:
+    if not document_id:
+        return None
+    try:
+        response = (
+            supabase.table("ocr_results")
+            .select("text,confidence,layout,created_at")
+            .eq("document_id", document_id)
+            .order("created_at", desc=True)
+            .limit(1)
+            .execute()
+        )
+        rows = response.data if isinstance(response.data, list) else []
+        if not rows:
+            return None
+        row = rows[0]
+        text = str(row.get("text") or "")
+        if len(text.strip()) < 20:
+            return None
+        return {
+            "text": text,
+            "confidence": float(row.get("confidence") or 0),
+            "layout": row.get("layout") if isinstance(row.get("layout"), dict) else {},
+            "created_at": row.get("created_at"),
+        }
+    except Exception as exc:
+        log_warning("worker.ocr_cache_read_failed", document_id=document_id, error=str(exc))
+        return None
+
+
+def cache_ocr_result(supabase: Client, document_id: str | None, text: str, ocr_debug: dict[str, Any]) -> None:
+    if not document_id or len(text.strip()) < 20:
+        return
+    try:
+        supabase.table("ocr_results").insert(
+            {
+                "document_id": document_id,
+                "language": "eng",
+                "confidence": 92,
+                "text": text,
+                "layout": {
+                    "source": "accounting_worker_ocr",
+                    "engine": ocr_debug.get("engine"),
+                    "jobs": ocr_debug.get("jobs"),
+                    "duration_ms": ocr_debug.get("duration_ms"),
+                },
+            }
+        ).execute()
+    except Exception as exc:
+        log_warning("worker.ocr_cache_write_failed", document_id=document_id, error=str(exc))
 
 
 def fetch_classification_rules(supabase: Client, workspace_id: str) -> list[dict[str, Any]]:
@@ -268,6 +329,93 @@ def extract_statement_text(pdf_bytes: bytes) -> list[dict[str, Any]]:
     if sum(len(page["text"]) for page in pages) >= 250:
         return pages
     return extract_text_with_pymupdf(pdf_bytes)
+
+
+def detect_pdf_type(pdf_bytes: bytes) -> tuple[str, int, list[dict[str, Any]]]:
+    preview_pages = extract_text_with_pymupdf(pdf_bytes)
+    preview_characters = sum(len((page.get("text") or "").strip()) for page in preview_pages)
+    if preview_characters > 500:
+        return "digital", preview_characters, preview_pages
+    if preview_characters <= 20:
+        return "scanned", preview_characters, preview_pages
+    return "hybrid", preview_characters, preview_pages
+
+
+def ocr_binary_path() -> str:
+    configured = os.getenv("OCRMYPDF_PATH")
+    if configured:
+        return configured
+    discovered = shutil.which("ocrmypdf")
+    if discovered:
+        return discovered
+    raise HTTPException(
+        status_code=503,
+        detail=with_worker_version(
+            {
+                "message": "OCR engine is unavailable on the worker.",
+                "status": "ocr_binary_missing",
+            }
+        ),
+    )
+
+
+def run_ocrmypdf(pdf_bytes: bytes) -> tuple[bytes, dict[str, Any]]:
+    binary = ocr_binary_path()
+    with tempfile.TemporaryDirectory(prefix="docucorex-ocr-") as temp_dir:
+        input_path = os.path.join(temp_dir, "input.pdf")
+        output_path = os.path.join(temp_dir, "output.pdf")
+        with open(input_path, "wb") as handle:
+            handle.write(pdf_bytes)
+
+        command = [
+            binary,
+            "--jobs",
+            "1",
+            "--skip-text",
+            "--force-ocr",
+            "--output-type",
+            "pdf",
+            "--quiet",
+            input_path,
+            output_path,
+        ]
+        started = time.perf_counter()
+        process = subprocess.run(command, capture_output=True, text=True, timeout=240)
+        duration_ms = round((time.perf_counter() - started) * 1000, 2)
+        if process.returncode != 0 or not os.path.exists(output_path):
+            raise HTTPException(
+                status_code=422,
+                detail=with_worker_version(
+                    {
+                        "message": "OCR processing failed for this PDF.",
+                        "status": "ocr_failed",
+                        "ocr_debug": {
+                            "engine": "ocrmypdf",
+                            "duration_ms": duration_ms,
+                            "exit_code": process.returncode,
+                            "stderr": (process.stderr or "")[:1800],
+                            "stdout": (process.stdout or "")[:500],
+                        },
+                    }
+                ),
+            )
+
+        with open(output_path, "rb") as handle:
+            output_pdf = handle.read()
+        return output_pdf, {
+            "engine": "ocrmypdf",
+            "duration_ms": duration_ms,
+            "jobs": 1,
+            "stderr": (process.stderr or "")[:500],
+            "stdout": (process.stdout or "")[:500],
+        }
+
+
+def ocr_text_pages(text: str) -> list[dict[str, Any]]:
+    parts = [part.strip() for part in re.split(r"\f+", text) if part and part.strip()]
+    if not parts:
+        parts = [text]
+    return [{"page": index + 1, "text": part, "tables": []} for index, part in enumerate(parts)]
 
 
 def find_first(patterns: list[str], text: str) -> str | None:
@@ -1215,6 +1363,108 @@ def extraction_diagnostics(pages: list[dict[str, Any]], full_text: str) -> dict[
         "sample_lines": sample_lines,
         "sample_tables": sample_tables,
     }
+
+
+def extract_statement_content(
+    supabase: Client,
+    payload: ProcessRequest,
+    pdf_bytes: bytes,
+) -> tuple[list[dict[str, Any]], str, str, dict[str, Any], dict[str, Any]]:
+    detected_pdf_type, preview_chars, preview_pages = detect_pdf_type(pdf_bytes)
+    ocr_debug: dict[str, Any] = {
+        "attempted": False,
+        "used": False,
+        "cached": False,
+        "preview_characters": preview_chars,
+        "detected_pdf_type": detected_pdf_type,
+    }
+    parser_debug: dict[str, Any] = {
+        "preview_characters": preview_chars,
+        "detected_pdf_type": detected_pdf_type,
+        "force_reprocess": payload.force_reprocess,
+    }
+    last_step = "pdf_text_extraction"
+
+    if detected_pdf_type == "digital" and not payload.force_reprocess:
+        pages = extract_text_with_pdfplumber(pdf_bytes)
+        if sum(len(page.get("text") or "") for page in pages) < 80:
+            pages = preview_pages
+        full_text = "\n".join(page.get("text") or "" for page in pages)
+        parser_debug["source"] = "pdfplumber"
+        parser_debug["characters"] = len(full_text)
+        return pages, full_text, last_step, parser_debug, ocr_debug
+
+    cached = get_cached_ocr_result(supabase, payload.document_id) if not payload.force_reprocess else None
+    if cached and detected_pdf_type in {"scanned", "hybrid"}:
+        ocr_debug.update(
+            {
+                "attempted": False,
+                "used": True,
+                "cached": True,
+                "cached_at": cached.get("created_at"),
+                "cache_confidence": cached.get("confidence"),
+            }
+        )
+        full_text = str(cached.get("text") or "")
+        pages = ocr_text_pages(full_text)
+        parser_debug["source"] = "ocr_cache"
+        parser_debug["characters"] = len(full_text)
+        return pages, full_text, "ocr_cached", parser_debug, ocr_debug
+
+    if detected_pdf_type == "scanned" or payload.force_reprocess:
+        last_step = "ocr_processing"
+        ocr_debug["attempted"] = True
+        ocr_pdf_bytes, ocr_runtime = run_ocrmypdf(pdf_bytes)
+        ocr_debug.update(ocr_runtime)
+        ocr_debug["used"] = True
+        ocr_pages = extract_statement_text(ocr_pdf_bytes)
+        full_text = "\n".join(page.get("text") or "" for page in ocr_pages)
+        if len(full_text.strip()) < 20:
+            raise HTTPException(
+                status_code=422,
+                detail=with_worker_version(
+                    {
+                        "message": "OCR completed but no readable text was detected.",
+                        "status": "ocr_empty_text",
+                        "ocr_debug": ocr_debug,
+                    }
+                ),
+            )
+        cache_ocr_result(supabase, payload.document_id, full_text, ocr_debug)
+        parser_debug["source"] = "ocr_output"
+        parser_debug["characters"] = len(full_text)
+        return ocr_pages, full_text, "ocr_completed", parser_debug, ocr_debug
+
+    pages = extract_statement_text(pdf_bytes)
+    full_text = "\n".join(page.get("text") or "" for page in pages)
+    parser_debug["source"] = "mixed_pdf_extract"
+    parser_debug["characters"] = len(full_text)
+
+    if len(full_text.strip()) <= 20:
+        last_step = "ocr_processing"
+        ocr_debug["attempted"] = True
+        ocr_pdf_bytes, ocr_runtime = run_ocrmypdf(pdf_bytes)
+        ocr_debug.update(ocr_runtime)
+        ocr_debug["used"] = True
+        pages = extract_statement_text(ocr_pdf_bytes)
+        full_text = "\n".join(page.get("text") or "" for page in pages)
+        if len(full_text.strip()) < 20:
+            raise HTTPException(
+                status_code=422,
+                detail=with_worker_version(
+                    {
+                        "message": "OCR completed but no readable text was detected.",
+                        "status": "ocr_empty_text",
+                        "ocr_debug": ocr_debug,
+                    }
+                ),
+            )
+        cache_ocr_result(supabase, payload.document_id, full_text, ocr_debug)
+        parser_debug["source"] = "mixed_pdf_ocr_output"
+        parser_debug["characters"] = len(full_text)
+        return pages, full_text, "ocr_completed", parser_debug, ocr_debug
+
+    return pages, full_text, last_step, parser_debug, ocr_debug
 
 
 HEADER_FILL = PatternFill("solid", fgColor="0F2A5F")
@@ -2541,6 +2791,74 @@ def version() -> dict[str, str]:
     return worker_version()
 
 
+@app.post("/ocr-text")
+def ocr_text(payload: OcrTextRequest, authorization: str | None = Header(default=None)) -> dict[str, Any]:
+    verify_worker_token(authorization)
+    supabase = get_supabase()
+    bucket = os.getenv("SUPABASE_BUCKET", "documents")
+    started = time.perf_counter()
+
+    try:
+        pdf_bytes = supabase.storage.from_(bucket).download(payload.storage_path)
+        cached = None if payload.force_reprocess else get_cached_ocr_result(supabase, payload.document_id)
+        if cached:
+            return with_worker_version(
+                {
+                    "ok": True,
+                    "cached": True,
+                    "text": cached.get("text"),
+                    "characters": len(str(cached.get("text") or "")),
+                    "ocr_debug": {
+                        "cached": True,
+                        "attempted": False,
+                        "used": True,
+                        "cache_confidence": cached.get("confidence"),
+                        "duration_ms": round((time.perf_counter() - started) * 1000, 2),
+                    },
+                }
+            )
+
+        ocr_pdf_bytes, ocr_debug = run_ocrmypdf(pdf_bytes)
+        pages = extract_statement_text(ocr_pdf_bytes)
+        text = "\n".join(page.get("text") or "" for page in pages)
+        if len(text.strip()) < 20:
+            raise HTTPException(
+                status_code=422,
+                detail=with_worker_version(
+                    {
+                        "message": "OCR completed but produced no usable text.",
+                        "status": "ocr_empty_text",
+                        "ocr_debug": ocr_debug,
+                    }
+                ),
+            )
+
+        cache_ocr_result(supabase, payload.document_id, text, ocr_debug)
+        return with_worker_version(
+            {
+                "ok": True,
+                "cached": False,
+                "text": text,
+                "characters": len(text),
+                "ocr_debug": {**ocr_debug, "cached": False, "attempted": True, "used": True},
+            }
+        )
+    except HTTPException:
+        raise
+    except Exception as exc:
+        log_exception("worker.ocr_text_failed", storage_path=payload.storage_path, error=str(exc))
+        raise HTTPException(
+            status_code=422,
+            detail=with_worker_version(
+                {
+                    "message": str(exc),
+                    "status": "ocr_unhandled_error",
+                    "ocr_debug": {"attempted": True, "used": False},
+                }
+            ),
+        ) from exc
+
+
 @app.post("/combine-fnb-statements")
 def combine_fnb_statements(payload: CombineRequest, authorization: str | None = Header(default=None)) -> Response:
     verify_worker_token(authorization)
@@ -2650,6 +2968,10 @@ def process_fnb_statement(payload: ProcessRequest, authorization: str | None = H
     parser_profile = WORKER_PARSER_VERSION
     parser_version = WORKER_PARSER_VERSION
     bank_name = "FNB South Africa"
+    detected_pdf_type = "unknown"
+    parser_debug: dict[str, Any] = {}
+    ocr_debug: dict[str, Any] = {}
+    last_step = "starting"
 
     log_event(
         "worker.process_request",
@@ -2665,8 +2987,9 @@ def process_fnb_statement(payload: ProcessRequest, authorization: str | None = H
     try:
         pdf_bytes = supabase.storage.from_(bucket).download(payload.storage_path)
         log_event("worker.storage_downloaded", run_id=payload.run_id, bytes=len(pdf_bytes))
-        pages = extract_statement_text(pdf_bytes)
-        full_text = "\n".join(page["text"] for page in pages)
+        last_step = "pdf_downloaded"
+        pages, full_text, last_step, parser_debug, ocr_debug = extract_statement_content(supabase, payload, pdf_bytes)
+        detected_pdf_type = str(parser_debug.get("detected_pdf_type") or "unknown")
         parser = BankRegistry.detect(full_text[:4000], payload.storage_path)
         if parser is None:
             raise HTTPException(status_code=422, detail="No parser profile is registered for this statement.")
@@ -2680,6 +3003,11 @@ def process_fnb_statement(payload: ProcessRequest, authorization: str | None = H
                     {
                         "message": f"Detected parser profile {parser_profile}, but only fnb_business_v1 is implemented for extraction in this phase.",
                         "status": "parser_profile_not_implemented",
+                        "last_step": "parser_detected",
+                        "selected_parser": parser_profile,
+                        "detected_pdf_type": detected_pdf_type,
+                        "parser_debug": parser_debug,
+                        "ocr_debug": ocr_debug,
                     }
                 ),
             )
@@ -2690,6 +3018,7 @@ def process_fnb_statement(payload: ProcessRequest, authorization: str | None = H
             characters=len(full_text),
             parser_profile=parser_profile,
         )
+        last_step = "parser_detected"
         metadata = parse_metadata(full_text)
         metadata["parser_profile"] = parser_profile
         metadata["parser_version"] = parser_version
@@ -2718,6 +3047,7 @@ def process_fnb_statement(payload: ProcessRequest, authorization: str | None = H
             service_fee_rows=sum(1 for transaction in transactions if transaction.description.startswith("#")),
             learned_rules_applied=learned_rules_applied,
         )
+        last_step = "transactions_parsed"
 
         if not transactions:
             diagnostics = extraction_diagnostics(pages, full_text)
@@ -2727,6 +3057,11 @@ def process_fnb_statement(payload: ProcessRequest, authorization: str | None = H
                 detail={
                     "message": "No FNB transactions could be parsed from this PDF.",
                     "diagnostics": diagnostics,
+                    "last_step": last_step,
+                    "selected_parser": parser_profile,
+                    "detected_pdf_type": detected_pdf_type,
+                    "parser_debug": parser_debug,
+                    "ocr_debug": ocr_debug,
                     "worker": worker_version(),
                 },
             )
@@ -2762,6 +3097,7 @@ def process_fnb_statement(payload: ProcessRequest, authorization: str | None = H
         supabase.table("accounting_transactions").delete().eq("run_id", payload.run_id).execute()
         rows = [transaction_insert_row(transaction, payload.run_id, payload.workspace_id) for transaction in transactions]
         supabase.table("accounting_transactions").insert(rows).execute()
+        last_step = "transactions_saved"
 
         workbook_bytes = build_workbook(metadata, transactions)
         ai_stats = metadata.get("_ai_diagnostics") or ai_diagnostics(enabled=False)
@@ -2780,6 +3116,7 @@ def process_fnb_statement(payload: ProcessRequest, authorization: str | None = H
             )
         export_duration_ms = round((time.perf_counter() - export_started) * 1000, 2)
         log_event("worker.workbook_exported", run_id=payload.run_id, duration_ms=export_duration_ms, parser_profile=WORKER_PARSER_VERSION)
+        last_step = "workbook_uploaded"
 
         bank_charges_total = sum(transaction.debit_amount or 0 for transaction in transactions if transaction.bank_charge)
         avg_confidence = sum(transaction.confidence for transaction in transactions) / len(transactions)
@@ -2804,6 +3141,13 @@ def process_fnb_statement(payload: ProcessRequest, authorization: str | None = H
                 "extraction_accuracy": round(avg_confidence, 2),
                 "confidence": round(avg_confidence, 2),
                 "error": run_error,
+                "error_message": run_error,
+                "last_step": "completed",
+                "selected_parser": parser_profile,
+                "detected_pdf_type": detected_pdf_type,
+                "parser_debug": parser_debug,
+                "ocr_debug": ocr_debug,
+                "requires_review": review_required,
                 "updated_at": datetime.utcnow().isoformat(),
             }
         ).eq("id", payload.run_id).eq("workspace_id", payload.workspace_id).execute()
@@ -2834,6 +3178,8 @@ def process_fnb_statement(payload: ProcessRequest, authorization: str | None = H
             export_duration_ms=export_duration_ms,
             parser_profile=parser_profile,
             processing_duration_ms=processing_duration_ms,
+            detected_pdf_type=detected_pdf_type,
+            ocr_debug=ocr_debug,
         )
 
         return {
@@ -2845,11 +3191,23 @@ def process_fnb_statement(payload: ProcessRequest, authorization: str | None = H
             "review_issue": review_issue,
             "ai_diagnostics": ai_stats,
             "parser_profile": parser_profile,
+            "detected_pdf_type": detected_pdf_type,
+            "selected_parser": parser_profile,
+            "last_step": "completed",
+            "parser_debug": parser_debug,
+            "ocr_debug": ocr_debug,
+            "requires_review": review_required,
             "processing_duration_ms": processing_duration_ms,
             "worker": worker_version(),
         }
     except HTTPException as exc:
         message = json.dumps(exc.detail, default=str) if isinstance(exc.detail, (dict, list)) else str(exc.detail)
+        detail = exc.detail if isinstance(exc.detail, dict) else {}
+        if isinstance(detail, dict):
+            ocr_debug = detail.get("ocr_debug") if isinstance(detail.get("ocr_debug"), dict) else ocr_debug
+            parser_debug = detail.get("parser_debug") if isinstance(detail.get("parser_debug"), dict) else parser_debug
+            detected_pdf_type = str(detail.get("detected_pdf_type") or detected_pdf_type)
+            last_step = str(detail.get("last_step") or last_step or "failed")
         record_parser_failure(supabase, payload.workspace_id, bank_name, message)
         log_exception(
             "worker.process_failed",
@@ -2861,7 +3219,18 @@ def process_fnb_statement(payload: ProcessRequest, authorization: str | None = H
             error=message,
         )
         supabase.table("accounting_statement_runs").update(
-            {"status": "failed", "error": message, "updated_at": datetime.utcnow().isoformat()}
+            {
+                "status": "failed",
+                "error": message,
+                "error_message": message,
+                "last_step": last_step or "failed",
+                "selected_parser": parser_profile,
+                "detected_pdf_type": detected_pdf_type,
+                "parser_debug": parser_debug,
+                "ocr_debug": ocr_debug,
+                "requires_review": False,
+                "updated_at": datetime.utcnow().isoformat(),
+            }
         ).eq("id", payload.run_id).eq("workspace_id", payload.workspace_id).execute()
         if payload.processing_job_id:
             supabase.table("processing_jobs").update(
@@ -2881,7 +3250,18 @@ def process_fnb_statement(payload: ProcessRequest, authorization: str | None = H
             error=message,
         )
         supabase.table("accounting_statement_runs").update(
-            {"status": "failed", "error": message, "updated_at": datetime.utcnow().isoformat()}
+            {
+                "status": "failed",
+                "error": message,
+                "error_message": message,
+                "last_step": last_step or "failed",
+                "selected_parser": parser_profile,
+                "detected_pdf_type": detected_pdf_type,
+                "parser_debug": parser_debug,
+                "ocr_debug": ocr_debug,
+                "requires_review": False,
+                "updated_at": datetime.utcnow().isoformat(),
+            }
         ).eq("id", payload.run_id).eq("workspace_id", payload.workspace_id).execute()
         if payload.processing_job_id:
             supabase.table("processing_jobs").update(

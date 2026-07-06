@@ -17,3 +17,4 @@ if sys.version_info < (3, 10):
 PY
 
 "$PYTHON_BIN" workers/accounting_worker/tests/regression_suite.py
+"$PYTHON_BIN" workers/accounting_worker/tests/ocr_flow_check.py
