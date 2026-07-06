@@ -588,9 +588,15 @@ def classify_transaction(description: str, debit: float | None, credit: float | 
           "life cover", "outsurance", "santam", "old mutual"), "Insurance Expense", "exempt", False, 85),
         # Salaries / payroll
         (("salary", "payroll", "wages", "nanny", "care giver"), "Salaries & Wages", "out_of_scope", False, 90),
+        # Medical aid / employee medical deductions
+        (("medical aid", "med aid", "medshield", "momentum health", "discovery health", "bonitas"),
+         "Salaries & Wages", "out_of_scope", False, 90),
         # Loans — balance-sheet liability, excluded from P&L (interest is separate).
         (("loan repayment", "loan installment", "loan instalment", "vehicle finance", "wesbank", "loan"),
          "Loan / Liability", "out_of_scope", False, 80),
+        # Road use / toll operators
+        (("toll", "sanral", "n3tc", "bakwena", "tracn4", "toll gate"),
+         "Road Tolls", "standard", False, 88),
         # Refunds
         (("refund", "reversal"), "Refund / Suspense", "review", False, 74),
         # Levies
@@ -604,11 +610,17 @@ def classify_transaction(description: str, debit: float | None, credit: float | 
         # Meals / entertainment
         (("uber eats", "mr d food", "restaurant"), "Staff Welfare / Meals / Entertainment", "review", False, 80),
         # Fuel / motor
-        (("fuel", "petrol", "garage", "engen", "shell", "bp ", "sasol", "total ", "caltex"),
+        (("fuel", "petrol", "diesel", "garage", "engen", "shell", "bp ", "sasol", "total ", "caltex", "volvo"),
          "Motor Vehicle Expenses", "standard", False, 84),
+        # Freight / logistics suppliers and customer references seen on FNB freight
+        # statements (kept direction-safe: receipts stay income, payments stay opex).
+        (("afrigreen", "freight aces", "millenium trans", "pablo logistics", "kavi comm", "orca freight", "arca freight"),
+         "Sales / Revenue" if credit and credit > 0 else "Operating Expenses", "standard", False, 87),
+        # Pharmacy / medical retail
+        (("pharmacy", "chemist", "dis-chem", "clicks"), "Medical Expenses", "review", False, 82),
         # Sales / income (inbound payments)
-        (("fnb ob pmt", "payment from", "rtc credit", "cash deposit received", "eft credit"),
-         "Sales / Revenue", "review", False, 80),
+        (("fnb ob pmt", "payment from", "rtc credit", "cash deposit received", "eft credit", "customer receipt", "customer payment", "immediate payment received"),
+         "Sales / Revenue", "standard", False, 90),
     ]
     for needles, category, vat, bank_charge, confidence in rules:
         if any(needle in text for needle in needles):
@@ -623,6 +635,16 @@ def classify_transaction(description: str, debit: float | None, credit: float | 
     )
     if any(marker in text for marker in person_markers):
         tail = text.rsplit(" to ", 1)[-1] if " to " in text else text
+        business_hints = (
+            "diesel", "volvo", "toll", "sanral", "salary", "medical", "aid", "insurance",
+            "loan", "freight", "afrigreen", "pharmacy", "chemist", "dis-chem", "clicks",
+            "engen", "shell", "sasol", "caltex", "customer", "invoice", "inv",
+        )
+        if any(hint in tail for hint in business_hints):
+            if credit and credit > 0:
+                return "Sales / Revenue", "standard", False, 82
+            if debit and debit > 0:
+                return "Operating Expenses", "review", False, 78
         if re.search(r"\d{5,}", tail) and not re.search(r"[a-z]{3,}", tail):
             return "Suspense / Review Required", "review", False, 60
         return "Related Party / Drawings", "out_of_scope", False, 68
@@ -737,6 +759,7 @@ def transaction_section_lines(full_text: str) -> list[str]:
     lines = [re.sub(r"\s+", " ", line).strip() for line in full_text.splitlines()]
     in_section = False
     seen_transaction = False
+    awaiting_section_reopen = False
     section: list[str] = []
 
     for line in lines:
@@ -744,23 +767,30 @@ def transaction_section_lines(full_text: str) -> list[str]:
         if is_fnb_page_artifact(line):
             continue
         lowered = line.lower()
+        if awaiting_section_reopen:
+            if "transactions in rand" in lowered:
+                awaiting_section_reopen = False
+                in_section = True
+            continue
         # Section start: the "Transactions in RAND (ZAR)" heading, with or without
         # the account number / colon (e.g. "Transactions in RAND (ZAR) : 62905786151").
         # It repeats on every page — re-entering the section is harmless. "(ZAR)"
         # may wrap onto its own line, so it is not required on the heading line.
         if "transactions in rand" in lowered:
             in_section = True
+            awaiting_section_reopen = False
             continue
         if not in_section:
             continue
         # Section end: the true statement end only. A summary "Closing Balance" or a
-        # per-page "Balance Brought/Carried Forward" must NOT end it early, so the
-        # closing-balance break requires at least one transaction row to have been
-        # seen. "Turnover for Statement Period" always ends the section.
+        # per-page "Balance Brought/Carried Forward" must NOT end it early. Some
+        # scanned/OCR layouts emit "Closing Balance" between repeated page headers.
+        # Keep parsing until the statement turnover/summary block starts.
         if "turnover for statement period" in lowered:
             break
         if "closing balance" in lowered and seen_transaction:
-            break
+            awaiting_section_reopen = True
+            continue
         if line:
             section.append(line)
             if LOOSE_DATE.match(line):
@@ -774,17 +804,22 @@ def transaction_candidate_lines(full_text: str) -> list[str]:
     current = ""
     last_date = ""
 
+    def append_candidate(candidate: str) -> None:
+        for item in split_compound_candidate_line(candidate):
+            if item:
+                candidates.append(item)
+
     for line in transaction_section_lines(full_text):
         line = strip_fnb_page_artifacts(line)
         if is_fnb_page_artifact(line):
             if current:
-                candidates.append(current.strip())
+                append_candidate(current.strip())
                 current = ""
             continue
         date_match = LOOSE_DATE.match(line)
         if date_match:
             if current:
-                candidates.append(current.strip())
+                append_candidate(current.strip())
             current = line
             last_date = date_match.group("date")
             continue
@@ -799,7 +834,7 @@ def transaction_candidate_lines(full_text: str) -> list[str]:
         # treated as a wrap and appended.
         if last_date and _is_grouped_movement_line(line):
             if current:
-                candidates.append(current.strip())
+                append_candidate(current.strip())
             current = f"{last_date} {line}".strip()
             continue
 
@@ -807,9 +842,29 @@ def transaction_candidate_lines(full_text: str) -> list[str]:
             current = f"{current} {line}".strip()
 
     if current:
-        candidates.append(current.strip())
+        append_candidate(current.strip())
 
     return candidates
+
+
+def split_compound_candidate_line(line: str) -> list[str]:
+    matches = list(LOOSE_DATE.finditer(line))
+    if len(matches) <= 1:
+        return [line.strip()]
+
+    parts: list[str] = []
+    start = 0
+    for match in matches[1:]:
+        prefix = line[start:match.start()].strip()
+        suffix = line[match.start():].strip()
+        if prefix and MONEY_TOKEN.search(prefix) and MONEY_TOKEN.search(suffix):
+            parts.append(prefix)
+            start = match.start()
+
+    tail = line[start:].strip()
+    if tail:
+        parts.append(tail)
+    return parts or [line.strip()]
 
 
 def _is_grouped_movement_line(line: str) -> bool:
@@ -2017,17 +2072,27 @@ def transaction_month(transaction: ParsedTransaction) -> str:
 def professional_account(transaction: ParsedTransaction) -> tuple[str, str, str, str]:
     learned_or_rule_category = (transaction.account_category or "").strip()
     learned_map = {
+        "Sales / Revenue": ("Sales / Revenue", "Income", "Standard-rated taxable receipts", "Output"),
         "Income": ("Other Income / Review", "Income", "Output VAT if taxable supply", "Output/Review"),
+        "Cash Deposits / Revenue": ("Cash Deposits / Revenue", "Income", "Standard-rated taxable receipts unless proven otherwise", "Output"),
         "Bank Charges": ("Bank Charges", "Bank Charges", "Input VAT if valid bank tax invoice", "Input/Review"),
         "Staff Welfare / Meals / Entertainment": ("Meals / Groceries - Non Deductible Review", "Meals/Groceries", "Restricted/Review", "Review"),
         "Software Subscriptions": ("Software / IT", "Software/IT", "Input VAT if valid invoice", "Input/Review"),
         "Software / IT": ("Software / IT", "Software/IT", "Input VAT if valid invoice", "Input/Review"),
+        "Telephone / Internet / Communication": ("Telephone / Internet / Communication", "Operating Expenses", "Input VAT if valid invoice", "Input/Review"),
         "Insurance": ("Insurance", "Insurance", "Exempt/No VAT", "No"),
+        "Insurance Expense": ("Insurance", "Insurance", "Exempt/No VAT", "No"),
         "Levies": ("Levies", "Property/Levies", "Review", "Review"),
         "Salaries & Wages": ("Salaries / Drawings / Personal", "Payroll/Personal", "No VAT", "No"),
         "Inter-account Transfer": ("Inter-account Transfer", "Transfers", "No VAT", "No"),
+        "Related Party / Drawings": ("Director Loan / Drawings", "Transfers", "No VAT", "No"),
+        "Loan / Liability": ("Loan / Liability", "Loans", "No VAT", "No"),
+        "SARS / Tax Suspense": ("SARS / Tax Suspense", "Taxes", "No VAT", "No"),
         "Courier / Delivery": ("Courier / Freight", "Freight", "Input VAT if valid invoice", "Input/Review"),
         "Motor Vehicle Expenses": ("Motor Vehicle Expenses", "Motor Vehicle", "Input VAT if valid invoice", "Input/Review"),
+        "Road Tolls": ("Road Tolls", "Motor Vehicle", "Input VAT if valid invoice", "Input/Review"),
+        "Operating Expenses": ("Operating Expenses", "Operating Expenses", "Input VAT if valid invoice", "Input/Review"),
+        "Medical Expenses": ("Medical Expenses", "Operating Expenses", "Input VAT if valid invoice", "Input/Review"),
         "VAT Control": ("VAT Control", "VAT", "VAT control", "No"),
         "Finance Costs": ("Finance Costs", "Finance Costs", "Exempt/No VAT", "No"),
         "Rent": ("Rent", "Premises", "Input VAT if valid invoice", "Input/Review"),
@@ -2115,13 +2180,18 @@ def professional_review_reason(row: dict[str, Any]) -> str | None:
     reasons: list[str] = []
     description = str(row["description"]).lower()
     confidence = float(row.get("rule_confidence") or row.get("ai_confidence") or 0)
-    if confidence and confidence < 75:
+    if confidence and confidence < 68:
         reasons.append("Low confidence classification")
-    if row["account"] in {"Unclassified Expense", "Other Income / Review", "Meals / Groceries - Non Deductible Review"}:
+    if row["account"] in {
+        "Unclassified Expense",
+        "Other Income / Review",
+        "Meals / Groceries - Non Deductible Review",
+        "Review Required Suspense",
+    }:
         reasons.append("Unknown or unclear supplier")
     if row["vat_claim_status"] in {"Review", "Output/Review"}:
         reasons.append("VAT treatment uncertain")
-    if row.get("invoice_required"):
+    if row.get("invoice_required") and row["vat_claim_status"] == "Review":
         reasons.append("Invoice support required")
     if any(token in description for token in ("uber eats", "meal", "restaurant", "spa", "puppy", "photography", "sloppy kisses", "senses spa", "adore")):
         reasons.append("Personal-looking or entertainment expense")
@@ -2165,12 +2235,23 @@ def ai_diagnostics(enabled: bool | None = None) -> dict[str, Any]:
 
 def row_needs_ai(row: dict[str, Any]) -> bool:
     description = str(row.get("description") or "").lower()
+    account = str(row.get("account") or "")
     return (
-        float(row.get("rule_confidence") or 0) < 80
+        bool(row.get("review_required"))
+        or float(row.get("rule_confidence") or 0) < 88
         or row.get("vat_claim_status") in {"Review", "Output/Review"}
-        or row.get("account") in {"Unclassified Expense", "Review Required", "Meals / Groceries - Non Deductible Review", "Other Income / Review"}
+        or account in {
+            "Unclassified Expense",
+            "Review Required",
+            "Review Required Suspense",
+            "Meals / Groceries - Non Deductible Review",
+            "Other Income / Review",
+            "Suspense / Review Required",
+            "Related Party / Drawings",
+            "Revenue Review",
+        }
         or row.get("group") == "Review"
-        or any(token in description for token in ("uber eats", "spa", "puppy", "photography", "sloppy kisses", "senses spa", "adore"))
+        or any(token in description for token in ("uber eats", "spa", "puppy", "photography", "sloppy kisses", "senses spa", "adore", "afrigreen", "freight aces", "naicker"))
     )
 
 
@@ -2288,6 +2369,10 @@ def request_ai_classifications(items: list[dict[str, Any]], diagnostics: dict[st
             {"merchant": "Google ChatGPT/OpenAI", "account": "Software Subscriptions", "reason": "Software subscription merchant pattern."},
             {"merchant": "DHL/Paygate DHL", "account": "Courier / Freight", "reason": "Courier merchant pattern."},
             {"merchant": "Payroll, nanny, caregiver, salary", "account": "Salaries / Drawings / Personal", "reason": "Payroll/personnel payment pattern."},
+            {"merchant": "Diesel, Engen, Shell, Sasol, Volvo or toll operators", "account": "Motor Vehicle Expenses / Road Tolls", "reason": "Recurring fleet and transport operating costs."},
+            {"merchant": "Afrigreen or customer-name EFT credits", "account": "Sales / Revenue", "reason": "Inbound customer receipt pattern when money is received."},
+            {"merchant": "Medical aid, Discovery Health, Momentum Health, Medshield or Bonitas", "account": "Salaries / Drawings / Personal", "reason": "Payroll-linked medical deduction pattern."},
+            {"merchant": "Loans, WesBank or vehicle finance instalments", "account": "Loan / Liability", "reason": "Balance-sheet loan servicing pattern."},
         ],
         "schema": {
             "items": [
@@ -2361,10 +2446,20 @@ def apply_ai_result_to_row(row: dict[str, Any], result: dict[str, Any]) -> None:
     row["group"] = result["group"]
     row["vat_treatment"] = result["vat_treatment"]
     row["vat_claim_status"] = result["vat_claim_status"]
-    row["review_required"] = result["review_required"]
-    row["review_reason"] = result["review_reason"] or row.get("review_reason") or ""
+    ai_confidence = float(result["confidence"])
+    review_required = bool(result["review_required"])
+    review_reason = result["review_reason"] or ""
+    if (
+        not review_required
+        and ai_confidence >= 0.82
+        and result["account"] not in {"Unclassified Expense", "Other Income / Review", "Review Required", "Review Required Suspense", "Suspense / Review Required"}
+        and result["vat_claim_status"] not in {"Review", "Output/Review"}
+    ):
+        review_reason = ""
+    row["review_required"] = review_required
+    row["review_reason"] = review_reason
     row["invoice_required"] = result["invoice_required"]
-    row["ai_confidence"] = result["confidence"]
+    row["ai_confidence"] = ai_confidence
     row["classification_reason"] = result.get("reason") or row.get("classification_reason") or "AI classification applied to ambiguous transaction."
     row["classification_explanation"] = result.get("explanation") or row.get("classification_explanation") or ""
     row["ai_used"] = True
@@ -2615,7 +2710,7 @@ def build_workbook(metadata: dict[str, Any], transactions: list[ParsedTransactio
     review_row = 2
     for row in rows:
         reason = row.get("review_reason") or professional_review_reason(row)
-        if row.get("review_required") or reason:
+        if row.get("review_required") or reporting_account(row) == "Review Required Suspense":
             write_row(
                 review,
                 [
@@ -2885,6 +2980,12 @@ def build_combined_workbook(runs: list[dict[str, Any]], transactions_by_run: dic
         row["source_period"] = run_period_label(run)
         rows.append(row)
 
+    ai_started = time.perf_counter()
+    ai_stats = apply_ai_classifications(rows)
+    ai_duration_ms = round((time.perf_counter() - ai_started) * 1000, 2)
+    ai_stats["ai_classification_duration_ms"] = ai_duration_ms
+    mark_possible_duplicates(rows)
+
     reportable_rows = [row for row in rows if reporting_account(row) != "Review Required Suspense"]
     total_debits = sum((row["money_out"] for row in rows), Decimal("0.00")).quantize(CENT)
     total_credits = sum((row["money_in"] for row in rows), Decimal("0.00")).quantize(CENT)
@@ -3021,7 +3122,7 @@ def build_combined_workbook(runs: list[dict[str, Any]], transactions_by_run: dic
     review_row = 2
     for row in rows:
         reason = row.get("review_reason") or professional_review_reason(row)
-        if row.get("review_required") or reporting_account(row) == "Review Required Suspense" or reason:
+        if row.get("review_required") or reporting_account(row) == "Review Required Suspense":
             write_row(review, [row["date"], row["source_period"], row["description"], row["money_in"], row["money_out"], reporting_account(row), reporting_vat_status(row), reason or "Review recommended"], review_row)
             review_row += 1
     apply_number_formats(review, [4, 5])
@@ -3046,6 +3147,7 @@ def build_combined_workbook(runs: list[dict[str, Any]], transactions_by_run: dic
         ("run_ids", [run.get("id") for run in sorted_runs]),
         ("duplicates_removed", duplicates_removed),
         ("continuity", continuity),
+        ("ai", ai_stats),
     ]
     for row_index, row in enumerate(diagnostics_rows, start=2):
         write_row(diagnostics, [row[0], json.dumps(row[1], default=str)], row_index)
@@ -3456,6 +3558,13 @@ def process_fnb_statement(payload: ProcessRequest, authorization: str | None = H
                 "parser_version": parser_version,
                 "review_required": review_required,
                 "review_reason": run_error,
+                "validation_status": extraction_check.get("status"),
+                "reconciliation_difference": extraction_check.get("reconciliation_difference"),
+                "missing_transaction_count": max(
+                    0,
+                    int((extraction_check.get("expected_transaction_count") or 0) - len(transactions)),
+                ) if extraction_check.get("expected_transaction_count") is not None else None,
+                "requires_review": review_required,
                 "processing_duration_ms": int(processing_duration_ms),
                 "extraction_accuracy": round(avg_confidence, 2),
                 "confidence": round(avg_confidence, 2),

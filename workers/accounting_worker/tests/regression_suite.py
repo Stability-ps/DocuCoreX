@@ -92,9 +92,11 @@ from openpyxl import load_workbook
 
 from main import (
     ParsedTransaction,
+    build_combined_workbook,
     build_workbook,
     parse_metadata,
     parse_transactions,
+    professional_transaction_row,
     validate_statement,
     validation_summary,
 )
@@ -533,6 +535,257 @@ def run_freight_aces_case() -> None:
     assert_equal(str(validation["closing_balance"]), "295242.68", f"{case_id} closing balance")
 
 
+def run_december_multi_page_closing_balance_case() -> None:
+    # Regression: multi-page OCR text can include "Closing Balance" between repeated
+    # page headers. The parser must NOT stop at that intermediate line.
+    from decimal import Decimal as D
+
+    from main import parse_transactions, validate_statement, validation_summary
+
+    case_id = "freight-aces-dec-multipage"
+    opening, closing = D("4378.76"), D("97489.87")
+
+    def money(v: D) -> str:
+        return f"{v:,.2f}"
+
+    def balance_cell(v: D) -> str:
+        return f"{money(v)} Cr" if v >= 0 else money(v.copy_abs())
+
+    credits = [D("50000.00")] * 11 + [D("12345.67")]
+    debits = [D("4500.00")] * 104 + [D("1234.56")]
+    rows: list[tuple[str, D, bool]] = []
+    for idx, amount in enumerate(credits):
+        rows.append((f"Eft Credit Customer {idx:03d}", amount, True))
+    for idx, amount in enumerate(debits):
+        desc = "" if idx % 11 == 0 else f"Card Purchase Merchant {idx:03d}"
+        rows.append((desc, amount, False))
+
+    lines = [
+        "FREIGHT ACES (PTY)LTD",
+        "Account Number : 62905786151",
+        "Opening Balance 4,378.76 Cr",
+        "Closing Balance 97,489.87 Cr",
+        "Transactions in RAND (ZAR) : 62905786151",
+    ]
+    bal = opening
+    for idx, (desc, amount, is_credit) in enumerate(rows):
+        day = f"{(idx % 28) + 1:02d} Dec"
+        if is_credit:
+            bal += amount
+            lines.append(f"{day} {desc} {money(amount)}Cr {balance_cell(bal)}")
+        else:
+            bal -= amount
+            lines.append(f"{day} {desc} {money(amount)} {balance_cell(bal)}".replace("  ", " "))
+        if idx in (38, 76):  # pseudo page breaks
+            lines.append(f"Closing Balance {balance_cell(bal)}")
+            lines.append(f"Balance Brought Forward {balance_cell(bal)}")
+            lines.append("Transactions in RAND (ZAR) : 62905786151")
+    lines.append("Closing Balance 97,489.87 Cr")
+    lines.append("Turnover for Statement Period")
+    text = "\n".join(lines)
+
+    metadata = {
+        "opening_balance": 4378.76,
+        "closing_balance": 97489.87,
+        "expected_transaction_count": 117,
+        "expected_credit_count": 12,
+        "expected_debit_count": 105,
+        "declared_credit_total": 562345.67,
+        "declared_debit_total": 469234.56,
+    }
+    txns = parse_transactions([], metadata, text)
+    assert_equal(len(txns), 117, f"{case_id} transaction count")
+    summary = validation_summary(txns)
+    assert_equal(summary["credit_count"], 12, f"{case_id} credit count")
+    assert_equal(summary["debit_count"], 105, f"{case_id} debit count")
+    assert_equal(str(summary["total_credits"]), "562345.67", f"{case_id} credit total")
+    assert_equal(str(summary["total_debits"]), "469234.56", f"{case_id} debit total")
+    validation = validate_statement(metadata, txns)
+    if validation["calculated_closing"] != validation["closing_balance"]:
+        raise AssertionError(f"{case_id}: reconciliation not zero ({validation['calculated_closing']} vs {validation['closing_balance']})")
+
+
+def run_compound_ocr_line_case() -> None:
+    # OCR occasionally merges adjacent transaction rows onto one physical line.
+    # The parser must split those compound lines back into separate movements.
+    case_id = "compound-ocr-line-split"
+    text = (
+        "Transactions in RAND (ZAR)\n"
+        "01 Dec Diesel Depot 1,200.00 8,800.00 Cr 02 Dec Eft Credit Customer Alpha 9,500.00Cr 18,300.00 Cr\n"
+        "03 Dec Sanral Toll 450.00 17,850.00 Cr\n"
+        "Closing Balance 17,850.00 Cr\n"
+        "Turnover for Statement Period\n"
+    )
+    metadata = {
+        "statement_period_start": "2025-12-01",
+        "statement_period_end": "2025-12-31",
+        "opening_balance": 10000.00,
+        "closing_balance": 17850.00,
+        "expected_transaction_count": 3,
+        "expected_credit_count": 1,
+        "expected_debit_count": 2,
+        "declared_credit_total": 9500.00,
+        "declared_debit_total": 1650.00,
+    }
+    txns = parse_transactions([], metadata, text)
+    assert_equal(len(txns), 3, f"{case_id} transaction count")
+    extracted = {(t.description, f"{(t.debit_amount or t.credit_amount or 0):.2f}") for t in txns}
+    for expected in {
+        ("Diesel Depot", "1200.00"),
+        ("Eft Credit Customer Alpha", "9500.00"),
+        ("Sanral Toll", "450.00"),
+    }:
+        if expected not in extracted:
+            raise AssertionError(f"{case_id}: missing split transaction {expected}")
+    validate_statement(metadata, txns)
+
+
+def run_professional_classification_case() -> None:
+    case_id = "professional-classification"
+    fuel = ParsedTransaction(
+        transaction_date="2026-01-05",
+        description="Shell Diesel Depot",
+        debit_amount=1500.0,
+        credit_amount=None,
+        running_balance=8500.0,
+        bank_charge=False,
+        account_category="Motor Vehicle Expenses",
+        vat_treatment="standard",
+        supported_by_invoice=False,
+        confidence=92,
+        review_status="ready",
+        source_page=1,
+        raw_text="05 Jan Shell Diesel Depot 1,500.00 8,500.00 Cr",
+    )
+    receipt = ParsedTransaction(
+        transaction_date="2026-01-06",
+        description="Eft Credit Customer Freight Aces",
+        debit_amount=None,
+        credit_amount=12500.0,
+        running_balance=21000.0,
+        bank_charge=False,
+        account_category="Sales / Revenue",
+        vat_treatment="standard",
+        supported_by_invoice=False,
+        confidence=92,
+        review_status="ready",
+        source_page=1,
+        raw_text="06 Jan Eft Credit Customer Freight Aces 12,500.00Cr 21,000.00 Cr",
+    )
+    fuel_row = professional_transaction_row(fuel, "fixture")
+    receipt_row = professional_transaction_row(receipt, "fixture")
+    assert_equal(fuel_row["review_required"], False, f"{case_id} fuel review")
+    assert_equal(receipt_row["review_required"], False, f"{case_id} receipt review")
+    assert_equal(fuel_row["account"], "Motor Vehicle Expenses", f"{case_id} fuel account")
+    assert_equal(receipt_row["account"], "Sales / Revenue", f"{case_id} receipt account")
+    assert_equal(receipt_row["vat_claim_status"], "Output", f"{case_id} receipt vat")
+
+
+def run_combined_workbook_case() -> None:
+    case_id = "combined-workbook-months"
+    december_run = {
+        "id": "run-dec",
+        "company_name": "Freight Aces (Pty) Ltd",
+        "bank": "FNB South Africa",
+        "account_number": "62905786151",
+        "statement_period_start": "2025-12-01",
+        "statement_period_end": "2025-12-31",
+        "opening_balance": 1000.0,
+        "closing_balance": 3200.0,
+        "created_at": "2026-01-01T00:00:00",
+    }
+    january_run = {
+        "id": "run-jan",
+        "company_name": "Freight Aces (Pty) Ltd",
+        "bank": "FNB South Africa",
+        "account_number": "62905786151",
+        "statement_period_start": "2026-01-01",
+        "statement_period_end": "2026-01-31",
+        "opening_balance": 3200.0,
+        "closing_balance": 6400.0,
+        "created_at": "2026-02-01T00:00:00",
+    }
+    december_txns = [
+        ParsedTransaction(
+            transaction_date="2025-12-05",
+            description="Eft Credit Customer Afrigreen",
+            debit_amount=None,
+            credit_amount=4000.0,
+            running_balance=5000.0,
+            bank_charge=False,
+            account_category="Sales / Revenue",
+            vat_treatment="standard",
+            supported_by_invoice=False,
+            confidence=92,
+            review_status="ready",
+            source_page=1,
+            raw_text="05 Dec Eft Credit Customer Afrigreen 4,000.00Cr 5,000.00 Cr",
+        ),
+        ParsedTransaction(
+            transaction_date="2025-12-09",
+            description="Diesel Depot",
+            debit_amount=1800.0,
+            credit_amount=None,
+            running_balance=3200.0,
+            bank_charge=False,
+            account_category="Motor Vehicle Expenses",
+            vat_treatment="standard",
+            supported_by_invoice=False,
+            confidence=92,
+            review_status="ready",
+            source_page=1,
+            raw_text="09 Dec Diesel Depot 1,800.00 3,200.00 Cr",
+        ),
+    ]
+    january_txns = [
+        ParsedTransaction(
+            transaction_date="2026-01-03",
+            description="Eft Credit Customer Freight Aces",
+            debit_amount=None,
+            credit_amount=5000.0,
+            running_balance=8200.0,
+            bank_charge=False,
+            account_category="Sales / Revenue",
+            vat_treatment="standard",
+            supported_by_invoice=False,
+            confidence=92,
+            review_status="ready",
+            source_page=1,
+            raw_text="03 Jan Eft Credit Customer Freight Aces 5,000.00Cr 8,200.00 Cr",
+        ),
+        ParsedTransaction(
+            transaction_date="2026-01-10",
+            description="Sanral Toll",
+            debit_amount=1800.0,
+            credit_amount=None,
+            running_balance=6400.0,
+            bank_charge=False,
+            account_category="Road Tolls",
+            vat_treatment="standard",
+            supported_by_invoice=False,
+            confidence=90,
+            review_status="ready",
+            source_page=1,
+            raw_text="10 Jan Sanral Toll 1,800.00 6,400.00 Cr",
+        ),
+    ]
+    workbook_bytes, summary = build_combined_workbook(
+        [january_run, december_run],
+        {"run-dec": december_txns, "run-jan": january_txns},
+    )
+    workbook = load_workbook(io.BytesIO(workbook_bytes), data_only=True)
+    tx_sheet = workbook["Transactions"]
+    source_periods = {tx_sheet.cell(row=row, column=3).value for row in range(2, tx_sheet.max_row + 1)}
+    if {"2025-12-01 to 2025-12-31", "2026-01-01 to 2026-01-31"} - source_periods:
+        raise AssertionError(f"{case_id}: combined workbook must preserve both statement periods")
+    assert_equal(summary["transaction_count"], 4, f"{case_id} transaction count")
+    assert_equal(summary["review_count"], 0, f"{case_id} review count")
+    diagnostics = workbook["Diagnostics"]
+    ai_row = next((row for row in range(2, diagnostics.max_row + 1) if diagnostics.cell(row=row, column=1).value == "ai"), None)
+    if ai_row is None:
+        raise AssertionError(f"{case_id}: combined diagnostics missing AI row")
+
+
 def run() -> None:
     run_fnb_extraction_case()
     run_statement_period_case()
@@ -540,6 +793,10 @@ def run() -> None:
     run_validation_diagnostics_case()
     run_april_missing_rows_case()
     run_freight_aces_case()
+    run_december_multi_page_closing_balance_case()
+    run_compound_ocr_line_case()
+    run_professional_classification_case()
+    run_combined_workbook_case()
 
     manifest = json.loads(MANIFEST_PATH.read_text())
     cases = manifest.get("cases") if isinstance(manifest, dict) else None
