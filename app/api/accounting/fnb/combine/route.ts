@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { getAccountingRunDetail } from "@/lib/accounting/server";
 import { getWorkspaceContext } from "@/lib/server-documents";
+import { buildWorkerEndpoint, createWorkerRequestId, getWorkerConfig, logWorkerStartupCheck } from "@/lib/system-worker-config";
 
 type CombineBody = {
   runIds?: string[];
@@ -8,14 +9,6 @@ type CombineBody = {
   overrideContinuity?: boolean;
   confirmationText?: string;
 };
-
-function getWorkerOrigin(workerUrl: string) {
-  try {
-    return new URL(workerUrl).origin;
-  } catch {
-    return "invalid-worker-url";
-  }
-}
 
 function sameAccountKey(detail: NonNullable<Awaited<ReturnType<typeof getAccountingRunDetail>>>) {
   return [
@@ -38,6 +31,7 @@ function periodToken(value: string | null | undefined) {
 }
 
 export async function POST(request: Request) {
+  await logWorkerStartupCheck();
   const body = (await request.json().catch(() => ({}))) as CombineBody;
   const runIds = Array.from(new Set(body.runIds ?? [])).filter(Boolean);
   const wantsOverride = Boolean(body.combineDifferentAccounts || body.overrideContinuity);
@@ -57,7 +51,7 @@ export async function POST(request: Request) {
     );
   }
 
-  const workerUrl = process.env.ACCOUNTING_WORKER_URL;
+  const workerUrl = getWorkerConfig().accountingWorkerUrl;
   if (!workerUrl) {
     return NextResponse.json(
       { error: "Accounting worker is not configured. Set ACCOUNTING_WORKER_URL to generate combined workbooks." },
@@ -93,10 +87,21 @@ export async function POST(request: Request) {
 
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 45_000);
+  const requestId = createWorkerRequestId("acct_combine");
+  const workerEndpoint = buildWorkerEndpoint(workerUrl, "/combine-fnb-statements");
 
   let response: Response;
   try {
-    response = await fetch(`${workerUrl.replace(/\/$/, "")}/combine-fnb-statements`, {
+    console.info("docucorex.accounting.worker.request", {
+      requestId,
+      resolvedAccountingWorkerUrl: workerUrl,
+      endpoint: workerEndpoint,
+      runIdsCount: runIds.length,
+      combineDifferentAccounts: Boolean(body.combineDifferentAccounts),
+      overrideContinuity: Boolean(body.overrideContinuity),
+    });
+
+    response = await fetch(workerEndpoint, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -129,7 +134,9 @@ export async function POST(request: Request) {
       {
         status,
         message,
-        workerOrigin: getWorkerOrigin(workerUrl),
+        workerUrl,
+        workerEndpoint,
+        requestId,
       },
       { status: 503 },
     );
@@ -138,6 +145,13 @@ export async function POST(request: Request) {
   }
 
   const responseBuffer = await response.arrayBuffer();
+  console.info("docucorex.accounting.worker.response", {
+    requestId,
+    endpoint: workerEndpoint,
+    status: response.status,
+    ok: response.ok,
+    contentType: response.headers.get("content-type"),
+  });
   if (!response.ok) {
     const text = new TextDecoder().decode(responseBuffer);
     let error = text || "Combined workbook generation failed.";
@@ -179,7 +193,9 @@ export async function POST(request: Request) {
         allowOverride,
         continuity,
         workerStatus: response.status,
-        workerOrigin: getWorkerOrigin(workerUrl),
+        workerUrl,
+        workerEndpoint,
+        requestId,
       },
       { status: response.status },
     );

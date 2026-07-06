@@ -7,6 +7,7 @@ import { runExtractionPipeline } from "@/lib/pdf/runExtractionPipeline";
 import { computeFileHash } from "@/lib/pdf/extractionCache";
 import { PROCESSING_STEP_LABELS, PROCESSING_STEP_PROGRESS, type ProcessingStep } from "@/lib/pdf/processingSteps";
 import { buildWorkerInput, extractionProcessingMetadata } from "@/lib/pdf/workerHandoff";
+import { buildWorkerEndpoint, createWorkerRequestId, getWorkerConfig, logWorkerStartupCheck } from "@/lib/system-worker-config";
 import type { WorkspaceContext } from "@/lib/server-documents";
 import type { AccountingRunDetail } from "@/lib/accounting/types";
 
@@ -142,14 +143,6 @@ type WorkerResponseBody = {
   worker?: unknown;
   [key: string]: unknown;
 };
-
-function getWorkerOrigin(workerUrl: string) {
-  try {
-    return new URL(workerUrl).origin;
-  } catch {
-    return "invalid-worker-url";
-  }
-}
 
 function getWorkerError(result: WorkerResponseBody, responseText: string, status: number) {
   if (typeof result.error === "string" && result.error) {
@@ -288,7 +281,15 @@ async function processStatementInBackground(context: WorkspaceContext, detail: A
       ...hints,
     };
     const parserProfile = detectBankProfile({ bank: detail.run.bank, fileName: detail.run.sourceStoragePath });
-    console.info("[accounting/process] sending worker payload", { runId, parserProfile, workerOrigin: getWorkerOrigin(workerUrl) });
+    const requestId = createWorkerRequestId("acct_process");
+    const workerEndpoint = buildWorkerEndpoint(workerUrl, "/process-statement");
+    console.info("docucorex.accounting.worker.request", {
+      requestId,
+      resolvedAccountingWorkerUrl: workerUrl,
+      endpoint: workerEndpoint,
+      runId,
+      parserProfile,
+    });
 
     // 2. Accounting worker (timeout-protected so it cannot hang the function).
     const controller = new AbortController();
@@ -296,7 +297,7 @@ async function processStatementInBackground(context: WorkspaceContext, detail: A
     let response: Response;
     let responseText: string;
     try {
-      response = await fetch(`${workerUrl.replace(/\/$/, "")}/process-statement`, {
+      response = await fetch(workerEndpoint, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -309,7 +310,7 @@ async function processStatementInBackground(context: WorkspaceContext, detail: A
     } catch (fetchError) {
       const aborted = fetchError instanceof Error && fetchError.name === "AbortError";
       const message = aborted ? `Accounting worker timed out after ${ACCOUNTING_WORKER_TIMEOUT_MS / 1000}s.` : `Accounting worker unreachable: ${fetchError instanceof Error ? fetchError.message : String(fetchError)}`;
-      console.error("[accounting/process] worker fetch failed", { runId, message });
+      console.error("[accounting/process] worker fetch failed", { requestId, endpoint: workerEndpoint, runId, message });
       await failRun(message, toParserDebug(pipelineDebug));
       return;
     } finally {
@@ -322,7 +323,7 @@ async function processStatementInBackground(context: WorkspaceContext, detail: A
     } catch {
       result = { detail: responseText };
     }
-    console.info("[accounting/process] worker response", { runId, status: response.status, ok: response.ok });
+    console.info("docucorex.accounting.worker.response", { requestId, endpoint: workerEndpoint, runId, status: response.status, ok: response.ok });
 
     if (response.ok) updateStep("reconciling");
 
@@ -352,6 +353,7 @@ async function processStatementInBackground(context: WorkspaceContext, detail: A
 }
 
 export async function POST(request: Request) {
+  await logWorkerStartupCheck();
   const body = (await request.json().catch(() => ({}))) as ProcessBody;
   const runId = body.runId;
 
@@ -359,7 +361,7 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "runId is required." }, { status: 400 });
   }
 
-  const workerUrl = process.env.ACCOUNTING_WORKER_URL;
+  const workerUrl = getWorkerConfig().accountingWorkerUrl;
   if (!workerUrl) {
     return NextResponse.json(
       { error: "Accounting worker is not configured. Set ACCOUNTING_WORKER_URL to process FNB statements." },
