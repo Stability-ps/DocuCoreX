@@ -24,7 +24,7 @@ import type {
 } from "@/lib/types";
 import { DocumentStatusBadge, statusLabel } from "@/components/documents/document-status-badge";
 import { detectedTypeLabel, formatBytes, formatRelativeTime } from "@/components/documents/document-card";
-import { DocumentViewer, type DocumentViewerKind } from "@/components/document-viewer";
+import { DocumentPreview, type DocumentPreviewKind } from "@/components/documents/document-preview";
 
 type DetailData = {
   document?: DocumentRecord;
@@ -419,10 +419,10 @@ function OverviewTab({ doc, jobs }: { doc: DocumentRecord; jobs: ProcessingJob[]
 }
 
 function PreviewTab({ kind, previewUrl, downloadUrl, name }: { kind: string; previewUrl: string; downloadUrl: string; name: string }) {
-  // Standard platform-wide viewer (same one used in the Statement Review Workspace).
-  // Preview renders inline (previewUrl); Download uses the attachment endpoint.
-  const viewerKind: DocumentViewerKind = kind === "pdf" ? "pdf" : kind === "image" ? "image" : "other";
-  return <DocumentViewer sourceUrl={previewUrl} downloadUrl={downloadUrl} fileName={name} kind={viewerKind} minHeightClass="min-h-[70vh]" />;
+  // Documents preview: fits the container width by default and renders inline.
+  // Preview uses previewUrl (inline); Download uses the attachment endpoint.
+  const viewerKind: DocumentPreviewKind = kind === "pdf" ? "pdf" : kind === "image" ? "image" : "other";
+  return <DocumentPreview previewUrl={previewUrl} downloadUrl={downloadUrl} name={name} kind={viewerKind} />;
 }
 
 function OcrTab({ ocr, onRun, busy }: { ocr?: OcrResult; onRun: () => void; busy: boolean }) {

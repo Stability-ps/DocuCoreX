@@ -77,7 +77,20 @@ test("preview serves inline, download serves attachment (separate logic)", () =>
   // download URL only for the Download button.
   const docs = read("components/documents/document-detail-panel.tsx");
   assert.match(docs, /const previewUrl = `\/api\/documents\/\$\{documentId\}\/preview`/, "documents must build an inline preview URL");
-  assert.match(docs, /sourceUrl=\{previewUrl\} downloadUrl=\{downloadUrl\}/, "viewer must preview inline and download separately");
+  assert.match(docs, /previewUrl=\{previewUrl\} downloadUrl=\{downloadUrl\}/, "preview inline, download separately");
+});
+
+test("Documents preview fits width and previews inline (no auto-download)", () => {
+  const preview = read("components/documents/document-preview.tsx");
+  assert.match(preview, /view=FitH/, "Documents preview must default to Fit Width");
+  assert.match(preview, /h-full w-full/, "the frame must fill the container width");
+  assert.match(preview, /src=\{previewUrl\}|src=\{frameSrc\}/, "preview must use the inline preview URL, not the download URL");
+  assert.match(preview, /href=\{downloadUrl\}/, "Download button uses the download URL");
+  assert.match(preview, /transformOrigin: "center center"/, "rotate must keep the document centred");
+  assert.match(preview, /const fitWidth = \(\)/, "Fit button resets to Fit Width");
+  // The Documents panel renders the width-fitting preview, not the shared viewer.
+  const docs = read("components/documents/document-detail-panel.tsx");
+  assert.match(docs, /<DocumentPreview /, "Documents must render the Fit-Width preview");
 });
 
 test("the shared document viewer separates preview and download and handles errors", () => {
@@ -95,8 +108,8 @@ test("the shared document viewer separates preview and download and handles erro
   assert.match(viewer, /process\.env\.NODE_ENV !== "production"/, "diagnostics must be development-only");
 });
 
-test("one shared DocumentViewer is the standard viewer across the platform", () => {
-  // The shared component exists.
+test("shared DocumentViewer stays intact and is used by the statement workspace", () => {
+  // The shared component exists and is unchanged in behaviour.
   const viewer = read("components/document-viewer.tsx");
   assert.match(viewer, /export function DocumentViewer/, "shared DocumentViewer must exist");
   assert.doesNotMatch(viewer, /requestFullscreen/, "shared viewer must not use browser fullscreen");
@@ -107,12 +120,6 @@ test("one shared DocumentViewer is the standard viewer across the platform", () 
   assert.match(workspace, /import \{ DocumentViewer \} from "@\/components\/document-viewer"/, "workspace must import the shared viewer");
   assert.match(workspace, /<DocumentViewer /, "workspace must render the shared viewer");
   assert.doesNotMatch(workspace, /function PdfViewer\(/, "workspace must not define its own viewer");
-
-  // The Documents preview uses the shared viewer, not a bare iframe.
-  const docs = read("components/documents/document-detail-panel.tsx");
-  assert.match(docs, /import \{ DocumentViewer/, "documents preview must import the shared viewer");
-  assert.match(docs, /<DocumentViewer /, "documents preview must render the shared viewer");
-  assert.doesNotMatch(docs, /<iframe title=\{`Preview of/, "documents preview must not use a bare iframe");
 });
 
 test("no hardcoded ALLIANZ company name in the export path", () => {
