@@ -47,6 +47,9 @@ export async function runExtractionPipeline(buffer: Uint8Array, fileName = "stat
   let routeReason: string;
   let pdfplumber: ExtractionResult | null = null;
   let ocr: ExtractionResult | null = null;
+  // extractWithOcr returns null only when CONVERSION_WORKER_URL is unset, so this
+  // lets us distinguish "OCR skipped (not configured)" from "OCR ran, no text".
+  let ocrAttempted = false;
 
   if (analysis.isDigitalPdf) {
     // 2. Digital → native parsers, no OCR.
@@ -60,6 +63,7 @@ export async function runExtractionPipeline(buffer: Uint8Array, fileName = "stat
     }
     routeReason = `${analysis.kind} PDF (${analysis.totalTextLength} chars, ${analysis.confidence}% text confidence) → OCR fallback.`;
     pdfplumber = analysis.kind === "weak-text" ? await extractWithPdfplumber(buffer, fileName) : null;
+    ocrAttempted = true;
     ocr = await extractWithOcr(buffer, fileName);
   }
 
@@ -68,6 +72,7 @@ export async function runExtractionPipeline(buffer: Uint8Array, fileName = "stat
   // 4. Native parse failed reconciliation and OCR has not run yet → OCR retry.
   if (assembled.validation.requiresReview && !ocr) {
     pdfLog("route.ocr_retry", { reason: "reconciliation failed on native parse", difference: assembled.validation.difference });
+    ocrAttempted = true;
     ocr = await extractWithOcr(buffer, fileName);
     if (ocr && (ocr.combinedText.length > 0 || ocr.transactions.length > 0)) {
       const retry = assemble(analysis, { pdfjs, pdfplumber, ocr });
@@ -105,11 +110,17 @@ export async function runExtractionPipeline(buffer: Uint8Array, fileName = "stat
   const preExtractedTextLength = assembled.merged.combinedText.trim().length;
   const ocrDebug = ocr && ocr.metadata && typeof ocr.metadata._ocrDebug === "object" ? (ocr.metadata._ocrDebug as Record<string, unknown>) : null;
   const ocrReason = ocr && typeof ocr.metadata?._ocrReason === "string" ? (ocr.metadata._ocrReason as string) : null;
+  const ocrConfigured = !(ocrAttempted && ocr === null);
   let reasonNoTransactions: string | null = null;
   if (assembled.merged.transactions.length === 0) {
     if ((analysis.kind === "scanned" || analysis.kind === "weak-text") && ocrTextLength === 0) {
-      // Prefer the OCR engine's exact reason (encrypted / malformed / etc.).
-      reasonNoTransactions = ocrReason || "OCR completed but no readable text was found";
+      if (!ocrConfigured) {
+        // OCR was required but never ran — don't claim OCR found nothing.
+        reasonNoTransactions = "OCR is required for this PDF but is not configured — set CONVERSION_WORKER_URL on the app.";
+      } else {
+        // Prefer the OCR engine's exact reason (encrypted / malformed / etc.).
+        reasonNoTransactions = ocrReason || "OCR completed but no readable text was found";
+      }
     } else if (preExtractedTextLength < 20) {
       reasonNoTransactions = "No readable text could be extracted from the PDF";
     } else {
@@ -123,13 +134,15 @@ export async function runExtractionPipeline(buffer: Uint8Array, fileName = "stat
     preExtractedTextLength,
     sampleText: assembled.merged.combinedText.slice(0, 1000),
     reasonNoTransactions,
-    ocr: ocrDebug,
+    ocr: ocrDebug ?? (ocrAttempted && !ocrConfigured ? { ocr_status: "skipped", reason: "CONVERSION_WORKER_URL not configured" } : null),
   };
 
   // 6. Log the parser decision clearly.
   pdfLog("route.decision", {
     parserMethod,
     ocrUsed,
+    ocrAttempted,
+    ocrConfigured,
     confidence: assembled.selection.confidence,
     reconciled: assembled.validation.valid,
     requiresReview,

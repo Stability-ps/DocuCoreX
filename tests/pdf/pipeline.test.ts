@@ -96,6 +96,15 @@ test("pipeline forces OCR on near-empty PDF.js and reports the real reason", () 
   assert.match(pipeline, /reasonNoTransactions/);
 });
 
+test("pipeline distinguishes OCR-not-configured from OCR-ran-empty", () => {
+  const pipeline = read("lib/pdf/runExtractionPipeline.ts");
+  // extractWithOcr returns null only when unconfigured; the pipeline must not
+  // claim "OCR completed but no readable text" when OCR never ran.
+  assert.match(pipeline, /ocrAttempted/, "tracks whether OCR was attempted");
+  assert.match(pipeline, /const ocrConfigured = !\(ocrAttempted && ocr === null\)/);
+  assert.match(pipeline, /not configured — set CONVERSION_WORKER_URL/, "honest not-configured reason");
+});
+
 test("worker logs pre_extracted_text and adds parser_debug to the 422", () => {
   const worker = read("workers/accounting_worker/main.py");
   assert.match(worker, /worker\.pre_extracted_text_received/);
