@@ -20,6 +20,13 @@ type ProcessJobRequest = {
 
 export async function POST(request: Request) {
   const processRequest = (await request.clone().json().catch(() => ({}))) as ProcessJobRequest;
+  console.info("docucorex.conversion_worker.process_called", {
+    processorMode: process.env.CONVERSION_WORKER_MODE === "true" ? "worker" : "app",
+    conversionId: processRequest.conversionId ?? null,
+    jobId: processRequest.jobId ?? null,
+    documentId: processRequest.documentId ?? null,
+    hasWorkerSecret: Boolean(process.env.CONVERSION_WORKER_SECRET?.trim()),
+  });
   const proxied = await proxyToConversionWorker(request, processRequest);
   if (proxied) return proxied;
 
@@ -101,10 +108,23 @@ export async function POST(request: Request) {
     }
 
     try {
+      const currentConversionId = getConversionIdFromMessage(job.message);
       await context.supabase
         .from("processing_jobs")
-        .update({ status: "running", progress: 35, message: getRunningMessage(job.type), updated_at: new Date().toISOString() })
+        .update({
+          status: "running",
+          progress: 35,
+          message: internalJobMessage(getRunningMessage(job.type), currentConversionId),
+          updated_at: new Date().toISOString(),
+        })
         .eq("id", job.id);
+      console.info("docucorex.conversion_worker.job_processing", {
+        processorMode: process.env.CONVERSION_WORKER_MODE === "true" ? "worker" : "app",
+        jobId: job.id,
+        documentId: job.document_id,
+        type: job.type,
+        conversionId: currentConversionId,
+      });
 
       if (job.type === "upload") {
         await context.supabase
@@ -203,7 +223,7 @@ export async function POST(request: Request) {
 
         await context.supabase
           .from("processing_jobs")
-          .update({ status: "running", progress: 55, message: "Extracting document content", updated_at: new Date().toISOString() })
+          .update({ status: "running", progress: 55, message: internalJobMessage("Extracting document content", conversion.id), updated_at: new Date().toISOString() })
           .eq("id", job.id);
 
         const converted = await providers.conversion.run(
@@ -305,7 +325,7 @@ export async function POST(request: Request) {
 
         await context.supabase
           .from("processing_jobs")
-          .update({ status: "output_ready", progress: 100, message: "Download ready", updated_at: new Date().toISOString() })
+          .update({ status: "output_ready", progress: 100, message: internalJobMessage("Download ready", conversion.id), updated_at: new Date().toISOString() })
           .eq("id", job.id);
 
         results.push({ jobId: job.id, type: job.type, status: "output_ready", conversionId: conversion.id, downloadPath: converted.downloadPath });
@@ -334,7 +354,13 @@ export async function POST(request: Request) {
       }
       await context.supabase
         .from("processing_jobs")
-        .update({ status: "failed", progress: Math.max(1, Number(job.progress ?? 0)), message, error: message, updated_at: new Date().toISOString() })
+        .update({
+          status: "failed",
+          progress: Math.max(1, Number(job.progress ?? 0)),
+          message: internalJobMessage(message, job.type === "conversion" ? getConversionIdFromMessage(job.message) : null),
+          error: message,
+          updated_at: new Date().toISOString(),
+        })
         .eq("id", job.id);
       results.push({ jobId: job.id, type: job.type, status: "failed", message });
     }
@@ -579,6 +605,11 @@ async function failQueuedConversion(context: NonNullable<Awaited<ReturnType<type
 
 function getConversionIdFromMessage(message: string) {
   return message.match(/\bconversion:([0-9a-f-]{36})\b/i)?.[1] ?? null;
+}
+
+function internalJobMessage(message: string, conversionId?: string | null) {
+  if (!conversionId) return message;
+  return `${message.replace(/\s+·\s+conversion:[0-9a-f-]{36}\b/i, "")} · conversion:${conversionId}`;
 }
 
 async function addConvertedVersion(

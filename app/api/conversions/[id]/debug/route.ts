@@ -29,6 +29,11 @@ export async function GET(_request: Request, { params }: { params: Promise<{ id:
     .limit(10);
 
   const matchingJobs = (jobs ?? []).filter((job) => getConversionIdFromMessage(job.message) === conversion.id);
+  const latestMatchingJob = matchingJobs[0] ?? null;
+  const queuedJobAgeSeconds =
+    latestMatchingJob?.status === "queued"
+      ? Math.max(0, Math.floor((Date.now() - new Date(latestMatchingJob.created_at).getTime()) / 1000))
+      : null;
   const storagePath = conversion.download_path as string | null;
   const fileCheck = storagePath
     ? await context.supabase.storage.from("documents").download(storagePath)
@@ -87,6 +92,20 @@ export async function GET(_request: Request, { params }: { params: Promise<{ id:
     signedUrl: {
       success: Boolean(signedUrlCheck.data?.signedUrl),
       error: signedUrlCheck.error?.message ?? null,
+    },
+    processing: {
+      processorMode: workerHealth?.workerMode === true ? "worker" : process.env.CONVERSION_WORKER_URL?.trim() ? "remote-worker" : "local",
+      lastWorkerProcessAttempt: latestMatchingJob?.updated_at ?? null,
+      lastWorkerProcessResponse: latestMatchingJob
+        ? {
+            jobId: latestMatchingJob.id,
+            status: latestMatchingJob.status,
+            progress: latestMatchingJob.progress,
+            message: displayJobMessage(latestMatchingJob.message),
+            error: latestMatchingJob.error ?? null,
+          }
+        : null,
+      queuedJobAgeSeconds,
     },
     worker: workerHealth,
     app: {

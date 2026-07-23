@@ -30,6 +30,10 @@ check ocrmypdf ocrmypdf --version
 check tesseract tesseract --version
 check ghostscript gs --version
 check qpdf qpdf --version
+check libreoffice soffice --version
+check pdftotext pdftotext -v
+check pdftoppm pdftoppm -v
+check pdfinfo pdfinfo -v
 
 if [ -n "$missing" ]; then
   echo "DocuCoreX conversion worker cannot start. Missing dependencies:$missing" >&2

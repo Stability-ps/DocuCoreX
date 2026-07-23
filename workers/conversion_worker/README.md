@@ -10,9 +10,13 @@ The Docker image installs and verifies:
 - `tesseract --version`
 - `gs --version`
 - `qpdf --version`
+- `soffice --version`
+- `pdftotext -v`
+- `pdftoppm -v`
+- `pdfinfo -v`
 - English OCR language data: `tesseract-ocr-eng`
 - LibreOffice headless for Office-to-PDF rendering
-- Poppler utilities for PDF inspection
+- Poppler utilities for PDF text extraction and page image export
 
 If any required dependency is missing, the worker exits during startup.
 

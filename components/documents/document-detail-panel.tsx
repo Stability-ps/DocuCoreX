@@ -26,6 +26,7 @@ import { DocumentStatusBadge, statusLabel } from "@/components/documents/documen
 import { detectedTypeLabel, formatBytes, formatRelativeTime } from "@/components/documents/document-card";
 import { DocumentViewer, type DocumentViewerKind } from "@/components/document-viewer";
 import { ExtractionSummary } from "@/components/pdf/extraction-summary";
+import { createDocumentConversion, waitForDownloadReady, wakeConversionWorker } from "@/components/documents/conversion-client";
 
 type DetailData = {
   document?: DocumentRecord;
@@ -129,23 +130,16 @@ export function DocumentDetailPanel({ documentId }: { documentId: string }) {
     setBusy(true);
     setStatus(`Converting to ${target.toUpperCase()}…`);
     try {
-      const response = await fetch("/api/uploads/workflow", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ documentIds: [documentId], target }),
-      }).catch(() => null);
-      if (!response?.ok) {
-        const payload = (await response?.json().catch(() => null)) as { error?: string } | null;
-        setStatus(payload?.error ?? "Unable to start conversion.");
-        return;
-      }
-      await fetch("/api/jobs/process", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ documentId }),
-      }).catch(() => null);
+      const conversion = await createDocumentConversion(documentId, target);
+      await wakeConversionWorker(conversion);
+      await waitForDownloadReady(conversion, {
+        onStatus: setStatus,
+      });
       await loadSecondary();
-      setStatus("Conversion started. Outputs appear under History when ready.");
+      setStatus("Conversion complete. Download is ready in History.");
+    } catch (error) {
+      await loadSecondary();
+      setStatus(error instanceof Error ? error.message : "Conversion failed.");
     } finally {
       setBusy(false);
     }

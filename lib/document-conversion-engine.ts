@@ -1,6 +1,6 @@
 import { inflateRawSync } from "node:zlib";
 import { execFileSync, spawnSync } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { extname, join } from "node:path";
 import type { GeneratedFile } from "@/lib/file-output";
@@ -27,6 +27,15 @@ export type SourceDocument = {
 export type OcrRuntimeCheck = {
   ok: boolean;
   dependencies: Record<"ocrmypdf" | "tesseract" | "ghostscript" | "qpdf", { ok: boolean; path?: string; version?: string; error?: string }>;
+  message?: string;
+};
+
+export type ConversionRuntimeCheck = {
+  ok: boolean;
+  dependencies: Record<
+    "libreoffice" | "pdftotext" | "pdftoppm" | "pdfinfo",
+    { ok: boolean; path?: string; version?: string; error?: string }
+  >;
   message?: string;
 };
 
@@ -88,13 +97,27 @@ export async function convertDocumentContent(source: SourceDocument, target: str
       throw new ConversionError("This image format needs an image rendering provider before it can be converted into a visual PDF. JPG/JPEG image to PDF is available now.", "IMAGE_RENDERER_REQUIRED");
     }
     if (targetFormat === "text" || targetFormat === "word" || targetFormat === "excel" || targetFormat === "csv") {
-      throw new ConversionError("This image needs OCR before text or table output can be generated. Configure an OCR provider, then retry.", "OCR_REQUIRED");
+      const extracted = extractImageTextWithTesseract(source);
+      if (!hasReadableContent(extracted)) {
+        throw new ConversionError("OCR completed, but no readable text could be extracted from this image.", "OCR_NO_TEXT_EXTRACTED");
+      }
+      if (targetFormat === "word") return createDocxFile(source.name, contentLines(extracted));
+      if (targetFormat === "excel") return createXlsxFile(source.name, workbookRows(extracted));
+      if (targetFormat === "csv") return createCsvFile(source.name, workbookRows(extracted));
+      return createTextFile(source.name, contentLines(extracted));
     }
     throw new ConversionError("This image conversion is not supported by the local provider yet.", "UNSUPPORTED_IMAGE_CONVERSION");
   }
 
   if (targetFormat === "images" || targetFormat === "image") {
-    throw new ConversionError("PDF or document page image export requires a rendering provider. Configure a PDF/image rendering service before using this conversion.", "RENDERER_REQUIRED");
+    if (sourceType === "pdf") {
+      return convertPdfToImages(source);
+    }
+    if (isOfficeSource(sourceType)) {
+      const pdf = convertOfficeDocumentToPdf(source);
+      return convertPdfToImages({ name: pdf.fileName, mimeType: pdf.contentType, content: pdf.content });
+    }
+    throw new ConversionError("Page image export is only available for PDF and Office documents right now.", "UNSUPPORTED_IMAGE_EXPORT");
   }
 
   const extracted = extractReadableContent(source);
@@ -141,6 +164,58 @@ export async function convertDocumentContent(source: SourceDocument, target: str
   }
 
   throw new ConversionError(`Conversion to ${targetFormat} is not implemented.`, "UNSUPPORTED_CONVERSION");
+}
+
+function convertPdfToImages(source: SourceDocument): GeneratedFile {
+  inspectPdf(source.content, source.name);
+  const pdftoppm = findExecutable("PDFTOPPM_PATH", [
+    "pdftoppm",
+    "/Users/patric/.cache/codex-runtimes/codex-primary-runtime/dependencies/bin/pdftoppm",
+  ]);
+
+  if (!pdftoppm) {
+    throw new ConversionError("PDF page image export engine unavailable. Poppler pdftoppm is required.", "RENDERER_REQUIRED");
+  }
+
+  const tempDir = mkdtempSync(join(tmpdir(), "docucorex-pdf-images-"));
+  const inputPath = join(tempDir, `${baseName(source.name)}.pdf`);
+  const outputPrefix = join(tempDir, "page");
+
+  try {
+    writeFileSync(inputPath, source.content);
+    const result = spawnSync(pdftoppm, ["-png", "-r", "160", inputPath, outputPrefix], {
+      cwd: tempDir,
+      env: conversionProcessEnv(),
+      encoding: "utf8",
+      timeout: 120_000,
+    });
+
+    if (result.error || result.status !== 0) {
+      const reason = result.error?.message || result.stderr || result.stdout || `pdftoppm exited with status ${result.status}`;
+      throw new ConversionError(`PDF page image export failed: ${reason.trim()}`, "RENDERER_FAILED");
+    }
+
+    const images = readdirSync(tempDir)
+      .filter((name) => /^page-\d+\.png$/i.test(name))
+      .sort((a, b) => Number(a.match(/\d+/)?.[0] ?? 0) - Number(b.match(/\d+/)?.[0] ?? 0));
+
+    if (!images.length) {
+      throw new ConversionError("PDF page image export completed but produced no images.", "RENDERER_OUTPUT_MISSING");
+    }
+
+    return {
+      fileName: `${baseName(source.name)}-pages.zip`,
+      contentType: "application/zip",
+      content: createZip(
+        images.map((name, index) => ({
+          name: `pages/${String(index + 1).padStart(3, "0")}.png`,
+          content: new Uint8Array(readFileSync(join(tempDir, name))),
+        })),
+      ),
+    };
+  } finally {
+    rmSync(tempDir, { recursive: true, force: true });
+  }
 }
 
 function extractReadableContent(source: SourceDocument): ExtractedContent {
@@ -273,6 +348,16 @@ function extensionForSourceType(sourceType: string) {
   if (sourceType === "excel") return ".xlsx";
   if (sourceType === "powerpoint") return ".pptx";
   return ".bin";
+}
+
+function imageExtensionForMime(mimeType: string) {
+  const normalized = mimeType.toLowerCase();
+  if (normalized.includes("png")) return ".png";
+  if (normalized.includes("tiff")) return ".tiff";
+  if (normalized.includes("bmp")) return ".bmp";
+  if (normalized.includes("gif")) return ".gif";
+  if (normalized.includes("heic")) return ".heic";
+  return ".jpg";
 }
 
 function conversionProcessEnv() {
@@ -478,6 +563,23 @@ export function verifyOcrRuntime(): OcrRuntimeCheck {
   };
 }
 
+export function verifyConversionRuntime(): ConversionRuntimeCheck {
+  const dependencies = {
+    libreoffice: checkBinary("LIBREOFFICE_PATH", ["soffice", "libreoffice"], ["--version"]),
+    pdftotext: checkBinary("PDFTOTEXT_PATH", ["pdftotext"], ["-v"]),
+    pdftoppm: checkBinary("PDFTOPPM_PATH", ["pdftoppm"], ["-v"]),
+    pdfinfo: checkBinary("PDFINFO_PATH", ["pdfinfo"], ["-v"]),
+  };
+  const missing = Object.entries(dependencies)
+    .filter(([, status]) => !status.ok)
+    .map(([name]) => name);
+  return {
+    ok: missing.length === 0,
+    dependencies,
+    message: missing.length ? `Conversion worker dependencies missing or unavailable: ${missing.join(", ")}` : undefined,
+  };
+}
+
 function createSearchablePdfWithOcr(source: SourceDocument): GeneratedFile {
   const runtime = verifyOcrRuntime();
   if (!runtime.ok) {
@@ -534,12 +636,46 @@ function createSearchablePdfWithOcr(source: SourceDocument): GeneratedFile {
   }
 }
 
+function extractImageTextWithTesseract(source: SourceDocument): ExtractedContent {
+  const tesseract = findExecutable("TESSERACT_PATH", ["tesseract"]);
+  if (!tesseract) {
+    throw new ConversionError("OCR engine unavailable. Tesseract is required for image text extraction.", "OCR_ENGINE_UNAVAILABLE");
+  }
+
+  const tempDir = mkdtempSync(join(tmpdir(), "docucorex-image-ocr-"));
+  const extension = extname(source.name) || imageExtensionForMime(source.mimeType);
+  const inputPath = join(tempDir, `${baseName(source.name)}${extension}`);
+
+  try {
+    writeFileSync(inputPath, source.content);
+    const result = spawnSync(tesseract, [inputPath, "stdout", "-l", "eng"], {
+      cwd: tempDir,
+      env: conversionProcessEnv(),
+      encoding: "utf8",
+      timeout: 120_000,
+    });
+
+    if (result.error || result.status !== 0) {
+      const reason = result.error?.message || result.stderr || result.stdout || `Tesseract exited with status ${result.status}`;
+      throw new ConversionError(`OCR engine failed while reading this image: ${reason.trim()}`, "OCR_ENGINE_FAILED");
+    }
+
+    const text = normalizeText(result.stdout);
+    return { kind: "image", text, rows: textRows(text), sourceType: "image" };
+  } finally {
+    rmSync(tempDir, { recursive: true, force: true });
+  }
+}
+
 function extractPdfText(bytes: Uint8Array, fileName: string) {
   const tempDir = mkdtempSync(join(tmpdir(), "docucorex-pdf-text-"));
   const pdfPath = join(tempDir, `${baseName(fileName)}.pdf`);
 
   try {
     writeFileSync(pdfPath, bytes);
+    const popplerExtraction = extractPdfTextWithPdftotext(pdfPath);
+    if (popplerExtraction) return popplerExtraction;
+
     const python = findExecutable("PYTHON_PATH", [
       "/Users/patric/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3",
       "python3",
@@ -588,6 +724,30 @@ print(json.dumps({"pages": pages}))
   } finally {
     rmSync(tempDir, { recursive: true, force: true });
   }
+}
+
+function extractPdfTextWithPdftotext(pdfPath: string) {
+  const pdftotext = findExecutable("PDFTOTEXT_PATH", [
+    "pdftotext",
+    "/Users/patric/.cache/codex-runtimes/codex-primary-runtime/dependencies/bin/pdftotext",
+  ]);
+
+  if (!pdftotext) return null;
+
+  const result = spawnSync(pdftotext, ["-layout", pdfPath, "-"], {
+    encoding: "utf8",
+    timeout: 60_000,
+    env: conversionProcessEnv(),
+    maxBuffer: 64 * 1024 * 1024,
+  });
+
+  if (result.error || result.status !== 0) return null;
+
+  const text = normalizeText(result.stdout);
+  return {
+    text,
+    pageCharacters: text ? [text.length] : [],
+  };
 }
 
 function extractPdfTextWithLightweightParser(bytes: Uint8Array) {

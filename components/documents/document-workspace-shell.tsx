@@ -15,6 +15,7 @@ import type { DocumentRecord, DocumentStatus } from "@/lib/types";
 import { DocumentUploadPanel } from "@/components/documents/document-upload-panel";
 import { DocumentList } from "@/components/documents/document-list";
 import type { DocumentActionHandlers } from "@/components/documents/document-actions";
+import { createDocumentConversion, waitForDownloadReady, wakeConversionWorker } from "@/components/documents/conversion-client";
 
 type ScopeFilter = "all" | "processing" | "review" | "completed" | "shared" | "archived" | "trash";
 
@@ -228,26 +229,16 @@ export function DocumentWorkspaceShell({ initialFilter = "all" }: { initialFilte
     setMessage(`Converting ${document.name} to ${target.toUpperCase()}…`);
     patchLocal(document.id, { status: "processing" });
     try {
-      const response = await fetch("/api/uploads/workflow", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ documentIds: [document.id], target }),
-      }).catch(() => null);
-
-      if (!response?.ok) {
-        const data = (await response?.json().catch(() => null)) as { error?: string } | null;
-        setMessage(data?.error ?? "Unable to start conversion.");
-        await loadDocuments();
-        return;
-      }
-
-      await fetch("/api/jobs/process", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ documentId: document.id }),
-      }).catch(() => null);
+      const conversion = await createDocumentConversion(document.id, target);
+      await wakeConversionWorker(conversion);
+      await waitForDownloadReady(conversion, {
+        onStatus: (nextMessage) => setMessage(`${document.name}: ${nextMessage}`),
+      });
       await loadDocuments();
-      setMessage(`Conversion started for ${document.name}.`);
+      setMessage(`${document.name} converted. Download is ready in History.`);
+    } catch (error) {
+      await loadDocuments();
+      setMessage(error instanceof Error ? error.message : "Conversion failed.");
     } finally {
       setBusy(document.id, false);
     }
