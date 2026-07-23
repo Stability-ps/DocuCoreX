@@ -217,8 +217,17 @@ function accountGroups(transactions: AccountingTransaction[]) {
 // ─── Section builders ───────────────────────────────────────────────────────
 
 export function buildExportSections(detail: AccountingRunDetail, resolvedCompany: string): ExportSection[] {
-  const meta = buildStatementMetadata(detail, resolvedCompany);
-  const txns = detail.transactions;
+  const txns = [...detail.transactions].sort((a, b) => {
+    const dateCompare = String(a.transactionDate ?? "").localeCompare(String(b.transactionDate ?? ""));
+    if (dateCompare !== 0) return dateCompare;
+    const pageCompare = Number(a.sourcePage ?? 0) - Number(b.sourcePage ?? 0);
+    if (pageCompare !== 0) return pageCompare;
+    const rowCompare = Number(a.sourceRow ?? 0) - Number(b.sourceRow ?? 0);
+    if (rowCompare !== 0) return rowCompare;
+    return String(a.createdAt ?? "").localeCompare(String(b.createdAt ?? ""));
+  });
+  const sortedDetail: AccountingRunDetail = { ...detail, transactions: txns };
+  const meta = buildStatementMetadata(sortedDetail, resolvedCompany);
   const run = detail.run;
   const missingTransactionCount = Math.max(0, Number(run.missingTransactionCount ?? 0) || 0);
   const lowConfidenceCount = txns.filter((t) => t.confidence < 80).length;
@@ -233,7 +242,25 @@ export function buildExportSections(detail: AccountingRunDetail, resolvedCompany
   const exportStatusLabel = draftNeedsReview ? "Draft / Needs Review" : "Final Export";
 
   // ONE canonical accounting model — every ledger-based sheet consumes this.
-  const model = buildAccountingModel(detail);
+  const model = buildAccountingModel(sortedDetail);
+  const claimStatusOf = (t: (typeof model.transactions)[number]) =>
+    t.vatCode === "REV"
+      ? "Review required"
+      : t.vatCode === "STD"
+        ? t.debit > 0
+          ? t.supportedByInvoice
+            ? "Claimable (invoice on file)"
+            : "Invoice required"
+          : "Output VAT"
+        : t.vatTreatmentLabel;
+  const txMonth = (date: string) => (date || "").slice(0, 7);
+  const txAmount = (t: (typeof model.transactions)[number]) => t.credit - t.debit;
+  const txType = (t: (typeof model.transactions)[number]) => (t.credit > 0 ? "Money In" : "Money Out");
+  const accountGroupLabel = (group: string) =>
+    group
+      .split("_")
+      .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+      .join(" ");
 
   const pl = computeProfitLoss(txns, run);
   const duplicates = detectDuplicates(txns);
@@ -331,38 +358,73 @@ export function buildExportSections(detail: AccountingRunDetail, resolvedCompany
     label: "Transactions",
     sheet: "Transactions",
     headerRow: 1,
-    filter: true,
+    filter: false,
     rows: [
-      [HDR("Date"), HDR("Reference"), HDR("Description"), HDR("Debit"), HDR("Credit"), HDR("Balance"), HDR("Category"), HDR("GL Account"), HDR("VAT Code"), HDR("Review Status"), HDR("Notes")],
+      [
+        HDR("Date"),
+        HDR("Month"),
+        HDR("Description"),
+        HDR("Money In"),
+        HDR("Money Out"),
+        HDR("Amount"),
+        HDR("Type"),
+        HDR("Balance"),
+        HDR("Bank Charge"),
+        HDR("Account"),
+        HDR("Group"),
+        HDR("Category"),
+        HDR("VAT Code"),
+        HDR("VAT Claim Status"),
+        HDR("Potential Output VAT"),
+        HDR("Potential Input VAT"),
+        HDR("Review Status"),
+        HDR("Notes"),
+      ],
       ...model.transactions.map((t) => [
         S(t.date),
-        S(t.reference),
+        S(txMonth(t.date)),
         S(t.description),
-        M(t.debit),
         M(t.credit),
+        M(t.debit),
+        txAmount(t) < 0 ? MW(txAmount(t)) : M(txAmount(t)),
+        S(txType(t)),
         t.balance != null ? M(t.balance) : S(""),
+        t.bankCharge ? M(t.debit) : S(""),
+        S(t.account.name),
+        S(accountGroupLabel(t.account.group)),
         S(t.category),
-        S(t.account.number),
         t.vatCode === "REV" ? WARN(t.vatCode) : S(t.vatCode),
+        S(claimStatusOf(t)),
+        M(t.outputVat),
+        M(t.inputVat),
         t.reviewReason ? WARN(t.reviewStatus) : S(t.reviewStatus),
         S(t.notes),
       ]),
-      [B("Totals"), S(""), S(""), MT(meta.totalPayments), MT(meta.totalReceipts), S(""), S(""), S(""), S(""), S(""), S("")],
+      [
+        B("Totals"),
+        S(""),
+        S(""),
+        MT(meta.totalReceipts),
+        MT(meta.totalPayments),
+        meta.totalReceipts - meta.totalPayments < 0 ? MW(meta.totalReceipts - meta.totalPayments) : MT(meta.totalReceipts - meta.totalPayments),
+        S(""),
+        S(""),
+        MT(meta.bankCharges),
+        S(""),
+        S(""),
+        S(""),
+        S(""),
+        S(""),
+        MT(model.vat201.outputVat),
+        MT(model.vat201.inputVat),
+        S(""),
+        S(""),
+      ],
     ],
   });
 
   // VAT Working Paper — professional, every VAT amount traces to a transaction.
   const v201 = model.vat201;
-  const claimStatusOf = (t: (typeof model.transactions)[number]) =>
-    t.vatCode === "REV"
-      ? "Review required"
-      : t.vatCode === "STD"
-        ? t.debit > 0
-          ? t.supportedByInvoice
-            ? "Claimable (invoice on file)"
-            : "Invoice required"
-          : "Output VAT"
-        : t.vatTreatmentLabel;
   // Declared bank VAT from the statement's fee summary (e.g. R158.64). If the
   // fee rows were extracted per-transaction their input VAT is already counted;
   // otherwise the shortfall is added so declared bank VAT is never lost.
@@ -385,41 +447,70 @@ export function buildExportSections(detail: AccountingRunDetail, resolvedCompany
     id: "vat",
     label: "VAT Working Paper",
     sheet: "VAT Working Paper",
-    headerRow: 8,
-    filter: true,
+    headerRow: 10,
+    filter: false,
     rows: [
       [TITLE("VAT Working Paper & VAT201")],
       [MUTE("VAT estimated at 15% inclusive (15/115). Every amount traces to a transaction. Verify against valid tax invoices and SARS VAT201. Not tax advice.")],
       [],
-      [HDR("Estimated VAT201"), HDR("Output VAT"), HDR("Input VAT"), HDR("Declared Bank VAT"), HDR("Net VAT"), HDR("Review Items"), HDR("Missing Invoices")],
-      [S("Totals"), M(v201.outputVat), M(totalInputVat), M(declaredBankVat), M(totalNetVat), INT(v201.reviewItems), INT(v201.missingInvoices)],
+      [HDR("VAT Summary"), HDR("Amount"), HDR("VAT201 Box"), HDR("Comment")],
+      [S("Output VAT"), M(v201.outputVat), S("4"), S("Standard-rated receipts only")],
+      [S("Input VAT"), M(totalInputVat), S("14/15"), S("Standard-rated payments with invoice support plus declared bank VAT")],
+      [S("Declared Bank VAT"), M(declaredBankVat), S("14/15"), S("From statement fee summary")],
+      [B(totalNetVat >= 0 ? "VAT Payable" : "VAT Refund"), totalNetVat >= 0 ? MT(totalNetVat) : MW(totalNetVat), S("13"), S(totalNetVat >= 0 ? "Payable to SARS" : "Refund due from SARS")],
+      [S("Review Items"), INT(v201.reviewItems), S(""), S("Excluded from VAT totals until approved")],
       [],
       [HDR("Month"), HDR("Output VAT"), HDR("Input VAT"), HDR("Net VAT Payable/(Refund)"), HDR("Running VAT Balance"), HDR("Status")],
       ...vatMonthlyRows,
       [],
-      [HDR("Date"), HDR("Reference"), HDR("Description"), HDR("Debit"), HDR("Credit"), HDR("Category"), HDR("GL Account"), HDR("VAT Code"), HDR("VAT %"), HDR("Input VAT"), HDR("Output VAT"), HDR("Net VAT"), HDR("VAT201 Box"), HDR("Claim Status"), HDR("Review Status"), HDR("Notes")],
-      ...model.transactions.map((t) => [
-        S(t.date),
-        S(t.reference),
-        S(t.description),
-        M(t.debit),
-        M(t.credit),
-        S(t.category),
-        S(t.account.number),
-        t.vatCode === "REV" ? WARN(t.vatCode) : t.vatCode === "STD" ? S(t.vatCode) : MUTE(t.vatCode),
-        S(t.vatCode === "STD" ? "15%" : t.vatCode === "ZR" ? "0%" : "—"),
-        M(t.inputVat),
-        M(t.outputVat),
-        t.netVat < 0 ? MW(t.netVat) : M(t.netVat),
-        S(t.sarsBox),
-        S(claimStatusOf(t)),
-        t.reviewReason ? WARN(t.reviewStatus) : S(t.reviewStatus),
-        S(t.notes),
-      ]),
+      [
+        HDR("Date"),
+        HDR("Month"),
+        HDR("Description"),
+        HDR("Money In"),
+        HDR("Money Out"),
+        HDR("Account"),
+        HDR("Category"),
+        HDR("VAT Code"),
+        HDR("VAT %"),
+        HDR("Claim Status"),
+        HDR("Output VAT"),
+        HDR("Input VAT"),
+        HDR("Net VAT"),
+        HDR("VAT Balance"),
+        HDR("VAT201 Box"),
+        HDR("Review Status"),
+        HDR("Notes"),
+      ],
+      ...(() => {
+        let lineVatBalance = 0;
+        return model.transactions.map((t) => {
+          lineVatBalance += t.netVat;
+          return [
+            S(t.date),
+            S(txMonth(t.date)),
+            S(t.description),
+            M(t.credit),
+            M(t.debit),
+            S(t.account.name),
+            S(t.category),
+            t.vatCode === "REV" ? WARN(t.vatCode) : S(t.vatCode),
+            S(t.vatCode === "STD" ? "15%" : t.vatCode === "ZR" ? "0%" : "—"),
+            S(claimStatusOf(t)),
+            M(t.outputVat),
+            M(t.inputVat),
+            t.netVat < 0 ? MW(t.netVat) : M(t.netVat),
+            lineVatBalance < 0 ? MW(lineVatBalance) : M(lineVatBalance),
+            S(t.sarsBox),
+            t.reviewReason ? WARN(t.reviewStatus) : S(t.reviewStatus),
+            S(t.notes),
+          ];
+        });
+      })(),
       ...(supplementaryBankVat > 0.005
-        ? [[B("Declared bank VAT (fees not itemised)"), S(""), S(""), S(""), S(""), S("Bank Charges"), S("5000"), S("STD"), S("15%"), M(supplementaryBankVat), M(0), M(-supplementaryBankVat), S("14/15 (Input VAT)"), S("Input VAT"), WARN("needs_review"), S("From statement fee summary")]]
+        ? [[B("Declared bank VAT (fees not itemised)"), S(""), S("From statement fee summary"), S(""), S(""), S("Bank Charges"), S("Bank Charges"), S("STD"), S("15%"), S("Input VAT"), M(0), M(supplementaryBankVat), MW(-supplementaryBankVat), MW(totalNetVat), S("14/15 (Input VAT)"), WARN("needs_review"), S("From statement fee summary")]]
         : []),
-      [B("Totals"), S(""), S(""), MT(meta.totalPayments), MT(meta.totalReceipts), S(""), S(""), S(""), S(""), MT(totalInputVat), MT(v201.outputVat), MT(totalNetVat), S(""), S(""), S(""), S("")],
+      [B("Totals"), S(""), S(""), MT(meta.totalReceipts), MT(meta.totalPayments), S(""), S(""), S(""), S(""), S(""), MT(v201.outputVat), MT(totalInputVat), MT(totalNetVat), MT(totalNetVat), S(""), S(""), S("")],
       [],
       [TITLE("Estimated SARS VAT201")],
       [HDR("VAT201 Box"), HDR("Description"), HDR("Amount")],
