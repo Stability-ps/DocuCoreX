@@ -33,6 +33,7 @@ WORKER_PARSER_VERSION = "fnb_business_v1"
 WORKER_BUILD_FALLBACK = "local-dev"
 DEFAULT_AI_MODEL = "gpt-4o-mini"
 AI_CLASSIFICATION_CACHE: dict[str, dict[str, Any]] = {}
+AI_CLASSIFICATION_BATCH_SIZE = 30
 ACCOUNTING_REPORT_DISCLAIMER = (
     "Draft management report generated from bank-statement data only. "
     "This is not a final IFRS or Companies Act financial statement and requires accountant review."
@@ -1619,6 +1620,27 @@ def validate_extraction(metadata: dict[str, Any], transactions: list[ParsedTrans
     }
 
 
+def extraction_money_checks_passed(extraction_check: dict[str, Any]) -> bool:
+    money_rules = {"reconciliation", "credit_total", "debit_total"}
+    checks = extraction_check.get("checks") or []
+    found = {check.get("name"): bool(check.get("ok")) for check in checks if check.get("name") in money_rules}
+    return all(found.get(rule, False) for rule in money_rules)
+
+
+def missing_transaction_count_for_storage(extraction_check: dict[str, Any], transaction_count: int) -> int | None:
+    expected_count = extraction_check.get("expected_transaction_count")
+    if expected_count is None:
+        return None
+    # FNB's printed transaction-count control can be out by one when hidden
+    # service-fee/bank-charge rows are represented differently from visible
+    # transaction rows. If the money controls reconcile exactly, do not tell the
+    # user a transaction is missing; keep the run in review, but with no
+    # suspected missing-money count.
+    if extraction_money_checks_passed(extraction_check):
+        return 0
+    return max(0, int(expected_count) - transaction_count)
+
+
 def balance_gap_diagnostics(metadata: dict[str, Any], transactions: list[ParsedTransaction]) -> list[dict[str, Any]]:
     if metadata.get("opening_balance") is None:
         return []
@@ -2397,7 +2419,7 @@ def validate_ai_item(item: Any, valid_ids: set[str]) -> dict[str, Any] | None:
     }
 
 
-def parse_ai_json_content(content: str) -> dict[str, Any]:
+def parse_ai_json_content(content: str) -> Any:
     cleaned = content.strip()
     if cleaned.startswith("```"):
         cleaned = re.sub(r"^```(?:json)?\s*", "", cleaned, flags=re.IGNORECASE).strip()
@@ -2410,7 +2432,7 @@ def parse_ai_json_content(content: str) -> dict[str, Any]:
         if start < 0 or end <= start:
             raise
         parsed = json.loads(cleaned[start : end + 1])
-    return parsed if isinstance(parsed, dict) else {}
+    return parsed
 
 
 def request_ai_classifications(items: list[dict[str, Any]], diagnostics: dict[str, Any]) -> list[dict[str, Any]]:
@@ -2459,6 +2481,7 @@ def request_ai_classifications(items: list[dict[str, Any]], diagnostics: dict[st
     body = {
         "model": accounting_ai_model(),
         "temperature": 0,
+        "max_tokens": 6000,
         "response_format": {"type": "json_object"},
         "messages": [
             {"role": "system", "content": "You are an accounting classification assistant. Output valid JSON only."},
@@ -2473,7 +2496,7 @@ def request_ai_classifications(items: list[dict[str, Any]], diagnostics: dict[st
             headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
             method="POST",
         )
-        with urllib.request.urlopen(request, timeout=30) as response:
+        with urllib.request.urlopen(request, timeout=60) as response:
             return json.loads(response.read().decode("utf-8"))
 
     try:
@@ -2489,7 +2512,17 @@ def request_ai_classifications(items: list[dict[str, Any]], diagnostics: dict[st
         content = payload.get("choices", [{}])[0].get("message", {}).get("content", "{}")
         parsed = parse_ai_json_content(content)
         valid_ids = {str(item["transaction_id"]) for item in items}
-        validated_items = [validated for raw in parsed.get("items", []) if (validated := validate_ai_item(raw, valid_ids))]
+        if isinstance(parsed, dict):
+            raw_items = parsed.get("items", [])
+        elif isinstance(parsed, list):
+            raw_items = parsed
+        else:
+            raw_items = []
+        if isinstance(raw_items, dict):
+            raw_items = list(raw_items.values())
+        elif not isinstance(raw_items, list):
+            raw_items = []
+        validated_items = [validated for raw in raw_items if (validated := validate_ai_item(raw, valid_ids))]
         if not validated_items and items:
             diagnostics["ai_failures"] += 1
             log_warning("worker.ai_classification_empty", returned_keys=list(parsed.keys()) if isinstance(parsed, dict) else [], item_count=len(items))
@@ -2552,15 +2585,17 @@ def apply_ai_classifications(rows: list[dict[str, Any]]) -> dict[str, Any]:
         cache_key_by_id[transaction_id] = cache_key
 
     diagnostics["ai_transactions_sent"] = len(batch)
-    for result in request_ai_classifications(batch, diagnostics):
-        row = row_by_id.get(result["transaction_id"])
-        if not row:
-            continue
-        apply_ai_result_to_row(row, result)
-        cache_key = cache_key_by_id.get(result["transaction_id"])
-        if cache_key:
-            AI_CLASSIFICATION_CACHE[cache_key] = result
-        diagnostics["ai_transactions_classified"] += 1
+    for start in range(0, len(batch), AI_CLASSIFICATION_BATCH_SIZE):
+        chunk = batch[start : start + AI_CLASSIFICATION_BATCH_SIZE]
+        for result in request_ai_classifications(chunk, diagnostics):
+            row = row_by_id.get(result["transaction_id"])
+            if not row:
+                continue
+            apply_ai_result_to_row(row, result)
+            cache_key = cache_key_by_id.get(result["transaction_id"])
+            if cache_key:
+                AI_CLASSIFICATION_CACHE[cache_key] = result
+            diagnostics["ai_transactions_classified"] += 1
 
     log_event("worker.ai_classification", **diagnostics)
     return diagnostics
@@ -3092,7 +3127,7 @@ def build_combined_workbook(runs: list[dict[str, Any]], transactions_by_run: dic
     ]
     for index, row in enumerate(dashboard_rows, start=3):
         write_row(dashboard, list(row), index)
-    write_row_at(dashboard, ["Month", "Receipts", "Payments", "Output VAT", "Input VAT", "VAT Payable/(Refund)"], 3, 4, header=True)
+    write_row_at(dashboard, ["Month", "VAT-classified receipts", "VAT-classified payments", "Output VAT", "Input VAT", "VAT Payable/(Refund)"], 3, 4, header=True)
     for row_index, month_row in enumerate(month_summary(reportable_rows), start=4):
         write_row_at(
             dashboard,
@@ -3705,10 +3740,7 @@ def process_fnb_statement(payload: ProcessRequest, authorization: str | None = H
                 "review_reason": run_error,
                 "validation_status": extraction_check.get("status"),
                 "reconciliation_difference": extraction_check.get("reconciliation_difference"),
-                "missing_transaction_count": max(
-                    0,
-                    int((extraction_check.get("expected_transaction_count") or 0) - len(transactions)),
-                ) if extraction_check.get("expected_transaction_count") is not None else None,
+                "missing_transaction_count": missing_transaction_count_for_storage(extraction_check, len(transactions)),
                 "requires_review": review_required,
                 "processing_duration_ms": int(processing_duration_ms),
                 "extraction_accuracy": round(avg_confidence, 2),

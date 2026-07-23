@@ -868,7 +868,7 @@ export function AccountingIntelligence() {
         await processRun(runId, { manageBusy: false, refreshAfter: false, reprocess: status !== "queued" });
       }
       await loadRuns(processableRunIds[0]).catch(() => undefined);
-      setMessage(`${processableRunIds.length} statements queued for processing.`);
+      setMessage(`${processableRunIds.length} statements processed. Review any highlighted items before final export.`);
     } finally {
       setBusy("");
     }
@@ -885,7 +885,7 @@ export function AccountingIntelligence() {
         await processRun(runId, { manageBusy: false, refreshAfter: false, reprocess: status !== "queued" });
       }
       await loadRuns(selectedProcessableRunIds[0]).catch(() => undefined);
-      setMessage(`${selectedProcessableRunIds.length} selected statements queued for processing.`);
+      setMessage(`${selectedProcessableRunIds.length} selected statements processed. Review any highlighted items before final export.`);
     } finally {
       setBusy("");
     }

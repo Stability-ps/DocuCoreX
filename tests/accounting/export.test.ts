@@ -313,3 +313,29 @@ test("draft combined export sends continuity override for review-required statem
   assert.match(ui, /overrideContinuity:\s*needsDraftOverride/);
   assert.match(ui, /confirmationText:\s*needsDraftOverride \? "COMBINE" : undefined/);
 });
+
+test("bulk processing shows completed wording instead of leaving queued copy", () => {
+  const ui = read("components/accounting/accounting-intelligence.tsx");
+  assert.match(ui, /statements processed\. Review any highlighted items before final export/);
+  assert.doesNotMatch(ui, /statements queued for processing/);
+});
+
+test("balanced count-only FNB reviews do not store suspected missing transactions", () => {
+  const worker = read("workers/accounting_worker/main.py");
+  assert.match(worker, /def missing_transaction_count_for_storage/);
+  assert.match(worker, /if extraction_money_checks_passed\(extraction_check\):\s*return 0/);
+  assert.match(worker, /"missing_transaction_count": missing_transaction_count_for_storage\(extraction_check, len\(transactions\)\)/);
+});
+
+test("AI accounting classification is batched and allowed enough response tokens", () => {
+  const worker = read("workers/accounting_worker/main.py");
+  assert.match(worker, /AI_CLASSIFICATION_BATCH_SIZE = 30/);
+  assert.match(worker, /"max_tokens": 6000/);
+  assert.match(worker, /for start in range\(0, len\(batch\), AI_CLASSIFICATION_BATCH_SIZE\)/);
+});
+
+test("combined dashboard labels VAT-classified monthly movement", () => {
+  const worker = read("workers/accounting_worker/main.py");
+  assert.match(worker, /"VAT-classified receipts"/);
+  assert.match(worker, /"VAT-classified payments"/);
+});
