@@ -92,6 +92,7 @@ from openpyxl import load_workbook
 
 from main import (
     ParsedTransaction,
+    apply_learned_classification_rules,
     build_combined_workbook,
     build_workbook,
     parse_metadata,
@@ -681,6 +682,94 @@ def run_professional_classification_case() -> None:
     assert_equal(receipt_row["vat_claim_status"], "Output", f"{case_id} receipt vat")
 
 
+def run_learned_supplier_rules_case() -> None:
+    case_id = "learned-supplier-rules"
+    transactions = [
+        ParsedTransaction(
+            transaction_date="2026-04-02",
+            description="POS Purchase New Uber Eats 400568*7629 01 Apr",
+            debit_amount=94.0,
+            credit_amount=None,
+            running_balance=1598939.08,
+            bank_charge=False,
+            account_category="Suspense / Review Required",
+            vat_treatment="review",
+            supported_by_invoice=False,
+            confidence=55,
+            review_status="needs_review",
+            source_page=1,
+            raw_text="02 Apr POS Purchase New Uber Eats 400568*7629 01 Apr 94.00 1,598,939.08Cr",
+        ),
+        ParsedTransaction(
+            transaction_date="2026-04-04",
+            description="POS Purchase Google Chatgpt 400568*7629 03 Apr",
+            debit_amount=424.99,
+            credit_amount=None,
+            running_balance=1598514.09,
+            bank_charge=False,
+            account_category="Suspense / Review Required",
+            vat_treatment="review",
+            supported_by_invoice=False,
+            confidence=55,
+            review_status="needs_review",
+            source_page=1,
+            raw_text="04 Apr POS Purchase Google Chatgpt 400568*7629 03 Apr 424.99 1,598,514.09Cr",
+        ),
+        ParsedTransaction(
+            transaction_date="2026-04-25",
+            description="25 Apr Byc Debit 63012593504",
+            debit_amount=8.51,
+            credit_amount=None,
+            running_balance=1450166.60,
+            bank_charge=False,
+            account_category="Suspense / Review Required",
+            vat_treatment="review",
+            supported_by_invoice=False,
+            confidence=55,
+            review_status="needs_review",
+            source_page=2,
+            raw_text="25 Apr Byc Debit 63012593504 8.51 1,450,166.60Cr",
+        ),
+    ]
+    rules = [
+        {
+            "merchant_key": "google",
+            "account_category": "Software / IT",
+            "vat_treatment": "review",
+            "review_status": "needs_review",
+            "confidence": 84,
+        },
+        {
+            "merchant_key": "google chatgpt",
+            "account_category": "Software Subscriptions",
+            "vat_treatment": "standard",
+            "review_status": "needs_review",
+            "confidence": 90,
+        },
+        {
+            "merchant_key": "uber eats",
+            "account_category": "Staff Welfare / Meals / Entertainment",
+            "vat_treatment": "review",
+            "review_status": "needs_review",
+            "confidence": 88,
+        },
+        {
+            "merchant_key": "byc debit",
+            "account_category": "Bank Charges",
+            "vat_treatment": "standard",
+            "review_status": "approved",
+            "confidence": 98,
+        },
+    ]
+    applied = apply_learned_classification_rules(transactions, rules)
+    assert_equal(applied, 3, f"{case_id} applied count")
+    assert_equal(transactions[0].account_category, "Staff Welfare / Meals / Entertainment", f"{case_id} uber")
+    assert_equal(transactions[1].account_category, "Software Subscriptions", f"{case_id} specific google rule")
+    assert_equal(transactions[2].account_category, "Bank Charges", f"{case_id} bank fee")
+    assert_equal(transactions[2].review_status, "approved", f"{case_id} bank fee review status")
+    assert_equal(transactions[2].confidence, 98.0, f"{case_id} bank fee confidence")
+
+
 def run_combined_workbook_case() -> None:
     case_id = "combined-workbook-months"
     december_run = {
@@ -846,6 +935,7 @@ def run() -> None:
     run_december_multi_page_closing_balance_case()
     run_compound_ocr_line_case()
     run_professional_classification_case()
+    run_learned_supplier_rules_case()
     run_combined_workbook_case()
     run_local_real_statement_files_case()
 

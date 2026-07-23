@@ -339,3 +339,23 @@ test("combined dashboard labels VAT-classified monthly movement", () => {
   assert.match(worker, /"VAT-classified receipts"/);
   assert.match(worker, /"VAT-classified payments"/);
 });
+
+test("starter supplier knowledge seeds worker learning rules", () => {
+  const kb = read("lib/accounting/engine/merchant-kb.ts");
+  const server = read("lib/accounting/server.ts");
+  assert.match(kb, /canonicalName: "FNB Bank Charges"/);
+  assert.match(kb, /canonicalName: "Google ChatGPT \/ OpenAI"/);
+  assert.match(kb, /canonicalName: "Salaries and Caregivers"/);
+  assert.match(kb, /canonicalName: "Inter-account Transfers"/);
+  assert.match(kb, /canonicalName: "Personal \/ Lifestyle Review Suppliers"/);
+  assert.match(server, /\.from\("accounting_classification_rules"\)/);
+  assert.match(server, /ignoreDuplicates: true/, "seed rules must not overwrite accountant corrections");
+  assert.match(server, /defaultReviewStatus/);
+});
+
+test("worker applies most specific learned supplier rule first", () => {
+  const worker = read("workers/accounting_worker/main.py");
+  assert.match(worker, /sorted_rules = sorted\(/);
+  assert.match(worker, /len\(str\(rule\.get\("merchant_key"\) or ""\)\)/);
+  assert.match(worker, /reverse=True/);
+});

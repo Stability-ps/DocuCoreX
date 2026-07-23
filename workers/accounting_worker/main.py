@@ -157,12 +157,17 @@ def fetch_classification_rules(supabase: Client, workspace_id: str) -> list[dict
 def apply_learned_classification_rules(transactions: list[ParsedTransaction], rules: list[dict[str, Any]]) -> int:
     if not rules:
         return 0
+    sorted_rules = sorted(
+        rules,
+        key=lambda rule: len(str(rule.get("merchant_key") or "")),
+        reverse=True,
+    )
     applied = 0
     for transaction in transactions:
         key = normalize_merchant_key(transaction.description)
         if not key:
             continue
-        matched_rule = next((rule for rule in rules if str(rule.get("merchant_key") or "") and str(rule.get("merchant_key")) in key), None)
+        matched_rule = next((rule for rule in sorted_rules if str(rule.get("merchant_key") or "") and str(rule.get("merchant_key")) in key), None)
         if not matched_rule:
             continue
         transaction.account_category = str(matched_rule.get("account_category") or transaction.account_category)
@@ -582,13 +587,14 @@ def classify_transaction(description: str, debit: float | None, credit: float | 
         (("drawings", "director loan", "director's loan", "owner draw"),
          "Director Loan / Drawings", "out_of_scope", False, 82),
         # SARS / tax — suspense/liability, NEVER revenue. Excluded from P&L.
-        (("tax deposit", "sars", "efiling", "paye", "vat201", "provisional tax"),
+        (("tax deposit", "sars", "efiling", "paye", "vat201", "vat 201", "provisional tax"),
          "SARS / Tax Suspense", "review", False, 82),
         # Insurance / funeral debit orders
-        (("discovery account", "discovery insure", "insurance premium", "funeral", "fnbfuneral",
+        (("discovery account", "discovery insure", "discovery insurance", "discovery health", "insurance premium", "funeral", "fnbfuneral",
           "life cover", "outsurance", "santam", "old mutual"), "Insurance Expense", "exempt", False, 85),
         # Salaries / payroll
-        (("salary", "payroll", "wages", "nanny", "care giver"), "Salaries & Wages", "out_of_scope", False, 90),
+        (("salary", "payroll", "wages", "nanny", "care giver", "caregiver", "brilliant care giver",
+          "ana care giver", "waterfall salary", "sunfield sureka reddy"), "Salaries & Wages", "out_of_scope", False, 90),
         # Medical aid / employee medical deductions
         (("medical aid", "med aid", "medshield", "momentum health", "discovery health", "bonitas"),
          "Salaries & Wages", "out_of_scope", False, 90),
@@ -601,15 +607,20 @@ def classify_transaction(description: str, debit: float | None, credit: float | 
         # Refunds
         (("refund", "reversal"), "Refund / Suspense", "review", False, 74),
         # Levies
-        (("levy", "levies", "body corporate", "hoa "), "Levies", "review", False, 84),
+        (("levy", "levies", "body corporate", "hoa ", "h/o/a", "emporers ridge"), "Levies", "review", False, 84),
         # Software / IT
-        (("google chatgpt", "chatgpt", "openai", "microsoft", "adobe", "subscription", "saas", "aws ", "google cloud"),
+        (("google chatgpt", "chatgpt", "openai", "microsoft", "office365", "microsoft 365", "adobe",
+          "subscription", "saas", "aws ", "amazon web services", "google cloud", "google workspace"),
          "Software Subscriptions", "standard", False, 84),
-        (("google xiaomi home", "xiaomi home"), "Software / IT", "review", False, 82),
+        (("google xiaomi home", "xiaomi home", "google play"), "Software / IT", "review", False, 82),
         # Courier / delivery
-        (("dhl", "paygate*dhl", "courier", "aramex", "the courier guy", "postnet"), "Courier / Delivery", "standard", False, 84),
+        (("dhl", "paygate*dhl", "paygate dhl", "courier", "aramex", "the courier guy", "courier guy", "postnet"), "Courier / Delivery", "standard", False, 84),
         # Meals / entertainment
-        (("uber eats", "mr d food", "restaurant"), "Staff Welfare / Meals / Entertainment", "review", False, 80),
+        (("uber eats", "mr d food", "mr d", "restaurant", "checkers sixty60", "woolworths"), "Staff Welfare / Meals / Entertainment", "review", False, 80),
+        # Personal-looking or unclear suppliers should stay in review instead of
+        # being upgraded to normal operating expenses.
+        (("senses spa", "adore photography", "sloppy kisses", "puppy classes", "prayer shop"),
+         "Review Required", "review", False, 62),
         # Fuel / motor
         (("fuel", "petrol", "diesel", "garage", "engen", "shell", "bp ", "sasol", "total ", "caltex", "volvo"),
          "Motor Vehicle Expenses", "standard", False, 84),

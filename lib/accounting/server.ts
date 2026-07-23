@@ -267,15 +267,16 @@ async function ensureMerchantKnowledgeBase() {
   const context = await getWorkspaceContext();
   if (!context) return;
 
+  const now = new Date().toISOString();
   const rows = BASE_MERCHANT_KNOWLEDGE.map((entry) => ({
     workspace_id: context.workspaceId,
     canonical_name: entry.canonicalName,
     aliases: entry.aliases,
     default_category: entry.defaultCategory,
     default_vat_treatment: entry.defaultVatTreatment,
-    confidence: 90,
+    confidence: entry.confidence ?? 90,
     created_by: context.userId,
-    updated_at: new Date().toISOString(),
+    updated_at: now,
   }));
 
   const { error } = await context.supabase
@@ -284,6 +285,38 @@ async function ensureMerchantKnowledgeBase() {
 
   if (error && error.code !== "42P01" && error.code !== "PGRST204") {
     console.warn("[accounting] could not seed merchant knowledge base", error.message);
+  }
+
+  const ruleRows = BASE_MERCHANT_KNOWLEDGE.flatMap((entry) => {
+    const phrases = [entry.canonicalName, ...entry.aliases];
+    return phrases
+      .map((phrase) => ({ phrase, merchantKey: normalizeMerchantKey(phrase) }))
+      .filter((rule, index, list) => rule.merchantKey && list.findIndex((item) => item.merchantKey === rule.merchantKey) === index)
+      .map(({ phrase, merchantKey }) => ({
+        workspace_id: context.workspaceId,
+        merchant_key: merchantKey,
+        account_category: entry.defaultCategory,
+        vat_treatment: entry.defaultVatTreatment,
+        review_status:
+          entry.defaultReviewStatus ??
+          (entry.defaultVatTreatment === "review" || entry.defaultCategory.includes("Review") || entry.defaultCategory.includes("Uncategorised")
+            ? "needs_review"
+            : "approved"),
+        confidence: entry.confidence ?? 90,
+        reason: entry.reason ?? `Seeded supplier rule: ${entry.canonicalName}.`,
+        sample_description: phrase,
+        created_by: context.userId,
+        updated_at: now,
+        last_used_at: now,
+      }));
+  });
+
+  const { error: ruleError } = await context.supabase
+    .from("accounting_classification_rules")
+    .upsert(ruleRows, { onConflict: "workspace_id,merchant_key", ignoreDuplicates: true });
+
+  if (ruleError && ruleError.code !== "42P01" && ruleError.code !== "PGRST204") {
+    console.warn("[accounting] could not seed accounting classification rules", ruleError.message);
   }
 }
 
