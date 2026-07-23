@@ -451,6 +451,8 @@ export async function listAccountingRuns() {
   const context = await getWorkspaceContext();
   if (!context) return [];
 
+  await ensureMerchantKnowledgeBase();
+
   const { data, error } = await context.supabase
     .from("accounting_statement_runs")
     .select("*")
@@ -468,6 +470,8 @@ export async function listAccountingRuns() {
 export async function getAccountingRunDetail(runId: string): Promise<AccountingRunDetail | null> {
   const context = await getWorkspaceContext();
   if (!context) return null;
+
+  await ensureMerchantKnowledgeBase();
 
   const { data: run, error: runError } = await context.supabase
     .from("accounting_statement_runs")

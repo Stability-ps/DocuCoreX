@@ -348,6 +348,10 @@ test("starter supplier knowledge seeds worker learning rules", () => {
   assert.match(kb, /canonicalName: "Salaries and Caregivers"/);
   assert.match(kb, /canonicalName: "Inter-account Transfers"/);
   assert.match(kb, /canonicalName: "Personal \/ Lifestyle Review Suppliers"/);
+  assert.match(kb, /canonicalName: "Sage Accounting"/);
+  assert.match(kb, /canonicalName: "Netcash Debit Orders"/);
+  assert.match(kb, /canonicalName: "Savings and Home Loan Transfers"/);
+  assert.match(kb, /canonicalName: "Accounting and Professional Fees"/);
   assert.match(server, /\.from\("accounting_classification_rules"\)/);
   assert.match(server, /ignoreDuplicates: true/, "seed rules must not overwrite accountant corrections");
   assert.match(server, /defaultReviewStatus/);

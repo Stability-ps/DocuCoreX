@@ -730,6 +730,36 @@ def run_learned_supplier_rules_case() -> None:
             source_page=2,
             raw_text="25 Apr Byc Debit 63012593504 8.51 1,450,166.60Cr",
         ),
+        ParsedTransaction(
+            transaction_date="2026-04-07",
+            description="POS Purchase Sage SA 400568*7629 06 Apr",
+            debit_amount=599.0,
+            credit_amount=None,
+            running_balance=1449567.60,
+            bank_charge=False,
+            account_category="Suspense / Review Required",
+            vat_treatment="review",
+            supported_by_invoice=False,
+            confidence=55,
+            review_status="needs_review",
+            source_page=2,
+            raw_text="07 Apr POS Purchase Sage SA 400568*7629 06 Apr 599.00 1,449,567.60Cr",
+        ),
+        ParsedTransaction(
+            transaction_date="2026-04-08",
+            description="Scheduled Payment To Home Loan Emporers Home Loan Payment",
+            debit_amount=10000.0,
+            credit_amount=None,
+            running_balance=1439567.60,
+            bank_charge=False,
+            account_category="Suspense / Review Required",
+            vat_treatment="review",
+            supported_by_invoice=False,
+            confidence=55,
+            review_status="needs_review",
+            source_page=2,
+            raw_text="08 Apr Scheduled Payment To Home Loan Emporers Home Loan Payment 10,000.00 1,439,567.60Cr",
+        ),
     ]
     rules = [
         {
@@ -760,14 +790,31 @@ def run_learned_supplier_rules_case() -> None:
             "review_status": "approved",
             "confidence": 98,
         },
+        {
+            "merchant_key": "sage sa",
+            "account_category": "Software Subscriptions",
+            "vat_treatment": "standard",
+            "review_status": "needs_review",
+            "confidence": 90,
+        },
+        {
+            "merchant_key": "home loan payment",
+            "account_category": "Loan / Liability",
+            "vat_treatment": "out_of_scope",
+            "review_status": "approved",
+            "confidence": 92,
+        },
     ]
     applied = apply_learned_classification_rules(transactions, rules)
-    assert_equal(applied, 3, f"{case_id} applied count")
+    assert_equal(applied, 5, f"{case_id} applied count")
     assert_equal(transactions[0].account_category, "Staff Welfare / Meals / Entertainment", f"{case_id} uber")
     assert_equal(transactions[1].account_category, "Software Subscriptions", f"{case_id} specific google rule")
     assert_equal(transactions[2].account_category, "Bank Charges", f"{case_id} bank fee")
     assert_equal(transactions[2].review_status, "approved", f"{case_id} bank fee review status")
     assert_equal(transactions[2].confidence, 98.0, f"{case_id} bank fee confidence")
+    assert_equal(transactions[3].account_category, "Software Subscriptions", f"{case_id} sage")
+    assert_equal(transactions[4].account_category, "Loan / Liability", f"{case_id} home loan")
+    assert_equal(transactions[4].review_status, "approved", f"{case_id} home loan review status")
 
 
 def run_combined_workbook_case() -> None:

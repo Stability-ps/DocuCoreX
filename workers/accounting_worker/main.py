@@ -581,8 +581,11 @@ def classify_transaction(description: str, debit: float | None, credit: float | 
          "Telephone / Internet / Communication", "review", False, 84),
         # Inter-account / own transfers
         (("fnb app transfer to savings", "fnb app transfer from", "transfer to me", "transfer from",
-          "transfer to savings", "inter-account", "internal transfer", "own account"),
+          "transfer to savings", "scheduled payment to savings", "money maximizer savings", "inter-account", "internal transfer", "own account"),
          "Inter-account Transfer", "out_of_scope", False, 92),
+        # Home loans / credit card funding — balance sheet, not P&L.
+        (("scheduled payment to home loan", "home loan payment", "transfer to home loan", "transfer to credit card", "fnb app transfer to credit card"),
+         "Loan / Liability", "out_of_scope", False, 90),
         # Explicit director / drawings keywords (generic).
         (("drawings", "director loan", "director's loan", "owner draw"),
          "Director Loan / Drawings", "out_of_scope", False, 82),
@@ -610,7 +613,8 @@ def classify_transaction(description: str, debit: float | None, credit: float | 
         (("levy", "levies", "body corporate", "hoa ", "h/o/a", "emporers ridge"), "Levies", "review", False, 84),
         # Software / IT
         (("google chatgpt", "chatgpt", "openai", "microsoft", "office365", "microsoft 365", "adobe",
-          "subscription", "saas", "aws ", "amazon web services", "google cloud", "google workspace"),
+          "subscription", "saas", "aws ", "amazon web services", "google cloud", "google workspace",
+          "sage sa", "sage acc", "sage accounting", "pos purchase sage"),
          "Software Subscriptions", "standard", False, 84),
         (("google xiaomi home", "xiaomi home", "google play"), "Software / IT", "review", False, 82),
         # Courier / delivery
@@ -621,6 +625,17 @@ def classify_transaction(description: str, debit: float | None, credit: float | 
         # being upgraded to normal operating expenses.
         (("senses spa", "adore photography", "sloppy kisses", "puppy classes", "prayer shop"),
          "Review Required", "review", False, 62),
+        # Recurring debit orders and named suppliers that are operational but
+        # still need invoice/supporting detail before VAT is claimed.
+        (("netcash", "stratum netcash", "magtape debit stratum", "disc prem", "magtape debit disc prem"),
+         "Operating Expenses", "review", False, 76),
+        (("acapolite accounting", "bookkeeping", "audit fee", "tax practitioner"),
+         "Accounting / Professional Fees", "standard", False, 88),
+        (("jc industries", "bambhanani enterpris", "first works", "fabric and leather", "world focus", "kenny s intermedia"),
+         "Operating Expenses", "review", False, 76),
+        (("samsung electronics", "global-e", "global e"), "Software / IT", "review", False, 82),
+        (("sunnydale pharm", "khumbu hair", "raquel hair", "hair stuff", "hair health"),
+         "Staff Welfare / Meals / Entertainment", "review", False, 72),
         # Fuel / motor
         (("fuel", "petrol", "diesel", "garage", "engen", "shell", "bp ", "sasol", "total ", "caltex", "volvo"),
          "Motor Vehicle Expenses", "standard", False, 84),
@@ -2188,6 +2203,7 @@ def professional_account(transaction: ParsedTransaction) -> tuple[str, str, str,
         "Motor Vehicle Expenses": ("Motor Vehicle Expenses", "Motor Vehicle", "Input VAT if valid invoice", "Input/Review"),
         "Road Tolls": ("Road Tolls", "Motor Vehicle", "Input VAT if valid invoice", "Input/Review"),
         "Operating Expenses": ("Operating Expenses", "Operating Expenses", "Input VAT if valid invoice", "Input/Review"),
+        "Accounting / Professional Fees": ("Accounting / Professional Fees", "Operating Expenses", "Input VAT if valid invoice", "Input/Review"),
         "Medical Expenses": ("Medical Expenses", "Operating Expenses", "Input VAT if valid invoice", "Input/Review"),
         "VAT Control": ("VAT Control", "VAT", "VAT control", "No"),
         "Finance Costs": ("Finance Costs", "Finance Costs", "Exempt/No VAT", "No"),
@@ -2469,6 +2485,11 @@ def request_ai_classifications(items: list[dict[str, Any]], diagnostics: dict[st
             {"merchant": "Afrigreen or customer-name EFT credits", "account": "Sales / Revenue", "reason": "Inbound customer receipt pattern when money is received."},
             {"merchant": "Medical aid, Discovery Health, Momentum Health, Medshield or Bonitas", "account": "Salaries / Drawings / Personal", "reason": "Payroll-linked medical deduction pattern."},
             {"merchant": "Loans, WesBank or vehicle finance instalments", "account": "Loan / Liability", "reason": "Balance-sheet loan servicing pattern."},
+            {"merchant": "Sage SA or Sage Accounting", "account": "Software Subscriptions", "reason": "Accounting software subscription pattern."},
+            {"merchant": "Scheduled home loan, savings, credit card or own-account transfers", "account": "Loan / Liability or Inter-account Transfer", "reason": "Balance-sheet movement; not VAT or P&L."},
+            {"merchant": "Netcash, Stratum or Disc Prem debit orders", "account": "Operating Expenses", "reason": "Recurring debit-order supplier, but support is required before VAT is claimed."},
+            {"merchant": "Acapolite Accounting, bookkeeping or audit fees", "account": "Accounting / Professional Fees", "reason": "Professional services supplier, invoice support required."},
+            {"merchant": "Senses Spa, Sloppy Kisses, Puppy Classes, Prayer Shop, hair or pharmacy purchases", "account": "Staff Welfare / Meals / Entertainment or Review Required", "reason": "Personal-looking or welfare supplier; keep review required unless user-approved."},
         ],
         "schema": {
             "items": [
