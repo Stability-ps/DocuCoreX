@@ -559,6 +559,8 @@ def normalize_transaction_date(raw_date: str, metadata: dict[str, Any]) -> str |
 
 def classify_transaction(description: str, debit: float | None, credit: float | None) -> tuple[str, str, bool, float]:
     text = description.lower()
+    if debit and debit > 0 and looks_like_business_supplier_payment(text):
+        return "Supplier Payments", "review", False, 88
     # Ordered deterministic rules — most specific first. VAT is kept conservative
     # ("review") wherever an invoice is needed, but the account is still assigned
     # so transactions do not fall through to "Uncategorised".
@@ -621,6 +623,7 @@ def classify_transaction(description: str, debit: float | None, credit: float | 
         (("dhl", "paygate*dhl", "paygate dhl", "courier", "aramex", "the courier guy", "courier guy", "postnet"), "Courier / Delivery", "standard", False, 84),
         # Meals / entertainment
         (("uber eats", "mr d food", "mr d", "restaurant", "checkers sixty60", "woolworths"), "Staff Welfare / Meals / Entertainment", "review", False, 80),
+        (("emporers ridge utili", "emporers ridge utility", "utility payment", "utilities"), "Utilities", "standard", False, 84),
         # Government / tender receipts. These are customer receipts for work or
         # services supplied, not welfare/meal merchants and not generic income.
         (("magtape credit 047-gp hea", "gp hea-", "gauteng health", "department of health", "dept of health", "health department"),
@@ -673,6 +676,8 @@ def classify_transaction(description: str, debit: float | None, credit: float | 
             "loan", "freight", "afrigreen", "pharmacy", "chemist", "dis-chem", "clicks",
             "engen", "shell", "sasol", "caltex", "customer", "invoice", "inv",
         )
+        if looks_like_business_supplier_payment(tail):
+            return "Supplier Payments", "review", False, 88
         if any(hint in tail for hint in business_hints):
             if credit and credit > 0:
                 return "Sales / Revenue", "standard", False, 82
@@ -689,6 +694,56 @@ def classify_transaction(description: str, debit: float | None, credit: float | 
     if debit and debit > 0:
         return "Suspense / Review Required", "review", False, 55
     return "Uncategorised", "review", False, 50
+
+
+def looks_like_business_supplier_payment(text: str) -> bool:
+    lowered = text.lower()
+    return any(token in lowered for token in (
+        "msi industries",
+        "industries",
+        "trading",
+        "enterprises",
+        "enterprise",
+        "invoice",
+        " inv",
+        "inv0",
+        "inv1",
+        " inv-",
+        "interiors",
+        "first works",
+        "jc industries",
+        "fabric and leather",
+        "midway",
+        "world focus",
+        "bambhanani",
+        "supplier",
+        "services",
+    ))
+
+
+def is_staff_welfare_merchant(text: str) -> bool:
+    lowered = text.lower()
+    return any(token in lowered for token in (
+        "uber eats",
+        "mr d food",
+        "mr d",
+        "restaurant",
+        "checkers",
+        "woolworths",
+        "meat",
+        "food",
+        "meal",
+        "catering",
+        "coffee",
+        "spa",
+        "puppy",
+        "sloppy kisses",
+        "photography",
+        "netflorist",
+        "hair",
+        "with love",
+        "gift",
+    ))
 
 
 def normalize_merchant_key(description: str) -> str:
@@ -2212,6 +2267,7 @@ def professional_account(transaction: ParsedTransaction) -> tuple[str, str, str,
         "Supplier Payments": ("Supplier Payments", "Operating Expenses", "Input VAT if valid invoice", "Input/Review"),
         "Accounting / Professional Fees": ("Accounting / Professional Fees", "Operating Expenses", "Input VAT if valid invoice", "Input/Review"),
         "Medical Expenses": ("Medical Expenses", "Operating Expenses", "Input VAT if valid invoice", "Input/Review"),
+        "Utilities": ("Utilities", "Operating Expenses", "Input VAT if valid invoice", "Input/Review"),
         "VAT Control": ("VAT Control", "VAT", "VAT control", "No"),
         "Finance Costs": ("Finance Costs", "Finance Costs", "Exempt/No VAT", "No"),
         "Rent": ("Rent", "Premises", "Input VAT if valid invoice", "Input/Review"),
@@ -2226,6 +2282,8 @@ def professional_account(transaction: ParsedTransaction) -> tuple[str, str, str,
         return "Sales / Revenue", "Income", "Standard-rated taxable receipts", "Output"
     if any(token in text for token in ("rmsp trading", "stalitrex", "nms enterprises", "nms enterprises 5290b")):
         return "Supplier Payments", "Operating Expenses", "Input VAT if valid invoice", "Input/Review"
+    if looks_like_business_supplier_payment(text):
+        return "Supplier Payments", "Operating Expenses", "Input VAT if valid invoice", "Input/Review"
     if "uber eats" in text:
         return "Meals / Groceries - Non Deductible Review", "Meals/Groceries", "Restricted/Review", "Review"
     if "dhl" in text:
@@ -2236,7 +2294,7 @@ def professional_account(transaction: ParsedTransaction) -> tuple[str, str, str,
         return "Inter-account Transfer Out / Loan", "Transfers", "No VAT", "No"
     if "transfer from credit" in text:
         return "Inter-account Transfer In", "Transfers", "No VAT", "No"
-    if any(token in text for token in ("salary", "nanny", "care giver", "senses spa", "sloppy kisses", "puppy classes", "alicia", "tanita", "sunfield", "bianca", "nilam", "tammy", "debbie", "emporers ridge")):
+    if any(token in text for token in ("salary", "nanny", "care giver", "senses spa", "sloppy kisses", "puppy classes", "alicia", "tanita", "sunfield", "bianca", "nilam", "tammy", "debbie")):
         return "Salaries / Drawings / Personal", "Payroll/Personal", "No VAT", "No"
     if any(token in text for token in ("google chatgpt", "google xiaomi", "xiaomi", "chatgpt")):
         return "Software / IT", "Software/IT", "Input VAT if valid invoice", "Input/Review"
@@ -2511,12 +2569,13 @@ def request_ai_classifications(items: list[dict[str, Any]], diagnostics: dict[st
             {"merchant": "Netcash, Stratum or Disc Prem debit orders", "account": "Operating Expenses", "reason": "Recurring debit-order supplier, but support is required before VAT is claimed."},
             {"merchant": "Acapolite Accounting, bookkeeping or audit fees", "account": "Accounting / Professional Fees", "reason": "Professional services supplier, invoice support required."},
             {"merchant": "Magtape Credit 047-GP HEA / Gauteng Department of Health / Department of Health", "account": "Sales / Revenue", "reason": "Inbound government or tender/service receipt. Treat as taxable service revenue unless marked exempt by the accountant."},
-            {"merchant": "RMSP Trading, Stalitrex, NMS Enterprises, or other clear company-name payments", "account": "Supplier Payments", "reason": "Outbound payment to a business supplier. Do not classify as staff welfare merely because Allianz Holdings appears in the reference."},
+            {"merchant": "MSI Industries, RMSP Trading, Stalitrex, NMS Enterprises, JC Industries, First Works, Midway, Fabric And Leather, or other clear company-name/invoice payments", "account": "Supplier Payments", "reason": "Outbound payment to a business supplier. Do not classify as staff welfare merely because Allianz Holdings appears in the reference."},
             {"merchant": "Senses Spa, Sloppy Kisses, Puppy Classes, Prayer Shop, hair or pharmacy purchases", "account": "Staff Welfare / Meals / Entertainment or Review Required", "reason": "Personal-looking or welfare supplier; keep review required unless user-approved."},
         ],
         "classification_policy": [
             "Money In from a customer, tender, department, province, municipality, GP Health, Department of Health, or Magtape Credit must normally be Sales / Revenue with Output VAT review/standard treatment.",
-            "Money Out to a registered-looking company name must normally be Supplier Payments or Operating Expenses with invoice support required, not Staff Welfare.",
+            "Money Out to a registered-looking company name, supplier name, or description containing Industries, Trading, Enterprises, Services, Invoice, or Inv must normally be Supplier Payments or Operating Expenses with invoice support required, not Staff Welfare.",
+            "Large outbound payments above 5,000 require stronger business-context review. Never classify a large invoice/company payment as meals, entertainment, travel, or staff welfare unless the merchant itself is clearly food, restaurant, catering, personal care, or entertainment.",
             "Use Staff Welfare / Meals / Entertainment only for food, groceries, restaurant, personal care, entertainment, or welfare merchants.",
             "If the description contains the account holder name, ignore that account-holder wording and classify by the counterparty/merchant semantics.",
             "If a supplier is business-like but the exact expense nature is unclear, choose Supplier Payments, VAT review, invoice_required true, review_required true, and explain what invoice/support is needed.",
@@ -2600,6 +2659,42 @@ def request_ai_classifications(items: list[dict[str, Any]], diagnostics: dict[st
 
 
 def apply_ai_result_to_row(row: dict[str, Any], result: dict[str, Any]) -> None:
+    description = str(row.get("description") or "")
+    money_out = decimal_amount(row.get("money_out"))
+    ai_account_text = f"{result.get('account', '')} {result.get('group', '')}".lower()
+    if (
+        money_out > 0
+        and any(token in ai_account_text for token in ("staff welfare", "meal", "entertainment", "travel"))
+        and not is_staff_welfare_merchant(description)
+    ):
+        if looks_like_business_supplier_payment(description):
+            result = {
+                **result,
+                "account": "Supplier Payments",
+                "group": "Operating Expenses",
+                "vat_treatment": "Input VAT if valid invoice",
+                "vat_claim_status": "Input/Review",
+                "review_required": True,
+                "review_reason": "Business supplier payment requires invoice and VAT review.",
+                "invoice_required": True,
+                "confidence": min(float(result.get("confidence") or 0.72), 0.88),
+                "reason": "Guardrail applied: company/invoice supplier pattern overrides staff welfare.",
+                "explanation": "The description looks like a business supplier or invoice payment, so it must not be classified as meals or entertainment without explicit accountant approval.",
+            }
+        else:
+            result = {
+                **result,
+                "account": "Review Required Suspense",
+                "group": "Review",
+                "vat_treatment": "Review",
+                "vat_claim_status": "Review",
+                "review_required": True,
+                "review_reason": "AI suggested staff welfare without a recognised food, personal-care, or entertainment merchant.",
+                "invoice_required": True,
+                "confidence": min(float(result.get("confidence") or 0.62), 0.70),
+                "reason": "Guardrail applied: staff welfare requires a matching merchant pattern.",
+                "explanation": "The transaction needs accountant review before it can be treated as staff welfare, meals, entertainment, or travel.",
+            }
     row["account"] = result["account"]
     row["group"] = result["group"]
     row["vat_treatment"] = result["vat_treatment"]

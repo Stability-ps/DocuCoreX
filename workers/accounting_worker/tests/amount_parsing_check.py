@@ -256,6 +256,8 @@ def run():
     assert_equal(classify_transaction("FNB App Payment To Rmsp Trading Allianz Holdings", 2770250.85, None)[0], "Supplier Payments", "RMSP supplier payment account")
     assert_equal(classify_transaction("FNB App Payment To Stalitrex Allianz Holdings", 1000.0, None)[0], "Supplier Payments", "Stalitrex supplier payment account")
     assert_equal(classify_transaction("FNB App Payment To Nms Enterprises 5290B", 1000.0, None)[0], "Supplier Payments", "NMS supplier payment account")
+    assert_equal(classify_transaction("FNB App Payment To Msi Industries Inv109034", 1012000.0, None)[0], "Supplier Payments", "MSI invoice supplier payment account")
+    assert_equal(classify_transaction("FNB App Payment To Emporers Ridge Utili Emporers Ridge 16", 20000.0, None)[0], "Utilities", "Emporers Ridge utility payment account")
 
     # Statement summary extraction (declared ground truth, any bank).
     summary_meta = parse_metadata("\n".join([

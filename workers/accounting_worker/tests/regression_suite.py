@@ -92,6 +92,7 @@ from openpyxl import load_workbook
 
 from main import (
     ParsedTransaction,
+    apply_ai_result_to_row,
     apply_learned_classification_rules,
     build_combined_workbook,
     build_workbook,
@@ -703,10 +704,42 @@ def run_professional_classification_case() -> None:
         source_page=1,
         raw_text="03 May FNB App Payment To Rmsp Trading Allianz Holdings 2,770,250.85 0.00Cr",
     )
+    msi_payment = ParsedTransaction(
+        transaction_date="2026-05-15",
+        description="FNB App Payment To Msi Industries Inv109034",
+        debit_amount=1012000.00,
+        credit_amount=None,
+        running_balance=328320.91,
+        bank_charge=False,
+        account_category="Supplier Payments",
+        vat_treatment="review",
+        supported_by_invoice=False,
+        confidence=88,
+        review_status="needs_review",
+        source_page=1,
+        raw_text="15 May FNB App Payment To Msi Industries Inv109034 1,012,000.00 328,320.91Cr",
+    )
     fuel_row = professional_transaction_row(fuel, "fixture")
     receipt_row = professional_transaction_row(receipt, "fixture")
     gov_receipt_row = professional_transaction_row(gov_receipt, "fixture")
     supplier_payment_row = professional_transaction_row(supplier_payment, "fixture")
+    msi_payment_row = professional_transaction_row(msi_payment, "fixture")
+    apply_ai_result_to_row(
+        msi_payment_row,
+        {
+            "transaction_id": "1",
+            "account": "Travel / Meals / Entertainment",
+            "group": "Expense",
+            "vat_treatment": "Staff Welfare / Meals / Entertainment",
+            "vat_claim_status": "Review",
+            "review_required": True,
+            "review_reason": "AI guessed meals",
+            "invoice_required": False,
+            "confidence": 0.91,
+            "reason": "bad model answer",
+            "explanation": "bad model answer",
+        },
+    )
     assert_equal(fuel_row["review_required"], False, f"{case_id} fuel review")
     assert_equal(receipt_row["review_required"], False, f"{case_id} receipt review")
     assert_equal(fuel_row["account"], "Motor Vehicle Expenses", f"{case_id} fuel account")
@@ -717,6 +750,9 @@ def run_professional_classification_case() -> None:
     assert_equal(supplier_payment_row["account"], "Supplier Payments", f"{case_id} supplier payment account")
     assert_equal(supplier_payment_row["group"], "Operating Expenses", f"{case_id} supplier payment group")
     assert_equal(supplier_payment_row["invoice_required"], True, f"{case_id} supplier invoice review")
+    assert_equal(msi_payment_row["account"], "Supplier Payments", f"{case_id} AI guardrail supplier account")
+    assert_equal(msi_payment_row["group"], "Operating Expenses", f"{case_id} AI guardrail supplier group")
+    assert_equal(msi_payment_row["invoice_required"], True, f"{case_id} AI guardrail invoice support")
 
 
 def run_learned_supplier_rules_case() -> None:
