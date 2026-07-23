@@ -275,4 +275,13 @@ test("export UI surfaces draft warnings instead of blocking on review-required r
   assert.match(workspace, /export\/\$\{statementId\}\?section=\$\{option\.section\}/);
   const ui = read("components/accounting/accounting-intelligence.tsx");
   assert.match(ui, /function ExportOptionsModal/);
+  assert.match(ui, /Downloads now as a draft pack with review warnings included/);
+  assert.doesNotMatch(ui, /Resolve reconciliation and transaction-count review items before final export/);
+  assert.match(ui, /const active = selectedRuns\.some\(\(run\) => isActiveRunStatus\(run\.status\)\)/);
+  assert.match(ui, /const empty = selectedRuns\.some\(\(run\) => Number\(run\.transactionCount \?\? 0\) === 0\)/);
+});
+
+test("bulk process forces fresh extraction for stale completed or review runs", () => {
+  const ui = read("components/accounting/accounting-intelligence.tsx");
+  assert.match(ui, /reprocess:\s*status !== "queued"/);
 });

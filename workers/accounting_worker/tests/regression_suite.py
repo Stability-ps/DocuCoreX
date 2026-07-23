@@ -786,6 +786,56 @@ def run_combined_workbook_case() -> None:
         raise AssertionError(f"{case_id}: combined diagnostics missing AI row")
 
 
+def run_local_real_statement_files_case() -> None:
+    """Optional guard for the two real FNB statements supplied during support.
+    These files live outside the repository, so CI/deploys skip this test. On the
+    affected Mac it verifies that the current parser reconciles the exact March
+    and May PDFs whose older production runs displayed incorrect Money In/Out."""
+    try:
+        import pdfplumber
+    except Exception:
+        return
+    if not hasattr(pdfplumber, "open"):
+        return
+
+    cases = [
+        {
+            "id": "real-march-2026",
+            "path": Path("/Users/patric/Library/Mobile Documents/com~apple~CloudDocs/Desktop Mac Downloads/31 Mar 2026 - (Free)..A1N1WRAFCAUDGU1_EVNXHAEGdVVAU1RUVBgaIEYBVhkGAHlSEVdUVA8cGHIRB1UYUFV0AkAEBldXHxAkSgAETw.XhdUVD1zfHZqdiBmUQIBAAIFDQFtUVRWUgUCVgRUAwAFBwcDUldRXgAJAQw8UwU.pdf"),
+            "credits": "7043521.68",
+            "debits": "5388160.19",
+            "closing": "1666557.95",
+        },
+        {
+            "id": "real-may-2026",
+            "path": Path("/Users/patric/Library/Mobile Documents/com~apple~CloudDocs/Desktop Mac Downloads/30 May 2026 - (Free)..CgYpVEALUQoGSxsjSlRWGQFSeAVJBwQCBE5KJEdRBB8DUS4FTAIEBwYbGSAQAQcYAAUpVExUUgoCSB1yEV0ASg.V0MIWWZ9JXlvJHY6CgUABQJQAFFvBQQAAlNSUgUEUQYAV1BUBAIBDQkOAF49VVc.pdf"),
+            "credits": "12214591.85",
+            "debits": "6758364.90",
+            "closing": "6957593.75",
+        },
+    ]
+
+    for case in cases:
+        pdf_path = case["path"]
+        if not pdf_path.exists():
+            continue
+        pages = []
+        full_text_parts = []
+        with pdfplumber.open(str(pdf_path)) as pdf:
+            for page_number, page in enumerate(pdf.pages, start=1):
+                text = page.extract_text() or ""
+                pages.append({"page": page_number, "text": text, "tables": []})
+                full_text_parts.append(text)
+        full_text = "\n".join(full_text_parts)
+        metadata = parse_metadata(full_text)
+        transactions = parse_transactions(pages, metadata, full_text)
+        validation = validate_statement(metadata, transactions)
+        summary = validation_summary(transactions)
+        assert_equal(str(summary["total_credits"]), case["credits"], f"{case['id']} credits")
+        assert_equal(str(summary["total_debits"]), case["debits"], f"{case['id']} debits")
+        assert_equal(str(validation["closing_balance"]), case["closing"], f"{case['id']} closing")
+
+
 def run() -> None:
     run_fnb_extraction_case()
     run_statement_period_case()
@@ -797,6 +847,7 @@ def run() -> None:
     run_compound_ocr_line_case()
     run_professional_classification_case()
     run_combined_workbook_case()
+    run_local_real_statement_files_case()
 
     manifest = json.loads(MANIFEST_PATH.read_text())
     cases = manifest.get("cases") if isinstance(manifest, dict) else None

@@ -563,10 +563,17 @@ export function AccountingIntelligence() {
   );
   const fullPackBlockedReason = useMemo(() => {
     if (!selectedRuns.length) return "";
-    const blocked = selectedRuns.some(
+    const active = selectedRuns.some((run) => isActiveRunStatus(run.status));
+    if (active) return "Wait for processing to finish before exporting.";
+    const empty = selectedRuns.some((run) => Number(run.transactionCount ?? 0) === 0);
+    return empty ? "Export is available after transactions have been extracted." : "";
+  }, [selectedRuns]);
+  const fullPackDraftNotice = useMemo(() => {
+    if (!selectedRuns.length) return "";
+    const needsReview = selectedRuns.some(
       (run) => run.requiresReview || run.validationStatus === "review_required" || run.status === "review",
     );
-    return blocked ? "Resolve reconciliation and transaction-count review items before final export." : "";
+    return needsReview ? "Downloads now as a draft pack with review warnings included." : "";
   }, [selectedRuns]);
   async function loadRuns(preferredRunId?: string) {
     await refreshAccountingData(preferredRunId);
@@ -579,9 +586,23 @@ export function AccountingIntelligence() {
   }
 
   useEffect(() => {
-    void loadRuns().catch((loadError) => setError(loadError instanceof Error ? loadError.message : "Unable to load Accounting Intelligence."));
+    // Restore the previously-selected statement from the URL (?run=<id>) so
+    // returning here via the browser Back button reloads the same statement
+    // instead of losing selection — and so a deep link opens the right one.
+    const urlRunId = typeof window !== "undefined" ? new URLSearchParams(window.location.search).get("run") : null;
+    void loadRuns(urlRunId ?? undefined).catch((loadError) => setError(loadError instanceof Error ? loadError.message : "Unable to load Accounting Intelligence."));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // Keep ?run=<id> in the URL in sync with the selected statement (replaceState,
+  // so it never adds history entries — Back still returns to the prior page).
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const target = selectedRunId ? `/accounting?run=${encodeURIComponent(selectedRunId)}` : "/accounting";
+    if (`${window.location.pathname}${window.location.search}` !== target) {
+      window.history.replaceState(window.history.state, "", target);
+    }
+  }, [selectedRunId]);
 
   useEffect(() => {
     if (!hasActiveRuns) return;
@@ -823,7 +844,8 @@ export function AccountingIntelligence() {
     setMessage("");
     try {
       for (const runId of processableRunIds) {
-        await processRun(runId, { manageBusy: false, refreshAfter: false });
+        const status = runById.get(runId)?.status;
+        await processRun(runId, { manageBusy: false, refreshAfter: false, reprocess: status !== "queued" });
       }
       await loadRuns(processableRunIds[0]).catch(() => undefined);
       setMessage(`${processableRunIds.length} statements queued for processing.`);
@@ -839,7 +861,8 @@ export function AccountingIntelligence() {
     setMessage("");
     try {
       for (const runId of selectedProcessableRunIds) {
-        await processRun(runId, { manageBusy: false, refreshAfter: false });
+        const status = runById.get(runId)?.status;
+        await processRun(runId, { manageBusy: false, refreshAfter: false, reprocess: status !== "queued" });
       }
       await loadRuns(selectedProcessableRunIds[0]).catch(() => undefined);
       setMessage(`${selectedProcessableRunIds.length} selected statements queued for processing.`);
@@ -1726,6 +1749,7 @@ export function AccountingIntelligence() {
           runIds={selectedRunIds}
           combinedLabel="Combined Full Pack"
           fullPackBlockedReason={fullPackBlockedReason}
+          fullPackDraftNotice={fullPackDraftNotice}
           onClose={() => setShowExportModal(false)}
           onCombined={() => void createCombinedWorkbookWithPrecheck()}
         />
@@ -1830,12 +1854,14 @@ function ExportOptionsModal({
   runIds,
   combinedLabel,
   fullPackBlockedReason,
+  fullPackDraftNotice,
   onClose,
   onCombined,
 }: {
   runIds: string[];
   combinedLabel: string;
   fullPackBlockedReason?: string;
+  fullPackDraftNotice?: string;
   onClose: () => void;
   onCombined: () => void;
 }) {
@@ -1873,7 +1899,7 @@ function ExportOptionsModal({
           <span>
             <span className="block text-sm font-bold text-royal-800">{multiple ? combinedLabel : "Full Accounting Pack"}</span>
             <span className="mt-0.5 block text-xs font-semibold text-royal-600">
-              {fullPackBlockedReason || "Every section in one Excel workbook · XLSX"}
+              {fullPackBlockedReason || fullPackDraftNotice || "Every section in one Excel workbook · XLSX"}
             </span>
           </span>
           <ArrowDownToLine className="h-5 w-5 shrink-0 text-royal-600" />
