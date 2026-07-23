@@ -2657,6 +2657,86 @@ def month_summary(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return summary
 
 
+def write_vat_schedule_sheet(workbook: Workbook, rows: list[dict[str, Any]], include_source_period: bool = False):
+    vat = workbook.create_sheet("VAT Schedule")
+    reportable_rows = [row for row in rows if reporting_account(row) != "Review Required Suspense"]
+    total_output_vat = sum((row["potential_output_vat"] for row in reportable_rows), Decimal("0.00")).quantize(CENT)
+    total_input_vat = sum((row["potential_input_vat"] for row in reportable_rows), Decimal("0.00")).quantize(CENT)
+    net_vat = (total_output_vat - total_input_vat).quantize(CENT)
+    review_items = sum(1 for row in rows if reporting_account(row) == "Review Required Suspense" or reporting_vat_status(row) == "Review")
+    vat["A1"] = "VAT Schedule & VAT Payable/(Refund)"
+    vat["A1"].font = Font(bold=True, size=14, color="FFFFFF")
+    vat["A1"].fill = HEADER_FILL
+    vat.merge_cells("A1:K1")
+    vat["A2"] = "VAT is calculated at 15/115 on VAT-inclusive transactions only where the category and VAT treatment are reportable. Review-required rows stay visible but are excluded from VAT totals until approved."
+    vat["A2"].font = Font(italic=True, size=9, color="475569")
+    vat["A2"].alignment = Alignment(wrap_text=True)
+
+    write_row(vat, ["VAT Summary", "Output VAT", "Input VAT", "VAT Payable/(Refund)", "Review Items"], 4, header=True)
+    write_row(vat, ["Totals", total_output_vat, total_input_vat, net_vat, review_items], 5)
+    for column_index in range(2, 5):
+        vat.cell(row=5, column=column_index).number_format = CURRENCY_FORMAT
+    vat.cell(row=5, column=4).fill = PASS_FILL if net_vat <= 0 else FAIL_FILL
+    vat.cell(row=5, column=5).number_format = "0"
+
+    monthly_rows = month_summary(reportable_rows)
+    write_row(vat, ["Month", "Output VAT", "Input VAT", "Net VAT Payable/(Refund)", "Running VAT Balance", "Status"], 7, header=True)
+    running_balance = Decimal("0.00")
+    for row_index, month_row in enumerate(monthly_rows, start=8):
+        monthly_net = month_row["vat_payable"]
+        running_balance = (running_balance + monthly_net).quantize(CENT)
+        write_row(
+            vat,
+            [
+                month_row["month"],
+                month_row["output_vat"],
+                month_row["input_vat"],
+                monthly_net,
+                running_balance,
+                "Payable" if running_balance >= 0 else "Refundable",
+            ],
+            row_index,
+        )
+        for column_index in range(2, 6):
+            vat.cell(row=row_index, column=column_index).number_format = CURRENCY_FORMAT
+
+    detail_header_row = max(10, 9 + len(monthly_rows))
+    detail_headers = ["Date", "Description", "Money In", "Money Out", "Account", "VAT Treatment", "Claim Status", "Output VAT", "Input VAT", "Net VAT", "VAT Balance", "Document Status"]
+    if include_source_period:
+        detail_headers.insert(2, "Source Period")
+    write_row(vat, detail_headers, detail_header_row, header=True)
+    running_line_vat = Decimal("0.00")
+    for row_index, row in enumerate(rows, start=detail_header_row + 1):
+        is_reportable = reporting_account(row) != "Review Required Suspense"
+        output_vat = row["potential_output_vat"] if is_reportable else Decimal("0.00")
+        input_vat = row["potential_input_vat"] if is_reportable else Decimal("0.00")
+        line_net = (output_vat - input_vat).quantize(CENT)
+        running_line_vat = (running_line_vat + line_net).quantize(CENT)
+        values = [
+            row["date"],
+            row["description"],
+            row["money_in"],
+            row["money_out"],
+            reporting_account(row),
+            row["vat_treatment"],
+            reporting_vat_status(row),
+            output_vat,
+            input_vat,
+            line_net,
+            running_line_vat,
+            "Tax invoice to be matched by user" if is_reportable else "Review before VAT is included",
+        ]
+        if include_source_period:
+            values.insert(2, row["source_period"])
+        write_row(vat, values, row_index)
+
+    currency_columns = [3, 4, 8, 9, 10, 11] if include_source_period else [3, 4, 8, 9, 10, 11]
+    if include_source_period:
+        currency_columns = [4, 5, 9, 10, 11, 12]
+    apply_number_formats(vat, currency_columns)
+    return vat, detail_header_row, len(detail_headers)
+
+
 def build_workbook(metadata: dict[str, Any], transactions: list[ParsedTransaction], allow_ai: bool = True) -> bytes:
     workbook = Workbook()
     totals = validation_summary(transactions)
@@ -2754,22 +2834,7 @@ def build_workbook(metadata: dict[str, Any], transactions: list[ParsedTransactio
         )
     apply_number_formats(tx, [4, 5, 6, 8, 9, 14, 15])
 
-    vat = workbook.create_sheet("VAT Schedule")
-    vat_headers = ["Date", "Description", "Money In", "Money Out", "Account", "VAT Treatment", "Claim Status", "Output VAT", "Input VAT", "Net VAT", "Document Status"]
-    write_row(vat, vat_headers, 1, header=True)
-    for row_index, row in enumerate(rows, start=2):
-        write_row(
-            vat,
-            [
-                row["date"], row["description"], row["money_in"], row["money_out"], reporting_account(row), row["vat_treatment"],
-                reporting_vat_status(row), row["potential_output_vat"] if reporting_account(row) != "Review Required Suspense" else Decimal("0.00"),
-                row["potential_input_vat"] if reporting_account(row) != "Review Required Suspense" else Decimal("0.00"),
-                ((row["potential_output_vat"] - row["potential_input_vat"]) if reporting_account(row) != "Review Required Suspense" else Decimal("0.00")).quantize(CENT),
-                "Tax invoice to be matched by user",
-            ],
-            row_index,
-        )
-    apply_number_formats(vat, [3, 4, 8, 9, 10])
+    vat, vat_detail_header_row, vat_column_count = write_vat_schedule_sheet(workbook, rows)
 
     ledger = workbook.create_sheet("General Ledger")
     write_row(ledger, ["Date", "Description", "Account", "Debit", "Credit"], 1, header=True)
@@ -2882,7 +2947,7 @@ def build_workbook(metadata: dict[str, Any], transactions: list[ParsedTransactio
 
     finish_sheet(dashboard, freeze_pane="D4")
     finish_sheet(tx, filter_ref=f"A1:R{max(tx.max_row, 1)}")
-    finish_sheet(vat, filter_ref=f"A1:K{max(vat.max_row, 1)}")
+    finish_sheet(vat, freeze_pane=f"A{vat_detail_header_row + 1}", filter_ref=f"A{vat_detail_header_row}:{get_column_letter(vat_column_count)}{max(vat.max_row, vat_detail_header_row)}")
     finish_sheet(ledger, filter_ref=f"A1:E{max(ledger.max_row, 1)}")
     finish_sheet(trial, filter_ref=f"A1:E{max(len(ledger_accounts) + 1, 1)}")
     finish_sheet(rec)
@@ -3187,20 +3252,7 @@ def build_combined_workbook(runs: list[dict[str, Any]], transactions_by_run: dic
         )
     apply_number_formats(tx, [5, 6, 7, 9, 10, 15, 16])
 
-    vat = workbook.create_sheet("VAT Schedule")
-    write_row(vat, ["Date", "Month", "Source Period", "Description", "Money In", "Money Out", "Account", "VAT Treatment", "Claim Status", "Output VAT", "Input VAT"], 1, header=True)
-    for row_index, row in enumerate(rows, start=2):
-        write_row(
-            vat,
-            [
-                row["date"], row["month"], row["source_period"], row["description"], row["money_in"], row["money_out"],
-                reporting_account(row), row["vat_treatment"], reporting_vat_status(row),
-                row["potential_output_vat"] if reporting_account(row) != "Review Required Suspense" else Decimal("0.00"),
-                row["potential_input_vat"] if reporting_account(row) != "Review Required Suspense" else Decimal("0.00"),
-            ],
-            row_index,
-        )
-    apply_number_formats(vat, [5, 6, 10, 11])
+    vat, vat_detail_header_row, vat_column_count = write_vat_schedule_sheet(workbook, rows, include_source_period=True)
 
     ledger = workbook.create_sheet("General Ledger")
     write_row(ledger, ["Date", "Description", "Account", "Debit", "Credit", "Source Period"], 1, header=True)
@@ -3312,7 +3364,7 @@ def build_combined_workbook(runs: list[dict[str, Any]], transactions_by_run: dic
 
     finish_sheet(dashboard, freeze_pane="D4")
     finish_sheet(tx, filter_ref=f"A1:P{max(tx.max_row, 1)}")
-    finish_sheet(vat, filter_ref=f"A1:K{max(vat.max_row, 1)}")
+    finish_sheet(vat, freeze_pane=f"A{vat_detail_header_row + 1}", filter_ref=f"A{vat_detail_header_row}:{get_column_letter(vat_column_count)}{max(vat.max_row, vat_detail_header_row)}")
     finish_sheet(ledger, filter_ref=f"A1:F{max(ledger.max_row, 1)}")
     finish_sheet(trial, filter_ref=f"A1:E{max(trial.max_row, 1)}")
     finish_sheet(rec)

@@ -920,6 +920,11 @@ def run_combined_workbook_case() -> None:
     ai_row = next((row for row in range(2, diagnostics.max_row + 1) if diagnostics.cell(row=row, column=1).value == "ai"), None)
     if ai_row is None:
         raise AssertionError(f"{case_id}: combined diagnostics missing AI row")
+    vat = workbook["VAT Schedule"]
+    assert_equal(vat["A1"].value, "VAT Schedule & VAT Payable/(Refund)", f"{case_id} VAT title")
+    assert_equal(vat["D7"].value, "Net VAT Payable/(Refund)", f"{case_id} VAT monthly net header")
+    assert_equal(vat["E7"].value, "Running VAT Balance", f"{case_id} VAT running balance header")
+    assert_equal(vat["A11"].value, "Date", f"{case_id} VAT detail starts after monthly summary")
 
 
 def run_local_real_statement_files_case() -> None:

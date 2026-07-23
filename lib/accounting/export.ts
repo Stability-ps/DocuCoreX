@@ -371,6 +371,16 @@ export function buildExportSections(detail: AccountingRunDetail, resolvedCompany
   const supplementaryBankVat = Math.max(0, declaredBankVat - bankChargeInputVat);
   const totalInputVat = v201.inputVat + supplementaryBankVat;
   const totalNetVat = v201.outputVat - totalInputVat;
+  const vatMonths = Array.from(new Set(model.transactions.map((t) => (t.date || "").slice(0, 7)).filter(Boolean))).sort();
+  let runningVatBalance = 0;
+  const vatMonthlyRows = vatMonths.map((month) => {
+    const monthTxns = model.transactions.filter((t) => (t.date || "").startsWith(month));
+    const outputVat = monthTxns.reduce((sum, t) => sum + t.outputVat, 0);
+    const inputVat = monthTxns.reduce((sum, t) => sum + t.inputVat, 0);
+    const netVat = outputVat - inputVat;
+    runningVatBalance += netVat;
+    return [S(month), M(outputVat), M(inputVat), netVat < 0 ? MW(netVat) : M(netVat), runningVatBalance < 0 ? MW(runningVatBalance) : M(runningVatBalance), S(runningVatBalance >= 0 ? "Payable" : "Refundable")];
+  });
   sections.push({
     id: "vat",
     label: "VAT Working Paper",
@@ -383,6 +393,9 @@ export function buildExportSections(detail: AccountingRunDetail, resolvedCompany
       [],
       [HDR("Estimated VAT201"), HDR("Output VAT"), HDR("Input VAT"), HDR("Declared Bank VAT"), HDR("Net VAT"), HDR("Review Items"), HDR("Missing Invoices")],
       [S("Totals"), M(v201.outputVat), M(totalInputVat), M(declaredBankVat), M(totalNetVat), INT(v201.reviewItems), INT(v201.missingInvoices)],
+      [],
+      [HDR("Month"), HDR("Output VAT"), HDR("Input VAT"), HDR("Net VAT Payable/(Refund)"), HDR("Running VAT Balance"), HDR("Status")],
+      ...vatMonthlyRows,
       [],
       [HDR("Date"), HDR("Reference"), HDR("Description"), HDR("Debit"), HDR("Credit"), HDR("Category"), HDR("GL Account"), HDR("VAT Code"), HDR("VAT %"), HDR("Input VAT"), HDR("Output VAT"), HDR("Net VAT"), HDR("VAT201 Box"), HDR("Claim Status"), HDR("Review Status"), HDR("Notes")],
       ...model.transactions.map((t) => [

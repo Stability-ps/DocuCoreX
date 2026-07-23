@@ -340,6 +340,19 @@ test("combined dashboard labels VAT-classified monthly movement", () => {
   assert.match(worker, /"VAT-classified payments"/);
 });
 
+test("VAT schedules include VAT payable and running balance summaries", () => {
+  const worker = read("workers/accounting_worker/main.py");
+  const exportPath = read("lib/accounting/export.ts");
+  for (const src of [worker, exportPath]) {
+    assert.match(src, /VAT Payable\/\(Refund\)/);
+    assert.match(src, /Running VAT Balance/);
+    assert.match(src, /Output VAT/);
+    assert.match(src, /Input VAT/);
+  }
+  assert.match(worker, /def write_vat_schedule_sheet/);
+  assert.match(worker, /Review before VAT is included/);
+});
+
 test("starter supplier knowledge seeds worker learning rules", () => {
   const kb = read("lib/accounting/engine/merchant-kb.ts");
   const server = read("lib/accounting/server.ts");
