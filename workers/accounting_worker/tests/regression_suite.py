@@ -673,13 +673,50 @@ def run_professional_classification_case() -> None:
         source_page=1,
         raw_text="06 Jan Eft Credit Customer Freight Aces 12,500.00Cr 21,000.00 Cr",
     )
+    gov_receipt = ParsedTransaction(
+        transaction_date="2026-05-02",
+        description="Magtape Credit 047-Gp Hea-000052034",
+        debit_amount=None,
+        credit_amount=1234021.00,
+        running_balance=2700250.85,
+        bank_charge=False,
+        account_category="Sales / Revenue",
+        vat_treatment="standard",
+        supported_by_invoice=False,
+        confidence=94,
+        review_status="ready",
+        source_page=1,
+        raw_text="02 May Magtape Credit 047-Gp Hea-000052034 1,234,021.00Cr 2,700,250.85Cr",
+    )
+    supplier_payment = ParsedTransaction(
+        transaction_date="2026-05-03",
+        description="FNB App Payment To Rmsp Trading Allianz Holdings",
+        debit_amount=2770250.85,
+        credit_amount=None,
+        running_balance=0.00,
+        bank_charge=False,
+        account_category="Supplier Payments",
+        vat_treatment="review",
+        supported_by_invoice=False,
+        confidence=86,
+        review_status="needs_review",
+        source_page=1,
+        raw_text="03 May FNB App Payment To Rmsp Trading Allianz Holdings 2,770,250.85 0.00Cr",
+    )
     fuel_row = professional_transaction_row(fuel, "fixture")
     receipt_row = professional_transaction_row(receipt, "fixture")
+    gov_receipt_row = professional_transaction_row(gov_receipt, "fixture")
+    supplier_payment_row = professional_transaction_row(supplier_payment, "fixture")
     assert_equal(fuel_row["review_required"], False, f"{case_id} fuel review")
     assert_equal(receipt_row["review_required"], False, f"{case_id} receipt review")
     assert_equal(fuel_row["account"], "Motor Vehicle Expenses", f"{case_id} fuel account")
     assert_equal(receipt_row["account"], "Sales / Revenue", f"{case_id} receipt account")
     assert_equal(receipt_row["vat_claim_status"], "Output", f"{case_id} receipt vat")
+    assert_equal(gov_receipt_row["account"], "Sales / Revenue", f"{case_id} government health receipt account")
+    assert_equal(gov_receipt_row["group"], "Income", f"{case_id} government health receipt group")
+    assert_equal(supplier_payment_row["account"], "Supplier Payments", f"{case_id} supplier payment account")
+    assert_equal(supplier_payment_row["group"], "Operating Expenses", f"{case_id} supplier payment group")
+    assert_equal(supplier_payment_row["invoice_required"], True, f"{case_id} supplier invoice review")
 
 
 def run_learned_supplier_rules_case() -> None:

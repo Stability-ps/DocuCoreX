@@ -252,6 +252,10 @@ def run():
     assert_equal(classify_transaction("PayShap To Nomsa", 1200.0, None)[0], "Related Party / Drawings", "payshap to a name")
     # An unknown debit must NOT become an Operating Expense by default.
     assert_equal(classify_transaction("Some Unknown Vendor XYZ", 999.0, None)[0], "Suspense / Review Required", "unknown debit is suspense")
+    assert_equal(classify_transaction("Magtape Credit 047-Gp Hea-000052034", None, 1234021.00)[0], "Sales / Revenue", "government health receipt account")
+    assert_equal(classify_transaction("FNB App Payment To Rmsp Trading Allianz Holdings", 2770250.85, None)[0], "Supplier Payments", "RMSP supplier payment account")
+    assert_equal(classify_transaction("FNB App Payment To Stalitrex Allianz Holdings", 1000.0, None)[0], "Supplier Payments", "Stalitrex supplier payment account")
+    assert_equal(classify_transaction("FNB App Payment To Nms Enterprises 5290B", 1000.0, None)[0], "Supplier Payments", "NMS supplier payment account")
 
     # Statement summary extraction (declared ground truth, any bank).
     summary_meta = parse_metadata("\n".join([

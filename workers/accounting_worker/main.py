@@ -621,6 +621,10 @@ def classify_transaction(description: str, debit: float | None, credit: float | 
         (("dhl", "paygate*dhl", "paygate dhl", "courier", "aramex", "the courier guy", "courier guy", "postnet"), "Courier / Delivery", "standard", False, 84),
         # Meals / entertainment
         (("uber eats", "mr d food", "mr d", "restaurant", "checkers sixty60", "woolworths"), "Staff Welfare / Meals / Entertainment", "review", False, 80),
+        # Government / tender receipts. These are customer receipts for work or
+        # services supplied, not welfare/meal merchants and not generic income.
+        (("magtape credit 047-gp hea", "gp hea-", "gauteng health", "department of health", "dept of health", "health department"),
+         "Sales / Revenue", "standard", False, 94),
         # Personal-looking or unclear suppliers should stay in review instead of
         # being upgraded to normal operating expenses.
         (("senses spa", "adore photography", "sloppy kisses", "puppy classes", "prayer shop"),
@@ -631,6 +635,8 @@ def classify_transaction(description: str, debit: float | None, credit: float | 
          "Operating Expenses", "review", False, 76),
         (("acapolite accounting", "bookkeeping", "audit fee", "tax practitioner"),
          "Accounting / Professional Fees", "standard", False, 88),
+        (("rmsp trading", "stalitrex", "nms enterprises", "nms enterprises 5290b"),
+         "Supplier Payments", "review", False, 86),
         (("jc industries", "bambhanani enterpris", "first works", "fabric and leather", "world focus", "kenny s intermedia"),
          "Operating Expenses", "review", False, 76),
         (("samsung electronics", "global-e", "global e"), "Software / IT", "review", False, 82),
@@ -2203,6 +2209,7 @@ def professional_account(transaction: ParsedTransaction) -> tuple[str, str, str,
         "Motor Vehicle Expenses": ("Motor Vehicle Expenses", "Motor Vehicle", "Input VAT if valid invoice", "Input/Review"),
         "Road Tolls": ("Road Tolls", "Motor Vehicle", "Input VAT if valid invoice", "Input/Review"),
         "Operating Expenses": ("Operating Expenses", "Operating Expenses", "Input VAT if valid invoice", "Input/Review"),
+        "Supplier Payments": ("Supplier Payments", "Operating Expenses", "Input VAT if valid invoice", "Input/Review"),
         "Accounting / Professional Fees": ("Accounting / Professional Fees", "Operating Expenses", "Input VAT if valid invoice", "Input/Review"),
         "Medical Expenses": ("Medical Expenses", "Operating Expenses", "Input VAT if valid invoice", "Input/Review"),
         "VAT Control": ("VAT Control", "VAT", "VAT control", "No"),
@@ -2215,6 +2222,10 @@ def professional_account(transaction: ParsedTransaction) -> tuple[str, str, str,
     text = transaction.description.lower()
     if transaction.bank_charge or "service fee" in text or "monthly account fee" in text or "byc debit" in text:
         return "Bank Charges", "Bank Charges", "Input VAT if valid bank tax invoice", "Input/Review"
+    if any(token in text for token in ("magtape credit 047-gp hea", "gp hea-", "gauteng health", "department of health", "dept of health", "health department")):
+        return "Sales / Revenue", "Income", "Standard-rated taxable receipts", "Output"
+    if any(token in text for token in ("rmsp trading", "stalitrex", "nms enterprises", "nms enterprises 5290b")):
+        return "Supplier Payments", "Operating Expenses", "Input VAT if valid invoice", "Input/Review"
     if "uber eats" in text:
         return "Meals / Groceries - Non Deductible Review", "Meals/Groceries", "Restricted/Review", "Review"
     if "dhl" in text:
@@ -2348,9 +2359,15 @@ def ai_diagnostics(enabled: bool | None = None) -> dict[str, Any]:
 def row_needs_ai(row: dict[str, Any]) -> bool:
     description = str(row.get("description") or "").lower()
     account = str(row.get("account") or "")
+    group = str(row.get("group") or "")
+    confidence = float(row.get("rule_confidence") or 0)
+    money_in = decimal_amount(row.get("money_in"))
+    money_out = decimal_amount(row.get("money_out"))
+    if account == "Bank Charges" and confidence >= 94:
+        return False
     return (
         bool(row.get("review_required"))
-        or float(row.get("rule_confidence") or 0) < 88
+        or confidence < 94
         or row.get("vat_claim_status") in {"Review", "Output/Review"}
         or account in {
             "Unclassified Expense",
@@ -2361,9 +2378,13 @@ def row_needs_ai(row: dict[str, Any]) -> bool:
             "Suspense / Review Required",
             "Related Party / Drawings",
             "Revenue Review",
+            "Operating Expenses",
+            "Supplier Payments",
         }
-        or row.get("group") == "Review"
-        or any(token in description for token in ("uber eats", "spa", "puppy", "photography", "sloppy kisses", "senses spa", "adore", "afrigreen", "freight aces", "naicker"))
+        or group in {"Review", "Operating Expenses", "Income", "Meals/Groceries", "Payroll/Personal"}
+        or money_in >= Decimal("5000.00")
+        or money_out >= Decimal("5000.00")
+        or any(token in description for token in ("app payment to", "app rtc pmt to", "magtape credit", "gp hea", "department of health", "rmsp trading", "stalitrex", "nms enterprises", "uber eats", "spa", "puppy", "photography", "sloppy kisses", "senses spa", "adore", "afrigreen", "freight aces", "naicker"))
     )
 
 
@@ -2489,7 +2510,16 @@ def request_ai_classifications(items: list[dict[str, Any]], diagnostics: dict[st
             {"merchant": "Scheduled home loan, savings, credit card or own-account transfers", "account": "Loan / Liability or Inter-account Transfer", "reason": "Balance-sheet movement; not VAT or P&L."},
             {"merchant": "Netcash, Stratum or Disc Prem debit orders", "account": "Operating Expenses", "reason": "Recurring debit-order supplier, but support is required before VAT is claimed."},
             {"merchant": "Acapolite Accounting, bookkeeping or audit fees", "account": "Accounting / Professional Fees", "reason": "Professional services supplier, invoice support required."},
+            {"merchant": "Magtape Credit 047-GP HEA / Gauteng Department of Health / Department of Health", "account": "Sales / Revenue", "reason": "Inbound government or tender/service receipt. Treat as taxable service revenue unless marked exempt by the accountant."},
+            {"merchant": "RMSP Trading, Stalitrex, NMS Enterprises, or other clear company-name payments", "account": "Supplier Payments", "reason": "Outbound payment to a business supplier. Do not classify as staff welfare merely because Allianz Holdings appears in the reference."},
             {"merchant": "Senses Spa, Sloppy Kisses, Puppy Classes, Prayer Shop, hair or pharmacy purchases", "account": "Staff Welfare / Meals / Entertainment or Review Required", "reason": "Personal-looking or welfare supplier; keep review required unless user-approved."},
+        ],
+        "classification_policy": [
+            "Money In from a customer, tender, department, province, municipality, GP Health, Department of Health, or Magtape Credit must normally be Sales / Revenue with Output VAT review/standard treatment.",
+            "Money Out to a registered-looking company name must normally be Supplier Payments or Operating Expenses with invoice support required, not Staff Welfare.",
+            "Use Staff Welfare / Meals / Entertainment only for food, groceries, restaurant, personal care, entertainment, or welfare merchants.",
+            "If the description contains the account holder name, ignore that account-holder wording and classify by the counterparty/merchant semantics.",
+            "If a supplier is business-like but the exact expense nature is unclear, choose Supplier Payments, VAT review, invoice_required true, review_required true, and explain what invoice/support is needed.",
         ],
         "schema": {
             "items": [
