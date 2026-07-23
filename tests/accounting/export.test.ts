@@ -293,6 +293,20 @@ test("force reprocess clears stale transaction rows before polling", () => {
   assert.match(route, /transaction_count:\s*body\.reprocess \? 0 : detail\.run\.transactionCount/);
 });
 
+test("stale extraction detection is based on current rows, not old stored difference while processing", () => {
+  const quality = read("lib/accounting/run-quality.ts");
+  assert.match(quality, /detail\.run\.status === "queued" \|\| detail\.run\.status === "processing"/);
+  assert.match(quality, /if \(largeDifference\) \{/);
+  assert.doesNotMatch(quality, /storedLargeDifference/);
+  assert.doesNotMatch(quality, /storedDrift/);
+});
+
+test("FNB processing skips Vercel pre-extraction unless explicitly enabled", () => {
+  const route = read("app/api/accounting/fnb/process/route.ts");
+  assert.match(route, /ACCOUNTING_PRE_EXTRACT_ENABLED = process\.env\.ACCOUNTING_PRE_EXTRACT === "true"/);
+  assert.match(route, /ACCOUNTING_PRE_EXTRACT_ENABLED[\s\S]*runPipelineBeforeWorker/);
+});
+
 test("draft combined export sends continuity override for review-required statements", () => {
   const ui = read("components/accounting/accounting-intelligence.tsx");
   assert.match(ui, /const needsDraftOverride = selectedRuns\.some/);

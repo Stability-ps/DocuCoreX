@@ -213,6 +213,7 @@ function normalizeWorkerFailure(input: {
 }
 
 const ACCOUNTING_WORKER_TIMEOUT_MS = 120_000;
+const ACCOUNTING_PRE_EXTRACT_ENABLED = process.env.ACCOUNTING_PRE_EXTRACT === "true";
 
 // Allow the background work (after the response is sent) to run beyond the default
 // so extraction + worker + reconciliation can finish off the request path.
@@ -300,10 +301,13 @@ async function processStatementInBackground(context: WorkspaceContext, detail: A
 
   let pipelineDebug: PipelineDebug | null = null;
   try {
-    // 1. Extraction pipeline (best-source + persist). Defensive: never throws.
-    // The pipeline reports "Detecting PDF type" / "Running OCR"; the later
-    // "Parsing transactions" / "Reconciling" steps are reported around the worker.
-    const { hints, debug } = await runPipelineBeforeWorker(context, detail, { force, onStage: updateStep });
+    // 1. Optional Node-side pre-extraction (PDF.js / pdfplumber / OCR). For FNB
+    // accounting the Python worker is the source of truth and can parse these
+    // statements directly from the PDF. Keeping this OFF by default prevents
+    // Vercel from spending minutes in OCR before the real worker even starts.
+    const { hints, debug } = ACCOUNTING_PRE_EXTRACT_ENABLED
+      ? await runPipelineBeforeWorker(context, detail, { force, onStage: updateStep })
+      : { hints: {}, debug: null };
     pipelineDebug = debug;
     updateStep("parsing");
 

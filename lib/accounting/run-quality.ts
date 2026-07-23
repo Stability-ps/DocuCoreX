@@ -15,7 +15,6 @@ export type AccountingRunQualityIssue = {
 };
 
 const LARGE_RECONCILIATION_DIFFERENCE = 1000;
-const DIFFERENCE_DRIFT_TOLERANCE = 5;
 
 export function accountingTransactionTotals(transactions: AccountingTransaction[]): AccountingTotals {
   return {
@@ -46,6 +45,10 @@ export function accountingRunQuality(detail: AccountingRunDetail | null): Accoun
     return { needsFreshExtraction: false, reason: "", computedDifference: 0, storedDifference: null, outsidePeriodCount: 0 };
   }
 
+  if (detail.run.status === "queued" || detail.run.status === "processing") {
+    return { needsFreshExtraction: false, reason: "", computedDifference: 0, storedDifference: null, outsidePeriodCount: 0 };
+  }
+
   const totals = accountingTransactionTotals(detail.transactions);
   const opening = detail.run.openingBalance ?? 0;
   const closing = detail.run.closingBalance ?? 0;
@@ -53,9 +56,6 @@ export function accountingRunQuality(detail: AccountingRunDetail | null): Accoun
   const storedDifference = detail.run.reconciliationDifference ?? null;
   const outsidePeriodCount = detail.transactions.filter((transaction) => outsideStatementPeriod(transaction, detail.run)).length;
   const largeDifference = Math.abs(computedDifference) > LARGE_RECONCILIATION_DIFFERENCE;
-  const storedLargeDifference = storedDifference !== null && Math.abs(storedDifference) > LARGE_RECONCILIATION_DIFFERENCE;
-  const storedDrift =
-    storedDifference !== null && Math.abs(Math.abs(storedDifference) - Math.abs(computedDifference)) > DIFFERENCE_DRIFT_TOLERANCE;
 
   if (outsidePeriodCount > 0) {
     return {
@@ -67,7 +67,7 @@ export function accountingRunQuality(detail: AccountingRunDetail | null): Accoun
     };
   }
 
-  if (largeDifference || storedLargeDifference || storedDrift) {
+  if (largeDifference) {
     return {
       needsFreshExtraction: true,
       reason: "The saved transaction totals do not match the statement reconciliation. A fresh extraction is required.",
