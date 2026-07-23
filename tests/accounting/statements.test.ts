@@ -9,7 +9,7 @@ register("./alias-hook.mjs", pathToFileURL(new URL(".", import.meta.url).pathnam
 const { computeProfitLoss, accountType } = await import("@/lib/accounting/analytics.ts");
 const { buildExportSections, buildStatementMetadata, resolveCompanyName, FULL_PACK_SECTIONS, EXPORT_MENU } = await import("@/lib/accounting/export.ts");
 const { buildAccountingModel, resolveAccount, CHART } = await import("@/lib/accounting/model.ts");
-const { statementDisplayName, statementReferenceDate } = await import("@/lib/accounting/statement-name.ts");
+const { cleanStatementLabel, statementDisplayName, statementReferenceDate } = await import("@/lib/accounting/statement-name.ts");
 
 // Regression: an ALLIANZ statement uploaded in July for a 31 March 2026 period
 // must be named from the statement metadata, never the upload/current date.
@@ -50,6 +50,11 @@ test("statement name is a neutral placeholder before processing", () => {
 
   const unknownNoCompany = { statementPeriodStart: null, statementPeriodEnd: null, statementDate: null, companyName: null };
   assert.equal(statementDisplayName(unknownNoCompany), "Statement (Awaiting Processing)");
+
+  const placeholderCompany = { statementPeriodStart: null, statementPeriodEnd: null, statementDate: "<none>", companyName: "<none>" };
+  assert.equal(statementReferenceDate(placeholderCompany), null);
+  assert.equal(statementDisplayName(placeholderCompany), "Statement (Awaiting Processing)");
+  assert.equal(cleanStatementLabel("<none>"), null);
 
   // Once processed, the same run renames to its statement month.
   const processed = { statementPeriodStart: "2026-02-28", statementPeriodEnd: "2026-03-31", statementDate: "2026-03-31", companyName: "ALLIANZ HOLDINGS (PTY) LTD", status: "completed" as const };

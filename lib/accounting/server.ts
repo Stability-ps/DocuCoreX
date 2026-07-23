@@ -106,17 +106,26 @@ function normalizeMerchantKey(description: string) {
     .slice(0, 160);
 }
 
+const EMPTY_ACCOUNTING_METADATA = new Set(["", "-", "—", "n/a", "na", "none", "<none>", "null", "undefined", "not provided"]);
+
+function cleanAccountingMetadata(value: string | null | undefined) {
+  const trimmed = value?.trim();
+  if (!trimmed) return null;
+  if (EMPTY_ACCOUNTING_METADATA.has(trimmed.toLowerCase())) return null;
+  return trimmed;
+}
+
 function mapRun(row: AccountingRunRow): AccountingStatementRun {
   return {
     id: row.id,
     workspaceId: row.workspace_id,
     documentId: row.document_id,
     processingJobId: row.processing_job_id,
-    bank: row.bank,
+    bank: cleanAccountingMetadata(row.bank) ?? row.bank,
     statementType: row.statement_type,
     status: row.status,
-    companyName: row.company_name,
-    accountNumber: row.account_number,
+    companyName: cleanAccountingMetadata(row.company_name),
+    accountNumber: cleanAccountingMetadata(row.account_number),
     statementPeriodStart: row.statement_period_start,
     statementPeriodEnd: row.statement_period_end,
     statementDate: row.statement_date ?? null,

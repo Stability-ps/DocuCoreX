@@ -12,12 +12,22 @@ type NamingRun = Pick<AccountingStatementRun, "statementPeriodEnd" | "statementP
   status?: AccountingStatementRun["status"];
 };
 
+const EMPTY_METADATA_VALUES = new Set(["", "-", "—", "n/a", "na", "none", "<none>", "null", "undefined", "not provided"]);
+
+export function cleanStatementLabel(value: string | null | undefined): string | null {
+  const trimmed = value?.trim();
+  if (!trimmed) return null;
+  if (EMPTY_METADATA_VALUES.has(trimmed.toLowerCase())) return null;
+  return trimmed;
+}
+
 // The date that represents the statement's month, as an ISO string, or null.
 // Deliberately excludes the upload date — the month must come from the PDF.
 export function statementReferenceDate(run: NamingRun): string | null {
   const candidates = [run.statementPeriodEnd, run.statementDate, run.statementPeriodStart];
   for (const candidate of candidates) {
-    if (candidate && !Number.isNaN(new Date(candidate).getTime())) return candidate;
+    const value = cleanStatementLabel(candidate);
+    if (value && !Number.isNaN(new Date(value).getTime())) return value;
   }
   return null;
 }
@@ -35,7 +45,8 @@ function monthYear(iso: string): string | null {
 export function statementPlaceholderName(run: NamingRun): string {
   if (run.status === "queued" || run.status === "processing") return "Processing Statement…";
   if (run.status === "failed") return "Statement (Processing Failed)";
-  if (run.companyName?.trim()) return `${run.companyName.trim()} Statement`;
+  const companyName = cleanStatementLabel(run.companyName);
+  if (companyName) return `${companyName} Statement`;
   return "Statement (Awaiting Processing)";
 }
 

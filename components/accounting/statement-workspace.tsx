@@ -22,7 +22,7 @@ import type {
   AccountingTransactionPatch,
 } from "@/lib/accounting/types";
 import { buildAccountingModel } from "@/lib/accounting/model";
-import { statementDisplayName } from "@/lib/accounting/statement-name";
+import { cleanStatementLabel, statementDisplayName } from "@/lib/accounting/statement-name";
 import { parserMethodLabel } from "@/lib/pdf/workerHandoff";
 import { pollRunUntilTerminal } from "@/lib/accounting/poll-run";
 import { detectDuplicates, detectUnusualTransactions, detectDirectorTransactions } from "@/lib/accounting/analytics";
@@ -304,7 +304,7 @@ export function StatementWorkspace({ statementId }: { statementId: string }) {
               <p className="mt-1 text-xs font-bold text-amber-700">Review required before final export. Draft export is available.</p>
             ) : null}
             <p className="mt-0.5 text-xs font-semibold text-slate-500">
-              {run.bank} · Account {run.accountNumber || "—"} ·{" "}
+              {run.bank} · Account {cleanStatementLabel(run.accountNumber) || "—"} ·{" "}
               {run.statementPeriodStart || run.statementPeriodEnd
                 ? `${fmtDate(run.statementPeriodStart)} – ${fmtDate(run.statementPeriodEnd)}`
                 : "Period not detected"}
@@ -485,8 +485,8 @@ function StatementSidebar({
         <h2 className="text-sm font-black text-navy-950">Statement Details</h2>
         <dl className="mt-3 space-y-2 text-sm">
           <Row label="Bank" value={run.bank} />
-          <Row label="Company" value={run.companyName || "—"} />
-          <Row label="Account Number" value={run.accountNumber || "—"} />
+          <Row label="Company" value={cleanStatementLabel(run.companyName) || "—"} />
+          <Row label="Account Number" value={cleanStatementLabel(run.accountNumber) || "—"} />
           <Row label="Statement Period" value={run.statementPeriodStart || run.statementPeriodEnd ? `${fmtDate(run.statementPeriodStart)} – ${fmtDate(run.statementPeriodEnd)}` : "—"} />
           <Row label="Currency" value="ZAR" />
           <Row label="Opening Balance" value={fmtMoney(totals.opening)} />

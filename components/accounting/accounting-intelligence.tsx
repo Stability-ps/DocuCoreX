@@ -63,7 +63,7 @@ import type {
   ForecastData,
   AuditSummary,
 } from "@/lib/accounting/analytics";
-import { statementDisplayName, statementReferenceDate } from "@/lib/accounting/statement-name";
+import { cleanStatementLabel, statementDisplayName, statementReferenceDate } from "@/lib/accounting/statement-name";
 import { parserMethodLabel } from "@/lib/pdf/workerHandoff";
 import { pollRunUntilTerminal } from "@/lib/accounting/poll-run";
 import { deriveEffectiveRunStatus, isActiveRunStatus } from "@/lib/accounting/run-status";
@@ -227,7 +227,7 @@ function compactDateTime(value: string) {
 }
 
 function fileNameFromPath(path: string) {
-  return path.split("/").pop() ?? "FNB statement.pdf";
+  return cleanStatementLabel(path.split("/").pop()) ?? "FNB statement.pdf";
 }
 
 function runDisplayTitle(run: AccountingStatementRun) {
@@ -375,7 +375,11 @@ function getReviewItems(transactions: AccountingTransaction[]) {
 }
 
 function runAccountKey(run: AccountingStatementRun) {
-  return [run.companyName?.trim().toLowerCase() ?? "", run.bank.trim().toLowerCase(), run.accountNumber?.trim().toLowerCase() ?? ""].join("|");
+  return [
+    cleanStatementLabel(run.companyName)?.toLowerCase() ?? "",
+    cleanStatementLabel(run.bank)?.toLowerCase() ?? "",
+    cleanStatementLabel(run.accountNumber)?.toLowerCase() ?? "",
+  ].join("|");
 }
 
 function fileNameFromContentDisposition(header: string | null) {
@@ -1392,12 +1396,13 @@ export function AccountingIntelligence() {
                       // before then show the file name (never a guessed month).
                       const run = item.runId ? runById.get(item.runId) : null;
                       const named = run && statementReferenceDate(run) ? statementDisplayName(run) : null;
+                      const uploadName = cleanStatementLabel(item.name) ?? "Uploaded FNB statement";
                       return (
                         <>
-                          <p className="truncate text-sm font-black text-navy-950" title={named ?? item.name}>
-                            {named ?? item.name}
+                          <p className="truncate text-sm font-black text-navy-950" title={named ?? uploadName}>
+                            {named ?? uploadName}
                           </p>
-                          <p className="mt-0.5 truncate text-xs font-semibold text-slate-500">{named ? `${item.name} · ${fileSize(item.size)}` : fileSize(item.size)}</p>
+                          <p className="mt-0.5 truncate text-xs font-semibold text-slate-500">{named ? `${uploadName} · ${fileSize(item.size)}` : fileSize(item.size)}</p>
                         </>
                       );
                     })()}
@@ -2271,8 +2276,8 @@ function StatementRuns({
       next = next.filter((run) => {
         const haystack = [
           runDisplayTitle(run),
-          run.companyName,
-          run.accountNumber,
+          cleanStatementLabel(run.companyName),
+          cleanStatementLabel(run.accountNumber),
           statusLabel(run.status),
           fileNameFromPath(run.sourceStoragePath),
         ]
@@ -2292,7 +2297,7 @@ function StatementRuns({
         return new Date(keyFor(b)).getTime() - new Date(keyFor(a)).getTime();
       }
       if (sortBy === "status") return statusLabel(a.status).localeCompare(statusLabel(b.status));
-      if (sortBy === "company") return (a.companyName || "").localeCompare(b.companyName || "");
+      if (sortBy === "company") return (cleanStatementLabel(a.companyName) || "").localeCompare(cleanStatementLabel(b.companyName) || "");
       return new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime();
     });
     return sorted;
@@ -2396,7 +2401,7 @@ function StatementRuns({
                     <span className={`shrink-0 rounded-full px-2 py-0.5 text-[10px] font-black ${statusTone(run.status)}`}>{statusLabel(run.status)}</span>
                   </div>
                   <div className="mt-1 flex items-center justify-between gap-2 text-[11px] font-semibold text-slate-500">
-                    <span className="truncate">{run.accountNumber || run.companyName || compactDateTime(run.createdAt)}</span>
+                    <span className="truncate">{cleanStatementLabel(run.accountNumber) || cleanStatementLabel(run.companyName) || compactDateTime(run.createdAt)}</span>
                     {run.status === "failed" ? (
                       <button
                         type="button"
@@ -2768,8 +2773,8 @@ function SummaryPanel({
   transactionCount: number;
 }) {
   const rows: Array<[string, string]> = [
-    ["Company", run.companyName || "-"],
-    ["Account number", run.accountNumber || "-"],
+    ["Company", cleanStatementLabel(run.companyName) || "-"],
+    ["Account number", cleanStatementLabel(run.accountNumber) || "-"],
     ["Statement period", [run.statementPeriodStart, run.statementPeriodEnd].filter(Boolean).join(" to ") || "-"],
     ["Opening balance", money(run.openingBalance)],
     ["Total receipts", money(totals.credit)],
@@ -3854,9 +3859,9 @@ function ForecastPanel({
       <div className="flex items-center gap-2">
         <TrendingUp className="h-5 w-5 text-royal-600" />
         <h2 className="text-base font-bold text-navy-950">Cash Flow Forecast</h2>
-        {run.companyName ? (
+        {cleanStatementLabel(run.companyName) ? (
           <span className="rounded-full bg-slate-100 px-2 py-0.5 text-xs font-semibold text-slate-600">
-            {run.companyName}
+            {cleanStatementLabel(run.companyName)}
           </span>
         ) : null}
       </div>
