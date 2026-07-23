@@ -285,3 +285,17 @@ test("bulk process forces fresh extraction for stale completed or review runs", 
   const ui = read("components/accounting/accounting-intelligence.tsx");
   assert.match(ui, /reprocess:\s*status !== "queued"/);
 });
+
+test("force reprocess clears stale transaction rows before polling", () => {
+  const route = read("app/api/accounting/fnb/process/route.ts");
+  assert.match(route, /if \(body\.reprocess\) \{/);
+  assert.match(route, /\.from\("accounting_transactions"\)[\s\S]*\.delete\(\)[\s\S]*\.eq\("run_id", runId\)/);
+  assert.match(route, /transaction_count:\s*body\.reprocess \? 0 : detail\.run\.transactionCount/);
+});
+
+test("draft combined export sends continuity override for review-required statements", () => {
+  const ui = read("components/accounting/accounting-intelligence.tsx");
+  assert.match(ui, /const needsDraftOverride = selectedRuns\.some/);
+  assert.match(ui, /overrideContinuity:\s*needsDraftOverride/);
+  assert.match(ui, /confirmationText:\s*needsDraftOverride \? "COMBINE" : undefined/);
+});

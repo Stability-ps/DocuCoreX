@@ -800,7 +800,13 @@ export function AccountingIntelligence() {
       setOverrideDialogOpen(true);
       return;
     }
-    await createCombinedWorkbook();
+    const needsDraftOverride = selectedRuns.some(
+      (run) => run.requiresReview || run.validationStatus === "review_required" || run.status === "review",
+    );
+    await createCombinedWorkbook({
+      overrideContinuity: needsDraftOverride,
+      confirmationText: needsDraftOverride ? "COMBINE" : undefined,
+    });
   }
 
   async function deleteRuns(runIds: string[]) {

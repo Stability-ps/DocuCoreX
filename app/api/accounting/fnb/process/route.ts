@@ -433,11 +433,20 @@ export async function POST(request: Request) {
     // effort on the new columns — the update must not fail if migration 014 is
     // not yet applied, so retry without them on error.
     const nowIso = new Date().toISOString();
+    if (body.reprocess) {
+      await context.supabase
+        .from("accounting_transactions")
+        .delete()
+        .eq("workspace_id", context.workspaceId)
+        .eq("run_id", runId);
+    }
     const { error: markError } = await context.supabase
       .from("accounting_statement_runs")
       .update({
         status: "processing",
         error: null,
+        transaction_count: body.reprocess ? 0 : detail.run.transactionCount,
+        workbook_storage_path: body.reprocess ? null : detail.run.workbookStoragePath,
         parser_method: null,
         extraction_confidence: null,
         detected_pdf_type: null,
@@ -458,7 +467,13 @@ export async function POST(request: Request) {
     if (markError) {
       await context.supabase
         .from("accounting_statement_runs")
-        .update({ status: "processing", error: null, updated_at: nowIso })
+        .update({
+          status: "processing",
+          error: null,
+          transaction_count: body.reprocess ? 0 : detail.run.transactionCount,
+          workbook_storage_path: body.reprocess ? null : detail.run.workbookStoragePath,
+          updated_at: nowIso,
+        })
         .eq("workspace_id", context.workspaceId)
         .eq("id", runId);
     }
