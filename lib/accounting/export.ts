@@ -455,12 +455,12 @@ export function buildExportSections(detail: AccountingRunDetail, resolvedCompany
       [],
       [HDR("VAT Summary"), HDR("Amount"), HDR("VAT201 Box"), HDR("Comment")],
       [S("Output VAT"), M(v201.outputVat), S("4"), S("Standard-rated receipts only")],
-      [S("Input VAT"), M(totalInputVat), S("14/15"), S("Standard-rated payments with invoice support plus declared bank VAT")],
+      [S("Potential Input VAT"), M(totalInputVat), S("14/15"), S("Standard-rated and supplier-review payments requiring invoice support, plus declared bank VAT")],
       [S("Declared Bank VAT"), M(declaredBankVat), S("14/15"), S("From statement fee summary")],
       [B(totalNetVat >= 0 ? "VAT Payable" : "VAT Refund"), totalNetVat >= 0 ? MT(totalNetVat) : MW(totalNetVat), S("13"), S(totalNetVat >= 0 ? "Payable to SARS" : "Refund due from SARS")],
       [S("Review Items"), INT(v201.reviewItems), S(""), S("Excluded from VAT totals until approved")],
       [],
-      [HDR("Month"), HDR("Output VAT"), HDR("Input VAT"), HDR("Net VAT Payable/(Refund)"), HDR("Running VAT Balance"), HDR("Status")],
+      [HDR("Month"), HDR("Output VAT"), HDR("Potential Input VAT"), HDR("Net VAT Payable/(Refund)"), HDR("Running VAT Balance"), HDR("Status")],
       ...vatMonthlyRows,
       [],
       [
@@ -475,7 +475,7 @@ export function buildExportSections(detail: AccountingRunDetail, resolvedCompany
         HDR("VAT %"),
         HDR("Claim Status"),
         HDR("Output VAT"),
-        HDR("Input VAT"),
+        HDR("Potential Input VAT"),
         HDR("Net VAT"),
         HDR("VAT Balance"),
         HDR("VAT201 Box"),
@@ -508,7 +508,7 @@ export function buildExportSections(detail: AccountingRunDetail, resolvedCompany
         });
       })(),
       ...(supplementaryBankVat > 0.005
-        ? [[B("Declared bank VAT (fees not itemised)"), S(""), S("From statement fee summary"), S(""), S(""), S("Bank Charges"), S("Bank Charges"), S("STD"), S("15%"), S("Input VAT"), M(0), M(supplementaryBankVat), MW(-supplementaryBankVat), MW(totalNetVat), S("14/15 (Input VAT)"), WARN("needs_review"), S("From statement fee summary")]]
+        ? [[B("Declared bank VAT (fees not itemised)"), S(""), S("From statement fee summary"), S(""), S(""), S("Bank Charges"), S("Bank Charges"), S("STD"), S("15%"), S("Potential Input VAT"), M(0), M(supplementaryBankVat), MW(-supplementaryBankVat), MW(totalNetVat), S("14/15 (Input VAT)"), WARN("needs_review"), S("From statement fee summary")]]
         : []),
       [B("Totals"), S(""), S(""), MT(meta.totalReceipts), MT(meta.totalPayments), S(""), S(""), S(""), S(""), S(""), MT(v201.outputVat), MT(totalInputVat), MT(totalNetVat), MT(totalNetVat), S(""), S(""), S("")],
       [],
@@ -518,7 +518,7 @@ export function buildExportSections(detail: AccountingRunDetail, resolvedCompany
       [S("2"), S("Zero-rated supplies"), M(v201.zeroRated)],
       [S("3"), S("Exempt / non-supplies"), M(v201.exempt)],
       [S("4"), S("Output VAT"), M(v201.outputVat)],
-      [S("14/15"), S("Input VAT (incl. declared bank VAT)"), M(totalInputVat)],
+      [S("14/15"), S("Potential input VAT (incl. declared bank VAT)"), M(totalInputVat)],
       [B("13"), B(totalNetVat >= 0 ? "Net VAT payable" : "Net VAT refundable"), totalNetVat >= 0 ? MT(totalNetVat) : MW(totalNetVat)],
     ],
   });

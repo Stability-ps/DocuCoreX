@@ -106,6 +106,25 @@ function normalizeMerchantKey(description: string) {
     .slice(0, 160);
 }
 
+function deriveLearningMerchantKeys(description: string) {
+  const normalized = normalizeMerchantKey(description);
+  const keys = new Set<string>();
+  if (normalized) keys.add(normalized);
+
+  let merchant = normalized
+    .replace(/\b(fnb|app|payment|pmt|rtc|ob|to|from|payshap|account|off|us|send|money|dr|cr|eft|credit|debit|pos|purchase|new|dl|domestic|trea)\b/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+
+  const supplierMatch = merchant.match(/\b([a-z][a-z]+(?:\s+[a-z][a-z]+){0,3}\s+(?:industries|trading|enterprises|enterprise|interiors|services|works|suppliers|logistics|courier|freight))\b/);
+  if (supplierMatch?.[1]) {
+    keys.add(supplierMatch[1].trim().slice(0, 160));
+  }
+
+  if (merchant) keys.add(merchant.slice(0, 160));
+  return Array.from(keys).filter((key) => key.length >= 4);
+}
+
 const EMPTY_ACCOUNTING_METADATA = new Set(["", "-", "—", "n/a", "na", "none", "<none>", "null", "undefined", "not provided"]);
 
 function cleanAccountingMetadata(value: string | null | undefined) {
@@ -644,14 +663,15 @@ export async function updateAccountingTransaction(transactionId: string, patch: 
     patch.reviewStatus === "approved" ||
     patch.supportedByInvoice !== undefined;
   const merchantKey = normalizeMerchantKey(transaction.description);
+  const learningMerchantKeys = deriveLearningMerchantKeys(transaction.description);
 
-  if (shouldLearn && merchantKey && transaction.accountCategory !== "Review Required" && transaction.accountCategory !== "Uncategorised Expense") {
+  if (shouldLearn && learningMerchantKeys.length && transaction.accountCategory !== "Review Required" && transaction.accountCategory !== "Uncategorised Expense") {
     const { error: learningError } = await context.supabase
       .from("accounting_classification_rules")
       .upsert(
-        {
+        learningMerchantKeys.map((key) => ({
           workspace_id: context.workspaceId,
-          merchant_key: merchantKey,
+          merchant_key: key,
           account_category: transaction.accountCategory,
           vat_treatment: transaction.vatTreatment,
           review_status: transaction.reviewStatus,
@@ -661,7 +681,7 @@ export async function updateAccountingTransaction(transactionId: string, patch: 
           created_by: context.userId,
           updated_at: new Date().toISOString(),
           last_used_at: new Date().toISOString(),
-        },
+        })),
         { onConflict: "workspace_id,merchant_key" },
       );
     if (learningError && learningError.code !== "42P01" && learningError.code !== "PGRST204") {

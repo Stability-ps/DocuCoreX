@@ -300,6 +300,30 @@ test("model VAT ties output/input to the transactions", () => {
   assert.equal(Math.round(model.vat201.inputVat * 100) / 100, expectedInput, "input VAT ties to standard expenses");
 });
 
+test("supplier-review expenses carry potential input VAT while staying reviewable", () => {
+  const supplierDetail = {
+    run,
+    transactions: [
+      txn({
+        id: "supplier-1",
+        desc: "FNB App Payment To Msi Industries Inv109034",
+        debit: 1012000,
+        cat: "Supplier Payments",
+        vat: "review",
+        review: "needs_review",
+      }),
+    ],
+  };
+  const model = buildAccountingModel(supplierDetail);
+  const supplier = model.transactions[0];
+  const expectedInput = Math.round(1012000 * (15 / 115) * 100) / 100;
+  assert.equal(supplier.account.name, "Supplier Payments", "supplier payments must use a dedicated account");
+  assert.equal(supplier.vatCode, "REV", "VAT still needs review before final filing");
+  assert.equal(Math.round(supplier.inputVat * 100) / 100, expectedInput, "supplier review rows show potential input VAT");
+  assert.equal(Math.round(model.vat201.inputVat * 100) / 100, expectedInput, "VAT working paper includes potential supplier input VAT");
+  assert.equal(model.vat201.missingInvoices, 1, "supplier input VAT remains invoice/support dependent");
+});
+
 test("financials come from the ledger — tax/suspense are not revenue/expense", () => {
   const model = buildAccountingModel(detail);
   const revNames = model.financials.revenue.map((r: { name: string }) => r.name);

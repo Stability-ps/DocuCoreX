@@ -46,6 +46,7 @@ export const CHART: ChartAccount[] = [
   { number: "5400", name: "Payroll / Salaries", type: "expense", group: "expense", statement: "profit_loss" },
   { number: "5500", name: "Software Subscriptions", type: "expense", group: "expense", statement: "profit_loss" },
   { number: "5600", name: "Courier / Delivery", type: "expense", group: "expense", statement: "profit_loss" },
+  { number: "5650", name: "Supplier Payments", type: "expense", group: "expense", statement: "profit_loss" },
   { number: "5700", name: "Travel / Meals / Entertainment", type: "expense", group: "expense", statement: "profit_loss" },
   { number: "5800", name: "Levies", type: "expense", group: "expense", statement: "profit_loss" },
   { number: "5900", name: "Finance Costs", type: "expense", group: "expense", statement: "profit_loss" },
@@ -90,6 +91,7 @@ export function resolveAccount(category: string): ChartAccount {
       if (/salar|payroll|wages/.test(c)) return acct("5400");
       if (/software|subscription|saas/.test(c)) return acct("5500");
       if (/courier|delivery/.test(c)) return acct("5600");
+      if (/supplier|industries|trading|enterprises|invoice/.test(c)) return acct("5650");
       if (/travel|meals|entertainment|welfare/.test(c)) return acct("5700");
       if (/levy|levies/.test(c)) return acct("5800");
       if (/finance cost|interest (paid|charged)/.test(c)) return acct("5900");
@@ -174,8 +176,14 @@ export function enrichTransaction(t: AccountingTransaction): ModelTransaction {
   const account = resolveAccount(t.accountCategory);
   const vatCode = vatCodeFor(t.vatTreatment);
   const isStd = vatCode === "STD";
+  const potentialInputReview =
+    vatCode === "REV" &&
+    (t.debitAmount ?? 0) > 0 &&
+    account.statement === "profit_loss" &&
+    account.type !== "bank_charges" &&
+    !/travel|meal|entertainment|welfare/i.test(account.name);
   const outputVat = isStd ? (t.creditAmount ?? 0) * VAT_RATE : 0;
-  const inputVat = isStd ? (t.debitAmount ?? 0) * VAT_RATE : 0;
+  const inputVat = isStd || potentialInputReview ? (t.debitAmount ?? 0) * VAT_RATE : 0;
   const sarsBox = isStd
     ? (t.creditAmount ?? 0) > 0
       ? "1 (Standard-rate supplies)"
@@ -184,7 +192,9 @@ export function enrichTransaction(t: AccountingTransaction): ModelTransaction {
       ? "2 (Zero-rated)"
       : vatCode === "EX"
         ? "3 (Exempt/non-supplies)"
-        : "—";
+        : potentialInputReview
+          ? "14/15 (Potential input VAT)"
+          : "—";
   return {
     id: t.id,
     date: t.transactionDate ?? "",
@@ -333,7 +343,7 @@ export function buildVat201(model: ModelTransaction[]): Vat201 {
     if (t.vatCode === "ZR") zeroRated += t.credit + t.debit;
     if (t.vatCode === "EX") exempt += t.credit + t.debit;
     if (t.vatCode === "REV") reviewItems += 1;
-    if (t.vatCode === "STD" && t.debit > 0 && !t.supportedByInvoice) missingInvoices += 1;
+    if (t.inputVat > 0 && t.debit > 0 && !t.supportedByInvoice) missingInvoices += 1;
     if (t.confidence < 70) lowConfidence += 1;
   }
   return {

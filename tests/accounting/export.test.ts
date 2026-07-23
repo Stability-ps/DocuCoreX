@@ -177,7 +177,7 @@ test("company name resolution falls back statement -> workspace -> generic", () 
 
 test("VAT working paper includes all required columns (no engine columns)", () => {
   const src = read("lib/accounting/export.ts");
-  for (const col of ["Output VAT", "Input VAT", "Net VAT", "Claim Status", "VAT Code", "VAT %", "VAT201 Box", "Category"]) {
+  for (const col of ["Output VAT", "Potential Input VAT", "Net VAT", "Claim Status", "VAT Code", "VAT %", "VAT201 Box", "Category"]) {
     assert.match(src, new RegExp(`HDR\\("${col}"\\)`), `VAT working paper must have a "${col}" column`);
   }
   // Engine/AI columns must be gone.
@@ -351,6 +351,8 @@ test("VAT schedules include VAT payable and running balance summaries", () => {
   }
   assert.match(worker, /def write_vat_schedule_sheet/);
   assert.match(worker, /Review before VAT is included/);
+  assert.match(exportPath, /Potential Input VAT/);
+  assert.match(exportPath, /supplier-review payments requiring invoice support/);
 });
 
 test("starter supplier knowledge seeds worker learning rules", () => {
@@ -363,6 +365,9 @@ test("starter supplier knowledge seeds worker learning rules", () => {
   assert.match(kb, /canonicalName: "Personal \/ Lifestyle Review Suppliers"/);
   assert.match(kb, /canonicalName: "Sage Accounting"/);
   assert.match(kb, /canonicalName: "Netcash Debit Orders"/);
+  assert.match(server, /deriveLearningMerchantKeys/);
+  assert.match(server, /supplierMatch/);
+  assert.match(server, /learningMerchantKeys\.map/);
   assert.match(kb, /canonicalName: "Savings and Home Loan Transfers"/);
   assert.match(kb, /canonicalName: "Accounting and Professional Fees"/);
   assert.match(server, /\.from\("accounting_classification_rules"\)/);
