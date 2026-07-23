@@ -67,6 +67,7 @@ import { statementDisplayName, statementReferenceDate } from "@/lib/accounting/s
 import { parserMethodLabel } from "@/lib/pdf/workerHandoff";
 import { pollRunUntilTerminal } from "@/lib/accounting/poll-run";
 import { deriveEffectiveRunStatus, isActiveRunStatus } from "@/lib/accounting/run-status";
+import { accountingRunQuality, accountingTransactionTotals } from "@/lib/accounting/run-quality";
 import { ProcessingSteps } from "@/components/accounting/processing-steps";
 import { FailedRunPanel } from "@/components/accounting/failed-run-panel";
 import type { AiCommentaryResult, AiCommentaryType } from "@/lib/accounting/ai-service";
@@ -392,6 +393,7 @@ type LiveRefreshState = "idle" | "processing" | "refreshing";
 export function AccountingIntelligence() {
   const inputRef = useRef<HTMLInputElement>(null);
   const autoProcessedRef = useRef<Set<string>>(new Set());
+  const autoReprocessedStaleRef = useRef<Set<string>>(new Set());
   const selectedRunIdRef = useRef("");
   const [runs, setRuns] = useState<AccountingStatementRun[]>([]);
   const [uploadQueue, setUploadQueue] = useState<UploadQueueItem[]>([]);
@@ -631,6 +633,18 @@ export function AccountingIntelligence() {
       void browserSupabase.removeChannel(channel);
     };
   }, [hasActiveRuns, selectedRunId]);
+
+  useEffect(() => {
+    if (!detail) return;
+    if (isActiveRunStatus(detail.run.status)) return;
+    const quality = accountingRunQuality(detail);
+    if (!quality.needsFreshExtraction) return;
+    if (autoReprocessedStaleRef.current.has(detail.run.id)) return;
+    autoReprocessedStaleRef.current.add(detail.run.id);
+    setMessage(`Refreshing ${runDisplayTitle(detail.run)} because saved totals look stale. ${quality.reason}`);
+    void processRun(detail.run.id, { reprocess: true, manageBusy: false, refreshAfter: true }).catch(() => undefined);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [detail?.run.id, detail?.run.status, detail?.transactions.length]);
 
   useEffect(() => {
     if (!runs.length) return;
@@ -931,7 +945,7 @@ export function AccountingIntelligence() {
       } else {
         setMessage(
           outcome.status === "review"
-            ? "Review required — extraction and bank totals need review before export."
+            ? "Review required before final export. Draft export is available."
             : "Statement processed successfully. You can now review and export.",
         );
         setLiveRefreshState("idle");
@@ -1013,13 +1027,15 @@ export function AccountingIntelligence() {
   }, [query, selectedRows]);
 
   const totals = useMemo(() => {
+    const transactionTotals = accountingTransactionTotals(transactions);
     return {
-      debit: transactions.reduce((sum, transaction) => sum + (transaction.debitAmount ?? 0), 0),
-      credit: transactions.reduce((sum, transaction) => sum + (transaction.creditAmount ?? 0), 0),
-      bankCharges: transactions.reduce((sum, transaction) => sum + (transaction.bankCharge ? transaction.debitAmount ?? 0 : 0), 0),
+      debit: transactionTotals.debit,
+      credit: transactionTotals.credit,
+      bankCharges: transactionTotals.bankCharges,
       review: reviewItems.length,
     };
   }, [reviewItems.length, transactions]);
+  const runQuality = useMemo(() => accountingRunQuality(detail), [detail]);
 
   const expectedClosing = (detail?.run.openingBalance ?? 0) + totals.credit - totals.debit;
   const recDifference = expectedClosing - (detail?.run.closingBalance ?? 0);
@@ -1459,12 +1475,18 @@ export function AccountingIntelligence() {
           ) : null}
         </div>
       ) : null}
+      {runQuality.needsFreshExtraction ? (
+        <div className="rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm font-bold text-amber-900">
+          Refreshing this statement because the saved extraction looks stale. {runQuality.reason}
+        </div>
+      ) : null}
 
       <CompactSummaryBar
         run={detail?.run ?? null}
-        debit={transactions.length ? totals.debit : null}
-        credit={transactions.length ? totals.credit : null}
+        debit={transactions.length && !runQuality.needsFreshExtraction ? totals.debit : null}
+        credit={transactions.length && !runQuality.needsFreshExtraction ? totals.credit : null}
         reviewCount={totals.review}
+        stale={runQuality.needsFreshExtraction}
       />
 
       <div className="grid gap-4 xl:grid-cols-[360px_1fr]">
@@ -2172,14 +2194,16 @@ function CompactSummaryBar({
   debit,
   credit,
   reviewCount,
+  stale = false,
 }: {
   run: AccountingStatementRun | null;
   debit: number | null;
   credit: number | null;
   reviewCount: number;
+  stale?: boolean;
 }) {
   const items = [
-    { label: "Status", value: run ? statusLabel(run.status) : "No statement", tone: run?.status === "failed" ? "text-rose-700" : run?.status === "review" ? "text-amber-700" : "text-navy-950" },
+    { label: "Status", value: stale ? "Refreshing" : run ? statusLabel(run.status) : "No statement", tone: stale || run?.status === "review" ? "text-amber-700" : run?.status === "failed" ? "text-rose-700" : "text-navy-950" },
     { label: "Opening", value: money(run?.openingBalance ?? null), tone: "text-navy-950" },
     { label: "Closing", value: money(run?.closingBalance ?? null), tone: "text-navy-950" },
     { label: "Money out", value: money(debit), tone: "text-rose-700" },

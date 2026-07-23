@@ -26,6 +26,7 @@ import { statementDisplayName } from "@/lib/accounting/statement-name";
 import { parserMethodLabel } from "@/lib/pdf/workerHandoff";
 import { pollRunUntilTerminal } from "@/lib/accounting/poll-run";
 import { detectDuplicates, detectUnusualTransactions, detectDirectorTransactions } from "@/lib/accounting/analytics";
+import { accountingRunQuality, accountingTransactionTotals } from "@/lib/accounting/run-quality";
 import { DocumentViewer } from "@/components/document-viewer";
 import { ProcessingSteps } from "@/components/accounting/processing-steps";
 import { FailedRunPanel } from "@/components/accounting/failed-run-panel";
@@ -104,6 +105,7 @@ export function StatementWorkspace({ statementId }: { statementId: string }) {
   const [banner, setBanner] = useState<string | null>(null);
   const [exportOpen, setExportOpen] = useState(false);
   const [moreOpen, setMoreOpen] = useState(false);
+  const autoReprocessedStaleRef = useRef<Set<string>>(new Set());
 
   const sourceUrl = `/api/accounting/fnb/runs/${statementId}/source`;
 
@@ -166,7 +168,7 @@ export function StatementWorkspace({ statementId }: { statementId: string }) {
       await loadDetail();
       if (outcome.timedOut) setBanner("Still processing — taking longer than usual. Refresh to check the latest status.");
       else if (outcome.status === "failed") setBanner(outcome.error || "Re-processing failed.");
-      else if (outcome.status === "review") setBanner("Review required — extraction and bank totals need review.");
+      else if (outcome.status === "review") setBanner("Review required before final export. Draft export is available.");
       else setBanner("Statement re-processed. Latest extraction loaded.");
     } catch (reprocessError) {
       setBanner(reprocessError instanceof Error ? reprocessError.message : "Re-processing failed.");
@@ -212,11 +214,24 @@ export function StatementWorkspace({ statementId }: { statementId: string }) {
   const run = detail?.run ?? null;
   const transactions = detail?.transactions ?? [];
   const model = useMemo(() => (detail ? buildAccountingModel(detail) : null), [detail]);
+  const runQuality = useMemo(() => accountingRunQuality(detail), [detail]);
+
+  useEffect(() => {
+    if (!detail) return;
+    if (detail.run.status === "queued" || detail.run.status === "processing") return;
+    if (!runQuality.needsFreshExtraction) return;
+    if (autoReprocessedStaleRef.current.has(detail.run.id)) return;
+    autoReprocessedStaleRef.current.add(detail.run.id);
+    setBanner(`Refreshing this statement because the saved extraction looks stale. ${runQuality.reason}`);
+    void reprocess();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [detail?.run.id, detail?.run.status, detail?.transactions.length, runQuality.needsFreshExtraction]);
 
   const totals = useMemo(() => {
-    const moneyIn = transactions.reduce((s, t) => s + (t.creditAmount ?? 0), 0);
-    const moneyOut = transactions.reduce((s, t) => s + (t.debitAmount ?? 0), 0);
-    const charges = run?.bankChargesTotal || transactions.filter((t) => t.bankCharge).reduce((s, t) => s + (t.debitAmount ?? 0), 0);
+    const transactionTotals = accountingTransactionTotals(transactions);
+    const moneyIn = transactionTotals.credit;
+    const moneyOut = transactionTotals.debit;
+    const charges = run?.bankChargesTotal || transactionTotals.bankCharges;
     const opening = run?.openingBalance ?? 0;
     const closing = run?.closingBalance ?? 0;
     const expectedClosing = opening + moneyIn - moneyOut;
@@ -254,8 +269,8 @@ export function StatementWorkspace({ statementId }: { statementId: string }) {
     );
   }
 
-  const dataQuality = totals.reconciled ? "Complete" : totals.opening === 0 && totals.closing === 0 ? "Unable to Verify" : "Review Required";
-  const fullPackBlocked = Boolean(run.requiresReview || run.validationStatus === "review_required" || run.status === "review");
+  const dataQuality = runQuality.needsFreshExtraction ? "Refreshing" : totals.reconciled ? "Complete" : totals.opening === 0 && totals.closing === 0 ? "Unable to Verify" : "Review Required";
+  const fullPackBlocked = run.status === "queued" || run.status === "processing" || transactions.length === 0;
 
   return (
     <div className="px-4 py-4 sm:px-6 lg:px-8">
@@ -283,8 +298,10 @@ export function StatementWorkspace({ statementId }: { statementId: string }) {
                 <span className="rounded-full bg-slate-100 px-2.5 py-1 text-[11px] font-black text-slate-600">{parserMethodLabel(run.parserMethod)}</span>
               ) : null}
             </div>
-            {run.requiresReview || run.validationStatus === "review_required" ? (
-              <p className="mt-1 text-xs font-bold text-amber-700">Review required — extraction and bank totals do not reconcile.</p>
+            {runQuality.needsFreshExtraction ? (
+              <p className="mt-1 text-xs font-bold text-amber-700">Refreshing stale extraction — totals will update shortly.</p>
+            ) : run.requiresReview || run.validationStatus === "review_required" ? (
+              <p className="mt-1 text-xs font-bold text-amber-700">Review required before final export. Draft export is available.</p>
             ) : null}
             <p className="mt-0.5 text-xs font-semibold text-slate-500">
               {run.bank} · Account {run.accountNumber || "—"} ·{" "}
@@ -346,7 +363,7 @@ export function StatementWorkspace({ statementId }: { statementId: string }) {
                       >
                         {option.label}
                         <span className="mt-1 block text-[11px] font-semibold text-amber-700">
-                          Resolve reconciliation and count review items before final export.
+                          Wait for processing to finish before exporting.
                         </span>
                       </button>
                     ) : (
@@ -421,7 +438,7 @@ export function StatementWorkspace({ statementId }: { statementId: string }) {
 
       {/* ── Three-column layout ─────────────────────────────────────────── */}
       <div className="mt-4 grid gap-4 lg:grid-cols-[300px_minmax(0,1fr)] xl:grid-cols-[300px_minmax(0,1fr)_460px]">
-        <StatementSidebar run={run} totals={totals} reviewCount={reviewItems.length} dataQuality={dataQuality} onReview={() => setActiveTab("review")} />
+        <StatementSidebar run={run} totals={totals} reviewCount={reviewItems.length} dataQuality={dataQuality} stale={runQuality.needsFreshExtraction} onReview={() => setActiveTab("review")} />
         <DocumentViewer sourceUrl={sourceUrl} downloadUrl={`${sourceUrl}?download=1`} fileName={`${runTitle(run)}.pdf`} kind="pdf" />
         <div className="min-w-0 xl:row-span-1">
           <RightPanel
@@ -452,12 +469,14 @@ function StatementSidebar({
   totals,
   reviewCount,
   dataQuality,
+  stale,
   onReview,
 }: {
   run: AccountingStatementRun;
   totals: { moneyIn: number; moneyOut: number; charges: number; opening: number; closing: number; difference: number; reconciled: boolean };
   reviewCount: number;
   dataQuality: string;
+  stale: boolean;
   onReview: () => void;
 }) {
   return (
@@ -471,8 +490,8 @@ function StatementSidebar({
           <Row label="Statement Period" value={run.statementPeriodStart || run.statementPeriodEnd ? `${fmtDate(run.statementPeriodStart)} – ${fmtDate(run.statementPeriodEnd)}` : "—"} />
           <Row label="Currency" value="ZAR" />
           <Row label="Opening Balance" value={fmtMoney(totals.opening)} />
-          <Row label="Money In" value={fmtMoney(totals.moneyIn)} />
-          <Row label="Money Out" value={fmtMoney(totals.moneyOut)} />
+          <Row label="Money In" value={stale ? "Refreshing…" : fmtMoney(totals.moneyIn)} tone={stale ? "warn" : undefined} />
+          <Row label="Money Out" value={stale ? "Refreshing…" : fmtMoney(totals.moneyOut)} tone={stale ? "warn" : undefined} />
           <Row label="Closing Balance" value={fmtMoney(totals.closing)} />
           <Row label="Bank Charges" value={fmtMoney(totals.charges)} />
         </dl>
@@ -481,8 +500,8 @@ function StatementSidebar({
       <section className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
         <h2 className="text-sm font-black text-navy-950">Status &amp; Quality</h2>
         <dl className="mt-3 space-y-2 text-sm">
-          <Row label="Reconciliation" value={totals.reconciled ? "Reconciled" : "Review Required"} tone={totals.reconciled ? "good" : "warn"} />
-          <Row label="Difference" value={fmtMoney(totals.difference)} tone={totals.reconciled ? "good" : "warn"} />
+          <Row label="Reconciliation" value={stale ? "Refreshing" : totals.reconciled ? "Reconciled" : "Review Required"} tone={totals.reconciled && !stale ? "good" : "warn"} />
+          <Row label="Difference" value={stale ? "Refreshing…" : fmtMoney(totals.difference)} tone={totals.reconciled && !stale ? "good" : "warn"} />
           <Row label="Data Quality" value={dataQuality} tone={dataQuality === "Complete" ? "good" : "warn"} />
           <Row label="Transactions Extracted" value={String(run.transactionCount || 0)} />
           <Row label="Review Items" value={String(reviewCount)} tone={reviewCount ? "warn" : "good"} />
