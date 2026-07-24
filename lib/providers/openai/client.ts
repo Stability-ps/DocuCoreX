@@ -3,6 +3,10 @@
 // (see vision-ocr.ts / extraction.ts) so it can be unit-tested without the API.
 
 import { DEFAULT_OCR_MODEL, estimateCostUsd } from "@/lib/providers/openai/models";
+import { openAiErrorCodeFromBody, safeOpenAiErrorMessage, type OpenAiRequestError } from "@/lib/providers/openai/errors";
+
+export { openAiErrorCodeFromBody, safeOpenAiErrorMessage } from "@/lib/providers/openai/errors";
+export type { OpenAiRequestError } from "@/lib/providers/openai/errors";
 
 export type OpenAiUsage = { promptTokens: number; completionTokens: number; totalTokens: number };
 
@@ -43,9 +47,15 @@ export async function callOpenAi(body: Record<string, unknown>, signal?: AbortSi
   });
 
   if (!response.ok) {
-    const detail = await response.text().catch(() => "");
-    // Never include request content in the error — only status + a short reason.
-    throw new Error(`OpenAI request failed (HTTP ${response.status}): ${detail.slice(0, 200)}`);
+    // Read the body ONLY to extract the machine error code; never surface the raw
+    // text (it can contain a masked key) or the request content. Attach status +
+    // code so callers can classify (e.g. 401 invalid_api_key = configuration).
+    const bodyText = await response.text().catch(() => "");
+    const code = openAiErrorCodeFromBody(bodyText);
+    const error: OpenAiRequestError = new Error(safeOpenAiErrorMessage(response.status, code));
+    error.status = response.status;
+    error.code = code;
+    throw error;
   }
 
   const json = (await response.json()) as {

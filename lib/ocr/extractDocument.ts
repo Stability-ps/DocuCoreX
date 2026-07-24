@@ -15,6 +15,13 @@ import { runVisionOcr } from "@/lib/providers/openai/vision-ocr";
 import { runStructuredExtraction, type StructuredExtraction } from "@/lib/providers/openai/extraction";
 import { validateExtraction, type ValidationStatus } from "@/lib/ocr/validate";
 import type { ExtractionMethod } from "@/lib/ocr/method";
+import {
+  classifyOpenAiError,
+  buildAiFailureLog,
+  aiUnavailableWarning,
+  structuredExtractionFields,
+  deterministicExtractionFields,
+} from "@/lib/ocr/aiExtraction";
 
 export type DocumentExtraction = {
   text: string;
@@ -35,19 +42,6 @@ const CACHE_MAX = 50;
 
 function openAiConfigured(): boolean {
   return Boolean(process.env.OPENAI_API_KEY);
-}
-
-function structuredToFields(s: StructuredExtraction): DocumentExtraction["fields"] {
-  return {
-    provider: "openai",
-    companyName: s.companyName,
-    accountNumber: s.accountNumber,
-    statementPeriodStart: s.statementPeriodStart,
-    statementPeriodEnd: s.statementPeriodEnd,
-    openingBalance: s.openingBalance,
-    closingBalance: s.closingBalance,
-    lineItemCount: s.lineItems.length,
-  };
 }
 
 /**
@@ -93,19 +87,33 @@ export async function extractDocument(
         warnings.push("Rasterization unavailable in this runtime — used Tesseract OCR fallback.");
       }
     } catch (error) {
-      warnings.push(`OpenAI vision failed — used Tesseract fallback: ${error instanceof Error ? error.message : "error"}`);
+      // Safe log + warning (no key/content/response); Tesseract text is already in `text`.
+      const cls = classifyOpenAiError(error);
+      console.error("docucorex.openai.vision_failed", buildAiFailureLog("vision_ocr", document.id, cls));
+      warnings.push(
+        cls.configuration
+          ? "AI vision OCR unavailable due to configuration (invalid or missing OPENAI_API_KEY); Tesseract OCR fallback used."
+          : "AI vision OCR failed; Tesseract OCR fallback used.",
+      );
     }
   }
 
   // Structured extraction: OpenAI when available, else the pipeline's deterministic transactions.
   let structured: StructuredExtraction | null = null;
+  let aiWarning: string | null = null;
   if (options.useOpenAI && openAiConfigured() && text.trim().length > 0) {
     try {
       const run = await runStructuredExtraction(text);
       structured = run.data;
       openaiCostUsd += run.estimatedCostUsd;
     } catch (error) {
-      warnings.push(`OpenAI structured extraction failed — used deterministic transactions: ${error instanceof Error ? error.message : "error"}`);
+      // Classify (401/invalid_api_key/"not configured" ⇒ configuration error),
+      // log a SAFE structured entry (no key/content/response), then fall back to
+      // deterministic extraction. Auth failures are NOT retried.
+      const cls = classifyOpenAiError(error);
+      console.error("docucorex.openai.extraction_failed", buildAiFailureLog("structured_extraction", document.id, cls));
+      aiWarning = aiUnavailableWarning(cls);
+      warnings.push(aiWarning);
     }
   }
 
@@ -129,15 +137,15 @@ export async function extractDocument(
   const validationStatus: ValidationStatus = validation.status === "Failed" ? "Failed" : requiresReview ? "Review Required" : "Ready";
 
   const fields: DocumentExtraction["fields"] = structured
-    ? structuredToFields(structured)
-    : {
-        provider: "deterministic",
+    ? structuredExtractionFields(structured)
+    : deterministicExtractionFields({
         openingBalance,
         closingBalance,
         totalDebits: validation.totalDebits,
         totalCredits: validation.totalCredits,
         lineItemCount: lineItems.length,
-      };
+        aiWarning,
+      });
 
   const result: DocumentExtraction = {
     text,
