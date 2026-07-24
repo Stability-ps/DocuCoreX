@@ -43,23 +43,23 @@ export class MockOCRProvider implements OCRProvider {
   name = "mock" as const;
 
   async run(document: Pick<DocumentRecord, "id" | "name" | "storagePath" | "mimeType">): Promise<OcrResult> {
+    // No real OCR provider is configured. Return an honest, clearly-labelled
+    // placeholder — never fabricate document content or financial figures that
+    // could be mistaken for a genuine extraction.
     const text = [
+      "[SAMPLE OUTPUT — no OCR provider is configured for this environment]",
       `Document: ${document.name}`,
-      "Statement period: 01 June 2026 - 30 June 2026",
-      "Opening balance: R 84,212.40",
-      "Closing balance: R 126,908.11",
-      "Fuel expenses: R 4,820.31",
-      "Subscriptions detected: Accounting Suite, Cloud Storage, Payroll Platform",
-      "VAT transactions detected: 18",
-      "Potential duplicate payments: 2",
-      "Provider: mock OCR fallback",
+      "Real text extraction requires an OCR/AI provider key (Google Vision, Azure",
+      "Form Recognizer, AWS Textract or OpenAI). This placeholder does not reflect",
+      "the actual contents of the uploaded file.",
     ].join("\n");
 
     return {
       id: `ocr_${document.id}`,
       documentId: document.id,
       language: "en",
-      confidence: 88.4,
+      // 0 confidence signals "not a real extraction" to any consumer/UI.
+      confidence: 0,
       text,
       layoutStatus: "complete",
       createdAt: new Date().toISOString(),
@@ -71,27 +71,21 @@ export class MockExtractionProvider implements ExtractionProvider {
   name = "mock" as const;
 
   async run(document: DocumentRecord): Promise<ExtractionResult> {
+    // No real extraction provider is configured. Do NOT fabricate balances, line
+    // items or VAT figures — that would present invented financial data as real.
     return {
       id: `extraction_${document.id}`,
       documentId: document.id,
-      detectedType: document.detectedType === "unknown" ? "bank_statement" : document.detectedType,
-      confidence: 87.6,
+      detectedType: document.detectedType,
+      // 0 confidence + empty fields signal "not a real extraction".
+      confidence: 0,
       fields: {
         documentName: document.name,
         provider: "mock",
-        statementPeriod: "2026-06-01 to 2026-06-30",
-        openingBalance: 84212.4,
-        closingBalance: 126908.11,
-        income: 214980.22,
-        expenses: 172284.51,
-        vatTransactions: 18,
-        duplicateCandidates: 2,
+        sampleOnly: true,
+        note: "No extraction provider configured — no fields were extracted from this document.",
       },
-      lineItems: [
-        { date: "2026-06-03", description: "Client payment", debit: null, credit: 48200, balance: 132412.4 },
-        { date: "2026-06-06", description: "Fuel Station", debit: 1240.3, credit: null, balance: 131172.1 },
-        { date: "2026-06-12", description: "Cloud Storage Subscription", debit: 389, credit: null, balance: 130783.1 },
-      ],
+      lineItems: [],
       createdAt: new Date().toISOString(),
     };
   }
