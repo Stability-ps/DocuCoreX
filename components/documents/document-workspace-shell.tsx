@@ -103,10 +103,25 @@ export function DocumentWorkspaceShell({ initialFilter = "all" }: { initialFilte
     () => documents.some((document) => ["queued", "processing"].includes(document.status)),
     [documents],
   );
+  // Latest documents, read inside the interval without re-subscribing every tick.
+  const documentsRef = useRef<DocumentRecord[]>([]);
+  documentsRef.current = documents;
   useEffect(() => {
     if (!hasActive) return;
     const timer = window.setInterval(() => {
-      void fetch("/api/jobs/process", { method: "POST" }).catch(() => null);
+      const active = documentsRef.current.filter((document) =>
+        ["queued", "processing"].includes(document.status),
+      );
+      // Advance each active document by its concrete id so the worker can resolve
+      // its workspace via service role. Cap per tick so a backlog drains gradually
+      // instead of firing one context-less "process everything" call.
+      active.slice(0, 5).forEach((document) => {
+        void fetch("/api/jobs/process", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ documentId: document.id }),
+        }).catch(() => null);
+      });
       void loadDocuments();
     }, 2500);
     return () => window.clearInterval(timer);

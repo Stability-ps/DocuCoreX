@@ -9,8 +9,10 @@ import {
 } from "@/lib/mock-repository";
 import { getWorkspaceContext } from "@/lib/server-documents";
 import { createSupabaseServiceRoleClient } from "@/lib/supabase-server";
+import { isSupabaseConfigured } from "@/lib/supabase";
 import type { DocumentRecord, ProcessingJob } from "@/lib/types";
 import { createWorkflowAdapters } from "@/lib/workflow-adapters";
+import { documentStatusAfterJob, documentStatusOnJobFailure, resolveProcessingMode } from "@/lib/jobs/processing-mode";
 
 type ProcessJobRequest = {
   conversionId?: string;
@@ -54,8 +56,31 @@ export async function POST(request: Request) {
     (process.env.CONVERSION_WORKER_MODE === "true" ? await getServiceRoleContextForJob(processRequest).catch(() => null) : null);
   const providers = createWorkflowAdapters();
 
-  if (!context) {
+  const mode = resolveProcessingMode({ hasContext: Boolean(context), isSupabaseConfigured });
+
+  if (mode === "demo") {
+    // Only reachable when there is genuinely no Supabase backend (local demo).
     return NextResponse.json(await processDemoJobs(providers));
+  }
+
+  if (mode === "unresolved" || !context) {
+    // A real, Supabase-backed deployment could not resolve a workspace for this
+    // job. Never silently return processed:0/mode:"demo" here — that leaves real
+    // uploads permanently queued. Surface an explicit, actionable error instead.
+    console.error("docucorex.conversion_worker.context_unresolved", {
+      processorMode: process.env.CONVERSION_WORKER_MODE === "true" ? "worker" : "app",
+      conversionId: processRequest.conversionId ?? null,
+      jobId: processRequest.jobId ?? null,
+      documentId: processRequest.documentId ?? null,
+    });
+    return NextResponse.json(
+      {
+        error:
+          "Could not resolve a workspace for this processing job. Sign in again, or retry with a valid documentId/jobId.",
+        code: "WORKSPACE_CONTEXT_UNRESOLVED",
+      },
+      { status: 401 },
+    );
   }
 
   let jobsQuery = context.supabase
@@ -132,7 +157,7 @@ export async function POST(request: Request) {
           .update({ status: "completed", progress: 100, message: "Upload registered", updated_at: new Date().toISOString() })
           .eq("id", job.id);
 
-        await context.supabase.from("documents").update({ status: "queued", updated_at: new Date().toISOString() }).eq("id", document.id);
+        await context.supabase.from("documents").update({ status: documentStatusAfterJob("upload"), updated_at: new Date().toISOString() }).eq("id", document.id);
 
         await context.supabase.from("processing_jobs").insert([
           { document_id: document.id, type: "ocr", status: "queued", progress: 0, message: "OCR queued" },
@@ -179,7 +204,7 @@ export async function POST(request: Request) {
           fields: extraction.fields,
           line_items: extraction.lineItems,
         });
-        await context.supabase.from("documents").update({ status: "ready", detected_type: extraction.detectedType, updated_at: new Date().toISOString() }).eq("id", document.id);
+        await context.supabase.from("documents").update({ status: documentStatusAfterJob("extraction"), detected_type: extraction.detectedType, updated_at: new Date().toISOString() }).eq("id", document.id);
         await recordAuditLog({
           action: "extraction_completed",
           entityType: "document",
@@ -362,6 +387,19 @@ export async function POST(request: Request) {
           updated_at: new Date().toISOString(),
         })
         .eq("id", job.id);
+
+      // Surface the failure on the document itself so it shows a clear error
+      // state in the UI instead of being left permanently "queued"/"processing".
+      // Conversion failures are reported via the conversion record above and must
+      // not flip the source document to failed (the original is still valid).
+      const failureStatus = documentStatusOnJobFailure(job.type);
+      if (failureStatus) {
+        await context.supabase
+          .from("documents")
+          .update({ status: failureStatus, updated_at: new Date().toISOString() })
+          .eq("id", document.id);
+      }
+
       results.push({ jobId: job.id, type: job.type, status: "failed", message });
     }
   }
@@ -425,30 +463,50 @@ async function getServiceRoleContextForJob(processRequest: ProcessJobRequest) {
     throw new Error("Service-role Supabase client is not configured for the conversion worker.");
   }
 
+  // Resolve the owning document → workspace so the worker can establish context
+  // for ANY job type (upload/ocr/extraction/conversion), not just conversions.
+  // A documentId resolves the workspace directly; a jobId/conversionId resolves
+  // it via the job's document. This is what lets forwarded (cookie-less) worker
+  // requests process real uploads instead of falling through to the demo path.
+  if (processRequest.documentId) {
+    const { data: document, error } = await supabase
+      .from("documents")
+      .select("workspace_id, owner_id")
+      .eq("id", processRequest.documentId)
+      .maybeSingle();
+
+    if (error || !document?.workspace_id) {
+      throw new Error(error?.message ?? "Document not found for worker-mode processing.");
+    }
+
+    return {
+      supabase,
+      userId: String(document.owner_id ?? ""),
+      workspaceId: String(document.workspace_id),
+    };
+  }
+
   let query = supabase
     .from("processing_jobs")
     .select("id, document_id, message, documents!inner(workspace_id,owner_id)")
-    .eq("type", "conversion")
     .order("created_at", { ascending: true });
 
   if (processRequest.jobId) {
     query = query.eq("id", processRequest.jobId).limit(1);
   } else if (processRequest.conversionId) {
     query = query.ilike("message", `%conversion:${processRequest.conversionId}%`).limit(1);
-  } else if (processRequest.documentId) {
-    query = query.eq("document_id", processRequest.documentId).limit(1);
   } else {
     throw new Error("A jobId, conversionId, or documentId is required for worker-mode processing.");
   }
 
   const { data: job, error } = await query.maybeSingle();
   if (error || !job) {
-    throw new Error(error?.message ?? "Queued conversion job not found.");
+    throw new Error(error?.message ?? "Queued job not found for worker-mode processing.");
   }
 
   const document = Array.isArray(job.documents) ? job.documents[0] : job.documents;
   if (!document?.workspace_id) {
-    throw new Error("Queued conversion job is missing workspace context.");
+    throw new Error("Queued job is missing workspace context.");
   }
 
   return {
