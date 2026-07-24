@@ -187,8 +187,8 @@ test("OCR extractor calls /api/ocr-text with logging and a timeout", () => {
   const ocr = read("lib/pdf/extractWithOcr.ts");
   assert.match(ocr, /\/api\/ocr-text/, "must call the /api/ocr-text endpoint (not /ocr-text)");
   assert.match(ocr, /ocr_started/, "logs request started, endpoint, file size");
-  assert.match(ocr, /textLength: combinedText\.trim\(\)\.length/, "logs OCR text length");
-  assert.match(ocr, /sample: combinedText\.trim\(\)\.slice\(0, 500\)/, "logs first 500 chars");
+  assert.match(ocr, /textLength: combinedText\.trim\(\)\.length/, "logs OCR text LENGTH (count), not text");
+  assert.doesNotMatch(ocr, /sample:\s*combinedText/, "must NOT log the OCR'd document text");
   assert.match(ocr, /errorBody/, "logs OCR error body on failure");
   assert.match(ocr, /AbortController/, "has a timeout");
 });
@@ -306,15 +306,16 @@ test("UI polls the run until a terminal state instead of holding the request", (
 
 test("pipeline is fault-tolerant: pdfplumber and OCR run even if PDF.js fails", () => {
   const pipeline = read("lib/pdf/runExtractionPipeline.ts");
-  // pdfplumber is attempted for everything except the clearly-scanned fast path
-  // (no text layer), so a PDF.js failure can never silently skip native parsing.
-  assert.match(pipeline, /Stage 2 — pdfplumber\. Attempted for everything EXCEPT the clearly-scanned fast/);
+  // pdfplumber ALWAYS runs (independent of PDF.js), so a PDF.js failure can never
+  // silently skip native parsing — its text feeds the OCR decision.
+  assert.match(pipeline, /Stage 2 — pdfplumber\. ALWAYS runs/);
   assert.match(pipeline, /pdfplumber = await extractWithPdfplumber\(pdfplumberBuf, fileName\);/);
-  // OCR routing is evidence-based (decideOcrNeed): a readable digital text layer
-  // skips OCR, but genuinely scanned / sparse / low-coverage text still triggers
-  // it — so a PDF.js failure (empty text ⇒ scanned) still runs OCR.
+  // OCR routing is evidence-based (decideOcrNeed) on the BEST native text from
+  // PDF.js OR pdfplumber: readable text skips OCR, but when neither extractor
+  // recovers usable text (scanned/sparse/corrupt) OCR still runs.
   assert.match(pipeline, /decideOcrNeed\(\{/);
-  assert.match(read("lib/pdf/ocrDecision.ts"), /e\.nativeChars < 20 \|\| e\.coverage < READABLE_MIN_COVERAGE/);
+  assert.match(read("lib/pdf/ocrDecision.ts"), /best < READABLE_MIN_CHARS/);
+  assert.match(read("lib/pdf/ocrDecision.ts"), /recovered by pdfplumber/);
   // Per-stage diagnostics + completion log, never abort early.
   assert.match(pipeline, /stages\.push\(stageDiag\("pdfjs"/);
   assert.match(pipeline, /stages\.push\(stageDiag\("pdfplumber"/);
@@ -388,8 +389,9 @@ test("digital PDF (>500 chars) skips OCR; scanned (<=20 chars) routes straight t
   assert.match(pipeline, /SCANNED_TEXT_LAYER_MAX_CHARS = 20/);
   assert.match(pipeline, /const skipOcrFastPath = pdfjsChars > DIGITAL_TEXT_LAYER_MIN_CHARS/);
   assert.match(pipeline, /const scannedFastPath = pdfjsChars <= SCANNED_TEXT_LAYER_MAX_CHARS && analysis\.kind === "scanned"/);
-  // Scanned fast path skips pdfplumber and records WHY, then goes to OCR.
-  assert.match(pipeline, /scanned \/ no text layer — routed directly to OCR/);
+  // pdfplumber ALWAYS runs so OCR routing has both extractors' evidence; a dense
+  // digital text layer still skips OCR.
+  assert.match(pipeline, /Stage 2 — pdfplumber\. ALWAYS runs/);
   assert.match(pipeline, /digital text layer \(>500 chars\) — OCR skipped/);
 });
 
@@ -427,12 +429,13 @@ test("extraction cache reuses by document_id + file_hash; Force reprocess bypass
   assert.match(route, /Boolean\(body\.reprocess\)/, "Force reprocess maps to force");
 });
 
-test("optimized path falls back to the full pipeline (Req 6)", () => {
+test("the full native pipeline is never bypassed on a bad guess (Req 6)", () => {
   const pipeline = read("lib/pdf/runExtractionPipeline.ts");
-  // Scanned fast path skipped pdfplumber — if OCR is empty, run it after all.
-  assert.match(pipeline, /route\.fallback_pdfplumber/);
-  assert.match(pipeline, /scanned fast path OCR empty — running skipped native parser/);
-  // PDF.js is raced against a budget so a hang can never block the fallback.
+  // pdfplumber now ALWAYS runs (no scanned skip), so a PDF.js mis-classification
+  // can never bypass native parsing — the fallback is satisfied by design.
+  assert.match(pipeline, /Stage 2 — pdfplumber\. ALWAYS runs/);
+  assert.match(pipeline, /pdfplumber = await extractWithPdfplumber\(pdfplumberBuf, fileName\);/);
+  // PDF.js is raced against a budget so a hang can never block the pipeline.
   assert.match(pipeline, /function withTimeout/);
   // parserDebug is preserved end-to-end (stages carry the skip/failure reasons).
   assert.match(pipeline, /const debug: ExtractionDebug = \{/);

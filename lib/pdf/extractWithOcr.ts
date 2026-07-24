@@ -104,13 +104,13 @@ export async function extractWithOcr(buffer: Uint8Array, fileName = "statement.p
         endpoint,
         status: response.status,
         attempt,
+        // Only safe, content-free diagnostics — never the OCR'd document text.
         textLength: combinedText.trim().length,
         pages: data.pages ?? 0,
         transactions: parseTransactionsFromText(combinedText).length,
         confidence: data.confidence ?? null,
         reason: data.reason ?? null,
         ocrDebug: data.ocrDebug ?? null,
-        sample: combinedText.trim().slice(0, 500),
         ms: Date.now() - started,
       });
 
