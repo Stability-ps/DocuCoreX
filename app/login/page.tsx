@@ -8,6 +8,7 @@ import { ArrowRight, Check, Eye, EyeOff, KeyRound, LockKeyhole, Mail, ShieldChec
 import { isDemoAllowed, isSupabaseConfigured, supabase } from "@/lib/supabase";
 import { profileChecklist } from "@/lib/product-data";
 import { clearDocucorexClientCache } from "@/lib/client-cache";
+import { safeNextPath } from "@/lib/safe-redirect";
 
 function LoginContent() {
   const searchParams = useSearchParams();
@@ -70,7 +71,8 @@ function LoginContent() {
     }
 
     const redirectTo = `${window.location.origin}/auth/callback`;
-    const nextPath = searchParams.get("next") || "/dashboard";
+    // Guard against open redirects: only honour internal paths from `next`.
+    const nextPath = safeNextPath(searchParams.get("next"));
 
     if (mode === "signin") {
       const response = await fetch("/api/auth/signin", {

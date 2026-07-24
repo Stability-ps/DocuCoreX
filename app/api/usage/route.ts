@@ -25,8 +25,26 @@ export async function GET() {
     .limit(1)
     .maybeSingle();
 
-  if (error || !data) {
-    return NextResponse.json({ error: error?.message ?? "Usage counters not found" }, { status: 404 });
+  if (error) {
+    return NextResponse.json({ error: error.message }, { status: 500 });
+  }
+
+  if (!data) {
+    // A workspace with no usage row yet is a valid, empty state — return a zeroed
+    // summary (200) so the dashboard/settings render 0s instead of logging a 404.
+    const now = new Date().toISOString();
+    return NextResponse.json({
+      usage: {
+        periodStart: now,
+        periodEnd: now,
+        documentsUploaded: 0,
+        pagesProcessed: 0,
+        ocrCreditsUsed: 0,
+        ocrCreditsRemaining: 0,
+        storageBytes: 0,
+        exportsCreated: 0,
+      },
+    });
   }
 
   return NextResponse.json({ usage: data });
