@@ -16,6 +16,7 @@ import { DocumentUploadPanel } from "@/components/documents/document-upload-pane
 import { DocumentList } from "@/components/documents/document-list";
 import type { DocumentActionHandlers } from "@/components/documents/document-actions";
 import { createDocumentConversion, waitForDownloadReady, wakeConversionWorker } from "@/components/documents/conversion-client";
+import { useEscapeToClose } from "@/lib/use-escape-to-close";
 
 type ScopeFilter = "all" | "processing" | "review" | "completed" | "shared" | "archived" | "trash";
 
@@ -68,6 +69,7 @@ export function DocumentWorkspaceShell({ initialFilter = "all" }: { initialFilte
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
   const [busyIds, setBusyIds] = useState<Set<string>>(new Set());
   const [convertTarget, setConvertTarget] = useState<DocumentRecord | null>(null);
+  useEscapeToClose(Boolean(convertTarget), () => setConvertTarget(null));
   const sessionRedirectedRef = useRef(false);
 
   const loadDocuments = useCallback(async () => {
@@ -178,6 +180,39 @@ export function DocumentWorkspaceShell({ initialFilter = "all" }: { initialFilte
       }
     },
     onConvert: (document) => setConvertTarget(document),
+    onRename: async (document) => {
+      const nextName = window.prompt("Rename document", document.name)?.trim();
+      if (!nextName || nextName === document.name) return;
+      patchLocal(document.id, { name: nextName });
+      try {
+        const response = await fetch(`/api/documents/${document.id}`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ name: nextName }),
+        });
+        if (!response.ok) throw new Error();
+        setMessage(`Renamed to “${nextName}”.`);
+      } catch {
+        patchLocal(document.id, { name: document.name });
+        setMessage("Unable to rename document.");
+      }
+    },
+    onStar: async (document) => {
+      const nextStarred = !document.starred;
+      patchLocal(document.id, { starred: nextStarred });
+      try {
+        const response = await fetch(`/api/documents/${document.id}`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ starred: nextStarred }),
+        });
+        if (!response.ok) throw new Error();
+        setMessage(nextStarred ? `Starred ${document.name}.` : `Removed star from ${document.name}.`);
+      } catch {
+        patchLocal(document.id, { starred: document.starred });
+        setMessage("Unable to update star.");
+      }
+    },
     onDownload: (document) => {
       window.open(`/api/documents/${document.id}/download`, "_blank", "noopener,noreferrer");
     },
@@ -472,7 +507,7 @@ export function DocumentWorkspaceShell({ initialFilter = "all" }: { initialFilte
 
       {/* Convert format modal */}
       {convertTarget ? (
-        <div className="fixed inset-0 z-50 flex items-end justify-center bg-navy-950/40 p-4 sm:items-center" onClick={() => setConvertTarget(null)}>
+        <div className="fixed inset-0 z-50 flex items-end justify-center bg-navy-950/40 p-4 sm:items-center" onClick={() => setConvertTarget(null)} role="dialog" aria-modal="true" aria-label="Convert document">
           <div
             className="w-full max-w-md rounded-2xl border border-slate-200 bg-white p-5 shadow-xl"
             onClick={(event) => event.stopPropagation()}

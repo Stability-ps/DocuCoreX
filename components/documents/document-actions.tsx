@@ -6,8 +6,11 @@ import {
   Eye,
   FileOutput,
   MoreVertical,
+  Pencil,
   RefreshCcw,
   ScanSearch,
+  Star,
+  StarOff,
   Trash2,
 } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
@@ -20,6 +23,8 @@ export type DocumentActionHandlers = {
   onReview: (document: DocumentRecord) => void;
   onDownload: (document: DocumentRecord) => void;
   onExport: (document: DocumentRecord) => void;
+  onRename: (document: DocumentRecord) => void;
+  onStar: (document: DocumentRecord) => void;
   onDelete: (document: DocumentRecord) => void;
 };
 
@@ -56,6 +61,13 @@ function buildActions(document: DocumentRecord, handlers: DocumentActionHandlers
   }
 
   actions.push({ key: "download", label: "Download", icon: Download, run: handlers.onDownload });
+  actions.push({
+    key: "star",
+    label: document.starred ? "Unstar" : "Star",
+    icon: document.starred ? StarOff : Star,
+    run: handlers.onStar,
+  });
+  actions.push({ key: "rename", label: "Rename", icon: Pencil, run: handlers.onRename });
   actions.push({ key: "delete", label: "Delete", icon: Trash2, run: handlers.onDelete, tone: "danger" });
 
   return actions;

@@ -27,6 +27,7 @@ import { detectedTypeLabel, formatBytes, formatRelativeTime } from "@/components
 import { DocumentViewer, type DocumentViewerKind } from "@/components/document-viewer";
 import { ExtractionSummary } from "@/components/pdf/extraction-summary";
 import { createDocumentConversion, waitForDownloadReady, wakeConversionWorker } from "@/components/documents/conversion-client";
+import { useEscapeToClose } from "@/lib/use-escape-to-close";
 
 type DetailData = {
   document?: DocumentRecord;
@@ -50,6 +51,7 @@ export function DocumentDetailPanel({ documentId }: { documentId: string }) {
   const [busy, setBusy] = useState(false);
   const [status, setStatus] = useState("");
   const [showConvert, setShowConvert] = useState(false);
+  useEscapeToClose(showConvert, () => setShowConvert(false));
 
   const downloadUrl = `/api/documents/${documentId}/download`;
   const previewUrl = `/api/documents/${documentId}/preview`;
@@ -284,7 +286,7 @@ export function DocumentDetailPanel({ documentId }: { documentId: string }) {
       {tab === "History" ? <HistoryTab versions={data.versions} downloads={data.downloads} /> : null}
 
       {showConvert ? (
-        <div className="fixed inset-0 z-50 flex items-end justify-center bg-navy-950/40 p-4 sm:items-center" onClick={() => setShowConvert(false)}>
+        <div className="fixed inset-0 z-50 flex items-end justify-center bg-navy-950/40 p-4 sm:items-center" onClick={() => setShowConvert(false)} role="dialog" aria-modal="true" aria-label="Convert to another format">
           <div className="w-full max-w-md rounded-2xl border border-slate-200 bg-white p-5 shadow-xl" onClick={(event) => event.stopPropagation()}>
             <div className="flex items-center justify-between">
               <h2 className="text-base font-bold text-navy-950">Convert to…</h2>

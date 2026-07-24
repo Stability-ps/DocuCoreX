@@ -32,11 +32,13 @@ function maskAccountNumber(value: string) {
 }
 
 function Field({ label, children, full = false }: { label: string; children: React.ReactNode; full?: boolean }) {
+  // Render as a <label> wrapping the control so the text is programmatically
+  // associated with its input for screen readers (implicit labelling).
   return (
-    <div className={`space-y-1 ${full ? "sm:col-span-2" : ""}`}>
-      <label className={labelClassName}>{label}</label>
+    <label className={`block space-y-1 ${full ? "sm:col-span-2" : ""}`}>
+      <span className={`block ${labelClassName}`}>{label}</span>
       {children}
-    </div>
+    </label>
   );
 }
 

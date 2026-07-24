@@ -3,12 +3,15 @@ import { createServerClient, type CookieOptions } from "@supabase/ssr";
 import { isSupabaseConfigured } from "@/lib/supabase";
 import { ensureUserWorkspace } from "@/lib/workspace-bootstrap";
 import { dedupeCookies, setSupabaseAuthCookie } from "@/lib/auth-cookies";
+import { safeNextPath } from "@/lib/safe-redirect";
 
 export async function GET(request: NextRequest) {
   const requestUrl = new URL(request.url);
   const origin = requestUrl.origin;
   const code = requestUrl.searchParams.get("code");
-  const next = requestUrl.searchParams.get("next") || "/dashboard";
+  // Only allow internal, same-origin redirect targets — never an attacker-supplied
+  // absolute URL (open-redirect guard).
+  const next = safeNextPath(requestUrl.searchParams.get("next"));
 
   try {
     if (!isSupabaseConfigured || !code) {
