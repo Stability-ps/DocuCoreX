@@ -1,5 +1,6 @@
 import type { ExtractionDebug, ExtractionPipelineResult, ExtractionResult, ExtractionStageDiag, ParserMethod, PdfAnalysis } from "@/lib/pdf/types";
 import { analyzeExtraction } from "@/lib/pdf/analyzePdf";
+import { decideOcrNeed } from "@/lib/pdf/ocrDecision";
 import { extractWithPdfjs } from "@/lib/pdf/extractWithPdfjs";
 import { extractWithPdfplumber } from "@/lib/pdf/extractWithPdfplumber";
 import { extractWithOcr } from "@/lib/pdf/extractWithOcr";
@@ -156,12 +157,25 @@ export async function runExtractionPipeline(buffer: Uint8Array, fileName = "stat
     stages.push(stageDiag("pdfplumber", pdfplumber, Date.now() - t2, pdfplumber === null ? "PDF_PLUMBER_URL not configured" : undefined));
   }
 
-  // Decide whether OCR is needed: the scanned fast path forces it; a strong digital
-  // text layer (>500 chars) skips it; otherwise OCR runs when analysis flagged it
-  // OR neither native extractor produced usable text/transactions.
+  // Decide whether OCR is needed using evidence-based routing (Req 4): a readable
+  // digital text layer is trusted even with zero transactions — transaction count
+  // alone never forces a ~43s OCR round-trip on a clean, short digital PDF.
   const nativeChars = Math.max(pdfjsChars, pdfplumber?.combinedText.trim().length ?? 0);
   const nativeTransactions = Math.max(pdfjs.transactions.length, pdfplumber?.transactions.length ?? 0);
-  const needsOcr = scannedFastPath || (!skipOcrFastPath && (analysis.needsOcr || nativeTransactions === 0 || nativeChars < 20));
+  const coverage = analysis.pages.length ? analysis.pages.filter((p) => p.hasText).length / analysis.pages.length : 0;
+  const ocrDecision = decideOcrNeed({
+    kind: analysis.kind,
+    pdfjsChars,
+    nativeChars,
+    nativeTransactions,
+    coverage,
+    pageCount: analysis.pageCount,
+    confidence: analysis.confidence,
+    scannedFastPath,
+    skipOcrFastPath,
+  });
+  const needsOcr = ocrDecision.needsOcr;
+  pdfLog("route.ocr_decision", { needsOcr, reason: ocrDecision.reason, nativeChars, nativeTransactions, coverage: Math.round(coverage * 100) / 100 });
 
   // Stage 3 — OCR fallback. Returns null only when CONVERSION_WORKER_URL is unset.
   let ocr: ExtractionResult | null = null;

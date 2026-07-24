@@ -38,10 +38,11 @@ export function aiUnavailableWarning(cls: OpenAiErrorClass): string {
 
 type Fields = Record<string, string | number | boolean | null>;
 
-// Fields when OpenAI structured extraction SUCCEEDS (shape unchanged).
+// Fields when OpenAI structured extraction SUCCEEDS.
 export function structuredExtractionFields(s: StructuredExtraction): Fields {
   return {
     provider: "openai",
+    aiExtractionAvailable: true,
     companyName: s.companyName,
     accountNumber: s.accountNumber,
     statementPeriodStart: s.statementPeriodStart,

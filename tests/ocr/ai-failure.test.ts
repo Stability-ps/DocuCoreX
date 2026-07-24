@@ -109,6 +109,7 @@ test("successful OpenAI extraction fields are unchanged (provider openai)", () =
   };
   const fields = structuredExtractionFields(structured);
   assert.equal(fields.provider, "openai");
+  assert.equal(fields.aiExtractionAvailable, true); // success path reports AI available
   assert.equal(fields.openingBalance, 1000);
   assert.equal(fields.closingBalance, 1250);
   assert.equal(fields.accountNumber, "63012589818");

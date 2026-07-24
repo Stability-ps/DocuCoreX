@@ -310,8 +310,11 @@ test("pipeline is fault-tolerant: pdfplumber and OCR run even if PDF.js fails", 
   // (no text layer), so a PDF.js failure can never silently skip native parsing.
   assert.match(pipeline, /Stage 2 — pdfplumber\. Attempted for everything EXCEPT the clearly-scanned fast/);
   assert.match(pipeline, /pdfplumber = await extractWithPdfplumber\(pdfplumberBuf, fileName\);/);
-  // OCR runs when native extraction is poor (0 tx / <20 chars) OR analysis says so.
-  assert.match(pipeline, /nativeTransactions === 0 \|\| nativeChars < 20/);
+  // OCR routing is evidence-based (decideOcrNeed): a readable digital text layer
+  // skips OCR, but genuinely scanned / sparse / low-coverage text still triggers
+  // it — so a PDF.js failure (empty text ⇒ scanned) still runs OCR.
+  assert.match(pipeline, /decideOcrNeed\(\{/);
+  assert.match(read("lib/pdf/ocrDecision.ts"), /e\.nativeChars < 20 \|\| e\.coverage < READABLE_MIN_COVERAGE/);
   // Per-stage diagnostics + completion log, never abort early.
   assert.match(pipeline, /stages\.push\(stageDiag\("pdfjs"/);
   assert.match(pipeline, /stages\.push\(stageDiag\("pdfplumber"/);
