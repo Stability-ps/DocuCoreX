@@ -3,7 +3,7 @@ import { recordAuditLog } from "@/lib/audit";
 import { extractionResults } from "@/lib/mock-repository";
 import { createWorkflowAdapters } from "@/lib/workflow-adapters";
 import { getDocumentWithJobs, getExtractionForWorkspace, getWorkspaceContext } from "@/lib/server-documents";
-import { resolveJobAction, findActiveJob, createRunningJob, runExtractionJob } from "@/lib/ocr/asyncJobs";
+import { resolveJobAction, findActiveJob, createRunningJob, runExtractionJob, reclaimStaleJobs, cancelActiveJobs } from "@/lib/ocr/asyncJobs";
 
 function isReprocess(url: string): boolean {
   return new URL(url).searchParams.get("reprocess") === "1";
@@ -46,6 +46,11 @@ export async function POST(request: Request, { params }: { params: Promise<{ doc
     await recordAuditLog({ action: "extraction_completed", entityType: "document", entityId: documentId, metadata: { provider: adapters.extraction.name, confidence: extraction.confidence } });
     return NextResponse.json({ extraction, job: { id: `job_extraction_${Date.now()}`, documentId, type: "extraction", status: "completed", progress: 100, message: "Extraction completed" }, mode: "demo" });
   }
+
+  // Reclaim any stalled job (dead worker); on explicit reprocess, cancel the
+  // active job so the fresh one does not violate the one-active-job index.
+  await reclaimStaleJobs(context, documentId, "extraction");
+  if (force) await cancelActiveJobs(context, documentId, "extraction");
 
   // Idempotent async processing: reuse a completed result, attach to an in-flight
   // job, or create a new one — never duplicate work for the same document+op.

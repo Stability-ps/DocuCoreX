@@ -48,3 +48,9 @@ Thumbs.db
 # Python cache
 __pycache__/
 *.pyc
+
+# Local QA / audit artifacts (never commit — may contain screenshots or samples)
+/_audit_src.tgz
+/qa-evidence/
+/QA_LIVE_TEST_REPORT.md
+/.vercelignore
