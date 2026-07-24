@@ -3,7 +3,7 @@ import { recordAuditLog } from "@/lib/audit";
 import { ocrResults } from "@/lib/mock-repository";
 import { createWorkflowAdapters } from "@/lib/workflow-adapters";
 import { getDocumentWithJobs, getOcrForWorkspace, getWorkspaceContext } from "@/lib/server-documents";
-import { resolveJobAction, findActiveJob, createRunningJob, runOcrJob } from "@/lib/ocr/asyncJobs";
+import { resolveJobAction, findActiveJob, createRunningJob, runOcrJob, reclaimStaleJobs, cancelActiveJobs } from "@/lib/ocr/asyncJobs";
 
 function isReprocess(url: string): boolean {
   return new URL(url).searchParams.get("reprocess") === "1";
@@ -47,6 +47,12 @@ export async function POST(request: Request, { params }: { params: Promise<{ doc
     await recordAuditLog({ action: "extraction_completed", entityType: "document", entityId: documentId, metadata: { stage: "ocr", provider: adapters.ocr.name, confidence: ocr.confidence } });
     return NextResponse.json({ ocr, job: { id: `job_ocr_${Date.now()}`, documentId, type: "ocr", status: "completed", progress: 100, message: "OCR completed" }, mode: "demo" });
   }
+
+  // Reclaim any stalled job (dead worker) so it neither blocks the unique-active
+  // index nor leaves the document stuck; on explicit reprocess, cancel the active
+  // job so the fresh one does not violate the index.
+  await reclaimStaleJobs(context, documentId, "ocr");
+  if (force) await cancelActiveJobs(context, documentId, "ocr");
 
   // Idempotent async processing: reuse a completed result, attach to an in-flight
   // job, or create a new one — never duplicate work for the same document+op.

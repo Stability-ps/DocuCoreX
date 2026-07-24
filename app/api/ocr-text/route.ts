@@ -24,7 +24,9 @@ function readTimeoutMs(value: string | undefined, fallback: number) {
 //   GET the same URL to check the OCR binaries.
 // Per-attempt cap and total budget are configurable so production can raise OCR
 // time limits for high-resolution scanned bank statements without code changes.
-const OCR_TIMEOUT_MS = readTimeoutMs(process.env.CONVERSION_OCR_TIMEOUT_MS ?? process.env.ACCOUNTING_OCR_TIMEOUT_MS, 300_000);
+// 120s default matches the frontend's worker-call timeout — the worker never runs
+// OCR longer than the caller waits (which would only produce a wasted result).
+const OCR_TIMEOUT_MS = readTimeoutMs(process.env.CONVERSION_OCR_TIMEOUT_MS ?? process.env.ACCOUNTING_OCR_TIMEOUT_MS, 120_000);
 const OCR_TOTAL_BUDGET_MS = readTimeoutMs(process.env.CONVERSION_OCR_TOTAL_BUDGET_MS ?? process.env.ACCOUNTING_OCR_TOTAL_BUDGET_MS, OCR_TIMEOUT_MS);
 
 function bin(envKey: string, fallback: string): string {

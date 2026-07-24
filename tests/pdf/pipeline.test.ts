@@ -289,7 +289,7 @@ test("process route returns immediately and runs extraction in the background", 
   // Timeout protection / parser time budgets (Req 2).
   assert.match(route, /ACCOUNTING_WORKER_TIMEOUT_MS = 120_000/, "accounting worker 120s timeout");
   assert.match(read("lib/pdf/extractWithPdfplumber.ts"), /PDFPLUMBER_TIMEOUT_MS = 15_000/, "pdfplumber 15s timeout");
-  assert.match(read("lib/pdf/extractWithOcr.ts"), /OCR_FETCH_TIMEOUT_MS = 120_000/, "OCR 120s timeout");
+  assert.match(read("lib/pdf/extractWithOcr.ts"), /OCR_FETCH_TIMEOUT_MS = readTimeoutMs\([^)]*, 120_000\)/, "OCR 120s timeout (< maxDuration)");
   // Failures mark the run failed with the real error.
   assert.match(route, /failRun/, "updates run/job status to failed on error");
 });
@@ -400,7 +400,7 @@ test("pipeline enforces per-parser time budgets (Req 2)", () => {
   assert.match(pipeline, /PDFJS_BUDGET_MS = 10_000/, "PDF.js 10s budget");
   assert.match(pipeline, /withTimeout\(extractWithPdfjs\(pdfjsBuf\)/, "PDF.js is time-boxed");
   assert.match(read("lib/pdf/extractWithPdfplumber.ts"), /PDFPLUMBER_TIMEOUT_MS = 15_000/, "pdfplumber 15s");
-  assert.match(read("lib/pdf/extractWithOcr.ts"), /OCR_FETCH_TIMEOUT_MS = 120_000/, "OCR 120s");
+  assert.match(read("lib/pdf/extractWithOcr.ts"), /OCR_FETCH_TIMEOUT_MS = readTimeoutMs\([^)]*, 120_000\)/, "OCR 120s");
   assert.match(read("app/api/accounting/fnb/process/route.ts"), /ACCOUNTING_WORKER_TIMEOUT_MS = 120_000/, "accounting worker 120s");
 });
 
@@ -449,7 +449,8 @@ test("OCR worker runs the fastest mode first and escalates only on failure (Req 
   assert.ok(skipIdx > 0, "uses --skip-text");
   assert.ok(forceIdx > skipIdx, "--force-ocr comes after --skip-text (heavier recovery mode)");
   assert.ok(redoIdx > forceIdx, "--redo-ocr comes last");
-  assert.match(route, /OCR_TOTAL_BUDGET_MS = 120_000/, "total OCR budget is 120s");
+  assert.match(route, /OCR_TIMEOUT_MS = readTimeoutMs\([^)]*, 120_000\)/, "OCR per-attempt cap is 120s");
+  assert.match(route, /OCR_TOTAL_BUDGET_MS = readTimeoutMs\([^)]*, OCR_TIMEOUT_MS\)/, "total OCR budget defaults to the 120s cap");
   assert.match(route, /total OCR budget exhausted/, "stops escalating once the budget is spent");
   // Only escalates when the previous attempt produced no text.
   assert.match(route, /if \(sidecarText\.trim\(\)\.length > 0\) \{\s*\n\s*text = sidecarText;\s*\n\s*break;/);
@@ -541,7 +542,7 @@ test("status sync: poll stops on effective terminal; UI refreshes list and clear
   const intel = read("components/accounting/accounting-intelligence.tsx");
   assert.match(intel, /deriveEffectiveRunStatus\(run, run\.transactionCount\)/, "queue status uses the effective run status");
   assert.match(intel, /queue\.filter\(\(item\) => item\.runId !== runId\)/, "removes the stale upload-queue item once terminal");
-  assert.match(intel, /if \(!outcome\.timedOut\) await loadRuns\(runId\)/, "refreshes the list + summary on terminal");
+  assert.match(intel, /if \(!outcome\.timedOut\) await refreshAccountingData\(runId/, "refreshes the list + summary on terminal");
 });
 
 // ── Failed-run visibility + diagnostics ──────────────────────────────────────
@@ -563,7 +564,8 @@ test("failed runs surface the real error + diagnostics with retry (not just 'Fai
   assert.match(panel, /Detected PDF type/);
   assert.match(panel, /OCR debug/);
   assert.match(panel, /Parser debug/);
-  assert.match(panel, /Retry \/ Force Reprocess/);
+  assert.match(panel, /"Retry"/);
+  assert.match(panel, /Force Reprocess/);
 
   // Dashboard renders the failed panel (not the empty state), a "View error"
   // affordance, and retry force-reprocesses. Failed runs stay selectable.

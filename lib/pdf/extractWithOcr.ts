@@ -10,7 +10,10 @@ function readTimeoutMs(value: string | undefined, fallback: number) {
 // OCR fallback for scanned / weak-text PDFs. Calls the conversion worker's
 // /api/ocr-text endpoint (ocrmypdf / tesseract). Runs ONLY when the caller
 // decides OCR is needed; time-bounded and degrades gracefully.
-const OCR_FETCH_TIMEOUT_MS = readTimeoutMs(process.env.CONVERSION_OCR_TIMEOUT_MS ?? process.env.ACCOUNTING_OCR_TIMEOUT_MS, 300_000);
+// 120s default keeps the OCR fetch bounded well under the Vercel function
+// maxDuration (300s), so a hung Render OCR times out cleanly instead of the
+// function being killed mid-request. Env-overridable for edge cases.
+const OCR_FETCH_TIMEOUT_MS = readTimeoutMs(process.env.CONVERSION_OCR_TIMEOUT_MS ?? process.env.ACCOUNTING_OCR_TIMEOUT_MS, 120_000);
 // A 502 means the conversion worker crashed / was momentarily unavailable (an
 // OOM restart, a cold instance). Retry ONCE after a short delay; a transient 502
 // usually clears once the instance is back (Req 9).
