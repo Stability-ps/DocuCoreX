@@ -1,7 +1,17 @@
 import type { DocumentRecord, DocumentDownload, ExtractionResult, OcrResult } from "@/lib/types";
 import { convertDocumentContent } from "@/lib/document-conversion-engine";
+import { isSupabaseConfigured } from "@/lib/supabase";
+import { selectOcrProvider, selectExtractionProvider, isSelectionError } from "@/lib/providers/selection";
+import {
+  OpenAIVisionOcrProvider,
+  OpenAIExtractionProvider,
+  PipelineOcrProvider,
+  PipelineExtractionProvider,
+  UnavailableOcrProvider,
+  UnavailableExtractionProvider,
+} from "@/lib/providers/real-providers";
 
-export type ProviderName = "mock" | "openai" | "google_vision" | "aws_textract" | "azure_form_recognizer";
+export type ProviderName = "mock" | "openai" | "tesseract" | "google_vision" | "aws_textract" | "azure_form_recognizer";
 
 export type ProviderDetection = {
   ocr: ProviderName;
@@ -180,12 +190,65 @@ export function detectProviderConfig(): ProviderDetection {
 }
 
 export function createWorkflowAdapters() {
+  const detection = detectProviderConfig();
+  // Mock is permissible ONLY when there is genuinely no Supabase backend (local
+  // dev / demo). A real production backend NEVER silently uses mock output.
+  const allowMock = !isSupabaseConfigured;
+  // We implement OpenAI (vision + structured) and Tesseract (via the conversion
+  // worker's /api/ocr-text). Only advertise those to the selector so it never
+  // resolves to an unimplemented cloud engine.
+  const configured = {
+    openai: detection.configured.openai,
+    googleVision: false,
+    aws: false,
+    azureFormRecognizer: false,
+  };
+  const tesseractAvailable = Boolean(process.env.CONVERSION_WORKER_URL?.trim());
+
+  const ocrSelection = selectOcrProvider({
+    configured,
+    tesseractAvailable,
+    override: process.env.OCR_PROVIDER,
+    allowMock,
+  });
+  const extractionSelection = selectExtractionProvider({
+    configured,
+    override: process.env.EXTRACTION_PROVIDER,
+    allowMock,
+  });
+
   return {
-    detection: detectProviderConfig(),
-    ocr: new MockOCRProvider(),
-    extraction: new MockExtractionProvider(),
+    detection,
+    ocr: buildOcrProvider(ocrSelection),
+    extraction: buildExtractionProvider(extractionSelection),
     conversion: new MockConversionProvider(),
   };
+}
+
+function buildOcrProvider(selection: ReturnType<typeof selectOcrProvider>): OCRProvider {
+  if (isSelectionError(selection)) return new UnavailableOcrProvider(selection.error);
+  switch (selection.provider) {
+    case "openai_vision":
+      return new OpenAIVisionOcrProvider();
+    case "tesseract":
+      return new PipelineOcrProvider(false);
+    case "mock":
+      return new MockOCRProvider();
+    default:
+      return new UnavailableOcrProvider(`OCR provider "${selection.provider}" is not implemented.`);
+  }
+}
+
+function buildExtractionProvider(selection: ReturnType<typeof selectExtractionProvider>): ExtractionProvider {
+  if (isSelectionError(selection)) return new UnavailableExtractionProvider(selection.error);
+  switch (selection.provider) {
+    case "openai":
+      return new OpenAIExtractionProvider();
+    case "mock":
+      return new MockExtractionProvider();
+    default:
+      return new UnavailableExtractionProvider(`Extraction provider "${selection.provider}" is not implemented.`);
+  }
 }
 
 export const MockOcrAdapter = MockOCRProvider;
