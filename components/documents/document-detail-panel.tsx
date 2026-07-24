@@ -113,13 +113,39 @@ export function DocumentDetailPanel({ documentId }: { documentId: string }) {
 
   async function runProcess() {
     setBusy(true);
-    setStatus("Running OCR and extraction…");
+    setStatus("Queued — starting OCR and extraction…");
     try {
-      await fetch(`/api/ocr/${documentId}`, { method: "POST" }).catch(() => null);
-      await fetch(`/api/extractions/${documentId}`, { method: "POST" }).catch(() => null);
+      // Both endpoints return 202 immediately and process in the background; poll
+      // the result endpoints for completion instead of holding the request open.
+      await Promise.all([
+        fetch(`/api/ocr/${documentId}`, { method: "POST" }).catch(() => null),
+        fetch(`/api/extractions/${documentId}`, { method: "POST" }).catch(() => null),
+      ]);
+      const started = Date.now();
+      let done = false;
+      while (!done && Date.now() - started < 180_000) {
+        await new Promise((resolve) => setTimeout(resolve, 3000));
+        const [ocrJson, exJson, docJson] = await Promise.all([
+          fetch(`/api/ocr/${documentId}`, { cache: "no-store" }).then((r) => r.json()).catch(() => ({})),
+          fetch(`/api/extractions/${documentId}`, { cache: "no-store" }).then((r) => r.json()).catch(() => ({})),
+          fetch(`/api/documents/${documentId}`, { cache: "no-store" }).then((r) => r.json()).catch(() => ({})),
+        ]);
+        const ocrDone = Boolean(ocrJson.ocr);
+        const exDone = Boolean(exJson.extraction);
+        const failed = docJson.document?.status === "failed" || ocrJson.status === "failed" || exJson.status === "failed";
+        if (failed) {
+          setStatus("Processing failed. Try reprocessing.");
+          done = true;
+        } else if (ocrDone && exDone) {
+          setStatus("Processing complete.");
+          done = true;
+        } else {
+          setStatus(`Processing… (OCR: ${ocrDone ? "done" : ocrJson.status ?? "queued"}, extraction: ${exDone ? "done" : exJson.status ?? "queued"})`);
+        }
+      }
+      if (!done) setStatus("Still processing — this document is taking longer than usual; check back shortly.");
       await loadCore();
       await loadSecondary();
-      setStatus("Processing complete.");
     } finally {
       setBusy(false);
     }

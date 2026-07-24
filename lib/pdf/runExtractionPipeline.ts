@@ -1,5 +1,6 @@
 import type { ExtractionDebug, ExtractionPipelineResult, ExtractionResult, ExtractionStageDiag, ParserMethod, PdfAnalysis } from "@/lib/pdf/types";
 import { analyzeExtraction } from "@/lib/pdf/analyzePdf";
+import { decideOcrNeed } from "@/lib/pdf/ocrDecision";
 import { extractWithPdfjs } from "@/lib/pdf/extractWithPdfjs";
 import { extractWithPdfplumber } from "@/lib/pdf/extractWithPdfplumber";
 import { extractWithOcr } from "@/lib/pdf/extractWithOcr";
@@ -139,16 +140,13 @@ export async function runExtractionPipeline(buffer: Uint8Array, fileName = "stat
     scannedFastPath,
   });
 
-  // Stage 2 — pdfplumber. Attempted for everything EXCEPT the clearly-scanned fast
-  // path (no text layer, so native parsing cannot help — route directly to OCR).
-  // Otherwise it always runs, independent of PDF.js's result, so a PDF.js failure
-  // can never skip it. Returns null only when PDF_PLUMBER_URL is not configured.
+  // Stage 2 — pdfplumber. ALWAYS runs (independent of PDF.js), so the OCR decision
+  // has the best native-text evidence from both extractors. This is cheap (~150ms)
+  // even for scanned PDFs (returns empty) and means a PDF.js runtime hiccup can
+  // never force OCR on a genuinely digital PDF that pdfplumber can still read.
   let pdfplumber: ExtractionResult | null = null;
   let pdfplumberBytes = 0;
-  if (scannedFastPath) {
-    pdfLog("route.skip_pdfplumber", { reason: "scanned / no text layer", pdfjsChars });
-    stages.push({ stage: "pdfplumber", attempted: false, ok: false, ms: 0, pages: 0, chars: 0, transactions: 0, skippedReason: "scanned / no text layer — routed directly to OCR" });
-  } else {
+  {
     const t2 = Date.now();
     const pdfplumberBuf = copyBuffer(original);
     pdfplumberBytes = pdfplumberBuf.byteLength;
@@ -156,20 +154,32 @@ export async function runExtractionPipeline(buffer: Uint8Array, fileName = "stat
     stages.push(stageDiag("pdfplumber", pdfplumber, Date.now() - t2, pdfplumber === null ? "PDF_PLUMBER_URL not configured" : undefined));
   }
 
-  // Decide whether OCR is needed: the scanned fast path forces it; a strong digital
-  // text layer (>500 chars) skips it; otherwise OCR runs when analysis flagged it
-  // OR neither native extractor produced usable text/transactions.
-  const nativeChars = Math.max(pdfjsChars, pdfplumber?.combinedText.trim().length ?? 0);
+  // Decide whether OCR is needed using evidence-based routing (Req 4): OCR runs
+  // ONLY when neither PDF.js nor pdfplumber recovered readable text. Transaction
+  // count never forces OCR, and a PDF.js failure is recovered by pdfplumber.
+  const pdfplumberChars = pdfplumber?.combinedText.trim().length ?? 0;
+  const nativeChars = Math.max(pdfjsChars, pdfplumberChars);
   const nativeTransactions = Math.max(pdfjs.transactions.length, pdfplumber?.transactions.length ?? 0);
-  const needsOcr = scannedFastPath || (!skipOcrFastPath && (analysis.needsOcr || nativeTransactions === 0 || nativeChars < 20));
+  const coverage = analysis.pages.length ? analysis.pages.filter((p) => p.hasText).length / analysis.pages.length : 0;
+  const ocrDecision = decideOcrNeed({
+    kind: analysis.kind,
+    pdfjsChars,
+    pdfplumberChars,
+    nativeTransactions,
+    coverage,
+    pageCount: analysis.pageCount,
+    confidence: analysis.confidence,
+    skipOcrFastPath,
+  });
+  const needsOcr = ocrDecision.needsOcr;
+  pdfLog("route.ocr_decision", { needsOcr, reason: ocrDecision.reason, pdfjsChars, pdfplumberChars, nativeChars, nativeTransactions, coverage: Math.round(coverage * 100) / 100, kind: analysis.kind, confidence: analysis.confidence });
 
   // Stage 3 — OCR fallback. Returns null only when CONVERSION_WORKER_URL is unset.
   let ocr: ExtractionResult | null = null;
   let ocrAttempted = false;
   let ocrBytes = 0;
   if (needsOcr) {
-    if (scannedFastPath) pdfLog("route.force_ocr", { pdfjsTextLength: pdfjsChars, reason: "scanned PDF — routed directly to OCR (pdfplumber skipped)" });
-    else if (pdfjsChars < 5) pdfLog("route.force_ocr", { pdfjsTextLength: pdfjsChars, reason: "PDF.js returned almost no text" });
+    pdfLog("route.force_ocr", { pdfjsTextLength: pdfjsChars, pdfplumberTextLength: pdfplumberChars, reason: ocrDecision.reason });
     onStage?.("ocr");
     ocrAttempted = true;
     const t3 = Date.now();
@@ -177,22 +187,6 @@ export async function runExtractionPipeline(buffer: Uint8Array, fileName = "stat
     ocrBytes = ocrBuf.byteLength;
     ocr = await extractWithOcr(ocrBuf, fileName);
     stages.push(stageDiag("ocr", ocr, Date.now() - t3, ocr === null ? "CONVERSION_WORKER_URL not configured" : undefined));
-
-    // Fallback (Req 6): the scanned fast path skipped pdfplumber. If OCR produced
-    // nothing usable, the PDF may have been mis-classified — run the native parser
-    // we skipped so the full pipeline is never bypassed on a bad guess.
-    const ocrEmpty = !ocr || (ocr.combinedText.trim().length === 0 && ocr.transactions.length === 0);
-    if (scannedFastPath && ocrEmpty && process.env.PDF_PLUMBER_URL) {
-      pdfLog("route.fallback_pdfplumber", { reason: "scanned fast path OCR empty — running skipped native parser" });
-      const t2b = Date.now();
-      const pdfplumberBuf = copyBuffer(original);
-      pdfplumberBytes = pdfplumberBuf.byteLength;
-      pdfplumber = await extractWithPdfplumber(pdfplumberBuf, fileName);
-      const diag = stageDiag("pdfplumber", pdfplumber, Date.now() - t2b, pdfplumber === null ? "PDF_PLUMBER_URL not configured" : undefined);
-      const idx = stages.findIndex((s) => s.stage === "pdfplumber");
-      if (idx >= 0) stages[idx] = diag;
-      else stages.push(diag);
-    }
   } else {
     stages.push({ stage: "ocr", attempted: false, ok: false, ms: 0, pages: 0, chars: 0, transactions: 0, skippedReason: skipOcrFastPath ? "digital text layer (>500 chars) — OCR skipped" : "native extraction sufficient" });
   }
@@ -264,7 +258,10 @@ export async function runExtractionPipeline(buffer: Uint8Array, fileName = "stat
     pdfplumberTextLength,
     ocrTextLength,
     preExtractedTextLength,
-    sampleText: assembled.merged.combinedText.slice(0, 1000),
+    // Never carry document text: `sampleText` is intentionally blank so it cannot
+    // leak into logs (accounting failure logs the full parserDebug) or the DB.
+    // Content-free length diagnostics above are retained.
+    sampleText: "",
     reasonNoTransactions,
     ocr: ocrDebug ?? (ocrAttempted && !ocrConfigured ? { ocr_status: "skipped", reason: "CONVERSION_WORKER_URL not configured" } : null),
     stages,
