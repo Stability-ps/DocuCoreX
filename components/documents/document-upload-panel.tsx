@@ -58,11 +58,14 @@ export function DocumentUploadPanel({ onUploaded }: { onUploaded: () => void }) 
     xhr.onload = () => {
       let ok = xhr.status >= 200 && xhr.status < 300;
       let errorMessage = "Upload failed";
+      let acceptedIds: string[] = [];
       try {
-        const data = JSON.parse(xhr.responseText || "{}") as { accepted?: unknown[]; error?: string };
+        const data = JSON.parse(xhr.responseText || "{}") as { accepted?: Array<{ id?: string }>; error?: string };
         if (!data.accepted?.length) {
           ok = false;
           errorMessage = data.error ?? errorMessage;
+        } else {
+          acceptedIds = data.accepted.map((entry) => entry.id).filter((id): id is string => Boolean(id));
         }
       } catch {
         ok = false;
@@ -76,15 +79,47 @@ export function DocumentUploadPanel({ onUploaded }: { onUploaded: () => void }) 
         ),
       );
 
-      if (ok) {
-        // Kick the job processor so the uploaded file starts processing, then refresh.
-        void fetch("/api/jobs/process", { method: "POST" }).catch(() => null);
+      if (!ok) return;
+
+      // Start processing for each concrete document so the worker can resolve its
+      // workspace (via service role) for THAT document. We never fire a
+      // context-less "process everything" call. If processing can't be started,
+      // surface it on the upload row instead of leaving the document queued.
+      const failRow = (message: string) => {
+        setUploads((current) =>
+          current.map((item) => (item.key === key ? { ...item, status: "failed", error: message } : item)),
+        );
+        onUploaded();
+      };
+
+      void (async () => {
+        try {
+          const responses = await Promise.all(
+            acceptedIds.map((documentId) =>
+              fetch("/api/jobs/process", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ documentId }),
+              }),
+            ),
+          );
+          const failed = responses.find((response) => !response.ok);
+          if (failed) {
+            const data = (await failed.json().catch(() => null)) as { error?: string } | null;
+            failRow(data?.error ?? "Processing could not be started.");
+            return;
+          }
+        } catch {
+          failRow("Processing could not be started.");
+          return;
+        }
+
         onUploaded();
         // Clear the completed row after a short delay.
         window.setTimeout(() => {
           setUploads((current) => current.filter((item) => item.key !== key));
         }, 2500);
-      }
+      })();
     };
 
     xhr.onerror = () => {
