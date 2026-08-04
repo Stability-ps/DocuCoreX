@@ -68,6 +68,7 @@ import { parserMethodLabel } from "@/lib/pdf/workerHandoff";
 import { pollRunUntilTerminal } from "@/lib/accounting/poll-run";
 import { deriveEffectiveRunStatus, isActiveRunStatus } from "@/lib/accounting/run-status";
 import { accountingRunQuality, accountingTransactionTotals } from "@/lib/accounting/run-quality";
+import { ACCOUNTING_CATEGORY_OPTIONS, VAT_TREATMENT_OPTIONS, isUnresolvedAccountingCategory } from "@/lib/accounting/review-options";
 import { ProcessingSteps } from "@/components/accounting/processing-steps";
 import { FailedRunPanel } from "@/components/accounting/failed-run-panel";
 import type { AiCommentaryResult, AiCommentaryType } from "@/lib/accounting/ai-service";
@@ -86,33 +87,8 @@ type UploadQueueItem = {
   file?: File;
 };
 
-const categories = [
-  "Income",
-  "Uncategorised Expense",
-  "Review Required",
-  "Bank Charges",
-  "Staff Welfare / Meals / Entertainment",
-  "Software Subscriptions",
-  "Software / IT",
-  "Insurance",
-  "Levies",
-  "Salaries & Wages",
-  "Inter-account Transfer",
-  "Courier / Delivery",
-  "Motor Vehicle Expenses",
-  "VAT Control",
-  "Finance Costs",
-  "Rent",
-  "Uncategorised",
-];
-
-const vatTreatments: Array<{ value: VatTreatment; label: string }> = [
-  { value: "standard", label: "Standard VAT" },
-  { value: "zero_rated", label: "Zero-rated" },
-  { value: "exempt", label: "Exempt" },
-  { value: "out_of_scope", label: "Out of scope" },
-  { value: "review", label: "Review" },
-];
+const categories = ACCOUNTING_CATEGORY_OPTIONS;
+const vatTreatments = VAT_TREATMENT_OPTIONS;
 
 const tabs: Array<{ id: AccountingTab; label: string }> = [
   { id: "transactions", label: "Transactions" },
@@ -2494,6 +2470,13 @@ function TransactionTable({
   );
   const desktopTopSpacer = desktopStart * desktopRowHeight;
   const desktopBottomSpacer = Math.max(0, (transactions.length - desktopEnd) * desktopRowHeight);
+  const approveAndRemember = (transaction: AccountingTransaction) =>
+    patchTransaction(transaction, {
+      reviewStatus: "approved",
+      notes: transaction.notes || "Approved and saved for future supplier matching.",
+    });
+  const canApproveAndRemember = (transaction: AccountingTransaction) =>
+    !isUnresolvedAccountingCategory(transaction.accountCategory) && transaction.vatTreatment !== "review";
 
   if (!transactions.length) {
     const isSuccess = emptyVariant === "success";
@@ -2545,8 +2528,8 @@ function TransactionTable({
               const offset = mobileOffsets[transaction.id] ?? 0;
               delete touchStartRef.current[transaction.id];
 
-              if (offset >= 80) {
-                void patchTransaction(transaction, { reviewStatus: "approved" });
+	              if (offset >= 80 && canApproveAndRemember(transaction)) {
+	                void approveAndRemember(transaction);
               }
               if (offset <= -80) {
                 setDismissedTransactionIds((current) => ({ ...current, [transaction.id]: true }));
@@ -2577,19 +2560,25 @@ function TransactionTable({
                   <p className="text-xs text-slate-500">{transaction.transactionDate || "-"}</p>
                   <p className="mt-1 text-sm font-semibold text-navy-950">{transaction.description}</p>
                 </div>
-                <button
-                  type="button"
-                  onClick={() =>
-                    void patchTransaction(transaction, {
-                      reviewStatus: transaction.reviewStatus === "approved" ? "needs_review" : "approved",
-                    })
-                  }
-                  className={`min-h-11 rounded-full px-2.5 py-1 text-xs font-semibold ${
-                    transaction.reviewStatus === "approved" ? "bg-emerald-50 text-emerald-700" : "bg-amber-50 text-amber-700"
-                  }`}
-                >
-                  {transaction.reviewStatus === "approved" ? "Approved" : "Review"}
-                </button>
+	                <button
+	                  type="button"
+	                  onClick={() =>
+	                    void (transaction.reviewStatus === "approved"
+	                      ? patchTransaction(transaction, { reviewStatus: "needs_review" })
+	                      : approveAndRemember(transaction))
+	                  }
+	                  disabled={transaction.reviewStatus !== "approved" && !canApproveAndRemember(transaction)}
+	                  title={canApproveAndRemember(transaction) ? "Approve this category and VAT treatment, then remember this supplier next time." : "Choose a final category and VAT treatment before approving."}
+	                  className={`min-h-11 rounded-full px-2.5 py-1 text-xs font-semibold ${
+	                    transaction.reviewStatus === "approved"
+	                      ? "bg-emerald-50 text-emerald-700"
+	                      : canApproveAndRemember(transaction)
+	                        ? "bg-amber-50 text-amber-700"
+	                        : "cursor-not-allowed bg-slate-100 text-slate-400"
+	                  }`}
+	                >
+	                  {transaction.reviewStatus === "approved" ? "Approved" : canApproveAndRemember(transaction) ? "Approve & remember" : "Set VAT"}
+	                </button>
               </div>
 
               <p className="mt-2 text-[11px] font-semibold text-slate-400">Swipe right to approve / Swipe left to dismiss</p>
@@ -2599,8 +2588,18 @@ function TransactionTable({
                 <p className="text-right font-semibold text-navy-950">{money((transaction.creditAmount ?? 0) - (transaction.debitAmount ?? 0))}</p>
                 <p className="text-slate-500">Category</p>
                 <p className="text-right font-semibold text-navy-950">{transaction.accountCategory}</p>
-                <p className="text-slate-500">VAT</p>
-                <p className="text-right font-semibold text-navy-950">{vatTreatments.find((v) => v.value === transaction.vatTreatment)?.label ?? transaction.vatTreatment}</p>
+	                <p className="text-slate-500">VAT</p>
+	                <p className="text-right font-semibold text-navy-950">{vatTreatments.find((v) => v.value === transaction.vatTreatment)?.label ?? transaction.vatTreatment}</p>
+	                <p className="text-slate-500">Invoice</p>
+	                <label className="text-right font-semibold text-navy-950">
+	                  <input
+	                    type="checkbox"
+	                    checked={transaction.supportedByInvoice}
+	                    onChange={(event) => void patchTransaction(transaction, { supportedByInvoice: event.target.checked })}
+	                    className="mr-1 align-middle"
+	                  />
+	                  Supported
+	                </label>
               </div>
 
               <div className="mt-2 grid grid-cols-2 gap-2">
@@ -2663,14 +2662,15 @@ function TransactionTable({
             <th className="px-3 py-2">Fees</th>
             <th className="px-3 py-2">Account</th>
             <th className="px-3 py-2">VAT</th>
-            <th className="px-3 py-2">Review</th>
+	            <th className="px-3 py-2">Invoice</th>
+	            <th className="px-3 py-2">Review</th>
             <th className="px-3 py-2"></th>
           </tr>
         </thead>
         <tbody className="divide-y divide-slate-100">
           {desktopTopSpacer > 0 ? (
             <tr aria-hidden>
-              <td colSpan={10} style={{ height: `${desktopTopSpacer}px`, padding: 0 }} />
+	              <td colSpan={11} style={{ height: `${desktopTopSpacer}px`, padding: 0 }} />
             </tr>
           ) : null}
           {desktopVisibleTransactions.map((transaction) => {
@@ -2695,8 +2695,8 @@ function TransactionTable({
               <td className="whitespace-nowrap px-3 py-2 font-semibold text-rose-700">{money(transaction.debitAmount)}</td>
               <td className="whitespace-nowrap px-3 py-2 font-bold text-navy-950">{money(transaction.runningBalance)}</td>
               <td className="whitespace-nowrap px-3 py-2 font-bold text-slate-600">{transaction.bankCharge ? money(transaction.debitAmount) : "-"}</td>
-              <td className="px-3 py-2">
-                <select
+	              <td className="px-3 py-2">
+	                <select
                   value={transaction.accountCategory}
                   onChange={(event) => void patchTransaction(transaction, { accountCategory: event.target.value })}
                   className="w-44 rounded-lg border border-slate-200 bg-white px-2 py-1.5 text-xs font-semibold text-navy-950 outline-none focus:border-royal-300"
@@ -2719,24 +2719,41 @@ function TransactionTable({
                       {treatment.label}
                     </option>
                   ))}
-                </select>
-              </td>
-              <td className="px-3 py-2">
-                <button
-                  type="button"
-                  onClick={() =>
-                    void patchTransaction(transaction, {
-                      reviewStatus: transaction.reviewStatus === "approved" ? "needs_review" : "approved",
-                    })
-                  }
-                  className={`inline-flex items-center gap-1 rounded-full px-2 py-1 text-[11px] font-black ${
-                    transaction.reviewStatus === "approved" ? "bg-emerald-50 text-emerald-700" : "bg-amber-50 text-amber-700"
-                  }`}
-                >
-                  {transaction.reviewStatus === "approved" ? <BadgeCheck className="h-3 w-3" /> : <PencilLine className="h-3 w-3" />}
-                  {transaction.reviewStatus === "approved" ? "Approved" : "Review"}
-                </button>
-              </td>
+	                </select>
+	              </td>
+	              <td className="px-3 py-2">
+	                <label className="inline-flex items-center gap-1 rounded-lg border border-slate-200 bg-white px-2 py-1 text-[11px] font-bold text-slate-600">
+	                  <input
+	                    type="checkbox"
+	                    checked={transaction.supportedByInvoice}
+	                    onChange={(event) => void patchTransaction(transaction, { supportedByInvoice: event.target.checked })}
+	                    className="h-3.5 w-3.5"
+	                  />
+	                  Invoice
+	                </label>
+	              </td>
+	              <td className="px-3 py-2">
+	                <button
+	                  type="button"
+	                  onClick={() =>
+	                    void (transaction.reviewStatus === "approved"
+	                      ? patchTransaction(transaction, { reviewStatus: "needs_review" })
+	                      : approveAndRemember(transaction))
+	                  }
+	                  disabled={transaction.reviewStatus !== "approved" && !canApproveAndRemember(transaction)}
+	                  title={canApproveAndRemember(transaction) ? "Approve this category and VAT treatment, then remember this supplier next time." : "Choose a final category and VAT treatment before approving."}
+	                  className={`inline-flex items-center gap-1 rounded-full px-2 py-1 text-[11px] font-black ${
+	                    transaction.reviewStatus === "approved"
+	                      ? "bg-emerald-50 text-emerald-700"
+	                      : canApproveAndRemember(transaction)
+	                        ? "bg-amber-50 text-amber-700"
+	                        : "cursor-not-allowed bg-slate-100 text-slate-400"
+	                  }`}
+	                >
+	                  {transaction.reviewStatus === "approved" ? <BadgeCheck className="h-3 w-3" /> : <PencilLine className="h-3 w-3" />}
+	                  {transaction.reviewStatus === "approved" ? "Approved" : canApproveAndRemember(transaction) ? "Approve & remember" : "Set category/VAT"}
+	                </button>
+	              </td>
               <td className="px-3 py-2">
                 <button
                   type="button"
@@ -2751,8 +2768,8 @@ function TransactionTable({
             </tr>
           );})}
           {desktopBottomSpacer > 0 ? (
-            <tr aria-hidden>
-              <td colSpan={10} style={{ height: `${desktopBottomSpacer}px`, padding: 0 }} />
+	            <tr aria-hidden>
+	              <td colSpan={11} style={{ height: `${desktopBottomSpacer}px`, padding: 0 }} />
             </tr>
           ) : null}
         </tbody>

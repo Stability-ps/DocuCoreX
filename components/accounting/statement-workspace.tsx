@@ -20,8 +20,10 @@ import type {
   AccountingStatementRun,
   AccountingTransaction,
   AccountingTransactionPatch,
+  VatTreatment,
 } from "@/lib/accounting/types";
 import { buildAccountingModel } from "@/lib/accounting/model";
+import { ACCOUNTING_CATEGORY_OPTIONS, VAT_TREATMENT_OPTIONS, isUnresolvedAccountingCategory } from "@/lib/accounting/review-options";
 import { cleanStatementLabel, statementDisplayName } from "@/lib/accounting/statement-name";
 import { parserMethodLabel } from "@/lib/pdf/workerHandoff";
 import { pollRunUntilTerminal } from "@/lib/accounting/poll-run";
@@ -139,16 +141,24 @@ export function StatementWorkspace({ statementId }: { statementId: string }) {
           : current,
       );
       try {
-        await fetch(`/api/accounting/fnb/transactions/${transaction.id}`, {
+        const response = await fetch(`/api/accounting/fnb/transactions/${transaction.id}`, {
           method: "PATCH",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify(patch),
         });
-      } catch {
-        setBanner("Change could not be saved. Refresh and try again.");
+        const body = (await response.json().catch(() => ({}))) as { transaction?: AccountingTransaction; error?: string };
+        if (!response.ok || !body.transaction) throw new Error(body.error || "Change could not be saved.");
+        setDetail((current) =>
+          current
+            ? { ...current, transactions: current.transactions.map((t) => (t.id === transaction.id ? body.transaction! : t)) }
+            : current,
+        );
+      } catch (saveError) {
+        setBanner(saveError instanceof Error ? saveError.message : "Change could not be saved. Refresh and try again.");
+        void loadDetail().catch(() => undefined);
       }
     },
-    [],
+    [loadDetail],
   );
 
   async function reprocess() {
@@ -649,6 +659,13 @@ function ReviewTab({ reviewItems, patchTransaction }: { reviewItems: AccountingT
   if (!reviewItems.length) {
     return <div className="rounded-lg border border-emerald-100 bg-emerald-50 p-4 text-sm font-bold text-emerald-800">Nothing to review — all transactions are categorised with resolved VAT.</div>;
   }
+  const canApproveAndRemember = (transaction: AccountingTransaction) =>
+    !isUnresolvedAccountingCategory(transaction.accountCategory) && transaction.vatTreatment !== "review";
+  const approveAndRemember = (transaction: AccountingTransaction) =>
+    patchTransaction(transaction, {
+      reviewStatus: "approved",
+      notes: transaction.notes || "Approved and saved for future supplier matching.",
+    });
   return (
     <div className="space-y-2">
       {reviewItems.map((t) => (
@@ -664,18 +681,53 @@ function ReviewTab({ reviewItems, patchTransaction }: { reviewItems: AccountingT
               {t.vatTreatment === "review" ? "VAT review" : /suspense|uncategori|review/i.test(t.accountCategory) ? "Categorise" : "Verify"}
             </span>
           </div>
-          <div className="mt-2 flex flex-wrap gap-2">
-            <button onClick={() => void patchTransaction(t, { reviewStatus: "approved" })} className="rounded-lg bg-royal-600 px-3 py-1.5 text-xs font-bold text-white hover:bg-royal-700">Resolve</button>
+          <div className="mt-2 grid gap-2 md:grid-cols-[1.2fr_0.8fr_auto_auto_auto]">
+            <select
+              value={t.accountCategory}
+              onChange={(event) => void patchTransaction(t, { accountCategory: event.target.value })}
+              className="h-9 rounded-lg border border-slate-200 bg-white px-2 text-xs font-semibold text-navy-950 outline-none focus:border-royal-300"
+              aria-label="Accounting category"
+            >
+              {ACCOUNTING_CATEGORY_OPTIONS.map((category) => (
+                <option key={category} value={category}>
+                  {category}
+                </option>
+              ))}
+            </select>
+            <select
+              value={t.vatTreatment}
+              onChange={(event) => void patchTransaction(t, { vatTreatment: event.target.value as VatTreatment })}
+              className="h-9 rounded-lg border border-slate-200 bg-white px-2 text-xs font-semibold text-navy-950 outline-none focus:border-royal-300"
+              aria-label="VAT treatment"
+            >
+              {VAT_TREATMENT_OPTIONS.map((treatment) => (
+                <option key={treatment.value} value={treatment.value}>
+                  {treatment.label}
+                </option>
+              ))}
+            </select>
+            <label className="inline-flex h-9 items-center justify-center gap-1 rounded-lg border border-slate-200 bg-white px-2 text-xs font-bold text-slate-600">
+              <input
+                type="checkbox"
+                checked={t.supportedByInvoice}
+                onChange={(event) => void patchTransaction(t, { supportedByInvoice: event.target.checked })}
+              />
+              Invoice
+            </label>
+            <button
+              type="button"
+              disabled={!canApproveAndRemember(t)}
+              title={canApproveAndRemember(t) ? "Approve this category and VAT treatment, then remember this supplier next time." : "Choose a final category and VAT treatment before approving."}
+              onClick={() => void approveAndRemember(t)}
+              className={`rounded-lg px-3 py-1.5 text-xs font-bold ${
+                canApproveAndRemember(t)
+                  ? "bg-royal-600 text-white hover:bg-royal-700"
+                  : "cursor-not-allowed bg-slate-100 text-slate-400"
+              }`}
+            >
+              {canApproveAndRemember(t) ? "Approve & remember" : "Set category/VAT"}
+            </button>
             <button onClick={() => void patchTransaction(t, { reviewStatus: "resolved", notes: t.notes || "Ignored during review." })} className="rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-xs font-bold text-slate-700 hover:bg-slate-50">Ignore</button>
-            <input
-              defaultValue={t.accountCategory}
-              onBlur={(e) => {
-                if (e.target.value.trim() && e.target.value !== t.accountCategory) void patchTransaction(t, { accountCategory: e.target.value.trim() });
-              }}
-              className="h-8 flex-1 rounded-lg border border-slate-200 px-2 text-xs font-semibold outline-none focus:border-royal-300"
-              placeholder="Edit category"
-              aria-label="Edit category"
-            />
           </div>
         </div>
       ))}
