@@ -750,9 +750,11 @@ def run_professional_classification_case() -> None:
     assert_equal(supplier_payment_row["account"], "Supplier Payments", f"{case_id} supplier payment account")
     assert_equal(supplier_payment_row["group"], "Operating Expenses", f"{case_id} supplier payment group")
     assert_equal(supplier_payment_row["invoice_required"], True, f"{case_id} supplier invoice review")
+    assert_equal(str(supplier_payment_row["potential_input_vat"]), "361337.07", f"{case_id} supplier potential input VAT")
     assert_equal(msi_payment_row["account"], "Supplier Payments", f"{case_id} AI guardrail supplier account")
     assert_equal(msi_payment_row["group"], "Operating Expenses", f"{case_id} AI guardrail supplier group")
     assert_equal(msi_payment_row["invoice_required"], True, f"{case_id} AI guardrail invoice support")
+    assert_equal(str(msi_payment_row["potential_input_vat"]), "132000.00", f"{case_id} AI guardrail potential input VAT")
 
 
 def run_learned_supplier_rules_case() -> None:
@@ -984,6 +986,9 @@ def run_combined_workbook_case() -> None:
     )
     workbook = load_workbook(io.BytesIO(workbook_bytes), data_only=True)
     tx_sheet = workbook["Transactions"]
+    headers = [tx_sheet.cell(row=1, column=column).value for column in range(1, tx_sheet.max_column + 1)]
+    if "VAT Code" not in headers or "VAT Treatment" in headers:
+        raise AssertionError(f"{case_id}: Transactions sheet must expose VAT Code and hide ambiguous VAT Treatment")
     source_periods = {tx_sheet.cell(row=row, column=3).value for row in range(2, tx_sheet.max_row + 1)}
     if {"2025-12-01 to 2025-12-31", "2026-01-01 to 2026-01-31"} - source_periods:
         raise AssertionError(f"{case_id}: combined workbook must preserve both statement periods")
@@ -995,9 +1000,11 @@ def run_combined_workbook_case() -> None:
         raise AssertionError(f"{case_id}: combined diagnostics missing AI row")
     vat = workbook["VAT Schedule"]
     assert_equal(vat["A1"].value, "VAT Schedule & VAT Payable/(Refund)", f"{case_id} VAT title")
+    assert_equal(vat["C7"].value, "Potential Input VAT", f"{case_id} VAT input header")
     assert_equal(vat["D7"].value, "Net VAT Payable/(Refund)", f"{case_id} VAT monthly net header")
     assert_equal(vat["E7"].value, "Running VAT Balance", f"{case_id} VAT running balance header")
     assert_equal(vat["A11"].value, "Date", f"{case_id} VAT detail starts after monthly summary")
+    assert_equal(vat["G11"].value, "VAT Code", f"{case_id} VAT detail must include VAT Code")
 
 
 def run_local_real_statement_files_case() -> None:

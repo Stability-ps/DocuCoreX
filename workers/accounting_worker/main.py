@@ -2208,6 +2208,41 @@ def apply_number_formats(sheet, currency_columns: list[int], percent_columns: li
                 row[index - 1].number_format = '0"%"'
 
 
+def vat_code_for_row(row: dict[str, Any]) -> str:
+    treatment = str(row.get("vat_treatment") or "").lower()
+    claim_status = str(row.get("vat_claim_status") or "").lower()
+    if "zero" in treatment or "zero" in claim_status:
+        return "ZR"
+    if "exempt" in treatment or claim_status in {"exempt", "no"}:
+        return "EX"
+    if "out_of_scope" in treatment or "out of scope" in treatment or treatment == "no vat":
+        return "OOS"
+    if "review" in treatment or "review" in claim_status:
+        return "REV"
+    if claim_status.startswith("input") or claim_status.startswith("output"):
+        return "STD"
+    return "REV"
+
+
+def potential_input_vat_for_row(row: dict[str, Any]) -> Decimal:
+    money_out = decimal_amount(row.get("money_out"))
+    if money_out <= 0:
+        return Decimal("0.00")
+    claim_status = str(row.get("vat_claim_status") or "")
+    if claim_status.startswith("Input"):
+        return (money_out * Decimal("15") / Decimal("115")).quantize(CENT)
+    if claim_status == "Review":
+        account = str(row.get("account") or "")
+        group = str(row.get("group") or "")
+        reviewable_supplier = (
+            group not in {"Bank Charges", "Transfers", "Payroll/Personal", "Insurance"}
+            and account not in {"Meals / Groceries - Non Deductible Review", "Salaries / Drawings / Personal"}
+        )
+        if reviewable_supplier:
+            return (money_out * Decimal("15") / Decimal("115")).quantize(CENT)
+    return Decimal("0.00")
+
+
 def finish_sheet(sheet, freeze_pane: str = "A2", filter_ref: str | None = None) -> None:
     sheet.freeze_panes = freeze_pane
     if filter_ref:
@@ -2310,7 +2345,6 @@ def professional_transaction_row(transaction: ParsedTransaction, source_file: st
     account, group, vat_treatment, vat_claim_status = professional_account(transaction)
     reason, explanation = classification_reason(account, transaction.description, transaction.confidence)
     output_vat = (money_in * Decimal("15") / Decimal("115")).quantize(CENT) if vat_claim_status.startswith("Output") else Decimal("0.00")
-    input_vat = (money_out * Decimal("15") / Decimal("115")).quantize(CENT) if vat_claim_status.startswith("Input") else Decimal("0.00")
     row = {
         "date": workbook_date(transaction.transaction_date),
         "month": transaction_month(transaction),
@@ -2326,7 +2360,7 @@ def professional_transaction_row(transaction: ParsedTransaction, source_file: st
         "vat_treatment": vat_treatment,
         "vat_claim_status": vat_claim_status,
         "potential_output_vat": output_vat,
-        "potential_input_vat": input_vat,
+        "potential_input_vat": Decimal("0.00"),
         "source_file": source_file,
         "rule_confidence": transaction.confidence,
         "classification_reason": reason,
@@ -2340,6 +2374,7 @@ def professional_transaction_row(transaction: ParsedTransaction, source_file: st
             and group not in {"Bank Charges", "Transfers", "Payroll/Personal", "Insurance"}
         ),
     }
+    row["potential_input_vat"] = potential_input_vat_for_row(row)
     row["review_reason"] = professional_review_reason(row) or ""
     row["review_required"] = bool(row["review_reason"])
     return row
@@ -2383,10 +2418,9 @@ def professional_review_reason(row: dict[str, Any]) -> str | None:
 
 def recompute_professional_vat(row: dict[str, Any]) -> None:
     money_in = decimal_amount(row.get("money_in"))
-    money_out = decimal_amount(row.get("money_out"))
     claim_status = str(row.get("vat_claim_status") or "")
     row["potential_output_vat"] = (money_in * Decimal("15") / Decimal("115")).quantize(CENT) if claim_status.startswith("Output") else Decimal("0.00")
-    row["potential_input_vat"] = (money_out * Decimal("15") / Decimal("115")).quantize(CENT) if claim_status.startswith("Input") else Decimal("0.00")
+    row["potential_input_vat"] = potential_input_vat_for_row(row)
 
 
 def accounting_ai_model() -> str:
@@ -2797,7 +2831,7 @@ def write_vat_schedule_sheet(workbook: Workbook, rows: list[dict[str, Any]], inc
     vat["A2"].font = Font(italic=True, size=9, color="475569")
     vat["A2"].alignment = Alignment(wrap_text=True)
 
-    write_row(vat, ["VAT Summary", "Output VAT", "Input VAT", "VAT Payable/(Refund)", "Review Items"], 4, header=True)
+    write_row(vat, ["VAT Summary", "Output VAT", "Potential Input VAT", "VAT Payable/(Refund)", "Review Items"], 4, header=True)
     write_row(vat, ["Totals", total_output_vat, total_input_vat, net_vat, review_items], 5)
     for column_index in range(2, 5):
         vat.cell(row=5, column=column_index).number_format = CURRENCY_FORMAT
@@ -2805,7 +2839,7 @@ def write_vat_schedule_sheet(workbook: Workbook, rows: list[dict[str, Any]], inc
     vat.cell(row=5, column=5).number_format = "0"
 
     monthly_rows = month_summary(reportable_rows)
-    write_row(vat, ["Month", "Output VAT", "Input VAT", "Net VAT Payable/(Refund)", "Running VAT Balance", "Status"], 7, header=True)
+    write_row(vat, ["Month", "Output VAT", "Potential Input VAT", "Net VAT Payable/(Refund)", "Running VAT Balance", "Status"], 7, header=True)
     running_balance = Decimal("0.00")
     for row_index, month_row in enumerate(monthly_rows, start=8):
         monthly_net = month_row["vat_payable"]
@@ -2826,7 +2860,7 @@ def write_vat_schedule_sheet(workbook: Workbook, rows: list[dict[str, Any]], inc
             vat.cell(row=row_index, column=column_index).number_format = CURRENCY_FORMAT
 
     detail_header_row = max(10, 9 + len(monthly_rows))
-    detail_headers = ["Date", "Description", "Money In", "Money Out", "Account", "VAT Treatment", "Claim Status", "Output VAT", "Input VAT", "Net VAT", "VAT Balance", "Document Status"]
+    detail_headers = ["Date", "Description", "Money In", "Money Out", "Account", "VAT Code", "Claim Status", "Output VAT", "Potential Input VAT", "Net VAT", "VAT Balance", "Document Status"]
     if include_source_period:
         detail_headers.insert(2, "Source Period")
     write_row(vat, detail_headers, detail_header_row, header=True)
@@ -2843,7 +2877,7 @@ def write_vat_schedule_sheet(workbook: Workbook, rows: list[dict[str, Any]], inc
             row["money_in"],
             row["money_out"],
             reporting_account(row),
-            row["vat_treatment"],
+            vat_code_for_row(row),
             reporting_vat_status(row),
             output_vat,
             input_vat,
@@ -2943,7 +2977,7 @@ def build_workbook(metadata: dict[str, Any], transactions: list[ParsedTransactio
     tx = workbook.create_sheet("Transactions")
     transaction_headers = [
         "Date", "Month", "Description", "Money In", "Money Out", "Amount", "Type", "Balance", "Bank Charge",
-        "Account", "Group", "VAT Treatment", "VAT Claim Status", "Potential Output VAT", "Potential Input VAT",
+        "Account", "Group", "VAT Code", "VAT Claim Status", "Potential Output VAT", "Potential Input VAT",
         "Confidence", "Classification Reason", "Classification Explanation",
     ]
     write_row(tx, transaction_headers, 1, header=True)
@@ -2952,7 +2986,7 @@ def build_workbook(metadata: dict[str, Any], transactions: list[ParsedTransactio
             tx,
             [
                 row["date"], row["month"], row["description"], row["money_in"], row["money_out"], row["amount"], row["type"], row["balance"],
-                row["bank_charge"], row["account"], row["group"], row["vat_treatment"], row["vat_claim_status"], row["potential_output_vat"],
+                row["bank_charge"], row["account"], row["group"], vat_code_for_row(row), row["vat_claim_status"], row["potential_output_vat"],
                 row["potential_input_vat"], row["rule_confidence"], row["classification_reason"], row["classification_explanation"],
             ],
             row_index,
@@ -3361,7 +3395,7 @@ def build_combined_workbook(runs: list[dict[str, Any]], transactions_by_run: dic
     tx = workbook.create_sheet("Transactions")
     tx_headers = [
         "Date", "Month", "Source Period", "Description", "Money In", "Money Out", "Amount", "Type", "Balance", "Bank Charge",
-        "Account", "Group", "VAT Treatment", "VAT Claim Status", "Potential Output VAT", "Potential Input VAT",
+        "Account", "Group", "VAT Code", "VAT Claim Status", "Potential Output VAT", "Potential Input VAT",
     ]
     write_row(tx, tx_headers, 1, header=True)
     for row_index, row in enumerate(rows, start=2):
@@ -3369,7 +3403,7 @@ def build_combined_workbook(runs: list[dict[str, Any]], transactions_by_run: dic
             tx,
             [
                 row["date"], row["month"], row["source_period"], row["description"], row["money_in"], row["money_out"], row["amount"], row["type"],
-                row["balance"], row["bank_charge"], reporting_account(row), row["group"], row["vat_treatment"], reporting_vat_status(row),
+                row["balance"], row["bank_charge"], reporting_account(row), row["group"], vat_code_for_row(row), reporting_vat_status(row),
                 row["potential_output_vat"] if reporting_account(row) != "Review Required Suspense" else Decimal("0.00"),
                 row["potential_input_vat"] if reporting_account(row) != "Review Required Suspense" else Decimal("0.00"),
             ],
