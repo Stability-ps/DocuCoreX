@@ -1,11 +1,13 @@
-import type { ExtractionDebug, ExtractionPipelineResult, ExtractionResult, ExtractionStageDiag, ParserMethod, PdfAnalysis } from "@/lib/pdf/types";
+import type { ExtractionDebug, ExtractionPipelineResult, ExtractionResult, ExtractionStageDiag, OcrEngineId, ParserMethod, PdfAnalysis } from "@/lib/pdf/types";
 import { analyzeExtraction } from "@/lib/pdf/analyzePdf";
 import { decideOcrNeed } from "@/lib/pdf/ocrDecision";
+import { selectExtractionStrategy } from "@/lib/pdf/extractionStrategy";
+import { decideMistralOcr } from "@/lib/pdf/mistralDecision";
+import { acceptExtraction, type AcceptanceResult } from "@/lib/pdf/acceptExtraction";
 import { extractWithPdfjs } from "@/lib/pdf/extractWithPdfjs";
 import { extractWithPdfplumber } from "@/lib/pdf/extractWithPdfplumber";
 import { extractWithOcr } from "@/lib/pdf/extractWithOcr";
-import { mergeExtractionResults } from "@/lib/pdf/mergeExtractionResults";
-import { validateBankStatement } from "@/lib/accounting/validateBankStatement";
+import { extractWithMistralOcr, isMistralConfigured } from "@/lib/pdf/extractWithMistralOcr";
 import { getCachedExtraction, setCachedExtraction } from "@/lib/pdf/extractionCache";
 import type { ProcessingStep } from "@/lib/pdf/processingSteps";
 import { pdfLog } from "@/lib/pdf/log";
@@ -15,16 +17,15 @@ import { pdfLog } from "@/lib/pdf/log";
 // PDF.js runs in-process with no native timeout, so the pipeline races it.
 const PDFJS_BUDGET_MS = 10_000;
 
-// Fast-routing thresholds (Req 1).
-const DIGITAL_TEXT_LAYER_MIN_CHARS = 500; // > this ⇒ trust the text layer, skip OCR
-const SCANNED_TEXT_LAYER_MAX_CHARS = 20; // <= this + kind==="scanned" ⇒ go straight to OCR
-
 export type ExtractionPipelineOptions = {
   // Cache identity — when both are present the result is reused for the same
   // document+bytes unless `force` is set (Force reprocess).
   documentId?: string | null;
   fileHash?: string | null;
   force?: boolean;
+  // Enhanced OCR: always escalate to the secondary engine, even when the primary
+  // extraction would otherwise be accepted.
+  enhancedOcr?: boolean;
   // Progress hook — the pipeline reports "detecting" then "ocr"; the caller
   // reports the later "parsing"/"reconciling" steps around the worker call.
   onStage?: (step: ProcessingStep) => void;
@@ -73,34 +74,36 @@ function copyBuffer(src: Uint8Array): Uint8Array {
   return copy;
 }
 
-function assemble(analysis: PdfAnalysis, inputs: { pdfjs?: ExtractionResult; pdfplumber?: ExtractionResult | null; ocr?: ExtractionResult | null }) {
-  const { selection, merged } = mergeExtractionResults(analysis, {
-    pdfjs: inputs.pdfjs,
-    pdfplumber: inputs.pdfplumber ?? undefined,
-    ocr: inputs.ocr ?? undefined,
-  });
-  const validation = validateBankStatement(merged);
-  return { selection, merged, validation };
-}
-
-// Fault-tolerant multi-parser pipeline. Every extractor runs independently and a
-// failure in one never prevents the others:
-//   PDF.js (text-only, no canvas) → pdfplumber → OCR → merge → validate.
-// pdfplumber ALWAYS runs (even if PDF.js failed / returned no text), so a digital
-// PDF that PDF.js cannot read is still parsed. The pipeline only "fails" after all
-// available extractors have been attempted, and returns per-stage diagnostics.
+/**
+ * Fault-tolerant, analysis-driven extraction pipeline.
+ *
+ *   1. ANALYSE   — always. PDF.js text layer → digital | weak-text | scanned.
+ *   2. STRATEGY  — selectExtractionStrategy(). Native is preferred for genuine
+ *                  digital PDFs; OCR cannot improve correctly embedded text.
+ *   3. EXTRACT   — native always; OCR upfront only when the strategy says so.
+ *   4. ACCEPT    — acceptExtraction(). The SAME gate for every strategy.
+ *   5. ESCALATE  — on rejection (or Enhanced OCR): primary OCR if it has not run,
+ *                  then the secondary Mistral engine, then re-enter step 4.
+ *
+ * Every extractor runs independently and a failure in one never prevents the
+ * others. The pipeline only "fails" after all available extractors have been
+ * attempted, and always returns per-stage diagnostics.
+ */
 export async function runExtractionPipeline(buffer: Uint8Array, fileName = "statement.pdf", options: ExtractionPipelineOptions = {}): Promise<ExtractionPipelineResult> {
   const pipelineStart = Date.now();
-  const { documentId = null, fileHash = null, force = false, onStage } = options;
+  const { documentId = null, fileHash = null, force = false, enhancedOcr = false, onStage } = options;
 
   // Reuse a prior extraction for the identical document+bytes (Req 3): never OCR
   // or re-parse the same file twice. Force reprocess bypasses the cache.
+  // An Enhanced OCR request is NOT satisfied by a cached result that never ran
+  // the secondary engine — otherwise "Enhanced OCR" would silently no-op.
   if (!force) {
     const cached = getCachedExtraction(documentId, fileHash);
-    if (cached) {
-      pdfLog("pipeline_cache_reused", { documentId, parserMethod: cached.parserMethod, ocrUsed: cached.ocrUsed });
+    if (cached && (!enhancedOcr || cached.ocrEngineComparison.some((c) => c.engine === "mistral_ocr"))) {
+      pdfLog("pipeline_cache_reused", { documentId, parserMethod: cached.parserMethod, ocrUsed: cached.ocrUsed, ocrEngine: cached.ocrEngine });
       return { ...cached, cached: true };
     }
+    if (cached) pdfLog("pipeline_cache_bypassed", { documentId, reason: "enhanced OCR requested but cached result has no secondary-engine run" });
   }
 
   // Keep the ORIGINAL buffer immutable and hand every extractor its own fresh copy.
@@ -109,10 +112,10 @@ export async function runExtractionPipeline(buffer: Uint8Array, fileName = "stat
   // ArrayBuffer"). copyBuffer guarantees each stage gets a valid full PDF.
   const original = buffer;
   const originalBytes = original.byteLength;
-  pdfLog("start", { fileName, bytes: originalBytes, original_bytes: originalBytes });
+  pdfLog("start", { fileName, bytes: originalBytes, original_bytes: originalBytes, enhancedOcr });
   const stages: ExtractionStageDiag[] = [];
 
-  // Step 1 — detect the PDF type (PDF.js text extraction, time-boxed to 10s).
+  // ---- Step 1: ANALYSE (mandatory for every document) ------------------------
   onStage?.("detecting");
   const t1 = Date.now();
   const pdfjsBuf = copyBuffer(original);
@@ -121,29 +124,24 @@ export async function runExtractionPipeline(buffer: Uint8Array, fileName = "stat
   stages.push(stageDiag("pdfjs", pdfjs, Date.now() - t1));
   const analysis = analyzeExtraction(pdfjs);
   const pdfjsChars = pdfjs.combinedText.trim().length;
-  // Fast routing (Req 1): a substantial digital text layer (>500 chars) means the
-  // PDF is not scanned — skip OCR entirely. A near-empty, clearly-scanned PDF
-  // (<=20 chars) means native parsing is pointless — skip pdfplumber and go
-  // straight to OCR.
-  const skipOcrFastPath = pdfjsChars > DIGITAL_TEXT_LAYER_MIN_CHARS;
-  const scannedFastPath = pdfjsChars <= SCANNED_TEXT_LAYER_MAX_CHARS && analysis.kind === "scanned";
-  pdfLog("route.analysis", {
-    pageCount: analysis.pageCount,
-    totalTextLength: analysis.totalTextLength,
-    averageTextPerPage: analysis.averageTextPerPage,
+
+  // ---- Step 2: STRATEGY ------------------------------------------------------
+  const plan = selectExtractionStrategy(analysis);
+  pdfLog("route.strategy", {
+    strategy: plan.strategy,
+    reason: plan.reason,
+    ocrUpfront: plan.ocrUpfront,
     kind: analysis.kind,
-    isDigitalPdf: analysis.isDigitalPdf,
-    needsOcr: analysis.needsOcr,
+    pageCount: analysis.pageCount,
+    averageTextPerPage: analysis.averageTextPerPage,
     confidence: analysis.confidence,
     pdfjsChars,
-    skipOcrFastPath,
-    scannedFastPath,
   });
 
-  // Stage 2 — pdfplumber. ALWAYS runs (independent of PDF.js), so the OCR decision
-  // has the best native-text evidence from both extractors. This is cheap (~150ms)
-  // even for scanned PDFs (returns empty) and means a PDF.js runtime hiccup can
-  // never force OCR on a genuinely digital PDF that pdfplumber can still read.
+  // ---- Step 3: EXTRACT (native) ---------------------------------------------
+  // pdfplumber ALWAYS runs, independent of PDF.js: it is cheap (~150ms) even for
+  // scanned PDFs (returns empty), and it means a PDF.js runtime hiccup can never
+  // force OCR on a genuinely digital PDF that pdfplumber can still read.
   let pdfplumber: ExtractionResult | null = null;
   let pdfplumberBytes = 0;
   {
@@ -154,67 +152,124 @@ export async function runExtractionPipeline(buffer: Uint8Array, fileName = "stat
     stages.push(stageDiag("pdfplumber", pdfplumber, Date.now() - t2, pdfplumber === null ? "PDF_PLUMBER_URL not configured" : undefined));
   }
 
-  // Decide whether OCR is needed using evidence-based routing (Req 4): OCR runs
-  // ONLY when neither PDF.js nor pdfplumber recovered readable text. Transaction
-  // count never forces OCR, and a PDF.js failure is recovered by pdfplumber.
+  // ---- Step 3b: EXTRACT (primary OCR, only when the strategy calls for it) ----
   const pdfplumberChars = pdfplumber?.combinedText.trim().length ?? 0;
-  const nativeChars = Math.max(pdfjsChars, pdfplumberChars);
   const nativeTransactions = Math.max(pdfjs.transactions.length, pdfplumber?.transactions.length ?? 0);
   const coverage = analysis.pages.length ? analysis.pages.filter((p) => p.hasText).length / analysis.pages.length : 0;
-  const ocrDecision = decideOcrNeed({
-    kind: analysis.kind,
-    pdfjsChars,
-    pdfplumberChars,
-    nativeTransactions,
-    coverage,
-    pageCount: analysis.pageCount,
-    confidence: analysis.confidence,
-    skipOcrFastPath,
-  });
-  const needsOcr = ocrDecision.needsOcr;
-  pdfLog("route.ocr_decision", { needsOcr, reason: ocrDecision.reason, pdfjsChars, pdfplumberChars, nativeChars, nativeTransactions, coverage: Math.round(coverage * 100) / 100, kind: analysis.kind, confidence: analysis.confidence });
 
-  // Stage 3 — OCR fallback. Returns null only when CONVERSION_WORKER_URL is unset.
   let ocr: ExtractionResult | null = null;
   let ocrAttempted = false;
   let ocrBytes = 0;
-  if (needsOcr) {
-    pdfLog("route.force_ocr", { pdfjsTextLength: pdfjsChars, pdfplumberTextLength: pdfplumberChars, reason: ocrDecision.reason });
+
+  // Returns the result rather than mutating `ocr` in place: an assignment made
+  // inside a closure is invisible to TypeScript's control-flow analysis, which
+  // would then narrow `ocr` to `null` for the rest of the function.
+  const runPrimaryOcr = async (why: string): Promise<ExtractionResult | null> => {
+    pdfLog("route.force_ocr", { pdfjsTextLength: pdfjsChars, pdfplumberTextLength: pdfplumberChars, reason: why });
     onStage?.("ocr");
-    ocrAttempted = true;
-    const t3 = Date.now();
+    const t = Date.now();
     const ocrBuf = copyBuffer(original);
     ocrBytes = ocrBuf.byteLength;
-    ocr = await extractWithOcr(ocrBuf, fileName);
-    stages.push(stageDiag("ocr", ocr, Date.now() - t3, ocr === null ? "CONVERSION_WORKER_URL not configured" : undefined));
+    const result = await extractWithOcr(ocrBuf, fileName);
+    stages.push(stageDiag("ocr", result, Date.now() - t, result === null ? "CONVERSION_WORKER_URL not configured" : undefined));
+    return result;
+  };
+
+  if (plan.ocrUpfront) {
+    // Even when the strategy allows OCR, the evidence-based guard decides whether
+    // it is actually worth running given what native extraction recovered.
+    const ocrDecision = decideOcrNeed({
+      kind: analysis.kind,
+      pdfjsChars,
+      pdfplumberChars,
+      nativeTransactions,
+      coverage,
+      pageCount: analysis.pageCount,
+      confidence: analysis.confidence,
+      skipOcrFastPath: false,
+    });
+    pdfLog("route.ocr_decision", { strategy: plan.strategy, needsOcr: ocrDecision.needsOcr, reason: ocrDecision.reason, pdfjsChars, pdfplumberChars, nativeChars: Math.max(pdfjsChars, pdfplumberChars), nativeTransactions, coverage: Math.round(coverage * 100) / 100, kind: analysis.kind });
+    if (ocrDecision.needsOcr) {
+      ocrAttempted = true;
+      ocr = await runPrimaryOcr(ocrDecision.reason);
+    } else {
+      stages.push({ stage: "ocr", attempted: false, ok: false, ms: 0, pages: 0, chars: 0, transactions: 0, skippedReason: ocrDecision.reason });
+    }
   } else {
-    stages.push({ stage: "ocr", attempted: false, ok: false, ms: 0, pages: 0, chars: 0, transactions: 0, skippedReason: skipOcrFastPath ? "digital text layer (>500 chars) — OCR skipped" : "native extraction sufficient" });
+    pdfLog("route.ocr_decision", { strategy: plan.strategy, needsOcr: false, reason: plan.reason });
+    stages.push({ stage: "ocr", attempted: false, ok: false, ms: 0, pages: 0, chars: 0, transactions: 0, skippedReason: `strategy "${plan.strategy}" — ${plan.reason}` });
   }
 
-  // Merge + validate.
-  let assembled = assemble(analysis, { pdfjs, pdfplumber, ocr });
+  // ---- Step 4: ACCEPT --------------------------------------------------------
+  let assembled: AcceptanceResult = acceptExtraction(analysis, { pdfjs, pdfplumber: pdfplumber ?? undefined, ocr: ocr ?? undefined });
+  pdfLog("route.accept", { verdict: assembled.verdict, selectedParser: assembled.selection.selectedParser, confidence: assembled.selection.confidence, rejectionReasons: assembled.rejectionReasons });
 
-  // Reconciliation retry: native parse did not reconcile and OCR hasn't run → OCR.
-  if (assembled.validation.requiresReview && !ocrAttempted) {
-    pdfLog("route.ocr_retry", { reason: "reconciliation failed on native parse", difference: assembled.validation.difference });
-    ocrAttempted = true;
-    const tR = Date.now();
-    const ocrBuf = copyBuffer(original);
-    ocrBytes = ocrBuf.byteLength;
-    ocr = await extractWithOcr(ocrBuf, fileName);
-    stages.push(stageDiag("ocr", ocr, Date.now() - tR, ocr === null ? "CONVERSION_WORKER_URL not configured" : undefined));
-    if (ocr && (ocr.combinedText.length > 0 || ocr.transactions.length > 0)) {
-      const retry = assemble(analysis, { pdfjs, pdfplumber, ocr });
-      if (retry.validation.valid || retry.selection.confidence > assembled.selection.confidence) assembled = retry;
+  // ---- Step 5: ESCALATE ------------------------------------------------------
+  let mistral: ExtractionResult | null = null;
+  let mistralAttempted = false;
+
+  if (!assembled.accepted || enhancedOcr) {
+    // 5a. The primary OCR engine, if the strategy never ran it. This is what
+    //     rescues a "native" result that failed reconciliation.
+    if (!ocrAttempted) {
+      ocrAttempted = true;
+      ocr = await runPrimaryOcr(enhancedOcr ? "Enhanced OCR requested" : `acceptance rejected: ${assembled.rejectionReasons[0] ?? "unknown"}`);
+      const retried = acceptExtraction(analysis, { pdfjs, pdfplumber: pdfplumber ?? undefined, ocr: ocr ?? undefined });
+      if (retried.accepted || retried.selection.confidence > assembled.selection.confidence) assembled = retried;
+      pdfLog("route.accept_after_primary_ocr", { verdict: assembled.verdict, confidence: assembled.selection.confidence });
+    }
+
+    // 5b. The secondary engine, when the trigger conditions are met.
+    const mistralDecision = decideMistralOcr({
+      configured: isMistralConfigured(),
+      enhanced: enhancedOcr,
+      strategy: plan.strategy,
+      ocrAttempted,
+      ocrChars: ocr ? ocr.combinedText.trim().length : 0,
+      ocrConfidence: ocr?.confidence ?? null,
+      selectionConfidence: assembled.selection.confidence,
+      transactionCount: assembled.merged.transactions.length,
+      hasOpeningBalance: assembled.merged.metadata.openingBalance != null,
+      hasClosingBalance: assembled.merged.metadata.closingBalance != null,
+      validationRequiresReview: assembled.validation.requiresReview,
+    });
+    pdfLog("route.mistral_decision", { needed: mistralDecision.needed, reason: mistralDecision.reason, strategy: plan.strategy });
+
+    if (mistralDecision.needed) {
+      onStage?.("ocr");
+      mistralAttempted = true;
+      const t = Date.now();
+      mistral = await extractWithMistralOcr(copyBuffer(original), fileName);
+      stages.push(stageDiag("mistral_ocr", mistral, Date.now() - t, mistral === null ? "MISTRAL_API_KEY not configured" : undefined));
+
+      if (mistral) {
+        // Re-enter the SAME acceptance gate with the enlarged candidate set.
+        const candidate = acceptExtraction(analysis, { pdfjs, pdfplumber: pdfplumber ?? undefined, ocr: ocr ?? undefined, mistral });
+        const better = (candidate.accepted && !assembled.accepted) || candidate.selection.confidence > assembled.selection.confidence;
+        pdfLog("route.accept_after_mistral", {
+          verdict: candidate.verdict,
+          confidence: candidate.selection.confidence,
+          previousConfidence: assembled.selection.confidence,
+          adopted: better,
+          comparison: candidate.ocrEngineComparison,
+        });
+        // Always adopt the candidate's comparison record even when the merged
+        // result did not change, so the head-to-head is never lost. When the two
+        // engines disagree materially, acceptExtraction has already recorded it
+        // and forced review — the conflict is surfaced, not resolved silently.
+        assembled = better ? candidate : { ...assembled, ocrEngineComparison: candidate.ocrEngineComparison, selection: candidate.selection, rejectionReasons: candidate.rejectionReasons, verdict: candidate.verdict, accepted: candidate.verdict === "validated" };
+      }
     }
   }
 
   // Each extractor received a valid full-size buffer (original never detached).
   pdfLog("buffers", { original_bytes: originalBytes, pdfjs_bytes: pdfjsBytes, pdfplumber_bytes: pdfplumberBytes, ocr_bytes: ocrBytes });
 
-  const routeReason = describeRoute(analysis, stages);
-  const ocrTextLength = ocr ? ocr.combinedText.trim().length : 0;
-  const ocrUsed = Boolean(ocr && ocrTextLength > 0 && assembled.merged.parser !== "pdfjs");
+  const routeReason = describeRoute(analysis, plan.strategy, plan.reason, stages);
+  const ocrText = ocr;
+  const ocrTextLength = ocrText ? ocrText.combinedText.trim().length : 0;
+  const mistralTextLength = mistral ? mistral.combinedText.trim().length : 0;
+  const ocrUsed = assembled.ocrEngine != null;
   const ocrConfigured = !(ocrAttempted && ocr === null);
 
   const parserMethod: ParserMethod = assembled.selection.selectedParser;
@@ -222,8 +277,8 @@ export async function runExtractionPipeline(buffer: Uint8Array, fileName = "stat
   // OCR was needed but the worker stayed unavailable (HTTP 502 after retry) or
   // timed out, and no native source recovered transactions → flag for review so
   // the failure is surfaced with parserDebug.ocr rather than a silent empty parse.
-  const ocrUnavailable = Boolean(ocr?.metadata?._ocrRequiresReview) && assembled.merged.transactions.length === 0;
-  const requiresReview = assembled.selection.requiresReview || assembled.validation.requiresReview || ocrUnavailable;
+  const ocrUnavailable = Boolean(ocrText?.metadata?._ocrRequiresReview) && assembled.merged.transactions.length === 0;
+  const requiresReview = !assembled.accepted || ocrUnavailable;
   if (assembled.validation.requiresReview) warnings.push("Extraction completed but reconciliation needs review.");
   if (ocrUnavailable) warnings.push("OCR service was unavailable (HTTP 502/timeout) — statement flagged for review.");
 
@@ -231,8 +286,9 @@ export async function runExtractionPipeline(buffer: Uint8Array, fileName = "stat
   const pdfjsTextLength = pdfjs.combinedText.trim().length;
   const pdfplumberTextLength = pdfplumber ? pdfplumber.combinedText.trim().length : 0;
   const preExtractedTextLength = assembled.merged.combinedText.trim().length;
-  const ocrDebug = ocr && ocr.metadata && typeof ocr.metadata._ocrDebug === "object" ? (ocr.metadata._ocrDebug as Record<string, unknown>) : null;
-  const ocrReason = ocr && typeof ocr.metadata?._ocrReason === "string" ? (ocr.metadata._ocrReason as string) : null;
+  const ocrDebug = ocrText && ocrText.metadata && typeof ocrText.metadata._ocrDebug === "object" ? (ocrText.metadata._ocrDebug as Record<string, unknown>) : null;
+  const ocrReason = ocrText && typeof ocrText.metadata?._ocrReason === "string" ? (ocrText.metadata._ocrReason as string) : null;
+  const mistralDebug = mistral && typeof mistral.metadata?._mistralDebug === "object" ? (mistral.metadata._mistralDebug as Record<string, unknown>) : null;
 
   let reasonNoTransactions: string | null = null;
   if (assembled.merged.transactions.length === 0) {
@@ -257,6 +313,7 @@ export async function runExtractionPipeline(buffer: Uint8Array, fileName = "stat
     pdfjsTextLength,
     pdfplumberTextLength,
     ocrTextLength,
+    mistralTextLength,
     preExtractedTextLength,
     // Never carry document text: `sampleText` is intentionally blank so it cannot
     // leak into logs (accounting failure logs the full parserDebug) or the DB.
@@ -264,17 +321,25 @@ export async function runExtractionPipeline(buffer: Uint8Array, fileName = "stat
     sampleText: "",
     reasonNoTransactions,
     ocr: ocrDebug ?? (ocrAttempted && !ocrConfigured ? { ocr_status: "skipped", reason: "CONVERSION_WORKER_URL not configured" } : null),
+    mistral: mistralDebug ?? (mistralAttempted && mistral === null ? { status: "skipped", reason: "MISTRAL_API_KEY not configured" } : null),
+    strategy: plan.strategy,
+    ocrEngine: assembled.ocrEngine,
     stages,
   };
 
   pdfLog("route.merge", { selectedParser: assembled.selection.selectedParser, confidence: assembled.selection.confidence, extractionScores: assembled.selection.extractionScores, reasons: assembled.selection.reasons });
   pdfLog("pipeline_completed", {
+    strategy: plan.strategy,
     parserMethod,
+    verdict: assembled.verdict,
     ocrUsed,
+    ocrEngine: assembled.ocrEngine,
+    ocrEngineComparison: assembled.ocrEngineComparison,
     ocrConfigured,
     requiresReview,
     reconciled: assembled.validation.valid,
     reasonNoTransactions,
+    disagreements: assembled.selection.disagreements.map((d) => d.field),
     stages: stages.map((s) => ({ stage: s.stage, attempted: s.attempted, ok: s.ok, ms: s.ms, chars: s.chars, transactions: s.transactions, reason: s.failureReason ?? s.skippedReason ?? null })),
     totalMs: Date.now() - pipelineStart,
   });
@@ -289,6 +354,11 @@ export async function runExtractionPipeline(buffer: Uint8Array, fileName = "stat
     validation: assembled.validation,
     warnings: [...new Set(warnings)],
     requiresReview,
+    strategy: plan.strategy,
+    ocrEngine: assembled.ocrEngine,
+    ocrEngineComparison: assembled.ocrEngineComparison,
+    verdict: assembled.verdict,
+    accepted: assembled.accepted,
     debug,
     cached: false,
   };
@@ -302,14 +372,17 @@ export async function runExtractionPipeline(buffer: Uint8Array, fileName = "stat
   return result;
 }
 
-// Human-readable summary of which extractor won and how the others fared.
-function describeRoute(analysis: PdfAnalysis, stages: ExtractionStageDiag[]): string {
+// Human-readable summary of the strategy taken, which extractor won and how the
+// others fared.
+function describeRoute(analysis: PdfAnalysis, strategy: string, strategyReason: string, stages: ExtractionStageDiag[]): string {
   const winner = stages.filter((s) => s.ok).sort((a, b) => b.transactions - a.transactions || b.chars - a.chars)[0];
   const parts = stages.map((s) => {
     if (!s.attempted) return `${s.stage} skipped (${s.skippedReason ?? "n/a"})`;
     if (s.ok) return `${s.stage} ok (${s.chars} chars, ${s.transactions} tx)`;
     return `${s.stage} failed (${s.failureReason ?? "no text"})`;
   });
-  const lead = winner ? `Best source: ${winner.stage}.` : `No extractor produced text (${analysis.kind}).`;
+  const lead = winner ? `Strategy ${strategy} (${strategyReason}). Best source: ${winner.stage}.` : `Strategy ${strategy}. No extractor produced text (${analysis.kind}).`;
   return `${lead} ${parts.join("; ")}.`;
 }
+
+export type { OcrEngineId };

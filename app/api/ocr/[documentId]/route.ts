@@ -9,6 +9,12 @@ function isReprocess(url: string): boolean {
   return new URL(url).searchParams.get("reprocess") === "1";
 }
 
+// Enhanced OCR: always escalate to the secondary engine, even when the primary
+// extraction would be accepted. Absent ⇒ standard behaviour.
+function isEnhanced(url: string): boolean {
+  return new URL(url).searchParams.get("enhanced") === "1";
+}
+
 export async function GET(_request: Request, { params }: { params: Promise<{ documentId: string }> }) {
   const { documentId } = await params;
   const result = await getOcrForWorkspace(documentId);
@@ -30,7 +36,9 @@ export async function GET(_request: Request, { params }: { params: Promise<{ doc
 
 export async function POST(request: Request, { params }: { params: Promise<{ documentId: string }> }) {
   const { documentId } = await params;
-  const force = isReprocess(request.url);
+  const enhanced = isEnhanced(request.url);
+  // An Enhanced OCR request must re-run rather than reuse a standard result.
+  const force = isReprocess(request.url) || enhanced;
   const workspaceDocument = await getDocumentWithJobs(documentId);
 
   if (!workspaceDocument?.document) {
@@ -41,7 +49,7 @@ export async function POST(request: Request, { params }: { params: Promise<{ doc
 
   // Demo mode (no Supabase backend): keep the fast in-memory synchronous path.
   if (!context) {
-    const adapters = createWorkflowAdapters();
+    const adapters = createWorkflowAdapters({ enhanced });
     const ocr = await adapters.ocr.run(workspaceDocument.document);
     ocrResults.unshift(ocr);
     await recordAuditLog({ action: "extraction_completed", entityType: "document", entityId: documentId, metadata: { stage: "ocr", provider: adapters.ocr.name, confidence: ocr.confidence } });
@@ -72,7 +80,7 @@ export async function POST(request: Request, { params }: { params: Promise<{ doc
   const job = await createRunningJob(context, documentId, "ocr");
   const document = workspaceDocument.document;
   after(async () => {
-    await runOcrJob(context, document, job.id);
+    await runOcrJob(context, document, job.id, { enhanced });
   });
   return NextResponse.json({ documentId, jobId: job.id, status: "processing" }, { status: 202 });
 }

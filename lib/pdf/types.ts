@@ -13,14 +13,24 @@ export type ExtractionPage = {
   lines: ExtractionLine[];
 };
 
+// OCR engines. "ocr" is the historical id for the primary OCRmyPDF/Tesseract
+// engine and is kept verbatim so persisted parser_method values stay readable.
+export type OcrEngineId = "tesseract" | "mistral_ocr";
+
 export type ExtractionResult = {
-  parser: "pdfjs" | "pdfplumber" | "ocr" | "hybrid";
+  parser: "pdfjs" | "pdfplumber" | "ocr" | "mistral_ocr" | "hybrid";
   pageCount: number;
   pages: ExtractionPage[];
   combinedText: string;
   transactions: ExtractionTransaction[];
   metadata: ExtractionMetadata;
   warnings: string[];
+  // Engine-reported confidence (0..100) for OCR results, and where it came from
+  // ("tesseract-tsv" | "heuristic" | "mistral-page"). Native parsers leave these
+  // undefined — a text layer has no OCR confidence. NEVER sufficient on its own
+  // to call a result validated; see acceptExtraction().
+  confidence?: number | null;
+  confidenceSource?: string | null;
 };
 
 export type ExtractionTransaction = {
@@ -84,16 +94,29 @@ export type ExtractionScore = {
 
 // The parser-selection / merge decision (step 5 of the spec).
 export type ParserSelection = {
-  selectedParser: "pdfjs" | "pdfplumber" | "ocr" | "hybrid";
+  selectedParser: "pdfjs" | "pdfplumber" | "ocr" | "mistral_ocr" | "hybrid";
   confidence: number; // 0..100
   reasons: string[];
   extractionScores: {
     pdfjs?: ExtractionScore;
     pdfplumber?: ExtractionScore;
     ocr?: ExtractionScore;
+    mistral_ocr?: ExtractionScore;
   };
   warnings: string[];
   requiresReview: boolean;
+  // Material cross-engine disagreements (dates, amounts, balances, transaction
+  // rows). Never suppressed — any entry forces review so the conflict is visible
+  // rather than silently resolved in favour of the higher-scoring engine.
+  disagreements: ExtractionDisagreement[];
+};
+
+// A concrete, human-readable conflict between two extraction sources.
+export type ExtractionDisagreement = {
+  field: "transactionCount" | "closingBalance" | "openingBalance" | "dateRange" | "amountTotals";
+  sources: string[]; // parser keys that disagreed
+  values: string[]; // stringified values, aligned with `sources`
+  detail: string;
 };
 
 // Bank-statement validation result.
@@ -116,11 +139,11 @@ export type BankStatementValidation = {
 };
 
 // The full pipeline output surfaced to the API / UI.
-export type ParserMethod = "pdfjs" | "pdfplumber" | "ocr" | "hybrid";
+export type ParserMethod = "pdfjs" | "pdfplumber" | "ocr" | "mistral_ocr" | "hybrid";
 
 // Per-extractor diagnostics — which stage ran, succeeded, and why others failed.
 export type ExtractionStageDiag = {
-  stage: "pdfjs" | "pdfplumber" | "ocr";
+  stage: "pdfjs" | "pdfplumber" | "ocr" | "mistral_ocr";
   attempted: boolean;
   ok: boolean; // produced usable text/transactions
   ms: number;
@@ -135,15 +158,42 @@ export type ExtractionDebug = {
   pdfjsTextLength: number;
   pdfplumberTextLength: number;
   ocrTextLength: number;
+  // Text recovered by the secondary Mistral OCR engine (0 when it never ran).
+  mistralTextLength: number;
   preExtractedTextLength: number;
   sampleText: string;
   reasonNoTransactions: string | null;
   // OCR engine diagnostics (ocr_endpoint, ocr_status, ocr_exit_code,
   // ocr_stderr_sample, sidecar_exists, sidecar_size, ocr_text_length, attempts).
   ocr: Record<string, unknown> | null;
-  // One entry per extractor: pdfjs, pdfplumber, ocr.
+  // Same, for the Mistral engine (endpoint, status, model, pages_processed).
+  mistral: Record<string, unknown> | null;
+  // Which strategy the analysis selected, and which OCR engine (if any) won.
+  strategy: ExtractionStrategy;
+  ocrEngine: OcrEngineId | null;
+  // One entry per extractor: pdfjs, pdfplumber, ocr, mistral_ocr.
   stages: ExtractionStageDiag[];
 };
+
+// How the document is to be extracted, chosen from the analysis before any
+// extractor runs. Native is preferred for genuine digital PDFs — OCR cannot
+// improve correctly embedded text.
+export type ExtractionStrategy = "native" | "native_then_ocr" | "ocr_primary";
+
+// Per-engine comparison record, persisted so the winner is auditable.
+export type OcrEngineComparison = {
+  engine: OcrEngineId;
+  score: number; // scoreExtraction 0..100
+  confidence: number | null; // engine-reported, may be null
+  chars: number;
+  transactions: number;
+  won: boolean;
+};
+
+// Overall acceptance verdict. "validated" requires EVERY check to pass:
+// extraction produced content, reconciliation balanced, required fields present,
+// and no material cross-engine disagreement. OCR confidence alone never earns it.
+export type AcceptanceVerdict = "validated" | "review_required" | "failed";
 
 export type ExtractionPipelineResult = {
   analysis: PdfAnalysis;
@@ -155,6 +205,16 @@ export type ExtractionPipelineResult = {
   validation: BankStatementValidation | null;
   warnings: string[];
   requiresReview: boolean;
+  // Strategy chosen from the analysis, before any extractor ran.
+  strategy: ExtractionStrategy;
+  // The OCR engine whose output was actually selected, or null when the result
+  // came from native extraction only.
+  ocrEngine: OcrEngineId | null;
+  // Head-to-head record when more than one OCR engine ran.
+  ocrEngineComparison: OcrEngineComparison[];
+  // The single acceptance verdict — see AcceptanceVerdict.
+  verdict: AcceptanceVerdict;
+  accepted: boolean; // verdict === "validated"
   debug: ExtractionDebug;
   // True when this result was served from the extraction cache (document_id +
   // file_hash) rather than freshly extracted — the expensive OCR/parse was reused.

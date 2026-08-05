@@ -17,6 +17,26 @@ services:
         sync: false
       - key: SUPABASE_SERVICE_ROLE_KEY
         sync: false
+      # /api/jobs/process is proxied here from Vercel, and this service then runs
+      # the FULL extraction pipeline locally (analyse → strategy → extract →
+      # accept → escalate). The Mistral escalation call therefore originates from
+      # THIS runtime as well as from Vercel, so the key is required in both.
+      - key: MISTRAL_API_KEY
+        sync: false
+      # Pin the same OCR model as Vercel. Optional (defaults to mistral-ocr-4-0),
+      # but if Vercel pins a model and this service does not, the two runtimes can
+      # OCR the same document with different models.
+      - key: MISTRAL_OCR_MODEL
+        sync: false
+      # pdfplumber is a SEPARATE Python service with no in-process path, so this
+      # runtime needs its URL. Without it extractWithPdfplumber returns null and
+      # the worker loses table-based transaction extraction.
+      - key: PDF_PLUMBER_URL
+        value: https://docucorex-pdf-plumber.onrender.com
+      # NOTE: CONVERSION_WORKER_URL is deliberately NOT set here. The OCR binaries
+      # are on this service, so extractWithOcr detects CONVERSION_WORKER_MODE=true
+      # and calls lib/pdf/ocrEngine in-process — no URL and no self-HTTP request.
+      # It remains REQUIRED on Vercel, which proxies jobs here over the network.
 
   # pdfplumber extraction service used by the multi-parser pipeline (lib/pdf).
   # After deploy, set PDF_PLUMBER_URL on the Vercel app to this service's URL.

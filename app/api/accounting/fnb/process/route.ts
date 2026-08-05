@@ -1,6 +1,7 @@
 import { NextResponse, after } from "next/server";
 import { recordAuditLog } from "@/lib/audit";
 import { detectBankProfile } from "@/lib/accounting/engine/registry";
+import { isNoTransactionsFailure } from "@/lib/accounting/workerFailure";
 import { getAccountingRunDetail } from "@/lib/accounting/server";
 import { getWorkspaceContext } from "@/lib/server-documents";
 import { runExtractionPipeline } from "@/lib/pdf/runExtractionPipeline";
@@ -24,17 +25,24 @@ type PipelineDebug = {
   pdfjsTextLength: number;
   pdfplumberTextLength: number;
   ocrTextLength: number;
+  mistralTextLength: number;
   preExtractedTextLength: number;
   sampleText: string;
   reasonNoTransactions: string | null;
   ocr: Record<string, unknown> | null;
+  mistral: Record<string, unknown> | null;
+  strategy: string;
+  ocrEngine: string | null;
+  verdict: string;
+  ocrEngineComparison: unknown[];
+  disagreements: unknown[];
   stages: unknown[];
 };
 
 async function runPipelineBeforeWorker(
   context: WorkspaceContext,
   detail: AccountingRunDetail,
-  options: { force: boolean; onStage: (step: ProcessingStep) => void },
+  options: { force: boolean; enhancedOcr?: boolean; onStage: (step: ProcessingStep) => void },
 ): Promise<{ hints: Record<string, unknown>; warning: string | null; debug: PipelineDebug | null }> {
   const runId = detail.run.id;
   try {
@@ -50,6 +58,7 @@ async function runPipelineBeforeWorker(
       documentId: detail.run.documentId,
       fileHash,
       force: options.force,
+      enhancedOcr: options.enhancedOcr,
       onStage: options.onStage,
     });
     const meta = extractionProcessingMetadata(pipeline);
@@ -70,12 +79,36 @@ async function runPipelineBeforeWorker(
         reconciliation_difference: meta.reconciliationDifference,
         missing_transaction_count: meta.missingTransactionCount,
         requires_review: pipeline.requiresReview,
+        // Migration 017 — engine provenance. Written in the same best-effort
+        // update; a missing migration warns and processing continues.
+        ocr_engine: meta.ocrEngine,
+        extraction_strategy: meta.strategy,
+        acceptance_verdict: meta.verdict,
+        ocr_engine_comparison: meta.ocrEngineComparison,
         updated_at: new Date().toISOString(),
       })
       .eq("workspace_id", context.workspaceId)
       .eq("id", runId);
     if (updateError) {
-      console.warn("[accounting/process] extraction metadata not persisted (migration 013 not applied?)", { runId, error: updateError.message });
+      console.warn("[accounting/process] extraction metadata not persisted (migration 013/017 not applied?)", { runId, error: updateError.message });
+      // Retry without the migration-017 columns so the 013/014 metadata still lands.
+      await context.supabase
+        .from("accounting_statement_runs")
+        .update({
+          parser_method: meta.selectedParser,
+          extraction_confidence: meta.extractionConfidence,
+          detected_pdf_type: meta.detectedPdfType,
+          ocr_used: meta.ocrUsed,
+          route_reason: pipeline.routeReason,
+          extraction_warnings: meta.warnings,
+          validation_status: meta.validationStatus,
+          reconciliation_difference: meta.reconciliationDifference,
+          missing_transaction_count: meta.missingTransactionCount,
+          requires_review: pipeline.requiresReview,
+          updated_at: new Date().toISOString(),
+        })
+        .eq("workspace_id", context.workspaceId)
+        .eq("id", runId);
     }
 
     const debug: PipelineDebug = {
@@ -87,28 +120,41 @@ async function runPipelineBeforeWorker(
       pdfjsTextLength: pipeline.debug.pdfjsTextLength,
       pdfplumberTextLength: pipeline.debug.pdfplumberTextLength,
       ocrTextLength: pipeline.debug.ocrTextLength,
+      mistralTextLength: pipeline.debug.mistralTextLength,
       preExtractedTextLength: pipeline.debug.preExtractedTextLength,
       sampleText: pipeline.debug.sampleText,
       reasonNoTransactions: pipeline.debug.reasonNoTransactions,
       ocr: pipeline.debug.ocr,
+      mistral: pipeline.debug.mistral,
+      strategy: pipeline.strategy,
+      ocrEngine: pipeline.ocrEngine,
+      verdict: pipeline.verdict,
+      ocrEngineComparison: pipeline.ocrEngineComparison,
+      disagreements: pipeline.selection.disagreements,
       stages: pipeline.debug.stages,
     };
 
     // Detailed log immediately before handing off to the worker.
     console.info("[accounting/process] extraction pipeline result", {
       runId,
+      strategy: pipeline.strategy,
       parserMethod: meta.selectedParser,
+      verdict: pipeline.verdict,
       ocrUsed: meta.ocrUsed,
+      ocrEngine: pipeline.ocrEngine,
+      ocrEngineComparison: pipeline.ocrEngineComparison,
       detectedPdfType: meta.detectedPdfType,
       extractionConfidence: meta.extractionConfidence,
       pdfjsTextLength: pipeline.debug.pdfjsTextLength,
       pdfplumberTextLength: pipeline.debug.pdfplumberTextLength,
       ocrTextLength: pipeline.debug.ocrTextLength,
+      mistralTextLength: pipeline.debug.mistralTextLength,
       preExtractedTextLength: workerInput.preExtractedText.length,
-      preExtractedTextSample: workerInput.preExtractedText.slice(0, 1000),
       transactionCandidates: workerInput.transactionCandidateCount,
       reasonNoTransactions: pipeline.debug.reasonNoTransactions,
+      disagreements: pipeline.selection.disagreements.map((d) => d.field),
       ocr: pipeline.debug.ocr,
+      mistral: pipeline.debug.mistral,
     });
 
     // Hand the worker the best source; it keeps the original PDF as a fallback.
@@ -213,7 +259,14 @@ function normalizeWorkerFailure(input: {
 }
 
 const ACCOUNTING_WORKER_TIMEOUT_MS = 120_000;
-const ACCOUNTING_PRE_EXTRACT_ENABLED = process.env.ACCOUNTING_PRE_EXTRACT === "true";
+// Every document is analysed before extraction, so the pipeline now runs by
+// default. The strategy keeps this affordable: a genuine digital statement takes
+// the "native" path and never calls OCR. Set ACCOUNTING_PRE_EXTRACT=false to
+// restore the previous bypass as an emergency kill switch.
+const ACCOUNTING_PRE_EXTRACT_ENABLED = process.env.ACCOUNTING_PRE_EXTRACT !== "false";
+// Safety net: when the Python worker cannot parse any transactions the document
+// is almost certainly scanned, so re-run with Enhanced OCR and retry once.
+const ACCOUNTING_OCR_FALLBACK_ENABLED = process.env.ACCOUNTING_OCR_FALLBACK !== "false";
 
 // Allow the background work (after the response is sent) to run beyond the default
 // so extraction + worker + reconciliation can finish off the request path.
@@ -229,10 +282,17 @@ function toParserDebug(pipelineDebug: PipelineDebug | null) {
     pdfjs_text_length: pipelineDebug.pdfjsTextLength,
     pdfplumber_text_length: pipelineDebug.pdfplumberTextLength,
     ocr_text_length: pipelineDebug.ocrTextLength,
+    mistral_text_length: pipelineDebug.mistralTextLength,
     pre_extracted_text_length: pipelineDebug.preExtractedTextLength,
     sample_text: pipelineDebug.sampleText,
     reason_no_transactions: pipelineDebug.reasonNoTransactions,
     ocr: pipelineDebug.ocr,
+    mistral: pipelineDebug.mistral,
+    extraction_strategy: pipelineDebug.strategy,
+    ocr_engine: pipelineDebug.ocrEngine,
+    acceptance_verdict: pipelineDebug.verdict,
+    ocr_engine_comparison: pipelineDebug.ocrEngineComparison,
+    disagreements: pipelineDebug.disagreements,
     stages: pipelineDebug.stages,
   };
 }
@@ -299,18 +359,17 @@ async function processStatementInBackground(context: WorkspaceContext, detail: A
     }
   };
 
-  let pipelineDebug: PipelineDebug | null = null;
-  try {
-    // 1. Optional Node-side pre-extraction (PDF.js / pdfplumber / OCR). For FNB
-    // accounting the Python worker is the source of truth and can parse these
-    // statements directly from the PDF. Keeping this OFF by default prevents
-    // Vercel from spending minutes in OCR before the real worker even starts.
-    const { hints, debug } = ACCOUNTING_PRE_EXTRACT_ENABLED
-      ? await runPipelineBeforeWorker(context, detail, { force, onStage: updateStep })
-      : { hints: {}, debug: null };
-    pipelineDebug = debug;
-    updateStep("parsing");
+  const parserProfile = detectBankProfile({ bank: detail.run.bank, fileName: detail.run.sourceStoragePath });
+  const workerEndpoint = buildWorkerEndpoint(workerUrl, "/process-statement");
 
+  // One attempt at the accounting worker. Returns a discriminated outcome so the
+  // caller can decide whether an OCR-backed retry is worthwhile.
+  type WorkerOutcome =
+    | { kind: "ok" }
+    | { kind: "failed"; status: number; error: string }
+    | { kind: "unreachable"; error: string };
+
+  const callWorker = async (hints: Record<string, unknown>): Promise<WorkerOutcome> => {
     const workerPayload = {
       run_id: runId,
       workspace_id: context.workspaceId,
@@ -319,9 +378,7 @@ async function processStatementInBackground(context: WorkspaceContext, detail: A
       storage_path: detail.run.sourceStoragePath,
       ...hints,
     };
-    const parserProfile = detectBankProfile({ bank: detail.run.bank, fileName: detail.run.sourceStoragePath });
     const requestId = createWorkerRequestId("acct_process");
-    const workerEndpoint = buildWorkerEndpoint(workerUrl, "/process-statement");
     console.info("docucorex.accounting.worker.request", {
       requestId,
       resolvedAccountingWorkerUrl: workerUrl,
@@ -330,7 +387,6 @@ async function processStatementInBackground(context: WorkspaceContext, detail: A
       parserProfile,
     });
 
-    // 2. Accounting worker (timeout-protected so it cannot hang the function).
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), ACCOUNTING_WORKER_TIMEOUT_MS);
     let response: Response;
@@ -350,8 +406,7 @@ async function processStatementInBackground(context: WorkspaceContext, detail: A
       const aborted = fetchError instanceof Error && fetchError.name === "AbortError";
       const message = aborted ? `Accounting worker timed out after ${ACCOUNTING_WORKER_TIMEOUT_MS / 1000}s.` : `Accounting worker unreachable: ${fetchError instanceof Error ? fetchError.message : String(fetchError)}`;
       console.error("[accounting/process] worker fetch failed", { requestId, endpoint: workerEndpoint, runId, message });
-      await failRun(message, toParserDebug(pipelineDebug));
-      return;
+      return { kind: "unreachable", error: message };
     } finally {
       clearTimeout(timer);
     }
@@ -364,17 +419,62 @@ async function processStatementInBackground(context: WorkspaceContext, detail: A
     }
     console.info("docucorex.accounting.worker.response", { requestId, endpoint: workerEndpoint, runId, status: response.status, ok: response.ok });
 
-    if (response.ok) updateStep("reconciling");
+    if (response.ok) {
+      updateStep("reconciling");
+      return { kind: "ok" };
+    }
 
-    if (!response.ok) {
-      let error = getWorkerError(result, responseText, response.status);
-      error = normalizeWorkerFailure({
-        status: response.status,
-        message: error,
-        workerUrl,
-        workerEndpoint,
-        worker: result.worker ?? asRecord(result.detail)?.worker ?? null,
+    const error = normalizeWorkerFailure({
+      status: response.status,
+      message: getWorkerError(result, responseText, response.status),
+      workerUrl,
+      workerEndpoint,
+      worker: result.worker ?? asRecord(result.detail)?.worker ?? null,
+    });
+    return { kind: "failed", status: response.status, error };
+  };
+
+  let pipelineDebug: PipelineDebug | null = null;
+  try {
+    // 1. Analyse + extract. EVERY document is analysed; the strategy decides how
+    // much work follows — a genuine digital statement takes the native path and
+    // never calls OCR. ACCOUNTING_PRE_EXTRACT=false is the emergency bypass.
+    const { hints, debug } = ACCOUNTING_PRE_EXTRACT_ENABLED
+      ? await runPipelineBeforeWorker(context, detail, { force, onStage: updateStep })
+      : { hints: {}, debug: null };
+    pipelineDebug = debug;
+    updateStep("parsing");
+
+    // 2. Accounting worker.
+    let outcome = await callWorker(hints);
+
+    // 2b. Safety net: the worker found nothing parseable, which for a bank
+    // statement almost always means it is scanned. Re-run the pipeline with
+    // Enhanced OCR (forcing the secondary engine) and give the worker the
+    // recovered text once. Skipped when pre-extraction already ran with OCR and
+    // still produced nothing usable, so this can never loop.
+    if (
+      outcome.kind === "failed" &&
+      ACCOUNTING_OCR_FALLBACK_ENABLED &&
+      isNoTransactionsFailure(outcome.status, outcome.error) &&
+      !pipelineDebug?.ocrUsed
+    ) {
+      console.warn("[accounting/process] worker parsed no transactions — retrying with Enhanced OCR", {
+        runId,
+        status: outcome.status,
+        previousStrategy: pipelineDebug?.strategy ?? null,
       });
+      updateStep("ocr");
+      const retry = await runPipelineBeforeWorker(context, detail, { force: true, enhancedOcr: true, onStage: updateStep });
+      pipelineDebug = retry.debug ?? pipelineDebug;
+      if (Object.keys(retry.hints).length > 0) {
+        updateStep("parsing");
+        outcome = await callWorker(retry.hints);
+      }
+    }
+
+    if (outcome.kind !== "ok") {
+      let error = outcome.error;
       // Do not hide the real reason behind "No FNB transactions could be parsed."
       if (pipelineDebug?.reasonNoTransactions && /no fnb transactions|no transactions could be parsed/i.test(error)) {
         error = pipelineDebug.reasonNoTransactions;
@@ -389,7 +489,14 @@ async function processStatementInBackground(context: WorkspaceContext, detail: A
       action: "accounting_extraction_completed",
       entityType: "accounting_run",
       entityId: runId,
-      metadata: { bank: detail.run.bank, parserProfile, worker: "fastapi" },
+      metadata: {
+        bank: detail.run.bank,
+        parserProfile,
+        worker: "fastapi",
+        extractionStrategy: pipelineDebug?.strategy ?? null,
+        ocrEngine: pipelineDebug?.ocrEngine ?? null,
+        acceptanceVerdict: pipelineDebug?.verdict ?? null,
+      },
     });
   } catch (error) {
     const message = error instanceof Error ? error.message : "Unable to process accounting statement.";
@@ -462,6 +569,10 @@ export async function POST(request: Request) {
         missing_transaction_count: null,
         requires_review: null,
         parser_debug: null,
+        ocr_engine: null,
+        extraction_strategy: null,
+        acceptance_verdict: null,
+        ocr_engine_comparison: null,
         processing_step: PROCESSING_STEP_LABELS.detecting,
         processing_started_at: nowIso,
         updated_at: nowIso,

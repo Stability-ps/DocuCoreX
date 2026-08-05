@@ -301,10 +301,42 @@ test("stale extraction detection is based on current rows, not old stored differ
   assert.doesNotMatch(quality, /storedDrift/);
 });
 
-test("FNB processing skips Vercel pre-extraction unless explicitly enabled", () => {
+test("FNB processing analyses every statement, with an explicit opt-out", () => {
   const route = read("app/api/accounting/fnb/process/route.ts");
-  assert.match(route, /ACCOUNTING_PRE_EXTRACT_ENABLED = process\.env\.ACCOUNTING_PRE_EXTRACT === "true"/);
+  // Every document must be analysed before extraction, so the pipeline now runs
+  // by default. Cost is controlled by the STRATEGY (a genuine digital statement
+  // takes the native path and never calls OCR), not by skipping analysis.
+  assert.match(route, /ACCOUNTING_PRE_EXTRACT_ENABLED = process\.env\.ACCOUNTING_PRE_EXTRACT !== "false"/);
   assert.match(route, /ACCOUNTING_PRE_EXTRACT_ENABLED[\s\S]*runPipelineBeforeWorker/);
+});
+
+test("a statement the worker cannot parse is retried once with Enhanced OCR", () => {
+  const route = read("app/api/accounting/fnb/process/route.ts");
+  assert.match(route, /ACCOUNTING_OCR_FALLBACK_ENABLED = process\.env\.ACCOUNTING_OCR_FALLBACK !== "false"/);
+  assert.match(route, /isNoTransactionsFailure\(outcome\.status, outcome\.error\)/);
+  // Guarded so it can never loop: only when OCR has not already run.
+  assert.match(route, /!pipelineDebug\?\.ocrUsed/);
+  assert.match(route, /enhancedOcr: true/);
+});
+
+test("isNoTransactionsFailure distinguishes 'nothing parseable' from transport errors", async () => {
+  // Relative import: this file does not register the "@/" alias hook.
+  const { isNoTransactionsFailure } = await import("../../lib/accounting/workerFailure.ts");
+  assert.equal(isNoTransactionsFailure(422, "anything"), true);
+  assert.equal(isNoTransactionsFailure(500, "No FNB transactions could be parsed."), true);
+  assert.equal(isNoTransactionsFailure(500, "no readable text could be extracted"), true);
+  // OCR cannot fix a misconfigured or unreachable worker — do not burn a retry.
+  assert.equal(isNoTransactionsFailure(404, "Accounting worker endpoint not found"), false);
+  assert.equal(isNoTransactionsFailure(401, "Unauthorized"), false);
+  assert.equal(isNoTransactionsFailure(503, "Accounting worker unreachable"), false);
+});
+
+test("the winning OCR engine and strategy are persisted on the run", () => {
+  const route = read("app/api/accounting/fnb/process/route.ts");
+  assert.match(route, /ocr_engine: meta\.ocrEngine/);
+  assert.match(route, /extraction_strategy: meta\.strategy/);
+  assert.match(route, /acceptance_verdict: meta\.verdict/);
+  assert.match(route, /ocr_engine_comparison: meta\.ocrEngineComparison/);
 });
 
 test("draft combined export sends continuity override for review-required statements", () => {

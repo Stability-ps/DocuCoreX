@@ -1,11 +1,18 @@
-import type { ExtractionResult, ExtractionScore, ParserSelection, PdfAnalysis } from "@/lib/pdf/types";
+import type { ExtractionDisagreement, ExtractionResult, ExtractionScore, ParserSelection, PdfAnalysis } from "@/lib/pdf/types";
 import { scoreExtraction } from "@/lib/pdf/scoreExtraction";
 
-type ParserKey = "pdfjs" | "pdfplumber" | "ocr";
-type Inputs = { pdfjs?: ExtractionResult; pdfplumber?: ExtractionResult; ocr?: ExtractionResult };
+type ParserKey = "pdfjs" | "pdfplumber" | "ocr" | "mistral_ocr";
+type Inputs = { pdfjs?: ExtractionResult; pdfplumber?: ExtractionResult; ocr?: ExtractionResult; mistral?: ExtractionResult };
+
+const OCR_ENGINE_KEYS: ParserKey[] = ["ocr", "mistral_ocr"];
 
 function num(value: unknown): number | null {
   return typeof value === "number" ? value : null;
+}
+
+// A transaction-count gap this large (or larger) is material rather than noise.
+function materialCountGap(min: number, max: number): boolean {
+  return max - min > Math.max(2, min * 0.02);
 }
 
 // Prefer pdfplumber tables for transaction rows, PDF.js text for metadata, and
@@ -18,8 +25,14 @@ export function mergeExtractionResults(
 ): { selection: ParserSelection; merged: ExtractionResult } {
   const scores: ParserSelection["extractionScores"] = {};
   const available: Array<{ key: ParserKey; result: ExtractionResult; score: ExtractionScore }> = [];
-  for (const key of ["pdfjs", "pdfplumber", "ocr"] as ParserKey[]) {
-    const result = inputs[key];
+  const byKey: Partial<Record<ParserKey, ExtractionResult>> = {
+    pdfjs: inputs.pdfjs,
+    pdfplumber: inputs.pdfplumber,
+    ocr: inputs.ocr,
+    mistral_ocr: inputs.mistral,
+  };
+  for (const key of ["pdfjs", "pdfplumber", "ocr", "mistral_ocr"] as ParserKey[]) {
+    const result = byKey[key];
     if (result) {
       const score = scoreExtraction(result);
       scores[key] = score;
@@ -29,10 +42,22 @@ export function mergeExtractionResults(
 
   const reasons: string[] = [];
   const warnings: string[] = [];
+  const disagreements: ExtractionDisagreement[] = [];
 
   // Best transaction source: prefer pdfplumber tables, then OCR (scanned), then
   // PDF.js — using the first in that order that actually captured transactions.
-  const preferenceOrder: ParserKey[] = ["pdfplumber", "ocr", "pdfjs"];
+  // When BOTH OCR engines produced a result, the higher-scoring one is promoted
+  // ahead of the other; Tesseract keeps the tie because it is the primary engine.
+  const preferenceOrder: ParserKey[] = ["pdfplumber", "ocr", "mistral_ocr", "pdfjs"];
+  const primaryOcr = available.find((c) => c.key === "ocr");
+  const secondaryOcr = available.find((c) => c.key === "mistral_ocr");
+  if (primaryOcr && secondaryOcr && secondaryOcr.score.score > primaryOcr.score.score) {
+    const ocrIndex = preferenceOrder.indexOf("ocr");
+    preferenceOrder.splice(preferenceOrder.indexOf("mistral_ocr"), 1);
+    preferenceOrder.splice(ocrIndex, 0, "mistral_ocr");
+    reasons.push(`mistral_ocr outscored tesseract (${secondaryOcr.score.score} vs ${primaryOcr.score.score})`);
+  }
+
   const byTransactionRows = [...available].sort((a, b) => b.result.transactions.length - a.result.transactions.length || b.score.transactionRows - a.score.transactionRows || b.score.score - a.score.score);
   let transactionSource: (typeof available)[number] | null = null;
   for (const key of preferenceOrder) {
@@ -54,7 +79,7 @@ export function mergeExtractionResults(
   if (!available.length) {
     const empty: ExtractionResult = { parser: "hybrid", pageCount: analysis.pageCount, pages: [], combinedText: "", transactions: [], metadata: {}, warnings: ["No extractor produced a result."] };
     return {
-      selection: { selectedParser: "hybrid", confidence: 0, reasons: ["No extractor succeeded."], extractionScores: scores, warnings: empty.warnings, requiresReview: true },
+      selection: { selectedParser: "hybrid", confidence: 0, reasons: ["No extractor succeeded."], extractionScores: scores, warnings: empty.warnings, requiresReview: true, disagreements: [] },
       merged: empty,
     };
   }
@@ -70,25 +95,87 @@ export function mergeExtractionResults(
     transactions: transactionSource ? transactionSource.result.transactions : [],
     metadata: { ...(textSource.result.metadata || {}), ...(metadataSource?.result.metadata || {}) },
     warnings: [...new Set(available.flatMap((c) => c.result.warnings))],
+    confidence: transactionSource?.result.confidence ?? null,
+    confidenceSource: transactionSource?.result.confidenceSource ?? null,
   };
 
   if (transactionSource) reasons.push(`transactions from ${transactionSource.key} (${transactionSource.result.transactions.length} rows, score ${transactionSource.score.score})`);
   if (metadataSource) reasons.push(`metadata from ${metadataSource.key}`);
-  if (analysis.needsOcr) reasons.push(`analysis flagged ${analysis.kind} — OCR ${inputs.ocr ? "used" : "unavailable"}`);
+  if (analysis.needsOcr) reasons.push(`analysis flagged ${analysis.kind} — OCR ${inputs.ocr || inputs.mistral ? "used" : "unavailable"}`);
 
-  // Cross-parser agreement: transaction counts, totals and closing balance.
-  const counts = available.map((c) => c.result.transactions.length).filter((n) => n > 0);
-  if (counts.length > 1) {
+  // ---- Cross-source agreement -------------------------------------------------
+  // Every material disagreement is RECORDED, not resolved silently. Any entry
+  // here forces review, so a conflict between engines is surfaced to a human
+  // rather than hidden behind whichever source happened to score higher.
+  const withTransactions = available.filter((c) => c.result.transactions.length > 0);
+  if (withTransactions.length > 1) {
+    const counts = withTransactions.map((c) => c.result.transactions.length);
     const min = Math.min(...counts);
     const max = Math.max(...counts);
-    if (max - min > Math.max(2, min * 0.02)) {
-      warnings.push(`Parsers disagree on transaction count (${counts.join(" vs ")}).`);
+    if (materialCountGap(min, max)) {
+      disagreements.push({
+        field: "transactionCount",
+        sources: withTransactions.map((c) => c.key),
+        values: counts.map(String),
+        detail: `Parsers disagree on transaction count (${counts.join(" vs ")}).`,
+      });
     }
   }
-  const closings = available.map((c) => num(c.result.metadata.closingBalance)).filter((n): n is number => n != null);
-  if (new Set(closings.map((v) => v.toFixed(2))).size > 1) {
-    warnings.push(`Parsers disagree on closing balance (${closings.map((v) => v.toFixed(2)).join(" vs ")}).`);
+
+  for (const field of ["closingBalance", "openingBalance"] as const) {
+    const withBalance = available
+      .map((c) => ({ key: c.key, value: num(c.result.metadata[field]) }))
+      .filter((c): c is { key: ParserKey; value: number } => c.value != null);
+    if (withBalance.length > 1 && new Set(withBalance.map((c) => c.value.toFixed(2))).size > 1) {
+      disagreements.push({
+        field,
+        sources: withBalance.map((c) => c.key),
+        values: withBalance.map((c) => c.value.toFixed(2)),
+        detail: `Parsers disagree on ${field === "closingBalance" ? "closing" : "opening"} balance (${withBalance.map((c) => c.value.toFixed(2)).join(" vs ")}).`,
+      });
+    }
   }
+
+  // Amount totals: compare summed debits/credits across sources that captured
+  // transactions. A material gap means the engines read different figures.
+  if (withTransactions.length > 1) {
+    const totals = withTransactions.map((c) => ({
+      key: c.key,
+      total: c.result.transactions.reduce((sum, t) => sum + Math.abs(t.debit ?? 0) + Math.abs(t.credit ?? 0), 0),
+    }));
+    const values = totals.map((t) => t.total);
+    const min = Math.min(...values);
+    const max = Math.max(...values);
+    if (max - min > Math.max(0.05, min * 0.01)) {
+      disagreements.push({
+        field: "amountTotals",
+        sources: totals.map((t) => t.key),
+        values: totals.map((t) => t.total.toFixed(2)),
+        detail: `Parsers disagree on total transaction value (${totals.map((t) => t.total.toFixed(2)).join(" vs ")}).`,
+      });
+    }
+  }
+
+  // Date coverage: a materially different first/last transaction date means one
+  // engine dropped rows at an edge of the statement.
+  if (withTransactions.length > 1) {
+    const ranges = withTransactions
+      .map((c) => {
+        const dates = c.result.transactions.map((t) => t.date).filter((d): d is string => Boolean(d)).sort();
+        return dates.length ? { key: c.key, range: `${dates[0]}..${dates[dates.length - 1]}` } : null;
+      })
+      .filter((r): r is { key: ParserKey; range: string } => r != null);
+    if (ranges.length > 1 && new Set(ranges.map((r) => r.range)).size > 1) {
+      disagreements.push({
+        field: "dateRange",
+        sources: ranges.map((r) => r.key),
+        values: ranges.map((r) => r.range),
+        detail: `Parsers disagree on the statement date range (${ranges.map((r) => r.range).join(" vs ")}).`,
+      });
+    }
+  }
+
+  warnings.push(...disagreements.map((d) => d.detail));
 
   // Selected parser: hybrid if we blended sources, otherwise the single winner.
   const usedMultiple = transactionSource && metadataSource && transactionSource.key !== metadataSource.key;
@@ -101,7 +188,9 @@ export function mergeExtractionResults(
   if (requiresReview && !warnings.length) warnings.push("Extraction confidence is low — review before export.");
 
   return {
-    selection: { selectedParser, confidence, reasons, extractionScores: scores, warnings, requiresReview },
+    selection: { selectedParser, confidence, reasons, extractionScores: scores, warnings, requiresReview, disagreements },
     merged,
   };
 }
+
+export { OCR_ENGINE_KEYS };

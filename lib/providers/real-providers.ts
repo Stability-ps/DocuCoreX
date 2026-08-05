@@ -10,14 +10,16 @@ import { extractDocument } from "@/lib/ocr/extractDocument";
 export class PipelineOcrProvider implements OCRProvider {
   name: ProviderName;
   private useOpenAI: boolean;
+  private enhanced: boolean;
 
-  constructor(useOpenAI: boolean) {
+  constructor(useOpenAI: boolean, enhanced = false) {
     this.useOpenAI = useOpenAI;
+    this.enhanced = enhanced;
     this.name = useOpenAI ? "openai" : "tesseract";
   }
 
   async run(document: Pick<DocumentRecord, "id" | "name" | "storagePath" | "mimeType">): Promise<OcrResult> {
-    const extraction = await extractDocument(document, { useOpenAI: this.useOpenAI });
+    const extraction = await extractDocument(document, { useOpenAI: this.useOpenAI, enhanced: this.enhanced });
     return {
       id: `ocr_${document.id}`,
       documentId: document.id,
@@ -26,13 +28,18 @@ export class PipelineOcrProvider implements OCRProvider {
       text: extraction.text,
       layoutStatus: "complete",
       createdAt: new Date().toISOString(),
+      // Which OCR engine actually produced the accepted text, and its own
+      // reported confidence — surfaced so the winner is visible in the UI/DB.
+      engine: extraction.ocrEngine,
+      engineConfidence: extraction.ocrConfidence,
+      strategy: extraction.strategy,
     };
   }
 }
 
 export class OpenAIVisionOcrProvider extends PipelineOcrProvider {
-  constructor() {
-    super(true);
+  constructor(enhanced = false) {
+    super(true, enhanced);
   }
 }
 

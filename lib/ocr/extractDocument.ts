@@ -27,7 +27,14 @@ export type DocumentExtraction = {
   text: string;
   method: ExtractionMethod; // authoritative engine for the text
   ocrUsed: boolean;
+  // Extraction QUALITY confidence from the acceptance engine (0..100). This is
+  // deliberately not the PDF-type-detection confidence, and not a raw OCR
+  // engine confidence — neither describes whether the extraction is correct.
   confidence: number;
+  // Engine-reported OCR confidence, recorded for comparison only.
+  ocrConfidence: number | null;
+  ocrEngine: "tesseract" | "mistral_ocr" | null;
+  strategy: string;
   detectedType: DocumentType;
   fields: Record<string, string | number | boolean | null>;
   lineItems: Array<{ date: string | null; description: string | null; debit: number | null; credit: number | null; balance: number | null }>;
@@ -50,24 +57,34 @@ function openAiConfigured(): boolean {
  */
 export async function extractDocument(
   document: Pick<DocumentRecord, "id" | "name" | "storagePath" | "mimeType"> & { detectedType?: DocumentType },
-  options: { useOpenAI: boolean },
+  options: { useOpenAI: boolean; enhanced?: boolean },
 ): Promise<DocumentExtraction> {
   const bytes = await loadDocumentBytes(document.storagePath);
   if (!bytes || !bytes.length) {
     throw new Error("Original document bytes are unavailable for extraction.");
   }
+  const enhanced = options.enhanced === true;
   const fileHash = computeFileHash(bytes);
-  const cacheKey = `${document.id}:${fileHash}:${options.useOpenAI ? "ai" : "det"}`;
+  // Enhanced runs are cached separately — an enhanced request must never be
+  // satisfied by a standard result that skipped the secondary OCR engine.
+  const cacheKey = `${document.id}:${fileHash}:${options.useOpenAI ? "ai" : "det"}:${enhanced ? "enh" : "std"}`;
   const cached = cache.get(cacheKey);
   if (cached) return cached;
 
   const fileName = document.name || "document.pdf";
-  // REUSE the existing pipeline (PDF.js/pdfplumber/Tesseract + accounting validation).
-  const pipeline = await runExtractionPipeline(bytes, fileName, { documentId: document.id, fileHash });
+  // REUSE the existing pipeline (analyse → strategy → extract → accept → escalate).
+  const pipeline = await runExtractionPipeline(bytes, fileName, { documentId: document.id, fileHash, enhancedOcr: enhanced });
 
   const warnings = [...pipeline.warnings];
   let text = pipeline.merged.combinedText;
-  let method: ExtractionMethod = pipeline.parserMethod === "ocr" ? "tesseract" : pipeline.parserMethod === "pdfplumber" ? "pdfplumber" : "pdfjs";
+  let method: ExtractionMethod =
+    pipeline.parserMethod === "ocr"
+      ? "tesseract"
+      : pipeline.parserMethod === "mistral_ocr"
+        ? "mistral_ocr"
+        : pipeline.parserMethod === "pdfplumber"
+          ? "pdfplumber"
+          : "pdfjs";
   let ocrUsed = pipeline.ocrUsed;
   let openaiCostUsd = 0;
 
@@ -151,7 +168,13 @@ export async function extractDocument(
     text,
     method,
     ocrUsed,
-    confidence: Math.round(pipeline.analysis.confidence),
+    // The acceptance engine's extraction-quality confidence — NOT
+    // pipeline.analysis.confidence, which only describes how digital the PDF
+    // looked and says nothing about whether the extraction is correct.
+    confidence: Math.round(pipeline.selection.confidence),
+    ocrConfidence: pipeline.merged.confidence ?? null,
+    ocrEngine: pipeline.ocrEngine,
+    strategy: pipeline.strategy,
     detectedType: (document.detectedType && document.detectedType !== "unknown" ? document.detectedType : "bank_statement") as DocumentType,
     fields,
     lineItems,
