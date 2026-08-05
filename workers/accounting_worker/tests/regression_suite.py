@@ -1058,6 +1058,8 @@ def run_local_real_statement_files_case() -> None:
 
 
 def run() -> None:
+    test_descriptionless_fee_rows_are_preserved()
+    test_unnamed_fee_rows_are_labelled_from_statement_figures_only()
     run_fnb_extraction_case()
     run_statement_period_case()
     run_missing_column_fallback_case()
@@ -1090,6 +1092,66 @@ def run() -> None:
             raise AssertionError(f"{case_id}: fixture file not found: {fixture_path}")
 
         run_synthetic_case(case_id, fixture_path)
+
+
+def test_descriptionless_fee_rows_are_preserved() -> None:
+    """FNB prints fee rows with no narrative: "DD Mon <amount> <balance>".
+
+    LOOSE_DATE's optional year group used to swallow the amount's integer part
+    ("26 Apr 550.00" parsed its date as "26 Apr 550"), which build_transaction
+    could not parse, so the row was dropped. Two such rows vanished per
+    statement and the debit count came up one short of the bank's own summary.
+    """
+    import main
+
+    for line, expected_date in (
+        ("26 Apr 550.00 148,157.78Cr", "26 Apr"),
+        ("26 Apr 15.00 148,142.78Cr", "26 Apr"),
+        ("26 May 30.00 106,128.78Cr", "26 May"),
+        ("02 Jun 1,234.56 10,000.00Cr", "02 Jun"),
+    ):
+        assert main.LOOSE_DATE.match(line).group("date") == expected_date, line
+
+    # A genuine year must still be recognised.
+    for line, expected_date in (
+        ("01 Apr 2025 Something 10.00 5.00Cr", "01 Apr 2025"),
+        ("01/04/2025 Foo 10.00 5.00Cr", "01/04/2025"),
+        ("01 Apr Magtape 330.00 123,839.78Cr", "01 Apr"),
+    ):
+        assert main.LOOSE_DATE.match(line).group("date") == expected_date, line
+
+    # The row must now parse into a real debit, not be discarded.
+    parsed = main.parse_fnb_transaction_line("26 Apr 550.00 148,157.78Cr", {})
+    assert parsed is not None, "descriptionless fee row must not be dropped"
+    assert parsed.debit_amount == 550.0
+    assert parsed.running_balance == 148157.78
+    assert parsed.description == main.UNNAMED_FEE_DESCRIPTION
+
+
+def test_unnamed_fee_rows_are_labelled_from_statement_figures_only() -> None:
+    """Naming must come from the statement's own figures, never a guess."""
+    import main
+
+    charged = main.build_transaction(
+        "26 Apr", "FNB App Rtc Pmt To Someone", 2500.0, None, 148707.78, {}, None, "raw", 96
+    )
+    assert charged is not None
+    charged.notes = "Accrued bank charges: 15.00"
+    fee = main.build_transaction("26 Apr", "", 15.0, None, 148692.78, {}, None, "raw", 96)
+    unknown = main.build_transaction("26 Apr", "", 30.0, None, 148662.78, {}, None, "raw", 96)
+    assert fee is not None and unknown is not None
+
+    rows = [charged, fee, unknown]
+    main.label_unnamed_fee_rows(rows, {})
+
+    # Matches a preceding accrued charge -> named.
+    assert fee.description == "Transaction Fee"
+    assert fee.bank_charge is True
+    # Nothing proves what the 30.00 is, so it keeps the neutral placeholder
+    # rather than being guessed at.
+    assert unknown.description == main.UNNAMED_FEE_DESCRIPTION
+    # Amounts are never altered by labelling.
+    assert fee.debit_amount == 15.0 and unknown.debit_amount == 30.0
 
 
 if __name__ == "__main__":

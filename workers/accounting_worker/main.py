@@ -509,7 +509,20 @@ TRANSACTION_LINE = re.compile(
     flags=re.IGNORECASE,
 )
 
-LOOSE_DATE = re.compile(r"(?P<date>\d{1,2}[/-]\d{1,2}(?:[/-]\d{2,4})?|\d{1,2}\s+[A-Za-z]{3,9}(?:\s+\d{2,4})?)")
+# The optional YEAR group must not swallow the amount that follows a
+# descriptionless row. On "26 Apr 550.00 148,157.78Cr" the old pattern matched
+# the date as "26 Apr 550" — taking the integer part of the amount as a year —
+# which build_transaction could not parse, so the row was silently dropped. Two
+# such rows per statement disappeared (the monthly account fee and a transaction
+# fee), leaving the debit count one short of the bank's own summary.
+#
+# A real year is never followed by a digit, decimal point or thousands comma, so
+# the lookahead rejects "550" (from 550.00) and "15" (from 15.00) while still
+# accepting "01 Apr 2025". Rows WITH a description were unaffected because their
+# next token is text, which is why only the fee rows vanished.
+LOOSE_DATE = re.compile(
+    r"(?P<date>\d{1,2}[/-]\d{1,2}(?:[/-]\d{2,4}(?![\d.,]))?|\d{1,2}\s+[A-Za-z]{3,9}(?:\s+\d{2,4}(?![\d.,]))?)"
+)
 LOOSE_MONEY = re.compile(r"(?:R\s*)?-?\(?\d[\d,\s]*\.\d{2}\)?-?")
 FNB_PAGE_ARTIFACT = re.compile(
     r"\b(?:Page\s+\d+\s+of\s+\d+|Delivery\s+Method|Branch\s+Number|Account\s+Number|"
@@ -784,6 +797,51 @@ def is_noise_transaction(description: str) -> bool:
     return any(item in lowered for item in noise)
 
 
+UNNAMED_FEE_DESCRIPTION = "Unnamed Bank Fee"
+
+
+def label_unnamed_fee_rows(transactions: list["ParsedTransaction"], metadata: dict[str, Any]) -> None:
+    """Name descriptionless fee rows from the statement's OWN figures.
+
+    These rows are already parsed and already correct — this only replaces the
+    neutral placeholder with a specific label where the statement proves which
+    fee it is. Nothing is created, merged, removed or re-valued, and a row whose
+    kind cannot be proven keeps the placeholder rather than being guessed at.
+    """
+    declared_service_fee = metadata.get("service_fees")
+    declared = decimal_amount(declared_service_fee) if declared_service_fee is not None else None
+
+    for index, transaction in enumerate(transactions):
+        if transaction.description != UNNAMED_FEE_DESCRIPTION:
+            continue
+        transaction.bank_charge = True
+        amount = decimal_amount(transaction.debit_amount or 0)
+
+        # A preceding row on the same date carrying an accrued charge equal to
+        # this amount identifies it as that transaction's fee.
+        matched_charge = False
+        for previous in reversed(transactions[:index]):
+            if previous.transaction_date != transaction.transaction_date:
+                break
+            note = previous.notes or ""
+            if "Accrued bank charges:" in note:
+                try:
+                    charged = decimal_amount(note.split("Accrued bank charges:")[1].strip())
+                except Exception:  # noqa: BLE001 — a malformed note must not break parsing
+                    charged = None
+                if charged is not None and charged == amount:
+                    matched_charge = True
+                    break
+        if matched_charge:
+            transaction.description = "Transaction Fee"
+            continue
+
+        # Otherwise, if it equals the declared service-fee total it is the
+        # monthly service fee.
+        if declared is not None and amount == declared:
+            transaction.description = "Service Fee"
+
+
 def build_transaction(
     raw_date: str,
     description: str,
@@ -799,10 +857,12 @@ def build_transaction(
     if is_noise_transaction(normalized_description):
         return None
     if not normalized_description:
-        # FNB "#" fee rows sometimes lose their description in text extraction,
-        # leaving only date + amount + balance. Keep the row (it still moves the
-        # balance) with a placeholder rather than dropping it and failing recon.
-        normalized_description = "Unlabelled transaction"
+        # FNB prints its fee rows with no narrative at all — just
+        # "DD Mon <amount> <balance>". They are real ledger entries that move the
+        # balance, so keep them with a neutral placeholder. The caller may refine
+        # this to "Transaction Fee" / "Service Fee" where the statement's own
+        # figures prove which it is; it is never guessed.
+        normalized_description = UNNAMED_FEE_DESCRIPTION
 
     for label, amount in (("debit", debit), ("credit", credit), ("balance", balance)):
         if amount is not None and Decimal(str(amount)).copy_abs() > MAX_DATABASE_AMOUNT:
@@ -1604,6 +1664,12 @@ def parse_transactions(pages: list[dict[str, Any]], metadata: dict[str, Any], fu
         service_fee_transactions = parse_fnb_service_fee_transactions(full_text, metadata) if full_text else []
         hash_fee_transactions = parse_hash_fee_lines(full_text, metadata) if full_text else []
         parsed = dedupe_transactions([*section_transactions, *service_fee_transactions, *hash_fee_transactions])
+        # Name the descriptionless fee rows from the statement's own figures.
+        # Runs BEFORE the inferred-fee fallback so that fallback sees the real,
+        # recovered rows: with them present there is no running-balance gap, so
+        # insert_inferred_fnb_service_fees becomes dormant on its own. It is left
+        # untouched and still fires when the genuine rows cannot be recovered.
+        label_unnamed_fee_rows(parsed, metadata)
         return insert_inferred_fnb_service_fees(parsed, metadata)
     table_transactions = parse_table_transactions(pages, metadata)
     if table_transactions:
