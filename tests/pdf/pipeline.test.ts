@@ -12,7 +12,8 @@ const read = (p: string) => readFileSync(join(root, p), "utf8");
 
 const { scoreExtraction } = await import("@/lib/pdf/scoreExtraction.ts");
 const { analyzeExtraction } = await import("@/lib/pdf/analyzePdf.ts");
-const { mergeExtractionResults } = await import("@/lib/pdf/mergeExtractionResults.ts");
+const mergeModule = await import("@/lib/pdf/mergeExtractionResults.ts");
+const { mergeExtractionResults } = mergeModule;
 const { selectExtractionStrategy } = await import("@/lib/pdf/extractionStrategy.ts");
 const { validateBankStatement } = await import("@/lib/accounting/validateBankStatement.ts");
 const { buildWorkerInput, extractionProcessingMetadata, parserMethodLabel } = await import("@/lib/pdf/workerHandoff.ts");
@@ -743,4 +744,78 @@ test("mergeExtractionResults prefers pdfplumber transactions and flags disagreem
   });
   assert.ok(disagree.selection.warnings.some((w: string) => /disagree/i.test(w)), "flags disagreement");
   assert.equal(disagree.selection.requiresReview, true);
+});
+
+// ── Confidence calculation bugs (regression guards) ───────────────────────────
+
+test("PDF.js disagreeing with a table parser does not fine the extraction", () => {
+  // The reported case: pdfplumber extracted the statement correctly and it
+  // reconciled at R0.00, but PDF.js — a raw text-layer probe — read different
+  // counts and balances. Four detectors fired at 15 points each and a ~98 score
+  // was reported as 38.
+  const plumber = plumberWithRows(70);
+  const weakPdfjs = {
+    parser: "pdfjs",
+    pageCount: 4,
+    pages: [pageOf("garbled text layer 01/02/2026 10.00", 1)],
+    combinedText: "garbled text layer 01/02/2026 10.00",
+    transactions: [{ date: "2026-02-01", description: "PARTIAL", debit: 10, credit: null, balance: 1 }],
+    metadata: { openingBalance: 1, closingBalance: 2 },
+    warnings: [],
+  } as never;
+
+  const { selection } = mergeExtractionResults(analysisFor(4), { pdfplumber: plumber, pdfjs: weakPdfjs });
+  assert.deepEqual(selection.disagreements, [], "PDF.js is not a peer — its differences are not conflicts");
+  assert.ok(selection.confidence > 60, `a correct extraction must not be fined into review, got ${selection.confidence}`);
+});
+
+test("disagreement between real peers is still recorded and still penalised", () => {
+  const tesseract = plumberWithRows(70) as unknown as Record<string, unknown>;
+  tesseract.parser = "ocr";
+  const mistral = plumberWithRows(40) as unknown as Record<string, unknown>;
+  mistral.parser = "mistral_ocr";
+  mistral.metadata = { openingBalance: 10000, closingBalance: 5555 };
+
+  const { selection } = mergeExtractionResults(analysisFor(4), { ocr: tesseract as never, mistral: mistral as never });
+  assert.ok(selection.disagreements.length > 0, "two OCR engines contradicting each other IS a conflict");
+  assert.equal(selection.requiresReview, true, "any disagreement still forces review");
+});
+
+test("the compounded penalty is capped", () => {
+  const { DISAGREEMENT_PENALTY_PER_WARNING, MAX_DISAGREEMENT_PENALTY } = mergeModule;
+  assert.equal(DISAGREEMENT_PENALTY_PER_WARNING, 15);
+  assert.equal(MAX_DISAGREEMENT_PENALTY, 30);
+  const src = read("lib/pdf/mergeExtractionResults.ts");
+  assert.match(src, /Math\.min\(MAX_DISAGREEMENT_PENALTY, warnings\.length \* DISAGREEMENT_PENALTY_PER_WARNING\)/);
+});
+
+test("the worker weights reconciliation checks by their real key", () => {
+  const worker = read("workers/accounting_worker/main.py");
+  // validate_extraction builds checks keyed by "name"; reading "rule" made every
+  // weight fall through to the default, so the weighting table was inert.
+  assert.match(worker, /weights\.get\(str\(c\.get\("name"\)\), 5\)/);
+  assert.ok(!/weights\.get\(str\(c\.get\("rule"\)\), 5\)/.test(worker), "the 'rule' key must be gone");
+  // The failed-rules penalty read the wrong key too.
+  assert.match(worker, /rules = extraction_check\.get\("failures"\)/);
+  assert.ok(!/extraction_check\.get\("failed_rules"\)/.test(worker));
+  // The weighting that was inert must still be present and meaningful.
+  assert.match(worker, /"reconciliation": 50/);
+});
+
+test("PDF.js finding MORE rows than the winner is still flagged", () => {
+  // The asymmetry: fewer rows from a text-layer probe is expected noise, but
+  // more rows means the winner may have dropped data — that must not be hidden.
+  const plumber = plumberWithRows(10);
+  const richPdfjs = {
+    parser: "pdfjs",
+    pageCount: 4,
+    pages: [pageOf("x".repeat(200), 1)],
+    combinedText: "x".repeat(200),
+    transactions: Array.from({ length: 60 }, (_, i) => ({ date: `2026-02-0${(i % 9) + 1}`, description: `ROW ${i}`, debit: 10, credit: null, balance: 100 - i })),
+    metadata: { openingBalance: 10000, closingBalance: 9900 },
+    warnings: [],
+  } as never;
+  const { selection } = mergeExtractionResults(analysisFor(4), { pdfplumber: plumber, pdfjs: richPdfjs });
+  assert.ok(selection.disagreements.length > 0, "the winner may have dropped rows — flag it");
+  assert.equal(selection.requiresReview, true);
 });

@@ -177,3 +177,96 @@ test("migration 018 creates the observational table", () => {
   }
   assert.match(sql, /enable row level security/);
 });
+
+// ── Sampling gate ─────────────────────────────────────────────────────────────
+
+function sampleEvidence(over: Record<string, unknown> = {}) {
+  return {
+    extractionConfidence: 97,
+    reconciliationConfidence: 100,
+    reconciliationDifference: 0,
+    missingTransactionCount: 0,
+    merged: statement("pdfplumber", 60),
+    extractionRequiresReview: false,
+    ...over,
+  } as never;
+}
+
+test("a complete extraction is skipped and never costs an Azure call", () => {
+  const d = shadow.decideShadowSample(sampleEvidence());
+  assert.equal(d.sample, false);
+  assert.match(d.reason, /already complete/i);
+});
+
+test("each shortfall condition triggers a sample", () => {
+  const cases: Array<[string, Record<string, unknown>, RegExp]> = [
+    ["low extraction confidence", { extractionConfidence: 94 }, /extraction confidence 94/],
+    ["imperfect reconciliation confidence", { reconciliationConfidence: 80 }, /reconciliation confidence 80/],
+    ["non-zero difference", { reconciliationDifference: -12.5 }, /difference -12\.50/],
+    ["missing rows", { missingTransactionCount: 3 }, /3 transaction row\(s\) missing/],
+    ["extraction-level review", { extractionRequiresReview: true }, /review required by the extraction gate/],
+  ];
+  for (const [label, over, expected] of cases) {
+    const d = shadow.decideShadowSample(sampleEvidence(over));
+    assert.equal(d.sample, true, label);
+    assert.match(d.reason, expected, label);
+  }
+});
+
+test("wrapped and multi-line descriptions trigger a sample", () => {
+  const wrapped = statement("pdfplumber", 2, {
+    transactions: [
+      { date: "2026-02-01", description: "PAYMENT TO ACME AND", debit: 10, credit: null, balance: 9990 },
+      { date: "2026-02-02", description: "CLEAN MERCHANT", debit: 10, credit: null, balance: 9980 },
+    ],
+  });
+  assert.match(shadow.decideShadowSample(sampleEvidence({ merged: wrapped })).reason, /wrapped transaction descriptions/);
+
+  const multiline = statement("pdfplumber", 1, {
+    transactions: [{ date: "2026-02-01", description: "ACME LTD\nTRADING AS FOO", debit: 10, credit: null, balance: 9990 }],
+  });
+  assert.equal(shadow.hasMultiLineDescriptions(multiline), true);
+  assert.match(shadow.decideShadowSample(sampleEvidence({ merged: multiline })).reason, /multi-line merchant descriptions/);
+});
+
+test("missing balances trigger a sample and are named", () => {
+  const noClosing = statement("pdfplumber", 60, { metadata: { openingBalance: 10000 } });
+  const d = shadow.decideShadowSample(sampleEvidence({ merged: noClosing }));
+  assert.equal(d.sample, true);
+  assert.match(d.reason, /missing closingBalance/);
+});
+
+test("classification-driven review does NOT trigger a sample", () => {
+  // The worker's per-transaction review flags are categorisation decisions.
+  // Azure cannot influence them, so they must never buy an Azure call.
+  const d = shadow.decideShadowSample(sampleEvidence({ extractionRequiresReview: false }));
+  assert.equal(d.sample, false, "only EXTRACTION-level review may sample");
+});
+
+test("every shortfall is reported, not just the first", () => {
+  const d = shadow.decideShadowSample(sampleEvidence({ extractionConfidence: 50, reconciliationDifference: 9.99, missingTransactionCount: 2 }));
+  assert.match(d.reason, /extraction confidence/);
+  assert.match(d.reason, /difference/);
+  assert.match(d.reason, /missing/);
+});
+
+test("skipped runs are recorded, and Azure is not called for them", () => {
+  const route = read("app/api/accounting/fnb/process/route.ts");
+  const fn = route.slice(route.indexOf("async function runShadowComparison"), route.indexOf("type ProcessBody"));
+  const gateIdx = fn.indexOf("decideShadowSample({");
+  const azureIdx = fn.indexOf("await extractWithAzureDocumentIntelligence(");
+  assert.ok(gateIdx > 0 && azureIdx > gateIdx, "the gate must precede the Azure call");
+  assert.match(fn, /shadow_skipped: true/);
+  assert.match(fn, /shadow_skip_reason: sampleDecision\.reason/);
+  // The skip path returns BEFORE Azure.
+  const skipBlock = fn.slice(fn.indexOf("if (!sampleDecision.sample)"), azureIdx);
+  assert.match(skipBlock, /return;/, "skip must return before the Azure call");
+  assert.ok(!/extractWithAzureDocumentIntelligence/.test(skipBlock));
+});
+
+test("migration 020 records the skip fields", () => {
+  const sql = read("supabase/migrations/020_shadow_sampling.sql");
+  for (const col of ["shadow_skipped", "shadow_skip_reason", "sample_reason", "extraction_confidence", "reconciliation_confidence"]) {
+    assert.match(sql, new RegExp(`add column if not exists ${col}`), `must add ${col}`);
+  }
+});
