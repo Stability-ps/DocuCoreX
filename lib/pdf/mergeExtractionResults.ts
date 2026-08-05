@@ -4,6 +4,9 @@ import { scoreExtraction } from "@/lib/pdf/scoreExtraction";
 type ParserKey = "pdfjs" | "pdfplumber" | "ocr" | "mistral_ocr" | "azure_di";
 type Inputs = { pdfjs?: ExtractionResult; pdfplumber?: ExtractionResult; ocr?: ExtractionResult; mistral?: ExtractionResult; azure?: ExtractionResult };
 
+export const DISAGREEMENT_PENALTY_PER_WARNING = 15;
+export const MAX_DISAGREEMENT_PENALTY = 30;
+
 function num(value: unknown): number | null {
   return typeof value === "number" ? value : null;
 }
@@ -42,6 +45,7 @@ export function mergeExtractionResults(
   const reasons: string[] = [];
   const warnings: string[] = [];
   const disagreements: ExtractionDisagreement[] = [];
+
 
   // Best transaction source: prefer pdfplumber tables, then OCR (scanned), then
   // PDF.js — using the first in that order that actually captured transactions.
@@ -138,11 +142,29 @@ export function mergeExtractionResults(
   if (metadataSource) reasons.push(`metadata from ${metadataSource.key}`);
   if (analysis.needsOcr) reasons.push(`analysis flagged ${analysis.kind} — OCR ${inputs.ocr || inputs.mistral ? "used" : "unavailable"}`);
 
+  // Which sources may raise a disagreement.
+  //
+  // PDF.js is a raw text-layer probe used for analysis and routing; its
+  // transaction parsing is a byproduct. When it simply finds FEWER rows than the
+  // winner that is expected, not a conflict — yet each detector was charging 15
+  // points for it, and four detectors took a ~98 score to 38 on a statement that
+  // reconciled exactly.
+  //
+  // The rule is therefore ASYMMETRIC rather than a blanket exclusion. If PDF.js
+  // found materially MORE rows than the winner, that is a genuine signal the
+  // winner dropped data and must still be flagged. Finding fewer is noise.
+  const winnerRows = transactionSource?.result.transactions.length ?? 0;
+  const peers = available.filter((candidate) => {
+    if (candidate.key !== "pdfjs") return true;
+    const pdfjsRows = candidate.result.transactions.length;
+    return materialCountGap(winnerRows, pdfjsRows) && pdfjsRows > winnerRows;
+  });
+
   // ---- Cross-source agreement -------------------------------------------------
   // Every material disagreement is RECORDED, not resolved silently. Any entry
   // here forces review, so a conflict between engines is surfaced to a human
   // rather than hidden behind whichever source happened to score higher.
-  const withTransactions = available.filter((c) => c.result.transactions.length > 0);
+  const withTransactions = peers.filter((c) => c.result.transactions.length > 0);
   if (withTransactions.length > 1) {
     const counts = withTransactions.map((c) => c.result.transactions.length);
     const min = Math.min(...counts);
@@ -158,7 +180,7 @@ export function mergeExtractionResults(
   }
 
   for (const field of ["closingBalance", "openingBalance"] as const) {
-    const withBalance = available
+    const withBalance = peers
       .map((c) => ({ key: c.key, value: num(c.result.metadata[field]) }))
       .filter((c): c is { key: ParserKey; value: number } => c.value != null);
     if (withBalance.length > 1 && new Set(withBalance.map((c) => c.value.toFixed(2))).size > 1) {
@@ -218,7 +240,14 @@ export function mergeExtractionResults(
   const selectedParser: ParserSelection["selectedParser"] = usedMultiple ? "hybrid" : winner.key;
 
   // Confidence: winner score, reduced by disagreement.
-  const confidence = Math.max(0, Math.min(100, Math.round((winner.score.score) - warnings.length * 15)));
+  // Disagreement detectors are CORRELATED: a row-count difference also shows up
+  // as an amount-total and a date-range difference, so four detectors usually
+  // describe one root cause. Charging 15 each compounded a single discrepancy
+  // into a 60-point penalty. The cap keeps the signal without letting one
+  // problem be billed four times. requiresReview is unaffected — ANY
+  // disagreement still forces review, so nothing is hidden by capping the score.
+  const penalty = Math.min(MAX_DISAGREEMENT_PENALTY, warnings.length * DISAGREEMENT_PENALTY_PER_WARNING);
+  const confidence = Math.max(0, Math.min(100, Math.round(winner.score.score - penalty)));
   const requiresReview = warnings.length > 0 || confidence < 60 || (transactionSource?.result.transactions.length ?? 0) === 0;
   if (requiresReview && !warnings.length) warnings.push("Extraction confidence is low — review before export.");
 

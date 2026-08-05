@@ -1723,7 +1723,8 @@ def reconciliation_confidence(extraction_check: dict[str, Any], missing_rows: in
     averaging the two hides both. Returns None when nothing was checked, because
     an absent score is honest where 0 would read as "checked and failed".
     """
-    rules = extraction_check.get("failed_rules")
+    # validate_extraction() returns "failures", not "failed_rules".
+    rules = extraction_check.get("failures")
     checks = extraction_check.get("checks")
     if not isinstance(checks, list) or not checks:
         # No per-rule detail: fall back to the coarse status.
@@ -1737,10 +1738,14 @@ def reconciliation_confidence(extraction_check: dict[str, Any], missing_rows: in
         "transaction_count": 10, "credit_total": 7, "debit_total": 7,
         "credit_count": 3, "debit_count": 3,
     }
-    total = sum(weights.get(str(c.get("rule")), 5) for c in checks)
+    # validate_extraction() keys each check by "name". Reading "rule" returned
+    # None for every check, so weights.get(None, 5) fell through to the default
+    # and EVERY check was weighted 5 — the table below was entirely inert, and a
+    # statement that reconciled perfectly scored no better than one that did not.
+    total = sum(weights.get(str(c.get("name")), 5) for c in checks)
     if total == 0:
         return None
-    earned = sum(weights.get(str(c.get("rule")), 5) for c in checks if c.get("ok"))
+    earned = sum(weights.get(str(c.get("name")), 5) for c in checks if c.get("ok"))
     score = (earned / total) * 100.0
     if missing_rows:
         score -= min(30.0, missing_rows * 5.0)
