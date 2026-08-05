@@ -384,6 +384,16 @@ function normalizeWorkerFailure(input: {
     return `Accounting worker endpoint not found at ${input.workerEndpoint}. ACCOUNTING_WORKER_URL is misconfigured (current: ${input.workerUrl}).${workerMetaSuffix}`;
   }
 
+  // The worker's auth fails closed, so these two statuses mean a configuration
+  // mismatch, not a bad statement. Say so — otherwise an operator reads
+  // "Invalid credentials" on an upload screen and goes looking at the PDF.
+  if (input.status === 503 && /not configured for authenticated access/i.test(detail)) {
+    return `Accounting worker has no ACCOUNTING_WORKER_TOKEN configured, so it is refusing all requests. Set it on the worker service.${workerMetaSuffix}`;
+  }
+  if (input.status === 401) {
+    return `Accounting worker rejected our credentials. ACCOUNTING_WORKER_TOKEN must be set to the same value here and on the worker service.${workerMetaSuffix}`;
+  }
+
   return `${detail || `Accounting worker returned HTTP ${input.status}.`} (endpoint: ${input.workerEndpoint}).${workerMetaSuffix}`;
 }
 
