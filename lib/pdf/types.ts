@@ -15,10 +15,10 @@ export type ExtractionPage = {
 
 // OCR engines. "ocr" is the historical id for the primary OCRmyPDF/Tesseract
 // engine and is kept verbatim so persisted parser_method values stay readable.
-export type OcrEngineId = "tesseract" | "mistral_ocr";
+export type OcrEngineId = "tesseract" | "mistral_ocr" | "azure_di";
 
 export type ExtractionResult = {
-  parser: "pdfjs" | "pdfplumber" | "ocr" | "mistral_ocr" | "hybrid";
+  parser: "pdfjs" | "pdfplumber" | "ocr" | "mistral_ocr" | "azure_di" | "hybrid";
   pageCount: number;
   pages: ExtractionPage[];
   combinedText: string;
@@ -94,7 +94,7 @@ export type ExtractionScore = {
 
 // The parser-selection / merge decision (step 5 of the spec).
 export type ParserSelection = {
-  selectedParser: "pdfjs" | "pdfplumber" | "ocr" | "mistral_ocr" | "hybrid";
+  selectedParser: "pdfjs" | "pdfplumber" | "ocr" | "mistral_ocr" | "azure_di" | "hybrid";
   confidence: number; // 0..100
   reasons: string[];
   extractionScores: {
@@ -102,6 +102,7 @@ export type ParserSelection = {
     pdfplumber?: ExtractionScore;
     ocr?: ExtractionScore;
     mistral_ocr?: ExtractionScore;
+    azure_di?: ExtractionScore;
   };
   warnings: string[];
   requiresReview: boolean;
@@ -139,11 +140,11 @@ export type BankStatementValidation = {
 };
 
 // The full pipeline output surfaced to the API / UI.
-export type ParserMethod = "pdfjs" | "pdfplumber" | "ocr" | "mistral_ocr" | "hybrid";
+export type ParserMethod = "pdfjs" | "pdfplumber" | "ocr" | "mistral_ocr" | "azure_di" | "hybrid";
 
 // Per-extractor diagnostics — which stage ran, succeeded, and why others failed.
 export type ExtractionStageDiag = {
-  stage: "pdfjs" | "pdfplumber" | "ocr" | "mistral_ocr";
+  stage: "pdfjs" | "pdfplumber" | "ocr" | "mistral_ocr" | "azure_di";
   attempted: boolean;
   ok: boolean; // produced usable text/transactions
   ms: number;
@@ -160,6 +161,8 @@ export type ExtractionDebug = {
   ocrTextLength: number;
   // Text recovered by the secondary Mistral OCR engine (0 when it never ran).
   mistralTextLength: number;
+  // Text recovered by Azure Document Intelligence (0 when it never ran).
+  azureTextLength: number;
   preExtractedTextLength: number;
   sampleText: string;
   reasonNoTransactions: string | null;
@@ -168,6 +171,9 @@ export type ExtractionDebug = {
   ocr: Record<string, unknown> | null;
   // Same, for the Mistral engine (endpoint, status, model, pages_processed).
   mistral: Record<string, unknown> | null;
+  // Azure diagnostics (provider, model, pages, tables, paragraphs, words,
+  // confidence, duration_ms, status).
+  azure: Record<string, unknown> | null;
   // Which strategy the analysis selected, and which OCR engine (if any) won.
   strategy: ExtractionStrategy;
   ocrEngine: OcrEngineId | null;
@@ -212,6 +218,11 @@ export type ExtractionPipelineResult = {
   ocrEngine: OcrEngineId | null;
   // Head-to-head record when more than one OCR engine ran.
   ocrEngineComparison: OcrEngineComparison[];
+  // Whether this result came from an Enhanced OCR run. The cache uses this so a
+  // standard result can never satisfy an Enhanced request — enumerating which
+  // providers happened to run is fragile, and adding a provider silently broke
+  // that guard once already.
+  enhanced: boolean;
   // The single acceptance verdict — see AcceptanceVerdict.
   verdict: AcceptanceVerdict;
   accepted: boolean; // verdict === "validated"

@@ -1,10 +1,8 @@
 import type { ExtractionDisagreement, ExtractionResult, ExtractionScore, ParserSelection, PdfAnalysis } from "@/lib/pdf/types";
 import { scoreExtraction } from "@/lib/pdf/scoreExtraction";
 
-type ParserKey = "pdfjs" | "pdfplumber" | "ocr" | "mistral_ocr";
-type Inputs = { pdfjs?: ExtractionResult; pdfplumber?: ExtractionResult; ocr?: ExtractionResult; mistral?: ExtractionResult };
-
-const OCR_ENGINE_KEYS: ParserKey[] = ["ocr", "mistral_ocr"];
+type ParserKey = "pdfjs" | "pdfplumber" | "ocr" | "mistral_ocr" | "azure_di";
+type Inputs = { pdfjs?: ExtractionResult; pdfplumber?: ExtractionResult; ocr?: ExtractionResult; mistral?: ExtractionResult; azure?: ExtractionResult };
 
 function num(value: unknown): number | null {
   return typeof value === "number" ? value : null;
@@ -30,8 +28,9 @@ export function mergeExtractionResults(
     pdfplumber: inputs.pdfplumber,
     ocr: inputs.ocr,
     mistral_ocr: inputs.mistral,
+    azure_di: inputs.azure,
   };
-  for (const key of ["pdfjs", "pdfplumber", "ocr", "mistral_ocr"] as ParserKey[]) {
+  for (const key of ["pdfjs", "pdfplumber", "ocr", "mistral_ocr", "azure_di"] as ParserKey[]) {
     const result = byKey[key];
     if (result) {
       const score = scoreExtraction(result);
@@ -48,7 +47,10 @@ export function mergeExtractionResults(
   // PDF.js — using the first in that order that actually captured transactions.
   // When BOTH OCR engines produced a result, the higher-scoring one is promoted
   // ahead of the other; Tesseract keeps the tie because it is the primary engine.
-  const preferenceOrder: ParserKey[] = ["pdfplumber", "ocr", "mistral_ocr", "pdfjs"];
+  // Azure sits ahead of the OCR engines: prebuilt-layout returns real table
+  // structure, which is what transaction rows are, whereas the OCR engines return
+  // text that has to be re-parsed by regex.
+  const preferenceOrder: ParserKey[] = ["pdfplumber", "azure_di", "ocr", "mistral_ocr", "pdfjs"];
   const primaryOcr = available.find((c) => c.key === "ocr");
   const secondaryOcr = available.find((c) => c.key === "mistral_ocr");
   if (primaryOcr && secondaryOcr && secondaryOcr.score.score > primaryOcr.score.score) {
@@ -225,5 +227,3 @@ export function mergeExtractionResults(
     merged,
   };
 }
-
-export { OCR_ENGINE_KEYS };

@@ -66,7 +66,7 @@ export type OcrResult = {
   layoutStatus: "queued" | "analysing" | "complete";
   createdAt: string;
   /** Which OCR engine produced the accepted text (null for native extraction). */
-  engine?: "tesseract" | "mistral_ocr" | null;
+  engine?: "tesseract" | "mistral_ocr" | "azure_di" | null;
   /** The engine's own reported confidence — recorded for comparison only. */
   engineConfidence?: number | null;
   /** Extraction strategy chosen from the document analysis. */

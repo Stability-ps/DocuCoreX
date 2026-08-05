@@ -33,6 +33,12 @@ services:
       # the worker loses table-based transaction extraction.
       - key: PDF_PLUMBER_URL
         value: https://docucorex-pdf-plumber.onrender.com
+      # Azure Document Intelligence. The pipeline runs on this service for
+      # proxied generic-document jobs, so the credentials are required here too.
+      - key: AZURE_DOCUMENT_INTELLIGENCE_ENDPOINT
+        sync: false
+      - key: AZURE_DOCUMENT_INTELLIGENCE_KEY
+        sync: false
       # NOTE: CONVERSION_WORKER_URL is deliberately NOT set here. The OCR binaries
       # are on this service, so extractWithOcr detects CONVERSION_WORKER_MODE=true
       # and calls lib/pdf/ocrEngine in-process — no URL and no self-HTTP request.

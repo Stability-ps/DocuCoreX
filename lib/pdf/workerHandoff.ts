@@ -84,6 +84,8 @@ export function parserMethodLabel(method: string | null | undefined): string {
       return "Processed with OCR";
     case "mistral_ocr":
       return "Processed with Mistral OCR";
+    case "azure_di":
+      return "Processed with Azure Document Intelligence";
     case "hybrid":
       return "Processed with hybrid extraction";
     default:

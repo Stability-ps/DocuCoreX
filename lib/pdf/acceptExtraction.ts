@@ -40,6 +40,7 @@ export type AcceptanceCandidates = {
   pdfplumber?: ExtractionResult;
   ocr?: ExtractionResult;
   mistral?: ExtractionResult;
+  azure?: ExtractionResult;
 };
 
 /**
@@ -85,11 +86,13 @@ export type AcceptanceResult = {
 function resolveOcrEngine(selection: ParserSelection, candidates: AcceptanceCandidates, merged: ExtractionResult): OcrEngineId | null {
   if (selection.selectedParser === "ocr") return "tesseract";
   if (selection.selectedParser === "mistral_ocr") return "mistral_ocr";
+  if (selection.selectedParser === "azure_di") return "azure_di";
   if (selection.selectedParser !== "hybrid") return null;
   // Hybrid: the transactions carry the substance, so credit whichever OCR engine
   // supplied them (identified by reference equality with the merged rows).
   if (candidates.ocr && candidates.ocr.transactions === merged.transactions) return "tesseract";
   if (candidates.mistral && candidates.mistral.transactions === merged.transactions) return "mistral_ocr";
+  if (candidates.azure && candidates.azure.transactions === merged.transactions) return "azure_di";
   return null;
 }
 
@@ -97,6 +100,7 @@ function buildComparison(candidates: AcceptanceCandidates, winner: OcrEngineId |
   const entries: Array<{ engine: OcrEngineId; result: ExtractionResult }> = [];
   if (candidates.ocr) entries.push({ engine: "tesseract", result: candidates.ocr });
   if (candidates.mistral) entries.push({ engine: "mistral_ocr", result: candidates.mistral });
+  if (candidates.azure) entries.push({ engine: "azure_di", result: candidates.azure });
   return entries.map(({ engine, result }) => ({
     engine,
     score: scoreExtraction(result).score,

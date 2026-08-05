@@ -26,11 +26,13 @@ type PipelineDebug = {
   pdfplumberTextLength: number;
   ocrTextLength: number;
   mistralTextLength: number;
+  azureTextLength: number;
   preExtractedTextLength: number;
   sampleText: string;
   reasonNoTransactions: string | null;
   ocr: Record<string, unknown> | null;
   mistral: Record<string, unknown> | null;
+  azure: Record<string, unknown> | null;
   strategy: string;
   ocrEngine: string | null;
   verdict: string;
@@ -124,11 +126,13 @@ async function runPipelineBeforeWorker(
       pdfplumberTextLength: pipeline.debug.pdfplumberTextLength,
       ocrTextLength: pipeline.debug.ocrTextLength,
       mistralTextLength: pipeline.debug.mistralTextLength,
+      azureTextLength: pipeline.debug.azureTextLength,
       preExtractedTextLength: pipeline.debug.preExtractedTextLength,
       sampleText: pipeline.debug.sampleText,
       reasonNoTransactions: pipeline.debug.reasonNoTransactions,
       ocr: pipeline.debug.ocr,
       mistral: pipeline.debug.mistral,
+      azure: pipeline.debug.azure,
       strategy: pipeline.strategy,
       ocrEngine: pipeline.ocrEngine,
       verdict: pipeline.verdict,
@@ -152,12 +156,14 @@ async function runPipelineBeforeWorker(
       pdfplumberTextLength: pipeline.debug.pdfplumberTextLength,
       ocrTextLength: pipeline.debug.ocrTextLength,
       mistralTextLength: pipeline.debug.mistralTextLength,
+      azureTextLength: pipeline.debug.azureTextLength,
       preExtractedTextLength: workerInput.preExtractedText.length,
       transactionCandidates: workerInput.transactionCandidateCount,
       reasonNoTransactions: pipeline.debug.reasonNoTransactions,
       disagreements: pipeline.selection.disagreements.map((d) => d.field),
       ocr: pipeline.debug.ocr,
       mistral: pipeline.debug.mistral,
+      azure: pipeline.debug.azure,
     });
 
     // Hand the worker the best source; it keeps the original PDF as a fallback.
@@ -286,11 +292,13 @@ function toParserDebug(pipelineDebug: PipelineDebug | null) {
     pdfplumber_text_length: pipelineDebug.pdfplumberTextLength,
     ocr_text_length: pipelineDebug.ocrTextLength,
     mistral_text_length: pipelineDebug.mistralTextLength,
+    azure_text_length: pipelineDebug.azureTextLength,
     pre_extracted_text_length: pipelineDebug.preExtractedTextLength,
     sample_text: pipelineDebug.sampleText,
     reason_no_transactions: pipelineDebug.reasonNoTransactions,
     ocr: pipelineDebug.ocr,
     mistral: pipelineDebug.mistral,
+    azure: pipelineDebug.azure,
     extraction_strategy: pipelineDebug.strategy,
     ocr_engine: pipelineDebug.ocrEngine,
     acceptance_verdict: pipelineDebug.verdict,
