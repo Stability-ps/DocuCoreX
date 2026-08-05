@@ -256,6 +256,49 @@ these checks** — a high Tesseract or Mistral score means the characters were
 *legible*, not that the extraction is *correct*, so it can never on its own mark
 a result validated.
 
+### Provider ladder
+
+Extraction is a ladder of interchangeable providers. Every rung re-enters the
+**same** `acceptExtraction()` gate and stops the moment a result is accepted.
+
+```
+ANALYSE → STRATEGY → PDF.js + pdfplumber → ACCEPT ──accepted──▶ STOP
+                                              │
+                                           rejected
+                                              ▼
+                              Azure Document Intelligence → ACCEPT ──▶ STOP
+                                              │
+                                           rejected
+                                              ▼
+                                     Mistral OCR → ACCEPT ──▶ STOP
+                                              │
+                                           rejected
+                                              ▼
+                                      Tesseract → ACCEPT ──▶ Review Required
+```
+
+**Why Azure before Mistral.** `prebuilt-layout` returns real table structure —
+rows, columns, cells — which is what a bank statement's transactions *are*. The
+OCR engines return flat text that has to be re-derived by regex, and the
+accounting worker re-parses whatever text it is handed. Giving it structured
+output first is the shortest path to a correct reconciliation. Mistral remains
+the fallback when Azure is unavailable or does no better.
+
+**Why Tesseract is last.** It is free, so there is no cost reason to gate it,
+but it is the weakest at preserving column structure — exactly what statement
+parsing depends on. It was previously run first; it is now the final resort.
+
+**Why `acceptExtraction()` stays the single gate.** Every provider — native,
+Azure, Mistral, Tesseract — is judged by identical rules: content recovered,
+completeness, reconciliation and cross-provider agreement for statements;
+content, page-coverage quality and agreement for generic documents. There is no
+Azure-specific acceptance path, so adding or removing a provider cannot change
+what "validated" means. `expect: "bank_statement" | "document"` is unchanged.
+
+**Cost.** Azure never runs on a document that already passed the gate. The first
+condition in `decideAzureExtraction` is `accepted && !enhanced → skip`, so a
+clean digital PDF costs nothing beyond PDF.js and pdfplumber.
+
 ### Engine roles
 
 | Engine | Role | Where the work happens | Called from |

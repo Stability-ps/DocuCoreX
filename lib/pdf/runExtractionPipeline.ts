@@ -3,6 +3,8 @@ import { analyzeExtraction } from "@/lib/pdf/analyzePdf";
 import { decideOcrNeed } from "@/lib/pdf/ocrDecision";
 import { selectExtractionStrategy } from "@/lib/pdf/extractionStrategy";
 import { decideMistralOcr } from "@/lib/pdf/mistralDecision";
+import { decideAzureExtraction } from "@/lib/pdf/azureDecision";
+import { extractWithAzureDocumentIntelligence, isAzureConfigured } from "@/lib/pdf/extractWithAzureDocumentIntelligence";
 import { acceptExtraction, type AcceptanceResult, type ExtractionExpectation } from "@/lib/pdf/acceptExtraction";
 import { extractWithPdfjs } from "@/lib/pdf/extractWithPdfjs";
 import { extractWithPdfplumber } from "@/lib/pdf/extractWithPdfplumber";
@@ -194,9 +196,12 @@ export async function runExtractionPipeline(buffer: Uint8Array, fileName = "stat
       skipOcrFastPath: false,
     });
     pdfLog("route.ocr_decision", { strategy: plan.strategy, needsOcr: ocrDecision.needsOcr, reason: ocrDecision.reason, pdfjsChars, pdfplumberChars, nativeChars: Math.max(pdfjsChars, pdfplumberChars), nativeTransactions, coverage: Math.round(coverage * 100) / 100, kind: analysis.kind });
+    // Tesseract is NO LONGER run upfront. The escalation ladder (step 5) owns
+    // engine ordering — Azure, then Mistral, then Tesseract — so a scanned
+    // document reaches the strongest structured extractor first instead of
+    // spending its first attempt on the weakest.
     if (ocrDecision.needsOcr) {
-      ocrAttempted = true;
-      ocr = await runPrimaryOcr(ocrDecision.reason);
+      stages.push({ stage: "ocr", attempted: false, ok: false, ms: 0, pages: 0, chars: 0, transactions: 0, skippedReason: `deferred to the escalation ladder — ${ocrDecision.reason}` });
     } else {
       stages.push({ stage: "ocr", attempted: false, ok: false, ms: 0, pages: 0, chars: 0, transactions: 0, skippedReason: ocrDecision.reason });
     }
@@ -210,35 +215,80 @@ export async function runExtractionPipeline(buffer: Uint8Array, fileName = "stat
   pdfLog("route.accept", { expect, verdict: assembled.verdict, selectedParser: assembled.selection.selectedParser, confidence: assembled.selection.confidence, rejectionReasons: assembled.rejectionReasons });
 
   // ---- Step 5: ESCALATE ------------------------------------------------------
+  // Ladder: Azure Document Intelligence → Mistral OCR → Tesseract. Each rung
+  // re-enters the SAME acceptance gate and stops the moment a result passes, so
+  // a healthy digital PDF reaches none of them.
+  //
+  // Azure runs first because prebuilt-layout returns real table structure —
+  // which is what a statement's transaction rows are — while the OCR engines
+  // return text that has to be re-derived by regex. Tesseract is last: it is
+  // free, but it is also the weakest at preserving column structure.
   let mistral: ExtractionResult | null = null;
   let mistralAttempted = false;
+  let azure: ExtractionResult | null = null;
+  let azureAttempted = false;
+
+  const candidatesSoFar = () => ({ pdfjs, pdfplumber: pdfplumber ?? undefined, ocr: ocr ?? undefined, mistral: mistral ?? undefined, azure: azure ?? undefined });
+  // Adopt a re-accepted candidate when it passes the gate or scores higher.
+  // Either way keep its comparison/verdict so the head-to-head is never lost.
+  const adopt = (candidate: AcceptanceResult, label: string) => {
+    const better = (candidate.accepted && !assembled.accepted) || candidate.selection.confidence > assembled.selection.confidence;
+    pdfLog(`route.accept_after_${label}`, {
+      verdict: candidate.verdict,
+      confidence: candidate.selection.confidence,
+      previousConfidence: assembled.selection.confidence,
+      adopted: better,
+      comparison: candidate.ocrEngineComparison,
+    });
+    assembled = better
+      ? candidate
+      : { ...assembled, ocrEngineComparison: candidate.ocrEngineComparison, selection: candidate.selection, rejectionReasons: candidate.rejectionReasons, verdict: candidate.verdict, accepted: candidate.verdict === "validated" };
+  };
 
   if (!assembled.accepted || enhancedOcr) {
-    // 5a. The primary OCR engine, if the strategy never ran it. This is what
-    //     rescues a "native" result that failed reconciliation.
-    if (!ocrAttempted) {
-      ocrAttempted = true;
-      ocr = await runPrimaryOcr(enhancedOcr ? "Enhanced OCR requested" : `acceptance rejected: ${assembled.rejectionReasons[0] ?? "unknown"}`);
-      const retried = acceptExtraction(analysis, { pdfjs, pdfplumber: pdfplumber ?? undefined, ocr: ocr ?? undefined }, { expect });
-      if (retried.accepted || retried.selection.confidence > assembled.selection.confidence) assembled = retried;
-      pdfLog("route.accept_after_primary_ocr", { verdict: assembled.verdict, confidence: assembled.selection.confidence });
+    // 5a. Azure Document Intelligence — the structured-extraction escalation.
+    const nativeChars = Math.max(pdfjsChars, pdfplumberChars);
+    const azureDecision = decideAzureExtraction({
+      configured: isAzureConfigured(),
+      enhanced: enhancedOcr,
+      strategy: plan.strategy,
+      expect,
+      accepted: assembled.accepted,
+      nativeChars,
+      selectionConfidence: assembled.selection.confidence,
+      transactionCount: assembled.merged.transactions.length,
+      hasOpeningBalance: assembled.merged.metadata.openingBalance != null,
+      hasClosingBalance: assembled.merged.metadata.closingBalance != null,
+      validationRequiresReview: assembled.validation.requiresReview,
+      alreadyAttempted: azureAttempted,
+    });
+    pdfLog("route.azure_decision", { needed: azureDecision.needed, reason: azureDecision.reason, strategy: plan.strategy, expect });
+
+    if (azureDecision.needed) {
+      onStage?.("ocr");
+      azureAttempted = true;
+      const t = Date.now();
+      azure = await extractWithAzureDocumentIntelligence(copyBuffer(original), fileName);
+      stages.push(stageDiag("azure_di", azure, Date.now() - t, azure === null ? "AZURE_DOCUMENT_INTELLIGENCE_ENDPOINT/KEY not configured" : undefined));
+      if (azure) adopt(acceptExtraction(analysis, candidatesSoFar(), { expect }), "azure");
     }
 
-    // 5b. The secondary engine, when the trigger conditions are met.
-    // The primary engine may have already fixed it in 5a — do not pay for a
-    // second engine on a result that now passes the gate. Only an explicit
-    // Enhanced OCR request overrides that.
+    // 5b. Mistral OCR — only if Azure did not satisfy the gate.
     const mistralDecision =
       assembled.accepted && !enhancedOcr
-        ? { needed: false, reason: "primary OCR satisfied the acceptance gate" }
+        ? { needed: false, reason: "a previous provider satisfied the acceptance gate" }
         : decideMistralOcr({
             configured: isMistralConfigured(),
             enhanced: enhancedOcr,
             strategy: plan.strategy,
             expect,
-            ocrAttempted,
-            ocrChars: ocr ? ocr.combinedText.trim().length : 0,
-            ocrConfidence: ocr?.confidence ?? null,
+            // The PRIOR escalation provider. Under the new ladder that is Azure,
+            // not Tesseract — Tesseract has not run yet at this point. Mistral's
+            // "the previous engine did badly" conditions must judge whichever
+            // provider actually ran before it, or they could never fire.
+            ocrAttempted: azureAttempted || ocrAttempted,
+            ocrChars: (azure ?? ocr) ? (azure ?? ocr)!.combinedText.trim().length : 0,
+            ocrConfidence: (azure ?? ocr)?.confidence ?? null,
             selectionConfidence: assembled.selection.confidence,
             transactionCount: assembled.merged.transactions.length,
             hasOpeningBalance: assembled.merged.metadata.openingBalance != null,
@@ -253,24 +303,18 @@ export async function runExtractionPipeline(buffer: Uint8Array, fileName = "stat
       const t = Date.now();
       mistral = await extractWithMistralOcr(copyBuffer(original), fileName);
       stages.push(stageDiag("mistral_ocr", mistral, Date.now() - t, mistral === null ? "MISTRAL_API_KEY not configured" : undefined));
+      // Re-enter the SAME acceptance gate with the enlarged candidate set. When
+      // providers disagree materially, acceptExtraction has already recorded it
+      // and forced review — the conflict is surfaced, not resolved silently.
+      if (mistral) adopt(acceptExtraction(analysis, candidatesSoFar(), { expect }), "mistral");
+    }
 
-      if (mistral) {
-        // Re-enter the SAME acceptance gate with the enlarged candidate set.
-        const candidate = acceptExtraction(analysis, { pdfjs, pdfplumber: pdfplumber ?? undefined, ocr: ocr ?? undefined, mistral }, { expect });
-        const better = (candidate.accepted && !assembled.accepted) || candidate.selection.confidence > assembled.selection.confidence;
-        pdfLog("route.accept_after_mistral", {
-          verdict: candidate.verdict,
-          confidence: candidate.selection.confidence,
-          previousConfidence: assembled.selection.confidence,
-          adopted: better,
-          comparison: candidate.ocrEngineComparison,
-        });
-        // Always adopt the candidate's comparison record even when the merged
-        // result did not change, so the head-to-head is never lost. When the two
-        // engines disagree materially, acceptExtraction has already recorded it
-        // and forced review — the conflict is surfaced, not resolved silently.
-        assembled = better ? candidate : { ...assembled, ocrEngineComparison: candidate.ocrEngineComparison, selection: candidate.selection, rejectionReasons: candidate.rejectionReasons, verdict: candidate.verdict, accepted: candidate.verdict === "validated" };
-      }
+    // 5c. Tesseract — the free last resort, only if nothing above passed and the
+    //     strategy never already ran it.
+    if (!ocrAttempted && (!assembled.accepted || enhancedOcr)) {
+      ocrAttempted = true;
+      ocr = await runPrimaryOcr(enhancedOcr ? "Enhanced OCR requested" : `acceptance still rejected: ${assembled.rejectionReasons[0] ?? "unknown"}`);
+      if (ocr) adopt(acceptExtraction(analysis, candidatesSoFar(), { expect }), "tesseract");
     }
   }
 
@@ -281,6 +325,7 @@ export async function runExtractionPipeline(buffer: Uint8Array, fileName = "stat
   const ocrText = ocr;
   const ocrTextLength = ocrText ? ocrText.combinedText.trim().length : 0;
   const mistralTextLength = mistral ? mistral.combinedText.trim().length : 0;
+  const azureTextLength = azure ? azure.combinedText.trim().length : 0;
   const ocrUsed = assembled.ocrEngine != null;
   const ocrConfigured = !(ocrAttempted && ocr === null);
 
@@ -301,6 +346,7 @@ export async function runExtractionPipeline(buffer: Uint8Array, fileName = "stat
   const ocrDebug = ocrText && ocrText.metadata && typeof ocrText.metadata._ocrDebug === "object" ? (ocrText.metadata._ocrDebug as Record<string, unknown>) : null;
   const ocrReason = ocrText && typeof ocrText.metadata?._ocrReason === "string" ? (ocrText.metadata._ocrReason as string) : null;
   const mistralDebug = mistral && typeof mistral.metadata?._mistralDebug === "object" ? (mistral.metadata._mistralDebug as Record<string, unknown>) : null;
+  const azureDebug = azure && typeof azure.metadata?._azureDebug === "object" ? (azure.metadata._azureDebug as Record<string, unknown>) : null;
 
   let reasonNoTransactions: string | null = null;
   if (assembled.merged.transactions.length === 0) {
@@ -326,6 +372,7 @@ export async function runExtractionPipeline(buffer: Uint8Array, fileName = "stat
     pdfplumberTextLength,
     ocrTextLength,
     mistralTextLength,
+    azureTextLength,
     preExtractedTextLength,
     // Never carry document text: `sampleText` is intentionally blank so it cannot
     // leak into logs (accounting failure logs the full parserDebug) or the DB.
@@ -334,6 +381,7 @@ export async function runExtractionPipeline(buffer: Uint8Array, fileName = "stat
     reasonNoTransactions,
     ocr: ocrDebug ?? (ocrAttempted && !ocrConfigured ? { ocr_status: "skipped", reason: "CONVERSION_WORKER_URL not configured" } : null),
     mistral: mistralDebug ?? (mistralAttempted && mistral === null ? { status: "skipped", reason: "MISTRAL_API_KEY not configured" } : null),
+    azure: azureDebug ?? (azureAttempted && azure === null ? { status: "skipped", reason: "AZURE_DOCUMENT_INTELLIGENCE_ENDPOINT/KEY not configured" } : null),
     strategy: plan.strategy,
     ocrEngine: assembled.ocrEngine,
     stages,

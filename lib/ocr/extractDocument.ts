@@ -10,6 +10,7 @@ import type { DocumentRecord, DocumentType } from "@/lib/types";
 import { loadDocumentBytes } from "@/lib/ocr/loadDocumentBytes";
 import { computeFileHash } from "@/lib/pdf/extractionCache";
 import { runExtractionPipeline } from "@/lib/pdf/runExtractionPipeline";
+import type { OcrEngineId } from "@/lib/pdf/types";
 import { rasterizePdfToImages } from "@/lib/pdf/rasterizePdf";
 import { runVisionOcr } from "@/lib/providers/openai/vision-ocr";
 import { runStructuredExtraction, type StructuredExtraction } from "@/lib/providers/openai/extraction";
@@ -34,7 +35,7 @@ export type DocumentExtraction = {
   confidence: number;
   // Engine-reported OCR confidence, recorded for comparison only.
   ocrConfidence: number | null;
-  ocrEngine: "tesseract" | "mistral_ocr" | null;
+  ocrEngine: OcrEngineId | null;
   strategy: string;
   detectedType: DocumentType;
   fields: Record<string, string | number | boolean | null>;
