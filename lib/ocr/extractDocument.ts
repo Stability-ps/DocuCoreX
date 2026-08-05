@@ -14,6 +14,7 @@ import { rasterizePdfToImages } from "@/lib/pdf/rasterizePdf";
 import { runVisionOcr } from "@/lib/providers/openai/vision-ocr";
 import { runStructuredExtraction, type StructuredExtraction } from "@/lib/providers/openai/extraction";
 import { validateExtraction, type ValidationStatus } from "@/lib/ocr/validate";
+import { resolveDetectedType } from "@/lib/ocr/detectedType";
 import type { ExtractionMethod } from "@/lib/ocr/method";
 import {
   classifyOpenAiError,
@@ -51,6 +52,7 @@ function openAiConfigured(): boolean {
   return Boolean(process.env.OPENAI_API_KEY);
 }
 
+
 /**
  * Extract a document once, reusing the pipeline + OpenAI, cached by
  * documentId+fileHash so the OCR and extraction providers don't double-call.
@@ -65,15 +67,23 @@ export async function extractDocument(
   }
   const enhanced = options.enhanced === true;
   const fileHash = computeFileHash(bytes);
+  // Only apply the statement checks (transaction rows, opening/closing balance,
+  // reconciliation) when the document IS a bank statement. Applying them to an
+  // invoice or a contract would reject a perfectly good native extraction and
+  // escalate it through both OCR engines at real cost, for a document that was
+  // never going to have balances.
+  const expect = document.detectedType === "bank_statement" ? "bank_statement" : "document";
   // Enhanced runs are cached separately — an enhanced request must never be
-  // satisfied by a standard result that skipped the secondary OCR engine.
-  const cacheKey = `${document.id}:${fileHash}:${options.useOpenAI ? "ai" : "det"}:${enhanced ? "enh" : "std"}`;
+  // satisfied by a standard result that skipped the secondary OCR engine. The
+  // expectation is part of the key too: reclassifying a document as a statement
+  // must not reuse a result that was accepted under the laxer checks.
+  const cacheKey = `${document.id}:${fileHash}:${options.useOpenAI ? "ai" : "det"}:${enhanced ? "enh" : "std"}:${expect}`;
   const cached = cache.get(cacheKey);
   if (cached) return cached;
 
   const fileName = document.name || "document.pdf";
   // REUSE the existing pipeline (analyse → strategy → extract → accept → escalate).
-  const pipeline = await runExtractionPipeline(bytes, fileName, { documentId: document.id, fileHash, enhancedOcr: enhanced });
+  const pipeline = await runExtractionPipeline(bytes, fileName, { documentId: document.id, fileHash, enhancedOcr: enhanced, expect });
 
   const warnings = [...pipeline.warnings];
   let text = pipeline.merged.combinedText;
@@ -175,7 +185,7 @@ export async function extractDocument(
     ocrConfidence: pipeline.merged.confidence ?? null,
     ocrEngine: pipeline.ocrEngine,
     strategy: pipeline.strategy,
-    detectedType: (document.detectedType && document.detectedType !== "unknown" ? document.detectedType : "bank_statement") as DocumentType,
+    detectedType: resolveDetectedType(document.detectedType, lineItems.length, openingBalance, closingBalance),
     fields,
     lineItems,
     validationStatus,
