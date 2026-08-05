@@ -3727,13 +3727,35 @@ def process_fnb_statement(payload: ProcessRequest, authorization: str | None = H
             extraction_source=payload.extraction_source,
             ocr_used=bool(payload.ocr_used),
         )
-        if provided and len(provided) >= max(200, len(native_text) // 2):
+        # Choose the text that actually PARSES, not the one that is longest.
+        #
+        # This previously accepted the provided text whenever it was at least half
+        # the length of the native text. Length is the wrong criterion: OCR
+        # markdown is verbose (pipes, headers, reflowed columns) and so always
+        # cleared the threshold, displacing a native pdfplumber extraction whose
+        # fixed-column layout these FNB parsers are written against. The result
+        # was fewer recovered rows and a large reconciliation difference.
+        #
+        # Counting candidate transaction lines is cheap and directly measures the
+        # only thing that matters here: how much of the statement this text will
+        # yield once parsed.
+        #
+        # One exception: when this worker's own extraction is empty (a scanned
+        # PDF, where pdfplumber and PyMuPDF both return nothing), the provided
+        # text is all there is — use it even if neither yields candidate rows,
+        # otherwise a scanned statement would be parsed from an empty string.
+        provided_rows = len(transaction_candidate_lines(provided)) if provided else 0
+        native_rows = len(transaction_candidate_lines(native_text)) if native_text else 0
+        native_is_empty = not native_text.strip()
+        if provided and (native_is_empty or provided_rows > native_rows):
             full_text = provided
             log_event(
                 "worker.pre_extracted_text_used",
                 run_id=payload.run_id,
                 provided_chars=len(provided),
                 native_chars=len(native_text),
+                provided_rows=provided_rows,
+                native_rows=native_rows,
             )
         else:
             full_text = native_text
@@ -3743,7 +3765,9 @@ def process_fnb_statement(payload: ProcessRequest, authorization: str | None = H
                     run_id=payload.run_id,
                     provided_chars=len(provided),
                     native_chars=len(native_text),
-                    reason="provided text shorter than half the native text",
+                    provided_rows=provided_rows,
+                    native_rows=native_rows,
+                    reason="native text yields at least as many transaction candidates",
                 )
         parser = BankRegistry.detect(full_text[:4000], payload.storage_path)
         if parser is None:
