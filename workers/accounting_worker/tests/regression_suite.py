@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib.util
 import io
 import json
+import os
 import sys
 import types
 from pathlib import Path
@@ -90,6 +91,7 @@ if importlib.util.find_spec("openpyxl") is None:
 
 from openpyxl import load_workbook
 
+import main
 from main import (
     ParsedTransaction,
     apply_ai_result_to_row,
@@ -1144,7 +1146,171 @@ def test_real_statement_cases_actually_execute() -> None:
         assert counts["financial"] > 0, case_id
 
 
+def test_worker_auth_fails_closed() -> None:
+    """An unconfigured secret must reject every request, not admit every request.
+
+    The old verify_worker_token returned early when ACCOUNTING_WORKER_TOKEN was
+    unset, and it was never set on Render — so /process-statement was callable by
+    anyone who knew the hostname (verified live, HTTP 422 on an unauthenticated
+    POST). The unconfigured case is the one that actually shipped, so it is the
+    one asserted first.
+    """
+    import auth
+
+    secret = "s3cret-token"
+
+    # The regression that mattered: no secret configured -> refuse, and refuse
+    # with 503 (server misconfiguration) rather than 401 (caller's fault).
+    for missing in (None, "", "   "):
+        assert auth.check_bearer(f"Bearer {secret}", missing) == auth.UNCONFIGURED, repr(missing)
+        assert auth.check_bearer(None, missing) == auth.UNCONFIGURED, repr(missing)
+    assert auth.STATUS_FOR_VERDICT[auth.UNCONFIGURED][0] == 503
+
+    # Configured: only the exact credential passes.
+    assert auth.check_bearer(f"Bearer {secret}", secret) == auth.OK
+    assert auth.check_bearer(f"bearer {secret}", secret) == auth.OK, "scheme is case-insensitive"
+    assert auth.check_bearer(f"Bearer   {secret}", secret) == auth.OK, "whitespace runs collapse"
+
+    assert auth.check_bearer(None, secret) == auth.MISSING
+    assert auth.check_bearer("", secret) == auth.MISSING
+    assert auth.check_bearer("Bearer", secret) == auth.MALFORMED
+    assert auth.check_bearer("Bearer ", secret) == auth.MALFORMED, "scheme with no token"
+    assert auth.check_bearer("   ", secret) == auth.MISSING, "whitespace-only header is no header"
+    assert auth.check_bearer(secret, secret) == auth.MALFORMED, "raw token without scheme"
+    assert auth.check_bearer(f"Basic {secret}", secret) == auth.MALFORMED
+    assert auth.check_bearer("Bearer wrong", secret) == auth.INVALID
+    assert auth.check_bearer(f"Bearer {secret}x", secret) == auth.INVALID
+    assert auth.check_bearer(f"Bearer {secret[:-1]}", secret) == auth.INVALID
+
+    # Everything that is not OK maps to a status, and none of them is a 2xx.
+    for verdict, (status, detail) in auth.STATUS_FOR_VERDICT.items():
+        assert status >= 400, f"{verdict} -> {status}"
+        assert secret not in detail, f"{verdict} message leaks the secret"
+    assert auth.OK not in auth.STATUS_FOR_VERDICT, "OK must have no error mapping"
+
+
+def test_worker_auth_matches_pdf_plumber_contract() -> None:
+    """The two services duplicate this logic because they have separate rootDirs
+    and cannot import across the repo. Pin them to one truth table so they cannot
+    drift apart silently. Skipped when the pdfplumber module is not present.
+    """
+    import importlib.util
+
+    peer = ROOT / "services" / "pdf-plumber" / "auth.py"
+    if not peer.exists():
+        return
+
+    spec = importlib.util.spec_from_file_location("pdf_plumber_auth", peer)
+    assert spec and spec.loader
+    peer_auth = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(peer_auth)
+
+    import auth
+
+    cases = [
+        (None, None),
+        ("Bearer tok", None),
+        ("Bearer tok", ""),
+        (None, "tok"),
+        ("", "tok"),
+        ("Bearer", "tok"),
+        ("Bearer tok", "tok"),
+        ("bearer tok", "tok"),
+        ("Basic tok", "tok"),
+        ("Bearer nope", "tok"),
+        ("tok", "tok"),
+    ]
+    for header, expected in cases:
+        assert auth.check_bearer(header, expected) == peer_auth.check_bearer(header, expected), (
+            f"accounting and pdfplumber disagree on {header!r}/{expected!r}"
+        )
+
+
+def test_worker_token_check_raises_on_unconfigured_secret() -> None:
+    """End-to-end through main.verify_worker_token, which is what the endpoints
+    call. Asserts the HTTP status the caller actually receives.
+    """
+    from fastapi import HTTPException
+
+    previous = os.environ.pop("ACCOUNTING_WORKER_TOKEN", None)
+    try:
+        for header in (None, "Bearer anything"):
+            try:
+                main.verify_worker_token(header)
+            except HTTPException as exc:
+                assert exc.status_code == 503, f"{header!r} -> {exc.status_code}"
+            else:
+                raise AssertionError(
+                    f"verify_worker_token({header!r}) allowed the request with no secret configured"
+                )
+
+        os.environ["ACCOUNTING_WORKER_TOKEN"] = "correct-horse"
+        main.verify_worker_token("Bearer correct-horse")  # must not raise
+
+        for header, status in ((None, 401), ("Bearer wrong", 401), ("correct-horse", 401)):
+            try:
+                main.verify_worker_token(header)
+            except HTTPException as exc:
+                assert exc.status_code == status, f"{header!r} -> {exc.status_code}"
+            else:
+                raise AssertionError(f"verify_worker_token({header!r}) should have been rejected")
+    finally:
+        os.environ.pop("ACCOUNTING_WORKER_TOKEN", None)
+        if previous is not None:
+            os.environ["ACCOUNTING_WORKER_TOKEN"] = previous
+
+
+def test_mutating_endpoints_are_all_authenticated() -> None:
+    """Every @app.post handler must call verify_worker_token in its own body.
+
+    /health and /version stay open by design — Render's health check must reach
+    them and they return only version metadata.
+
+    This parses main.py rather than inspecting main.app.routes, so it works even
+    when the suite runs against the FastAPI stub at the top of this file. Each
+    handler must check for itself: a handler that merely delegates to another
+    protected handler is rejected, because that guarantee is one refactor away
+    from disappearing.
+    """
+    import ast
+
+    tree = ast.parse((ROOT / "workers" / "accounting_worker" / "main.py").read_text())
+    posts = []
+    for node in ast.walk(tree):
+        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        for dec in node.decorator_list:
+            func = dec.func if isinstance(dec, ast.Call) else dec
+            if (
+                isinstance(func, ast.Attribute)
+                and func.attr == "post"
+                and isinstance(func.value, ast.Name)
+                and func.value.id == "app"
+            ):
+                posts.append(node)
+
+    assert posts, "found no @app.post handlers — the parser is wrong, not the code"
+
+    unprotected = []
+    for node in posts:
+        calls = {
+            c.func.id
+            for c in ast.walk(node)
+            if isinstance(c, ast.Call) and isinstance(c.func, ast.Name)
+        }
+        if "verify_worker_token" not in calls:
+            unprotected.append(node.name)
+    if unprotected:
+        raise AssertionError(
+            "POST handlers with no verify_worker_token call of their own: " + ", ".join(unprotected)
+        )
+
+
 def run() -> None:
+    test_worker_auth_fails_closed()
+    test_worker_auth_matches_pdf_plumber_contract()
+    test_worker_token_check_raises_on_unconfigured_secret()
+    test_mutating_endpoints_are_all_authenticated()
     test_descriptionless_fee_rows_are_preserved()
     test_unnamed_fee_rows_are_labelled_from_statement_figures_only()
     test_informational_rows_are_kept_but_not_counted()

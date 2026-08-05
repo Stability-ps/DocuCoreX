@@ -22,6 +22,7 @@ from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
 from pydantic import BaseModel
 from supabase import Client, create_client
+from auth import OK as AUTH_OK, STATUS_FOR_VERDICT, check_bearer
 from engine.bootstrap import register_default_parsers
 from engine.registry import BankRegistry
 
@@ -179,11 +180,18 @@ def apply_learned_classification_rules(transactions: list[ParsedTransaction], ru
 
 
 def verify_worker_token(authorization: str | None) -> None:
-    expected = os.getenv("ACCOUNTING_WORKER_TOKEN")
-    if not expected:
+    """Reject the request unless it carries the shared secret.
+
+    Previously this returned early when ACCOUNTING_WORKER_TOKEN was unset, and
+    the variable was never set on the Render service — so every endpoint was
+    callable by anyone who knew the hostname. It now fails closed: no secret
+    means the service refuses to serve rather than serving everybody.
+    """
+    verdict = check_bearer(authorization, os.getenv("ACCOUNTING_WORKER_TOKEN"))
+    if verdict == AUTH_OK:
         return
-    if authorization != f"Bearer {expected}":
-        raise HTTPException(status_code=401, detail="Invalid worker token")
+    status, detail = STATUS_FOR_VERDICT[verdict]
+    raise HTTPException(status_code=status, detail=detail)
 
 
 def parse_money(value: str | None) -> float | None:
@@ -4301,4 +4309,8 @@ def process_fnb_statement(payload: ProcessRequest, authorization: str | None = H
 
 @app.post("/process-statement")
 def process_statement(payload: ProcessRequest, authorization: str | None = Header(default=None)) -> dict[str, Any]:
+    # Checked here as well as in the delegate. The duplicate call is idempotent,
+    # and it means this endpoint's auth does not depend on an implementation
+    # detail of the function it happens to forward to today.
+    verify_worker_token(authorization)
     return process_fnb_statement(payload, authorization)
