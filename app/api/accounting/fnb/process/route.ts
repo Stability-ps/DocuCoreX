@@ -7,7 +7,8 @@ import { getWorkspaceContext } from "@/lib/server-documents";
 import { runExtractionPipeline } from "@/lib/pdf/runExtractionPipeline";
 import { computeFileHash } from "@/lib/pdf/extractionCache";
 import { extractWithAzureDocumentIntelligence } from "@/lib/pdf/extractWithAzureDocumentIntelligence";
-import { compareExtractions } from "@/lib/pdf/shadowComparison";
+import { compareExtractions, decideShadowSample } from "@/lib/pdf/shadowComparison";
+import { reconciliationConfidence } from "@/lib/accounting/confidence";
 import { pdfLog } from "@/lib/pdf/log";
 import { PROCESSING_STEP_LABELS, PROCESSING_STEP_PROGRESS, type ProcessingStep } from "@/lib/pdf/processingSteps";
 import { buildWorkerInput, extractionProcessingMetadata } from "@/lib/pdf/workerHandoff";
@@ -223,6 +224,45 @@ async function runShadowComparison(context: WorkspaceContext, detail: Accounting
       expect: "bank_statement",
     });
 
+    // Sampling gate — only spend an Azure call where it could realistically help.
+    const reconConfidence = reconciliationConfidence(adopted.validation);
+    const sampleDecision = decideShadowSample({
+      extractionConfidence: adopted.selection.confidence,
+      reconciliationConfidence: reconConfidence,
+      reconciliationDifference: adopted.validation?.difference ?? null,
+      missingTransactionCount: adopted.validation?.missingTransactionCount ?? null,
+      merged: adopted.merged,
+      // Extraction-level review ONLY. The worker's per-transaction review flags
+      // are classification decisions Azure cannot influence.
+      extractionRequiresReview: !adopted.accepted,
+    });
+
+    const baseRow = {
+      workspace_id: context.workspaceId,
+      run_id: runId,
+      document_id: detail.run.documentId,
+      current_provider: adopted.parserMethod,
+      extraction_confidence: adopted.selection.confidence,
+      reconciliation_confidence: reconConfidence,
+      reconciliation_difference: adopted.validation?.difference ?? null,
+    };
+
+    if (!sampleDecision.sample) {
+      // Record the skip — a skipped run is evidence too — and never call Azure.
+      pdfLog("shadow.skipped_by_gate", { runId, reason: sampleDecision.reason });
+      const { error: skipError } = await context.supabase.from("extraction_shadow_comparisons").insert({
+        ...baseRow,
+        azure_available: false,
+        would_azure_have_been_better: false,
+        shadow_skipped: true,
+        shadow_skip_reason: sampleDecision.reason,
+        reason: "Skipped by the sampling gate — Azure not called.",
+        metrics: [],
+      });
+      if (skipError) console.warn("[accounting/shadow] skip not recorded (migration 018/020 not applied?)", { runId, error: skipError.message });
+      return;
+    }
+
     const started = Date.now();
     const azure = await extractWithAzureDocumentIntelligence(buffer, fileName);
     const durationMs = Date.now() - started;
@@ -234,15 +274,16 @@ async function runShadowComparison(context: WorkspaceContext, detail: Accounting
       azureAvailable: comparison.azureAvailable,
       wouldAzureHaveBeenBetter: comparison.wouldAzureHaveBeenBetter,
       reason: comparison.reason,
+      sampleReason: sampleDecision.reason,
       score: comparison.score,
       durationMs,
     });
 
     const { error: insertError } = await context.supabase.from("extraction_shadow_comparisons").insert({
-      workspace_id: context.workspaceId,
-      run_id: runId,
-      document_id: detail.run.documentId,
+      ...baseRow,
       current_provider: comparison.currentProvider,
+      shadow_skipped: false,
+      sample_reason: sampleDecision.reason,
       azure_available: comparison.azureAvailable,
       would_azure_have_been_better: comparison.wouldAzureHaveBeenBetter,
       reason: comparison.reason,

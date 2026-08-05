@@ -208,3 +208,94 @@ export function compareExtractions(current: ExtractionResult, azure: ExtractionR
 
   return { currentProvider, azureAvailable: true, metrics, wouldAzureHaveBeenBetter, reason, score };
 }
+
+// ── Sampling gate ─────────────────────────────────────────────────────────────
+//
+// Shadow mode costs one Azure call per statement, so it is only worth spending
+// where Azure has a REALISTIC chance of improving extraction. A statement whose
+// extraction is already complete and reconciles exactly has nothing for a layout
+// engine to fix — sampling it would buy noise.
+//
+// Skips are still RECORDED (with a reason) rather than silently dropped: "0
+// candidates in 50 statements" is itself strong evidence that promoting Azure is
+// unjustified, and that only reads if the skips are counted.
+
+export type ShadowSampleDecision = {
+  sample: boolean;
+  /** Why it was sampled, or why it was skipped. Always populated. */
+  reason: string;
+};
+
+/** Extraction confidence at or above this is treated as already-good. */
+export const SHADOW_MIN_EXTRACTION_CONFIDENCE = 95;
+
+export type ShadowSampleEvidence = {
+  /** 0..100 from the acceptance engine. */
+  extractionConfidence: number;
+  /** 0..100 derived from the statement checks; null when nothing was checked. */
+  reconciliationConfidence: number | null;
+  /** Signed reconciliation difference; null when it could not be computed. */
+  reconciliationDifference: number | null;
+  /** Rows the validation believes are missing. */
+  missingTransactionCount: number | null;
+  /** The adopted extraction, for description/field inspection. */
+  merged: ExtractionResult;
+  /** Extraction-level review flag (NOT the worker's per-transaction one). */
+  extractionRequiresReview: boolean;
+};
+
+/**
+ * Decide whether this statement is worth shadowing.
+ *
+ * Sampled when ANY signal suggests extraction fell short. Skipped only when the
+ * extraction is complete on every axis.
+ */
+export function decideShadowSample(e: ShadowSampleEvidence): ShadowSampleDecision {
+  const reasons: string[] = [];
+
+  if (e.extractionConfidence < SHADOW_MIN_EXTRACTION_CONFIDENCE) {
+    reasons.push(`extraction confidence ${e.extractionConfidence} < ${SHADOW_MIN_EXTRACTION_CONFIDENCE}`);
+  }
+  if (e.reconciliationConfidence != null && e.reconciliationConfidence < 100) {
+    reasons.push(`reconciliation confidence ${e.reconciliationConfidence} < 100`);
+  }
+  if (e.reconciliationDifference != null && Math.abs(e.reconciliationDifference) > 0.005) {
+    reasons.push(`reconciliation difference ${e.reconciliationDifference.toFixed(2)} ≠ 0`);
+  }
+  if (wrappedDescriptionRecovery(e.merged) < 1) {
+    reasons.push("wrapped transaction descriptions detected");
+  }
+  if (hasMultiLineDescriptions(e.merged)) {
+    reasons.push("multi-line merchant descriptions detected");
+  }
+  const missingBalances = missingFields(e.merged).filter((f) => f === "openingBalance" || f === "closingBalance");
+  if (missingBalances.length) {
+    reasons.push(`missing ${missingBalances.join(" and ")}`);
+  }
+  if (typeof e.missingTransactionCount === "number" && e.missingTransactionCount > 0) {
+    reasons.push(`${e.missingTransactionCount} transaction row(s) missing`);
+  }
+  // Extraction-level review only. The worker's per-transaction review flags are
+  // CLASSIFICATION decisions and Azure cannot influence them, so they must not
+  // trigger a sample.
+  if (e.extractionRequiresReview) {
+    reasons.push("review required by the extraction gate (not classification)");
+  }
+
+  if (reasons.length) {
+    return { sample: true, reason: reasons.join("; ") };
+  }
+  return {
+    sample: false,
+    reason: `extraction already complete (confidence ${e.extractionConfidence}, reconciled exactly, all rows and balances recovered)`,
+  };
+}
+
+// A description carrying an embedded newline, or a run of whitespace wide enough
+// to be a column break, is a merchant name the parser spread over several lines.
+export function hasMultiLineDescriptions(result: ExtractionResult): boolean {
+  return result.transactions.some((t) => {
+    const d = t.description ?? "";
+    return /[\r\n]/.test(d) || /\s{4,}/.test(d);
+  });
+}
