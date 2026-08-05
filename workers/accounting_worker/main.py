@@ -509,7 +509,20 @@ TRANSACTION_LINE = re.compile(
     flags=re.IGNORECASE,
 )
 
-LOOSE_DATE = re.compile(r"(?P<date>\d{1,2}[/-]\d{1,2}(?:[/-]\d{2,4})?|\d{1,2}\s+[A-Za-z]{3,9}(?:\s+\d{2,4})?)")
+# The optional YEAR group must not swallow the amount that follows a
+# descriptionless row. On "26 Apr 550.00 148,157.78Cr" the old pattern matched
+# the date as "26 Apr 550" — taking the integer part of the amount as a year —
+# which build_transaction could not parse, so the row was silently dropped. Two
+# such rows per statement disappeared (the monthly account fee and a transaction
+# fee), leaving the debit count one short of the bank's own summary.
+#
+# A real year is never followed by a digit, decimal point or thousands comma, so
+# the lookahead rejects "550" (from 550.00) and "15" (from 15.00) while still
+# accepting "01 Apr 2025". Rows WITH a description were unaffected because their
+# next token is text, which is why only the fee rows vanished.
+LOOSE_DATE = re.compile(
+    r"(?P<date>\d{1,2}[/-]\d{1,2}(?:[/-]\d{2,4}(?![\d.,]))?|\d{1,2}\s+[A-Za-z]{3,9}(?:\s+\d{2,4}(?![\d.,]))?)"
+)
 LOOSE_MONEY = re.compile(r"(?:R\s*)?-?\(?\d[\d,\s]*\.\d{2}\)?-?")
 FNB_PAGE_ARTIFACT = re.compile(
     r"\b(?:Page\s+\d+\s+of\s+\d+|Delivery\s+Method|Branch\s+Number|Account\s+Number|"
@@ -784,6 +797,51 @@ def is_noise_transaction(description: str) -> bool:
     return any(item in lowered for item in noise)
 
 
+UNNAMED_FEE_DESCRIPTION = "Unnamed Bank Fee"
+
+
+def label_unnamed_fee_rows(transactions: list["ParsedTransaction"], metadata: dict[str, Any]) -> None:
+    """Name descriptionless fee rows from the statement's OWN figures.
+
+    These rows are already parsed and already correct — this only replaces the
+    neutral placeholder with a specific label where the statement proves which
+    fee it is. Nothing is created, merged, removed or re-valued, and a row whose
+    kind cannot be proven keeps the placeholder rather than being guessed at.
+    """
+    declared_service_fee = metadata.get("service_fees")
+    declared = decimal_amount(declared_service_fee) if declared_service_fee is not None else None
+
+    for index, transaction in enumerate(transactions):
+        if transaction.description != UNNAMED_FEE_DESCRIPTION:
+            continue
+        transaction.bank_charge = True
+        amount = decimal_amount(transaction.debit_amount or 0)
+
+        # A preceding row on the same date carrying an accrued charge equal to
+        # this amount identifies it as that transaction's fee.
+        matched_charge = False
+        for previous in reversed(transactions[:index]):
+            if previous.transaction_date != transaction.transaction_date:
+                break
+            note = previous.notes or ""
+            if "Accrued bank charges:" in note:
+                try:
+                    charged = decimal_amount(note.split("Accrued bank charges:")[1].strip())
+                except Exception:  # noqa: BLE001 — a malformed note must not break parsing
+                    charged = None
+                if charged is not None and charged == amount:
+                    matched_charge = True
+                    break
+        if matched_charge:
+            transaction.description = "Transaction Fee"
+            continue
+
+        # Otherwise, if it equals the declared service-fee total it is the
+        # monthly service fee.
+        if declared is not None and amount == declared:
+            transaction.description = "Service Fee"
+
+
 def build_transaction(
     raw_date: str,
     description: str,
@@ -799,10 +857,12 @@ def build_transaction(
     if is_noise_transaction(normalized_description):
         return None
     if not normalized_description:
-        # FNB "#" fee rows sometimes lose their description in text extraction,
-        # leaving only date + amount + balance. Keep the row (it still moves the
-        # balance) with a placeholder rather than dropping it and failing recon.
-        normalized_description = "Unlabelled transaction"
+        # FNB prints its fee rows with no narrative at all — just
+        # "DD Mon <amount> <balance>". They are real ledger entries that move the
+        # balance, so keep them with a neutral placeholder. The caller may refine
+        # this to "Transaction Fee" / "Service Fee" where the statement's own
+        # figures prove which it is; it is never guessed.
+        normalized_description = UNNAMED_FEE_DESCRIPTION
 
     for label, amount in (("debit", debit), ("credit", credit), ("balance", balance)):
         if amount is not None and Decimal(str(amount)).copy_abs() > MAX_DATABASE_AMOUNT:
@@ -1604,6 +1664,12 @@ def parse_transactions(pages: list[dict[str, Any]], metadata: dict[str, Any], fu
         service_fee_transactions = parse_fnb_service_fee_transactions(full_text, metadata) if full_text else []
         hash_fee_transactions = parse_hash_fee_lines(full_text, metadata) if full_text else []
         parsed = dedupe_transactions([*section_transactions, *service_fee_transactions, *hash_fee_transactions])
+        # Name the descriptionless fee rows from the statement's own figures.
+        # Runs BEFORE the inferred-fee fallback so that fallback sees the real,
+        # recovered rows: with them present there is no running-balance gap, so
+        # insert_inferred_fnb_service_fees becomes dormant on its own. It is left
+        # untouched and still fires when the genuine rows cannot be recovered.
+        label_unnamed_fee_rows(parsed, metadata)
         return insert_inferred_fnb_service_fees(parsed, metadata)
     table_transactions = parse_table_transactions(pages, metadata)
     if table_transactions:
@@ -1619,16 +1685,91 @@ def decimal_amount(value: float | int | str | None) -> Decimal:
     return Decimal(str(value)).quantize(CENT, rounding=ROUND_HALF_UP)
 
 
+# Rows FNB prints purely to report a payment's STATUS. They carry no money and
+# do not move the running balance, and the bank does not count them in its
+# declared transaction totals — so comparing our row count against that
+# declaration must exclude them.
+#
+# Deliberately narrow. A zero amount ALONE is not enough: a genuine accounting
+# adjustment can legitimately net to zero, and dropping those from the count
+# would hide real activity. All three conditions must hold.
+INFORMATIONAL_ROW_PATTERNS = (
+    "express pmt pending",
+    "express pmt complete",
+)
+
+
+def is_non_financial_informational_row(
+    transaction: ParsedTransaction, previous_balance: Decimal | None = None
+) -> bool:
+    """True only for a printed row that reports status and nothing else.
+
+    Requires ALL of:
+      * debit and credit are both zero
+      * the running balance does not move (when a previous balance is known)
+      * the description matches a known informational status pattern
+
+    The row itself is ALWAYS kept in the ledger — it appears in the source PDF
+    and removing printed rows is precisely the class of bug this work exists to
+    fix. It is only excluded from the count compared against the bank's own
+    declared transaction total.
+    """
+    if decimal_amount(transaction.debit_amount) != 0 or decimal_amount(transaction.credit_amount) != 0:
+        return False
+
+    if previous_balance is not None and transaction.running_balance is not None:
+        if decimal_amount(transaction.running_balance) != decimal_amount(previous_balance):
+            return False
+
+    description = re.sub(r"\s+", " ", (transaction.description or "")).strip().lower()
+    if not description:
+        return False
+    return any(pattern in description for pattern in INFORMATIONAL_ROW_PATTERNS)
+
+
+def split_ledger_rows(transactions: list[ParsedTransaction]) -> tuple[list[ParsedTransaction], list[ParsedTransaction]]:
+    """Partition printed rows into (financial, informational).
+
+    The ledger keeps both; only the financial list is counted against the bank's
+    declared transaction count. Balance continuity is evaluated in order, so an
+    informational row is recognised by the fact that it leaves the balance where
+    the previous row left it.
+    """
+    financial: list[ParsedTransaction] = []
+    informational: list[ParsedTransaction] = []
+    previous_balance: Decimal | None = None
+    for transaction in transactions:
+        if is_non_financial_informational_row(transaction, previous_balance):
+            informational.append(transaction)
+        else:
+            financial.append(transaction)
+        if transaction.running_balance is not None:
+            previous_balance = decimal_amount(transaction.running_balance)
+    return financial, informational
+
+
+def financial_transaction_count(transactions: list[ParsedTransaction]) -> int:
+    """Rows the BANK would count: printed rows minus proven informational ones."""
+    return len(split_ledger_rows(transactions)[0])
+
+
 def validation_summary(transactions: list[ParsedTransaction]) -> dict[str, Any]:
     total_debits = sum((decimal_amount(transaction.debit_amount) for transaction in transactions), Decimal("0.00"))
     total_credits = sum((decimal_amount(transaction.credit_amount) for transaction in transactions), Decimal("0.00"))
     debit_count = sum(1 for transaction in transactions if decimal_amount(transaction.debit_amount) > 0)
     credit_count = sum(1 for transaction in transactions if decimal_amount(transaction.credit_amount) > 0)
+    financial, informational = split_ledger_rows(transactions)
     return {
         "total_debits": total_debits.quantize(CENT),
         "total_credits": total_credits.quantize(CENT),
         "debit_count": debit_count,
         "credit_count": credit_count,
+        # Two DISTINCT concepts, deliberately both reported:
+        #   ledger_row_count      — every printed row, including informational
+        #   transaction_count     — what the bank counts, used for validation
+        "ledger_row_count": len(transactions),
+        "transaction_count": len(financial),
+        "informational_row_count": len(informational),
     }
 
 
@@ -1674,7 +1815,10 @@ def validate_extraction(metadata: dict[str, Any], transactions: list[ParsedTrans
 
     expected_count = metadata.get("expected_transaction_count")
     if expected_count is not None:
-        actual = len(transactions)
+        # Compare like with like: the bank's declared total counts FINANCIAL
+        # transactions, so status-only rows it prints (and does not count) must
+        # be excluded here. The rows themselves stay in the ledger.
+        actual = financial_transaction_count(transactions)
         check("transaction_count", actual == expected_count, f"extracted {actual} of {expected_count}", actual, expected_count)
 
     if metadata.get("expected_credit_count") is not None:

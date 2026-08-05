@@ -1007,17 +1007,27 @@ def run_combined_workbook_case() -> None:
     assert_equal(vat["G11"].value, "VAT Code", f"{case_id} VAT detail must include VAT Code")
 
 
+REAL_STATEMENT_RESULTS: dict[str, object] = {}
+
+
 def run_local_real_statement_files_case() -> None:
     """Optional guard for the two real FNB statements supplied during support.
     These files live outside the repository, so CI/deploys skip this test. On the
     affected Mac it verifies that the current parser reconciles the exact March
     and May PDFs whose older production runs displayed incorrect Money In/Out."""
+    # NEVER silently return. This case used to swallow a missing pdfplumber and
+    # report success while covering nothing — the runner used the system python3,
+    # which has no pdfplumber, so it skipped on every run and hid a live parser
+    # defect. A missing dependency is now a hard failure.
     try:
         import pdfplumber
-    except Exception:
-        return
+    except Exception as exc:  # noqa: BLE001
+        raise AssertionError(
+            "real-statement regression requires pdfplumber; run via "
+            "workers/accounting_worker/tests/run_regression.sh so the worker venv is used"
+        ) from exc
     if not hasattr(pdfplumber, "open"):
-        return
+        raise AssertionError("pdfplumber is present but unusable (no .open)")
 
     cases = [
         {
@@ -1039,6 +1049,7 @@ def run_local_real_statement_files_case() -> None:
     for case in cases:
         pdf_path = case["path"]
         if not pdf_path.exists():
+            REAL_STATEMENT_RESULTS[case["id"]] = "missing-file"
             continue
         pages = []
         full_text_parts = []
@@ -1055,9 +1066,88 @@ def run_local_real_statement_files_case() -> None:
         assert_equal(str(summary["total_credits"]), case["credits"], f"{case['id']} credits")
         assert_equal(str(summary["total_debits"]), case["debits"], f"{case['id']} debits")
         assert_equal(str(validation["closing_balance"]), case["closing"], f"{case['id']} closing")
+        summary_counts = validation_summary(transactions)
+        REAL_STATEMENT_RESULTS[case["id"]] = {
+            "ledger_rows": summary_counts["ledger_row_count"],
+            "financial": summary_counts["transaction_count"],
+            "informational": summary_counts["informational_row_count"],
+            "credits": summary_counts["credit_count"],
+            "debits": summary_counts["debit_count"],
+        }
+
+
+def test_informational_rows_are_kept_but_not_counted() -> None:
+    """Zero-value status rows stay in the ledger but are excluded from the count
+    compared against the bank's declared transaction total.
+
+    March 2026 prints 103 rows; FNB declares 101. The two extra are
+    "Express Pmt Pending" status lines carrying no money and leaving the balance
+    untouched. They must be preserved (they are printed) and not counted.
+    """
+    import main
+
+    def row(desc, debit, credit, balance):
+        t = main.build_transaction("27 Mar", desc, debit, credit, balance, {}, None, "raw", 96)
+        assert t is not None
+        return t
+
+    # Realistic ordering, as printed: a real movement lands the balance, then the
+    # two status rows leave it exactly where it was.
+    real_debit = row("FNB App Rtc Pmt To Someone", 96300.0, None, 3394030.08)
+    pending = row("Express Pmt Pending", 0.0, None, 3394030.08)
+    complete = row("Express Pmt Pending Express Pmt Complete", 0.0, None, 3394030.08)
+
+    rows = [real_debit, pending, complete]
+    financial, informational = main.split_ledger_rows(rows)
+
+    assert len(informational) == 2, informational
+    assert len(financial) == 1, financial
+    assert main.financial_transaction_count(rows) == 1
+
+    # Detection needs ALL THREE conditions — a bare zero amount is not enough.
+    zero_but_named = row("Interest Adjustment", 0.0, None, 3394030.08)
+    assert main.is_non_financial_informational_row(zero_but_named, main.decimal_amount(3394030.08)) is False
+
+    moved_balance = row("Express Pmt Pending", 0.0, None, 999.99)
+    assert main.is_non_financial_informational_row(moved_balance, main.decimal_amount(3394030.08)) is False
+
+    with_money = row("Express Pmt Pending", 25.0, None, 3394005.08)
+    assert main.is_non_financial_informational_row(with_money, main.decimal_amount(3394030.08)) is False
+
+    # The rows are never removed from the ledger.
+    summary = main.validation_summary(rows)
+    assert summary["ledger_row_count"] == 3, summary
+    assert summary["transaction_count"] == 1, summary
+    assert summary["informational_row_count"] == 2, summary
+
+
+def test_real_statement_cases_actually_execute() -> None:
+    """Guard against the silent-skip that hid a live parser defect.
+
+    run_local_real_statement_files_case used to swallow a missing pdfplumber and
+    return, so it reported success while never opening a PDF. This asserts the
+    cases genuinely ran and produced counts.
+    """
+    if not REAL_STATEMENT_RESULTS:
+        raise AssertionError(
+            "real-statement cases did not execute — run_local_real_statement_files_case "
+            "must run before this test and must never skip silently"
+        )
+    executed = {k: v for k, v in REAL_STATEMENT_RESULTS.items() if isinstance(v, dict)}
+    if not executed:
+        raise AssertionError(
+            "no real statement was opened; all cases reported missing-file: "
+            f"{REAL_STATEMENT_RESULTS}"
+        )
+    for case_id, counts in executed.items():
+        assert counts["ledger_rows"] >= counts["financial"], case_id
+        assert counts["financial"] > 0, case_id
 
 
 def run() -> None:
+    test_descriptionless_fee_rows_are_preserved()
+    test_unnamed_fee_rows_are_labelled_from_statement_figures_only()
+    test_informational_rows_are_kept_but_not_counted()
     run_fnb_extraction_case()
     run_statement_period_case()
     run_missing_column_fallback_case()
@@ -1070,6 +1160,7 @@ def run() -> None:
     run_learned_supplier_rules_case()
     run_combined_workbook_case()
     run_local_real_statement_files_case()
+    test_real_statement_cases_actually_execute()
 
     manifest = json.loads(MANIFEST_PATH.read_text())
     cases = manifest.get("cases") if isinstance(manifest, dict) else None
@@ -1090,6 +1181,66 @@ def run() -> None:
             raise AssertionError(f"{case_id}: fixture file not found: {fixture_path}")
 
         run_synthetic_case(case_id, fixture_path)
+
+
+def test_descriptionless_fee_rows_are_preserved() -> None:
+    """FNB prints fee rows with no narrative: "DD Mon <amount> <balance>".
+
+    LOOSE_DATE's optional year group used to swallow the amount's integer part
+    ("26 Apr 550.00" parsed its date as "26 Apr 550"), which build_transaction
+    could not parse, so the row was dropped. Two such rows vanished per
+    statement and the debit count came up one short of the bank's own summary.
+    """
+    import main
+
+    for line, expected_date in (
+        ("26 Apr 550.00 148,157.78Cr", "26 Apr"),
+        ("26 Apr 15.00 148,142.78Cr", "26 Apr"),
+        ("26 May 30.00 106,128.78Cr", "26 May"),
+        ("02 Jun 1,234.56 10,000.00Cr", "02 Jun"),
+    ):
+        assert main.LOOSE_DATE.match(line).group("date") == expected_date, line
+
+    # A genuine year must still be recognised.
+    for line, expected_date in (
+        ("01 Apr 2025 Something 10.00 5.00Cr", "01 Apr 2025"),
+        ("01/04/2025 Foo 10.00 5.00Cr", "01/04/2025"),
+        ("01 Apr Magtape 330.00 123,839.78Cr", "01 Apr"),
+    ):
+        assert main.LOOSE_DATE.match(line).group("date") == expected_date, line
+
+    # The row must now parse into a real debit, not be discarded.
+    parsed = main.parse_fnb_transaction_line("26 Apr 550.00 148,157.78Cr", {})
+    assert parsed is not None, "descriptionless fee row must not be dropped"
+    assert parsed.debit_amount == 550.0
+    assert parsed.running_balance == 148157.78
+    assert parsed.description == main.UNNAMED_FEE_DESCRIPTION
+
+
+def test_unnamed_fee_rows_are_labelled_from_statement_figures_only() -> None:
+    """Naming must come from the statement's own figures, never a guess."""
+    import main
+
+    charged = main.build_transaction(
+        "26 Apr", "FNB App Rtc Pmt To Someone", 2500.0, None, 148707.78, {}, None, "raw", 96
+    )
+    assert charged is not None
+    charged.notes = "Accrued bank charges: 15.00"
+    fee = main.build_transaction("26 Apr", "", 15.0, None, 148692.78, {}, None, "raw", 96)
+    unknown = main.build_transaction("26 Apr", "", 30.0, None, 148662.78, {}, None, "raw", 96)
+    assert fee is not None and unknown is not None
+
+    rows = [charged, fee, unknown]
+    main.label_unnamed_fee_rows(rows, {})
+
+    # Matches a preceding accrued charge -> named.
+    assert fee.description == "Transaction Fee"
+    assert fee.bank_charge is True
+    # Nothing proves what the 30.00 is, so it keeps the neutral placeholder
+    # rather than being guessed at.
+    assert unknown.description == main.UNNAMED_FEE_DESCRIPTION
+    # Amounts are never altered by labelling.
+    assert fee.debit_amount == 15.0 and unknown.debit_amount == 30.0
 
 
 if __name__ == "__main__":
