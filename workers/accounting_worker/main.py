@@ -1714,6 +1714,41 @@ def extraction_money_checks_passed(extraction_check: dict[str, Any]) -> bool:
     return all(found.get(rule, False) for rule in money_rules)
 
 
+
+def reconciliation_confidence(extraction_check: dict[str, Any], missing_rows: int | None) -> float | None:
+    """Reconciliation Confidence 0-100 — how internally consistent the statement is.
+
+    Deliberately SEPARATE from classification confidence. A statement can have
+    perfectly categorised transactions and still not balance, and vice versa;
+    averaging the two hides both. Returns None when nothing was checked, because
+    an absent score is honest where 0 would read as "checked and failed".
+    """
+    rules = extraction_check.get("failed_rules")
+    checks = extraction_check.get("checks")
+    if not isinstance(checks, list) or not checks:
+        # No per-rule detail: fall back to the coarse status.
+        status = extraction_check.get("status")
+        if status is None:
+            return None
+        return 100.0 if status == "ok" else 40.0
+
+    weights = {
+        "reconciliation": 50, "closing_balance": 10, "opening_balance": 10,
+        "transaction_count": 10, "credit_total": 7, "debit_total": 7,
+        "credit_count": 3, "debit_count": 3,
+    }
+    total = sum(weights.get(str(c.get("rule")), 5) for c in checks)
+    if total == 0:
+        return None
+    earned = sum(weights.get(str(c.get("rule")), 5) for c in checks if c.get("ok"))
+    score = (earned / total) * 100.0
+    if missing_rows:
+        score -= min(30.0, missing_rows * 5.0)
+    if isinstance(rules, list) and rules:
+        score -= min(20.0, len(rules) * 5.0)
+    return round(max(0.0, min(100.0, score)), 2)
+
+
 def missing_transaction_count_for_storage(extraction_check: dict[str, Any], transaction_count: int) -> int | None:
     expected_count = extraction_check.get("expected_transaction_count")
     if expected_count is None:
@@ -2114,7 +2149,16 @@ def statement_run_metadata(metadata: dict[str, Any]) -> dict[str, Any]:
 
 # Columns that may not exist yet if their migration has not been applied to the
 # live database. They are dropped (with a warning) rather than failing the job.
-OPTIONAL_RUN_COLUMNS = ("statement_date", "processing_step")
+# Columns that may not exist yet if a migration has not been applied. The run
+# update drops these and retries rather than failing outright, so shipping the
+# worker ahead of its migration degrades instead of breaking.
+OPTIONAL_RUN_COLUMNS = (
+    "statement_date",
+    "processing_step",
+    # migration 019 — the confidence split
+    "classification_confidence",
+    "reconciliation_confidence",
+)
 
 
 def is_missing_column_error(message: str) -> bool:
@@ -4011,7 +4055,14 @@ def process_fnb_statement(payload: ProcessRequest, authorization: str | None = H
                 "requires_review": review_required,
                 "processing_duration_ms": int(processing_duration_ms),
                 "extraction_accuracy": round(avg_confidence, 2),
+                # DEPRECATED: `confidence` has always carried the CLASSIFICATION
+                # score and continues to, so existing readers are unaffected.
+                # New readers should use classification_confidence.
                 "confidence": round(avg_confidence, 2),
+                "classification_confidence": round(avg_confidence, 2),
+                "reconciliation_confidence": reconciliation_confidence(
+                    extraction_check, missing_transaction_count_for_storage(extraction_check, len(transactions))
+                ),
                 "error": run_error,
                 "updated_at": datetime.utcnow().isoformat(),
             },

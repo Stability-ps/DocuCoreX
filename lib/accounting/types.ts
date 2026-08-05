@@ -47,6 +47,20 @@ export type AccountingStatementRun = {
   // Full parser/OCR debug blob (migration 015) — shown on failed runs so the
   // real reason + OCR diagnostics are visible, not just "Failed 0%".
   parserDebug?: Record<string, unknown> | null;
+  // The three confidence metrics, kept separate. Null means "not measured",
+  // which is honest for runs predating migration 019 — 0 would be a lie.
+  confidences: {
+    /** How accurately the document was extracted. */
+    extraction: number | null;
+    /** How confidently transactions were categorised. */
+    classification: number | null;
+    /** How reliable the reconstructed statement is. */
+    reconciliation: number | null;
+  };
+  /**
+   * @deprecated Carries the CLASSIFICATION score for backwards compatibility
+   * only. Read `confidences.classification`. Never an average of the three.
+   */
   confidence: number;
   error: string | null;
   createdAt: string;
