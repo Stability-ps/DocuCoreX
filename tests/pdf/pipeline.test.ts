@@ -84,6 +84,112 @@ test("migration 017 adds the OCR-engine provenance columns", () => {
   assert.match(sql, /notify pgrst, 'reload schema'/);
 });
 
+// ── Merge coherence: text and transactions must come from the SAME parser ─────
+
+function pageOf(text: string, pageNumber = 1) {
+  return { pageNumber, text, words: [], tables: [], lines: [] };
+}
+
+function analysisFor(pageCount: number) {
+  return {
+    pageCount,
+    totalTextLength: 4000,
+    averageTextPerPage: Math.round(4000 / pageCount),
+    pages: Array.from({ length: pageCount }, (_, i) => ({ pageNumber: i + 1, textLength: 1000, hasText: true })),
+    isDigitalPdf: true,
+    kind: "digital",
+    needsOcr: false,
+    confidence: 90,
+    extractedText: "",
+    reasons: [],
+    characters: 4000,
+    averageCharsPerPage: Math.round(4000 / pageCount),
+  } as never;
+}
+
+// pdfplumber: plain fixed-column text that parses into rows.
+function plumberWithRows(rows = 70) {
+  const lines = Array.from({ length: rows }, (_, i) => `0${(i % 9) + 1}/02/2026 PURCHASE ${i + 1} 10.00 ${(10000 - 10 * (i + 1)).toFixed(2)}`);
+  const combinedText = lines.join("\n");
+  return {
+    parser: "pdfplumber",
+    pageCount: 4,
+    pages: [0, 1, 2, 3].map((p) => pageOf(lines.slice(p * 18, (p + 1) * 18).join("\n"), p + 1)),
+    combinedText,
+    transactions: lines.map((raw, i) => ({ date: `2026-02-0${(i % 9) + 1}`, description: `PURCHASE ${i + 1}`, debit: 10, credit: null, balance: 10000 - 10 * (i + 1), raw })),
+    metadata: { openingBalance: 10000, closingBalance: 10000 - 10 * rows },
+    warnings: [],
+  } as never;
+}
+
+// Mistral: verbose markdown for every page, but zero parsed transactions —
+// longer than pdfplumber's text and with full page coverage, so under the old
+// rule it won `textSource` and its markdown was sent to the accounting worker.
+function mistralMarkdownNoRows() {
+  const md = Array.from({ length: 4 }, (_, p) =>
+    `# Statement page ${p + 1}\n\n| Date | Description | Amount | Balance |\n| --- | --- | --- | --- |\n${"| ... | ... | ... | ... |\n".repeat(40)}`,
+  );
+  return {
+    parser: "mistral_ocr",
+    pageCount: 4,
+    pages: md.map((text, i) => pageOf(text, i + 1)),
+    combinedText: md.join("\f"),
+    transactions: [],
+    metadata: { closingBalance: 12345 },
+    warnings: [],
+    confidence: 91,
+    confidenceSource: "mistral-page",
+  } as never;
+}
+
+test("merged text comes from the parser that produced the transactions", () => {
+  const plumber = plumberWithRows(70);
+  const mistral = mistralMarkdownNoRows();
+  // Precondition: the OCR text really is longer, so this pins the actual bug.
+  assert.ok(mistral.combinedText.length > plumber.combinedText.length, "fixture must reproduce the longer-OCR-text case");
+
+  const { merged } = mergeExtractionResults(analysisFor(4), { pdfplumber: plumber, mistral });
+
+  assert.equal(merged.transactions.length, 70);
+  assert.equal(merged.combinedText, plumber.combinedText, "text must match the source of the transactions");
+  assert.ok(!merged.combinedText.includes("| --- |"), "must not hand OCR markdown to the accounting worker");
+  assert.deepEqual(merged.pages, plumber.pages, "pages must be coherent with the text too");
+});
+
+test("merged balances come from the parser that produced the transactions", () => {
+  // Mistral reports a different closing balance. Taking its figure while keeping
+  // pdfplumber's rows is what manufactures a large reconciliation difference.
+  const { merged } = mergeExtractionResults(analysisFor(4), { pdfplumber: plumberWithRows(70), mistral: mistralMarkdownNoRows() });
+  assert.equal(merged.metadata.openingBalance, 10000);
+  assert.equal(merged.metadata.closingBalance, 10000 - 700, "must not adopt the other parser's closing balance");
+});
+
+test("other parsers may FILL a missing field but never override one", () => {
+  const plumber = plumberWithRows(70) as unknown as { metadata: Record<string, unknown> };
+  delete plumber.metadata.closingBalance; // pdfplumber missed it
+  const { merged } = mergeExtractionResults(analysisFor(4), { pdfplumber: plumber as never, mistral: mistralMarkdownNoRows() });
+  assert.equal(merged.metadata.openingBalance, 10000, "kept from the primary");
+  assert.equal(merged.metadata.closingBalance, 12345, "filled from the other source since the primary had none");
+});
+
+test("with no transactions anywhere, the richest text still wins", () => {
+  // Regression guard: a scanned document must not lose its OCR text just
+  // because nothing parsed into rows.
+  const empty = { parser: "pdfjs", pageCount: 4, pages: [], combinedText: "", transactions: [], metadata: {}, warnings: [] } as never;
+  const mistral = mistralMarkdownNoRows();
+  const { merged } = mergeExtractionResults(analysisFor(4), { pdfjs: empty, mistral });
+  assert.equal(merged.combinedText, mistral.combinedText);
+});
+
+test("the worker picks statement text by parse yield, not by length", () => {
+  const worker = read("workers/accounting_worker/main.py");
+  assert.match(worker, /provided_rows = len\(transaction_candidate_lines\(provided\)\)/);
+  assert.match(worker, /native_rows = len\(transaction_candidate_lines\(native_text\)\)/);
+  assert.match(worker, /if provided and \(native_is_empty or provided_rows > native_rows\)/);
+  // The old length rule must be gone.
+  assert.ok(!/len\(provided\) >= max\(200, len\(native_text\) \/\/ 2\)/.test(worker), "length-based selection must not remain");
+});
+
 test("migration adds the processing-metadata columns", () => {
   const sql = read("supabase/migrations/013_extraction_pipeline_metadata.sql");
   for (const column of ["parser_method", "extraction_confidence", "detected_pdf_type", "ocr_used", "route_reason", "extraction_warnings", "validation_status", "reconciliation_difference", "missing_transaction_count", "requires_review"]) {

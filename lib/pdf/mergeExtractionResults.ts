@@ -84,20 +84,53 @@ export function mergeExtractionResults(
     };
   }
 
-  // Merge: transactions from the transaction source, metadata from the metadata
-  // source, pages/text from the richest text source (highest coverage).
+  // The richest text source, used ONLY when nothing captured transactions.
   const textSource = [...available].sort((a, b) => b.score.pageCoverage - a.score.pageCoverage || b.result.combinedText.length - a.result.combinedText.length)[0];
+
+  // ---- Coherence -------------------------------------------------------------
+  // Text, pages and transactions MUST come from the same extraction.
+  //
+  // These used to be chosen independently: transactions from `transactionSource`
+  // but text from whichever candidate had the highest page coverage, tie-broken
+  // by longest string. An engine that returns verbose text but parses no rows
+  // (Mistral emits markdown for every page) therefore won the text while another
+  // engine won the transactions, producing a merged result whose text and rows
+  // came from different parsers.
+  //
+  // That matters because the accounting worker does NOT receive the transaction
+  // objects — buildWorkerInput sends only `merged.combinedText`, and the worker
+  // re-parses it. Handing it text from a parser that extracted nothing meant the
+  // worker re-derived a fraction of the rows and reconciliation failed by a large
+  // margin, even though a native parser had already extracted the statement
+  // correctly.
+  const primary = transactionSource ?? textSource;
+
+  // Metadata: the primary source wins, because its balances must be consistent
+  // with its own transaction rows — reconciling one parser's rows against
+  // another parser's closing balance is exactly how a spurious mismatch appears.
+  // Other sources only FILL fields the primary did not find; they never override.
+  const mergedMetadata: ExtractionResult["metadata"] = { ...(primary.result.metadata || {}) };
+  const fillOrder = [metadataSource, ...available].filter((c): c is (typeof available)[number] => Boolean(c) && c!.key !== primary.key);
+  for (const candidate of fillOrder) {
+    for (const [key, value] of Object.entries(candidate.result.metadata || {})) {
+      if (mergedMetadata[key] == null && value != null) mergedMetadata[key] = value;
+    }
+  }
+
   const merged: ExtractionResult = {
     parser: "hybrid",
     pageCount: analysis.pageCount,
-    pages: textSource.result.pages,
-    combinedText: textSource.result.combinedText,
+    pages: primary.result.pages,
+    combinedText: primary.result.combinedText,
     transactions: transactionSource ? transactionSource.result.transactions : [],
-    metadata: { ...(textSource.result.metadata || {}), ...(metadataSource?.result.metadata || {}) },
+    metadata: mergedMetadata,
     warnings: [...new Set(available.flatMap((c) => c.result.warnings))],
-    confidence: transactionSource?.result.confidence ?? null,
-    confidenceSource: transactionSource?.result.confidenceSource ?? null,
+    confidence: primary.result.confidence ?? null,
+    confidenceSource: primary.result.confidenceSource ?? null,
   };
+  if (primary.key !== textSource.key) {
+    reasons.push(`text from ${primary.key} (kept coherent with its transactions) rather than ${textSource.key}`);
+  }
 
   if (transactionSource) reasons.push(`transactions from ${transactionSource.key} (${transactionSource.result.transactions.length} rows, score ${transactionSource.score.score})`);
   if (metadataSource) reasons.push(`metadata from ${metadataSource.key}`);
