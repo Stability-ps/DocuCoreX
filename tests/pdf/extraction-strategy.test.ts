@@ -7,6 +7,7 @@ register("./alias-hook.mjs", pathToFileURL(new URL(".", import.meta.url).pathnam
 
 const { selectExtractionStrategy } = await import("@/lib/pdf/extractionStrategy.ts");
 const { acceptExtraction } = await import("@/lib/pdf/acceptExtraction.ts");
+const { resolveDetectedType } = await import("@/lib/ocr/detectedType.ts");
 
 type AnalysisOverrides = Record<string, unknown>;
 
@@ -152,6 +153,104 @@ test("material engine disagreement forces review instead of being hidden", () =>
   assert.ok(fields.includes("closingBalance"), `expected closingBalance disagreement, got ${fields.join(",")}`);
   // Every disagreement is surfaced as a rejection reason a human can read.
   assert.ok(outcome.rejectionReasons.some((r: string) => /disagree/i.test(r)));
+});
+
+// ── The acceptance gate is scoped to what the document is ─────────────────────
+
+// A clean digital invoice: real text, but no transactions and no balances —
+// because an invoice does not have them.
+function invoice() {
+  return {
+    parser: "pdfplumber",
+    pageCount: 2,
+    pages: [
+      { pageNumber: 1, text: "INVOICE 123 Acme Ltd Total R1,150.00", words: [], tables: [], lines: [] },
+      { pageNumber: 2, text: "Terms: 30 days. Banking details overleaf.", words: [], tables: [], lines: [] },
+    ],
+    combinedText: "INVOICE 123\nAcme Ltd\nDate 2026-02-01\nSubtotal 1000.00\nVAT 150.00\nTotal R1,150.00",
+    transactions: [],
+    metadata: {},
+    warnings: [],
+  } as never;
+}
+
+test("a clean invoice is VALIDATED as a document — statement checks do not apply", () => {
+  const outcome = acceptExtraction(analysis(), { pdfplumber: invoice() }, { expect: "document" });
+  assert.equal(outcome.verdict, "validated");
+  assert.equal(outcome.accepted, true, "native extraction succeeded; nothing to escalate");
+  assert.deepEqual(outcome.rejectionReasons, []);
+});
+
+test("the same invoice IS rejected when a bank statement was expected", () => {
+  const outcome = acceptExtraction(analysis(), { pdfplumber: invoice() }, { expect: "bank_statement" });
+  assert.equal(outcome.accepted, false);
+  assert.ok(outcome.rejectionReasons.some((r: string) => /transaction rows/i.test(r)));
+  assert.ok(outcome.rejectionReasons.some((r: string) => /closing balance is missing/i.test(r)));
+});
+
+test("the default expectation is the STRICTER one", () => {
+  // Forgetting to declare `expect` must not silently drop reconciliation from a
+  // real statement — the safe default is bank_statement.
+  const withoutOption = acceptExtraction(analysis(), { pdfplumber: invoice() });
+  const asStatement = acceptExtraction(analysis(), { pdfplumber: invoice() }, { expect: "bank_statement" });
+  assert.equal(withoutOption.verdict, asStatement.verdict);
+  assert.deepEqual(withoutOption.rejectionReasons, asStatement.rejectionReasons);
+});
+
+test("a document with NO readable text still fails, so OCR escalation still happens", () => {
+  const empty = { parser: "pdfjs", pageCount: 1, pages: [], combinedText: "", transactions: [], metadata: {}, warnings: [] } as never;
+  const outcome = acceptExtraction(analysis({ kind: "scanned", confidence: 5 }), { pdfjs: empty }, { expect: "document" });
+  assert.equal(outcome.verdict, "failed");
+  assert.equal(outcome.accepted, false, "a scanned document must still reach OCR");
+});
+
+test("a partially-extracted multi-page document is rejected on quality, not banking", () => {
+  // 1 of 4 pages yielded text — a mixed PDF where the rest are scanned images.
+  // OCR may fix this, so it must escalate. The reason must be about extraction
+  // quality, never about balances.
+  const partial = {
+    parser: "pdfplumber",
+    pageCount: 4,
+    pages: [
+      { pageNumber: 1, text: "CONTRACT OF SALE between the parties hereto", words: [], tables: [], lines: [] },
+      { pageNumber: 2, text: "", words: [], tables: [], lines: [] },
+      { pageNumber: 3, text: "", words: [], tables: [], lines: [] },
+      { pageNumber: 4, text: "", words: [], tables: [], lines: [] },
+    ],
+    combinedText: "CONTRACT OF SALE between the parties hereto",
+    transactions: [],
+    metadata: {},
+    warnings: [],
+  } as never;
+  const outcome = acceptExtraction(analysis(), { pdfplumber: partial }, { expect: "document" });
+  assert.equal(outcome.accepted, false);
+  assert.ok(outcome.rejectionReasons.some((r: string) => /only 25% of pages/i.test(r)));
+  assert.ok(!outcome.rejectionReasons.some((r: string) => /balance|reconcil|transaction/i.test(r)), "reasons must not mention banking");
+});
+
+test("an unclassified document is never relabelled a bank statement without evidence", () => {
+  // The old default wrote "bank_statement" back to documents.detected_type for
+  // ANY unknown document, which flipped it onto the statement policy on the next
+  // run and escalated a clean digital file through both OCR engines.
+  assert.equal(resolveDetectedType("unknown", 0, null, null), "unknown", "an invoice must not become a statement");
+  assert.equal(resolveDetectedType(undefined, 0, null, null), "unknown");
+  // A known type is always preserved.
+  assert.equal(resolveDetectedType("invoice", 0, null, null), "invoice");
+  assert.equal(resolveDetectedType("contract", 12, 1000, 900), "contract", "evidence never overrides an explicit type");
+  // Only real statement evidence earns the statement label.
+  assert.equal(resolveDetectedType("unknown", 40, 1000, 900), "bank_statement");
+  assert.equal(resolveDetectedType("unknown", 40, null, null), "unknown", "rows alone are not enough");
+  assert.equal(resolveDetectedType("unknown", 0, 1000, 900), "unknown", "balances alone are not enough");
+});
+
+test("engine disagreement still forces review for a generic document", () => {
+  // The agreement check is not statement-specific: two engines reading different
+  // text is a defect whatever the document is.
+  const a = statement("ocr", 60);
+  const b = statement("mistral_ocr", 45);
+  const outcome = acceptExtraction(analysis(), { ocr: a, mistral: b }, { expect: "document" });
+  assert.equal(outcome.accepted, false);
+  assert.ok(outcome.selection.disagreements.length > 0);
 });
 
 test("both OCR engines are recorded in the comparison with exactly one winner", () => {

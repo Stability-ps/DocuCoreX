@@ -83,6 +83,40 @@ test("missing fields on a native-strategy document still escalate", () => {
   assert.equal(d.needed, true);
 });
 
+test("a generic document never escalates for missing banking fields", () => {
+  // Every statement-shaped trigger is "on" — zero transactions, no balances,
+  // reconciliation unsatisfiable, low transaction-weighted score. None of them
+  // may spend money on a second engine for an invoice or a contract.
+  const d = decideMistralOcr(
+    evidence({
+      expect: "document",
+      strategy: "native",
+      ocrAttempted: false,
+      ocrChars: 0,
+      ocrConfidence: null,
+      transactionCount: 0,
+      hasOpeningBalance: false,
+      hasClosingBalance: false,
+      validationRequiresReview: true,
+      selectionConfidence: 12,
+    }),
+  );
+  assert.equal(d.needed, false, "no OCR on a clean digital document that simply is not a statement");
+  assert.match(d.reason, /generic document/i);
+});
+
+test("a generic document DOES escalate when OCR itself did badly", () => {
+  // The one legitimate reason to try a second engine on a generic document.
+  assert.equal(decideMistralOcr(evidence({ expect: "document", ocrConfidence: 40 })).needed, true);
+  assert.equal(decideMistralOcr(evidence({ expect: "document", ocrChars: 5, ocrConfidence: null })).needed, true);
+  assert.equal(decideMistralOcr(evidence({ expect: "document", enhanced: true })).needed, true);
+});
+
+test("omitting expect keeps the stricter statement behaviour", () => {
+  const d = decideMistralOcr(evidence({ transactionCount: 0 }));
+  assert.equal(d.needed, true, "default must not silently relax a statement");
+});
+
 test("a native-strategy document that passed every check is left alone", () => {
   const d = decideMistralOcr(evidence({ strategy: "native", ocrAttempted: false, ocrChars: 0, ocrConfidence: null }));
   assert.equal(d.needed, false, "OCR cannot improve correctly embedded text");

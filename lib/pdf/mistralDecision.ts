@@ -12,7 +12,15 @@
 // deliberate: a missing closing balance or a failed reconciliation means the
 // native parse is WRONG, not that the text layer is intact — so a second engine
 // is worth trying even though the PDF is digital.
+//
+// Conditions 2, 3 and the selection-confidence floor are STATEMENT-ONLY. They all
+// rest on transaction rows and balances, and scoreExtraction is transaction-
+// weighted, so a perfectly extracted invoice scores low and reports no balances.
+// Applying them to a generic document would escalate every non-statement upload
+// to a paid second engine for nothing. For a generic document the only reason to
+// try another engine is that OCR itself did badly.
 import type { ExtractionStrategy } from "@/lib/pdf/types";
+import type { ExtractionExpectation } from "@/lib/pdf/acceptExtraction";
 
 function readThreshold(value: string | undefined, fallback: number): number {
   const parsed = Number(value);
@@ -32,6 +40,8 @@ export type MistralEvidence = {
   /** Explicit "Enhanced OCR" request from the caller. */
   enhanced: boolean;
   strategy: ExtractionStrategy;
+  /** What the document is expected to be. Defaults to "bank_statement". */
+  expect?: ExtractionExpectation;
   /** Whether the primary OCR engine ran at all. */
   ocrAttempted: boolean;
   /** Characters recovered by the primary OCR engine. */
@@ -68,6 +78,11 @@ export function decideMistralOcr(e: MistralEvidence): MistralDecision {
   // 4. The primary OCR engine ran and recovered essentially nothing.
   if (e.ocrAttempted && e.ocrChars < MISTRAL_MIN_OCR_CHARS) {
     return { needed: true, reason: `primary OCR recovered only ${e.ocrChars} chars` };
+  }
+
+  // Conditions 5–7 only make sense for a bank statement.
+  if ((e.expect ?? "bank_statement") === "document") {
+    return { needed: false, reason: "generic document — OCR succeeded, statement checks do not apply" };
   }
 
   // 5. Important fields missing.

@@ -19,7 +19,7 @@ export async function GET(request: Request, { params }: { params: Promise<{ docu
 
     const { data: row, error } = await context.supabase
       .from("documents")
-      .select("id, name, storage_path, mime_type")
+      .select("id, name, storage_path, mime_type, detected_type")
       .eq("workspace_id", context.workspaceId)
       .eq("id", documentId)
       .single();
@@ -39,7 +39,10 @@ export async function GET(request: Request, { params }: { params: Promise<{ docu
     }
 
     const buffer = new Uint8Array(await file.arrayBuffer());
-    const result = await runExtractionPipeline(buffer, row.name || "document.pdf", { enhancedOcr: enhanced, force: enhanced });
+    // Statement checks only for actual statements — otherwise a clean invoice is
+    // rejected and escalated through both OCR engines for nothing.
+    const expect = row.detected_type === "bank_statement" ? "bank_statement" : "document";
+    const result = await runExtractionPipeline(buffer, row.name || "document.pdf", { enhancedOcr: enhanced, force: enhanced, expect });
 
     // Trim the heavy page/word payload — the UI only needs the summary.
     return NextResponse.json({
