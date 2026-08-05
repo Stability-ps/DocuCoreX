@@ -4,8 +4,6 @@ import { scoreExtraction } from "@/lib/pdf/scoreExtraction";
 type ParserKey = "pdfjs" | "pdfplumber" | "ocr" | "mistral_ocr" | "azure_di";
 type Inputs = { pdfjs?: ExtractionResult; pdfplumber?: ExtractionResult; ocr?: ExtractionResult; mistral?: ExtractionResult; azure?: ExtractionResult };
 
-const OCR_ENGINE_KEYS: ParserKey[] = ["ocr", "mistral_ocr", "azure_di"];
-
 function num(value: unknown): number | null {
   return typeof value === "number" ? value : null;
 }
@@ -229,5 +227,3 @@ export function mergeExtractionResults(
     merged,
   };
 }
-
-export { OCR_ENGINE_KEYS };

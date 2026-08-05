@@ -89,8 +89,9 @@ function copyBuffer(src: Uint8Array): Uint8Array {
  *                  digital PDFs; OCR cannot improve correctly embedded text.
  *   3. EXTRACT   — native always; OCR upfront only when the strategy says so.
  *   4. ACCEPT    — acceptExtraction(). The SAME gate for every strategy.
- *   5. ESCALATE  — on rejection (or Enhanced OCR): primary OCR if it has not run,
- *                  then the secondary Mistral engine, then re-enter step 4.
+ *   5. ESCALATE  — on rejection (or Enhanced OCR), a ladder of providers, each
+ *                  re-entering step 4 and stopping on the first acceptance:
+ *                  Azure Document Intelligence → Mistral OCR → Tesseract.
  *
  * Every extractor runs independently and a failure in one never prevents the
  * others. The pipeline only "fails" after all available extractors have been
@@ -102,15 +103,19 @@ export async function runExtractionPipeline(buffer: Uint8Array, fileName = "stat
 
   // Reuse a prior extraction for the identical document+bytes (Req 3): never OCR
   // or re-parse the same file twice. Force reprocess bypasses the cache.
-  // An Enhanced OCR request is NOT satisfied by a cached result that never ran
-  // the secondary engine — otherwise "Enhanced OCR" would silently no-op.
+  // An Enhanced OCR request is NOT satisfied by a standard cached result —
+  // otherwise "Enhanced OCR" would silently no-op.
   if (!force) {
     const cached = getCachedExtraction(documentId, fileHash);
-    if (cached && (!enhancedOcr || cached.ocrEngineComparison.some((c) => c.engine === "mistral_ocr"))) {
+    // An Enhanced request is satisfied only by a result that was itself produced
+    // by an Enhanced run. Checking for a specific provider broke the moment a
+    // third one was added: a cached Azure run would have satisfied an Enhanced
+    // request that never reached Mistral or Tesseract.
+    if (cached && (!enhancedOcr || cached.enhanced)) {
       pdfLog("pipeline_cache_reused", { documentId, parserMethod: cached.parserMethod, ocrUsed: cached.ocrUsed, ocrEngine: cached.ocrEngine });
       return { ...cached, cached: true };
     }
-    if (cached) pdfLog("pipeline_cache_bypassed", { documentId, reason: "enhanced OCR requested but cached result has no secondary-engine run" });
+    if (cached) pdfLog("pipeline_cache_bypassed", { documentId, reason: "enhanced OCR requested but the cached result came from a standard run" });
   }
 
   // Keep the ORIGINAL buffer immutable and hand every extractor its own fresh copy.
@@ -417,6 +422,7 @@ export async function runExtractionPipeline(buffer: Uint8Array, fileName = "stat
     strategy: plan.strategy,
     ocrEngine: assembled.ocrEngine,
     ocrEngineComparison: assembled.ocrEngineComparison,
+    enhanced: enhancedOcr,
     verdict: assembled.verdict,
     accepted: assembled.accepted,
     debug,

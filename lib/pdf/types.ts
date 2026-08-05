@@ -218,6 +218,11 @@ export type ExtractionPipelineResult = {
   ocrEngine: OcrEngineId | null;
   // Head-to-head record when more than one OCR engine ran.
   ocrEngineComparison: OcrEngineComparison[];
+  // Whether this result came from an Enhanced OCR run. The cache uses this so a
+  // standard result can never satisfy an Enhanced request — enumerating which
+  // providers happened to run is fragile, and adding a provider silently broke
+  // that guard once already.
+  enhanced: boolean;
   // The single acceptance verdict — see AcceptanceVerdict.
   verdict: AcceptanceVerdict;
   accepted: boolean; // verdict === "validated"

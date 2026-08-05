@@ -371,3 +371,22 @@ test("the Azure key is never logged or returned", () => {
   assert.ok(!/outputContentFormat[=:]/.test(src), "must not request markdown — it would repeat the merge-coherence defect");
   assert.ok(!/markdown/.test(src.replace(/\/\/.*$/gm, "")), "markdown must not appear in code, only in comments");
 });
+
+// ── Cache guard ───────────────────────────────────────────────────────────────
+
+test("an Enhanced request is not satisfied by a standard cached result", () => {
+  const src = read("lib/pdf/runExtractionPipeline.ts");
+  // The guard must key off whether the CACHED RUN was enhanced, not off which
+  // providers happen to appear in its comparison. The provider-enumerating form
+  // broke silently the moment a third provider was added: a cached Azure run
+  // satisfied an Enhanced request that never reached Mistral or Tesseract.
+  assert.match(src, /if \(cached && \(!enhancedOcr \|\| cached\.enhanced\)\)/);
+  assert.ok(!/cached\.ocrEngineComparison\.some/.test(src), "must not enumerate providers to decide cache reuse");
+  // The flag is recorded on every result so the guard has something to read.
+  assert.match(src, /enhanced: enhancedOcr,/);
+});
+
+test("OCR_ENGINE_KEYS is gone (it was exported and never consumed)", () => {
+  const merge = read("lib/pdf/mergeExtractionResults.ts");
+  assert.ok(!/OCR_ENGINE_KEYS/.test(merge));
+});
