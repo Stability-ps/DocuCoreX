@@ -1685,16 +1685,91 @@ def decimal_amount(value: float | int | str | None) -> Decimal:
     return Decimal(str(value)).quantize(CENT, rounding=ROUND_HALF_UP)
 
 
+# Rows FNB prints purely to report a payment's STATUS. They carry no money and
+# do not move the running balance, and the bank does not count them in its
+# declared transaction totals — so comparing our row count against that
+# declaration must exclude them.
+#
+# Deliberately narrow. A zero amount ALONE is not enough: a genuine accounting
+# adjustment can legitimately net to zero, and dropping those from the count
+# would hide real activity. All three conditions must hold.
+INFORMATIONAL_ROW_PATTERNS = (
+    "express pmt pending",
+    "express pmt complete",
+)
+
+
+def is_non_financial_informational_row(
+    transaction: ParsedTransaction, previous_balance: Decimal | None = None
+) -> bool:
+    """True only for a printed row that reports status and nothing else.
+
+    Requires ALL of:
+      * debit and credit are both zero
+      * the running balance does not move (when a previous balance is known)
+      * the description matches a known informational status pattern
+
+    The row itself is ALWAYS kept in the ledger — it appears in the source PDF
+    and removing printed rows is precisely the class of bug this work exists to
+    fix. It is only excluded from the count compared against the bank's own
+    declared transaction total.
+    """
+    if decimal_amount(transaction.debit_amount) != 0 or decimal_amount(transaction.credit_amount) != 0:
+        return False
+
+    if previous_balance is not None and transaction.running_balance is not None:
+        if decimal_amount(transaction.running_balance) != decimal_amount(previous_balance):
+            return False
+
+    description = re.sub(r"\s+", " ", (transaction.description or "")).strip().lower()
+    if not description:
+        return False
+    return any(pattern in description for pattern in INFORMATIONAL_ROW_PATTERNS)
+
+
+def split_ledger_rows(transactions: list[ParsedTransaction]) -> tuple[list[ParsedTransaction], list[ParsedTransaction]]:
+    """Partition printed rows into (financial, informational).
+
+    The ledger keeps both; only the financial list is counted against the bank's
+    declared transaction count. Balance continuity is evaluated in order, so an
+    informational row is recognised by the fact that it leaves the balance where
+    the previous row left it.
+    """
+    financial: list[ParsedTransaction] = []
+    informational: list[ParsedTransaction] = []
+    previous_balance: Decimal | None = None
+    for transaction in transactions:
+        if is_non_financial_informational_row(transaction, previous_balance):
+            informational.append(transaction)
+        else:
+            financial.append(transaction)
+        if transaction.running_balance is not None:
+            previous_balance = decimal_amount(transaction.running_balance)
+    return financial, informational
+
+
+def financial_transaction_count(transactions: list[ParsedTransaction]) -> int:
+    """Rows the BANK would count: printed rows minus proven informational ones."""
+    return len(split_ledger_rows(transactions)[0])
+
+
 def validation_summary(transactions: list[ParsedTransaction]) -> dict[str, Any]:
     total_debits = sum((decimal_amount(transaction.debit_amount) for transaction in transactions), Decimal("0.00"))
     total_credits = sum((decimal_amount(transaction.credit_amount) for transaction in transactions), Decimal("0.00"))
     debit_count = sum(1 for transaction in transactions if decimal_amount(transaction.debit_amount) > 0)
     credit_count = sum(1 for transaction in transactions if decimal_amount(transaction.credit_amount) > 0)
+    financial, informational = split_ledger_rows(transactions)
     return {
         "total_debits": total_debits.quantize(CENT),
         "total_credits": total_credits.quantize(CENT),
         "debit_count": debit_count,
         "credit_count": credit_count,
+        # Two DISTINCT concepts, deliberately both reported:
+        #   ledger_row_count      — every printed row, including informational
+        #   transaction_count     — what the bank counts, used for validation
+        "ledger_row_count": len(transactions),
+        "transaction_count": len(financial),
+        "informational_row_count": len(informational),
     }
 
 
@@ -1740,7 +1815,10 @@ def validate_extraction(metadata: dict[str, Any], transactions: list[ParsedTrans
 
     expected_count = metadata.get("expected_transaction_count")
     if expected_count is not None:
-        actual = len(transactions)
+        # Compare like with like: the bank's declared total counts FINANCIAL
+        # transactions, so status-only rows it prints (and does not count) must
+        # be excluded here. The rows themselves stay in the ledger.
+        actual = financial_transaction_count(transactions)
         check("transaction_count", actual == expected_count, f"extracted {actual} of {expected_count}", actual, expected_count)
 
     if metadata.get("expected_credit_count") is not None:
