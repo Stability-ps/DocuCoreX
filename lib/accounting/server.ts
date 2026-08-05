@@ -45,6 +45,9 @@ type AccountingRunRow = {
   extraction_accuracy?: number | string | null;
   parser_method?: string | null;
   extraction_confidence?: number | string | null;
+  // Migration 019 — the confidence split. Optional: runs predating it report null.
+  classification_confidence?: number | string | null;
+  reconciliation_confidence?: number | string | null;
   detected_pdf_type?: string | null;
   ocr_used?: boolean | null;
   route_reason?: string | null;
@@ -174,6 +177,14 @@ function mapRun(row: AccountingRunRow): AccountingStatementRun {
     processingStep: row.processing_step ?? null,
     processingStartedAt: row.processing_started_at ?? null,
     parserDebug: (row.parser_debug as Record<string, unknown> | null) ?? null,
+    confidences: {
+      extraction: toNumber(row.extraction_confidence ?? null) ?? null,
+      // Fall back to the legacy column: it has always held the classification
+      // score, so pre-migration runs still report it correctly.
+      classification: toNumber(row.classification_confidence ?? null) ?? toNumber(row.confidence ?? null) ?? null,
+      reconciliation: toNumber(row.reconciliation_confidence ?? null) ?? null,
+    },
+    // @deprecated — see AccountingStatementRun.confidence
     confidence: toNumber(row.confidence) ?? 0,
     error: row.error,
     createdAt: row.created_at,

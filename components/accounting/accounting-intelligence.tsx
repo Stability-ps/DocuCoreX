@@ -2004,11 +2004,11 @@ function ReviewRequiredPanel({
         </div>
       </div>
 
-      <div className="mt-4 grid gap-3 sm:grid-cols-3">
+      <div className="mt-4 grid gap-3 sm:grid-cols-2">
         <ReviewMetric label="Difference detected" value={money(diagnostics.difference)} tone="text-amber-700" />
-        <ReviewMetric label="Confidence" value={`${Math.round(confidence)}%`} tone={confidence < 70 ? "text-amber-700" : "text-navy-950"} />
         <ReviewMetric label="Estimated affected rows" value={plainNumber(affectedRows)} tone="text-navy-950" />
       </div>
+      {run ? <div className="mt-3"><ConfidenceTrio run={run} compact /></div> : null}
 
       <div className="mt-4 flex flex-wrap gap-2">
         <button type="button" onClick={onReview} className="min-h-10 rounded-lg bg-royal-600 px-4 text-sm font-black text-white shadow-sm">
@@ -2025,6 +2025,30 @@ function ReviewRequiredPanel({
 
       {canShowTechnicalDetails ? <TechnicalDetails diagnostics={diagnostics} /> : null}
     </section>
+  );
+}
+
+// The three confidence metrics, always shown separately and never averaged. A
+// single "Confidence" number previously conflated extraction, classification and
+// reconciliation, which made a classification problem look like an OCR failure.
+function ConfidenceTrio({ run, compact = false }: { run: AccountingStatementRun; compact?: boolean }) {
+  const items: Array<{ label: string; hint: string; value: number | null }> = [
+    { label: "Extraction", hint: "How accurately the document was extracted", value: run.confidences?.extraction ?? null },
+    { label: "Classification", hint: "How confidently transactions were categorised", value: run.confidences?.classification ?? null },
+    { label: "Reconciliation", hint: "How reliable the reconstructed statement is", value: run.confidences?.reconciliation ?? null },
+  ];
+  return (
+    <div className={`grid gap-3 ${compact ? "sm:grid-cols-3" : "sm:grid-cols-3"}`}>
+      {items.map((item) => (
+        <div key={item.label} className="rounded-lg bg-white p-3 shadow-sm ring-1 ring-slate-200" title={item.hint}>
+          <p className="text-[11px] font-black uppercase tracking-[0.08em] text-slate-400">{item.label} confidence</p>
+          <p className={`mt-1 text-lg font-black ${item.value == null ? "text-slate-400" : item.value < 70 ? "text-amber-700" : "text-navy-950"}`}>
+            {item.value == null ? "—" : `${Math.round(item.value)}%`}
+          </p>
+          {!compact ? <p className="mt-0.5 text-[11px] font-semibold text-slate-500">{item.hint}</p> : null}
+        </div>
+      ))}
+    </div>
   );
 }
 
@@ -2207,7 +2231,9 @@ function CompactSummaryBar({
             <p className={`mt-1 truncate whitespace-nowrap text-sm font-black ${item.tone}`}>{item.value}</p>
             {item.label === "Status" && run ? (
               <p className="mt-0.5 truncate whitespace-nowrap text-[11px] font-semibold text-slate-500">
-                {run.status === "processing" || run.status === "queued" ? "Confidence: Calculating..." : `${Math.round(run.confidence)}% confidence`}
+                {run.status === "processing" || run.status === "queued"
+                  ? "Confidence: Calculating..."
+                  : `${Math.round(run.confidences?.classification ?? run.confidence)}% classification`}
               </p>
             ) : null}
           </div>
@@ -2390,7 +2416,9 @@ function StatementRuns({
                         View error
                       </button>
                     ) : (
-                      <span>{run.status === "processing" || run.status === "queued" ? "Calculating..." : `${Math.round(run.confidence)}%`}</span>
+                      <span title="Classification confidence — how confidently transactions were categorised">
+                        {run.status === "processing" || run.status === "queued" ? "Calculating..." : `${Math.round(run.confidences?.classification ?? run.confidence)}% class.`}
+                      </span>
                     )}
                   </div>
                 </div>

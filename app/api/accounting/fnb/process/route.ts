@@ -6,6 +6,9 @@ import { getAccountingRunDetail } from "@/lib/accounting/server";
 import { getWorkspaceContext } from "@/lib/server-documents";
 import { runExtractionPipeline } from "@/lib/pdf/runExtractionPipeline";
 import { computeFileHash } from "@/lib/pdf/extractionCache";
+import { extractWithAzureDocumentIntelligence } from "@/lib/pdf/extractWithAzureDocumentIntelligence";
+import { compareExtractions } from "@/lib/pdf/shadowComparison";
+import { pdfLog } from "@/lib/pdf/log";
 import { PROCESSING_STEP_LABELS, PROCESSING_STEP_PROGRESS, type ProcessingStep } from "@/lib/pdf/processingSteps";
 import { buildWorkerInput, extractionProcessingMetadata } from "@/lib/pdf/workerHandoff";
 import { buildWorkerEndpoint, createWorkerRequestId, getWorkerConfig, logWorkerStartupCheck } from "@/lib/system-worker-config";
@@ -181,6 +184,82 @@ async function runPipelineBeforeWorker(
     const message = pipelineError instanceof Error ? pipelineError.message : String(pipelineError);
     console.warn("[accounting/process] extraction pipeline failed — using original worker path", { runId, error: message });
     return { hints: {}, warning: `Extraction pipeline error: ${message}`, debug: null };
+  }
+}
+
+// Shadow mode (Phase C). Opt-IN: set ACCOUNTING_SHADOW_AZURE=true to enable.
+// Default off so nothing changes until the observation is deliberately started.
+const SHADOW_AZURE_ENABLED = process.env.ACCOUNTING_SHADOW_AZURE === "true";
+
+/**
+ * Re-run Azure Document Intelligence against a statement the pipeline ALREADY
+ * accepted, compare the two extractions, and record the result.
+ *
+ * Purely observational. Called after the workbook exists, wrapped so that any
+ * failure — Azure down, comparison bug, missing migration — is logged and
+ * discarded. It returns nothing and mutates no run field.
+ */
+async function runShadowComparison(context: WorkspaceContext, detail: AccountingRunDetail, pipelineDebug: PipelineDebug | null): Promise<void> {
+  if (!SHADOW_AZURE_ENABLED) return;
+  const runId = detail.run.id;
+  try {
+    // Only meaningful when the pipeline actually ran and produced a winner. If
+    // Azure already ran in the ladder there is nothing to shadow.
+    if (!pipelineDebug || pipelineDebug.ocrEngine === "azure_di") {
+      pdfLog("shadow.skipped", { runId, reason: pipelineDebug ? "azure already ran in the ladder" : "no pipeline result" });
+      return;
+    }
+
+    const { data: file, error } = await context.supabase.storage.from("documents").download(detail.run.sourceStoragePath);
+    if (error || !file) return;
+    const buffer = new Uint8Array(await file.arrayBuffer());
+    const fileName = detail.run.sourceStoragePath.split("/").pop() || "statement.pdf";
+
+    // Re-derive the adopted extraction from the SAME cached pipeline result the
+    // run used, so the comparison baseline is exactly what shipped.
+    const adopted = await runExtractionPipeline(buffer, fileName, {
+      documentId: detail.run.documentId,
+      fileHash: computeFileHash(buffer),
+      expect: "bank_statement",
+    });
+
+    const started = Date.now();
+    const azure = await extractWithAzureDocumentIntelligence(buffer, fileName);
+    const durationMs = Date.now() - started;
+
+    const comparison = compareExtractions(adopted.merged, azure, adopted.parserMethod);
+    pdfLog("shadow.comparison", {
+      runId,
+      currentProvider: comparison.currentProvider,
+      azureAvailable: comparison.azureAvailable,
+      wouldAzureHaveBeenBetter: comparison.wouldAzureHaveBeenBetter,
+      reason: comparison.reason,
+      score: comparison.score,
+      durationMs,
+    });
+
+    const { error: insertError } = await context.supabase.from("extraction_shadow_comparisons").insert({
+      workspace_id: context.workspaceId,
+      run_id: runId,
+      document_id: detail.run.documentId,
+      current_provider: comparison.currentProvider,
+      azure_available: comparison.azureAvailable,
+      would_azure_have_been_better: comparison.wouldAzureHaveBeenBetter,
+      reason: comparison.reason,
+      metrics: comparison.metrics,
+      score: comparison.score,
+      azure_debug: (azure?.metadata?._azureDebug as Record<string, unknown> | undefined) ?? null,
+      azure_duration_ms: durationMs,
+    });
+    if (insertError) {
+      console.warn("[accounting/shadow] comparison not persisted (migration 018 not applied?)", { runId, error: insertError.message });
+    }
+  } catch (shadowError) {
+    // Never surface: the run has already succeeded.
+    console.warn("[accounting/shadow] comparison failed — run unaffected", {
+      runId,
+      error: shadowError instanceof Error ? shadowError.message : String(shadowError),
+    });
   }
 }
 
@@ -509,6 +588,14 @@ async function processStatementInBackground(context: WorkspaceContext, detail: A
         acceptanceVerdict: pipelineDebug?.verdict ?? null,
       },
     });
+
+    // 4. Shadow mode (Phase C) — OBSERVATIONAL ONLY.
+    //
+    // Runs strictly AFTER the workbook has been generated and the run persisted,
+    // so it can never influence the exported output, the acceptance verdict or
+    // the transactions. Fully swallowed: a shadow failure must never fail a run
+    // that has already succeeded.
+    await runShadowComparison(context, detail, pipelineDebug);
   } catch (error) {
     const message = error instanceof Error ? error.message : "Unable to process accounting statement.";
     console.error("[accounting/process] background failure", { runId, message });
