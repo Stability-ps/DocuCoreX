@@ -3,7 +3,7 @@ import { analyzeExtraction } from "@/lib/pdf/analyzePdf";
 import { decideOcrNeed } from "@/lib/pdf/ocrDecision";
 import { selectExtractionStrategy } from "@/lib/pdf/extractionStrategy";
 import { decideMistralOcr } from "@/lib/pdf/mistralDecision";
-import { acceptExtraction, type AcceptanceResult } from "@/lib/pdf/acceptExtraction";
+import { acceptExtraction, type AcceptanceResult, type ExtractionExpectation } from "@/lib/pdf/acceptExtraction";
 import { extractWithPdfjs } from "@/lib/pdf/extractWithPdfjs";
 import { extractWithPdfplumber } from "@/lib/pdf/extractWithPdfplumber";
 import { extractWithOcr } from "@/lib/pdf/extractWithOcr";
@@ -26,6 +26,11 @@ export type ExtractionPipelineOptions = {
   // Enhanced OCR: always escalate to the secondary engine, even when the primary
   // extraction would otherwise be accepted.
   enhancedOcr?: boolean;
+  // What the document is expected to be. "bank_statement" (the default) applies
+  // completeness + reconciliation checks; "document" requires only that readable
+  // content was recovered and the sources agree. Getting this wrong for a generic
+  // document costs a needless escalation through BOTH OCR engines.
+  expect?: ExtractionExpectation;
   // Progress hook — the pipeline reports "detecting" then "ocr"; the caller
   // reports the later "parsing"/"reconciling" steps around the worker call.
   onStage?: (step: ProcessingStep) => void;
@@ -91,7 +96,7 @@ function copyBuffer(src: Uint8Array): Uint8Array {
  */
 export async function runExtractionPipeline(buffer: Uint8Array, fileName = "statement.pdf", options: ExtractionPipelineOptions = {}): Promise<ExtractionPipelineResult> {
   const pipelineStart = Date.now();
-  const { documentId = null, fileHash = null, force = false, enhancedOcr = false, onStage } = options;
+  const { documentId = null, fileHash = null, force = false, enhancedOcr = false, expect = "bank_statement", onStage } = options;
 
   // Reuse a prior extraction for the identical document+bytes (Req 3): never OCR
   // or re-parse the same file twice. Force reprocess bypasses the cache.
@@ -201,8 +206,8 @@ export async function runExtractionPipeline(buffer: Uint8Array, fileName = "stat
   }
 
   // ---- Step 4: ACCEPT --------------------------------------------------------
-  let assembled: AcceptanceResult = acceptExtraction(analysis, { pdfjs, pdfplumber: pdfplumber ?? undefined, ocr: ocr ?? undefined });
-  pdfLog("route.accept", { verdict: assembled.verdict, selectedParser: assembled.selection.selectedParser, confidence: assembled.selection.confidence, rejectionReasons: assembled.rejectionReasons });
+  let assembled: AcceptanceResult = acceptExtraction(analysis, { pdfjs, pdfplumber: pdfplumber ?? undefined, ocr: ocr ?? undefined }, { expect });
+  pdfLog("route.accept", { expect, verdict: assembled.verdict, selectedParser: assembled.selection.selectedParser, confidence: assembled.selection.confidence, rejectionReasons: assembled.rejectionReasons });
 
   // ---- Step 5: ESCALATE ------------------------------------------------------
   let mistral: ExtractionResult | null = null;
@@ -214,26 +219,33 @@ export async function runExtractionPipeline(buffer: Uint8Array, fileName = "stat
     if (!ocrAttempted) {
       ocrAttempted = true;
       ocr = await runPrimaryOcr(enhancedOcr ? "Enhanced OCR requested" : `acceptance rejected: ${assembled.rejectionReasons[0] ?? "unknown"}`);
-      const retried = acceptExtraction(analysis, { pdfjs, pdfplumber: pdfplumber ?? undefined, ocr: ocr ?? undefined });
+      const retried = acceptExtraction(analysis, { pdfjs, pdfplumber: pdfplumber ?? undefined, ocr: ocr ?? undefined }, { expect });
       if (retried.accepted || retried.selection.confidence > assembled.selection.confidence) assembled = retried;
       pdfLog("route.accept_after_primary_ocr", { verdict: assembled.verdict, confidence: assembled.selection.confidence });
     }
 
     // 5b. The secondary engine, when the trigger conditions are met.
-    const mistralDecision = decideMistralOcr({
-      configured: isMistralConfigured(),
-      enhanced: enhancedOcr,
-      strategy: plan.strategy,
-      ocrAttempted,
-      ocrChars: ocr ? ocr.combinedText.trim().length : 0,
-      ocrConfidence: ocr?.confidence ?? null,
-      selectionConfidence: assembled.selection.confidence,
-      transactionCount: assembled.merged.transactions.length,
-      hasOpeningBalance: assembled.merged.metadata.openingBalance != null,
-      hasClosingBalance: assembled.merged.metadata.closingBalance != null,
-      validationRequiresReview: assembled.validation.requiresReview,
-    });
-    pdfLog("route.mistral_decision", { needed: mistralDecision.needed, reason: mistralDecision.reason, strategy: plan.strategy });
+    // The primary engine may have already fixed it in 5a — do not pay for a
+    // second engine on a result that now passes the gate. Only an explicit
+    // Enhanced OCR request overrides that.
+    const mistralDecision =
+      assembled.accepted && !enhancedOcr
+        ? { needed: false, reason: "primary OCR satisfied the acceptance gate" }
+        : decideMistralOcr({
+            configured: isMistralConfigured(),
+            enhanced: enhancedOcr,
+            strategy: plan.strategy,
+            expect,
+            ocrAttempted,
+            ocrChars: ocr ? ocr.combinedText.trim().length : 0,
+            ocrConfidence: ocr?.confidence ?? null,
+            selectionConfidence: assembled.selection.confidence,
+            transactionCount: assembled.merged.transactions.length,
+            hasOpeningBalance: assembled.merged.metadata.openingBalance != null,
+            hasClosingBalance: assembled.merged.metadata.closingBalance != null,
+            validationRequiresReview: assembled.validation.requiresReview,
+          });
+    pdfLog("route.mistral_decision", { needed: mistralDecision.needed, reason: mistralDecision.reason, strategy: plan.strategy, expect });
 
     if (mistralDecision.needed) {
       onStage?.("ocr");
@@ -244,7 +256,7 @@ export async function runExtractionPipeline(buffer: Uint8Array, fileName = "stat
 
       if (mistral) {
         // Re-enter the SAME acceptance gate with the enlarged candidate set.
-        const candidate = acceptExtraction(analysis, { pdfjs, pdfplumber: pdfplumber ?? undefined, ocr: ocr ?? undefined, mistral });
+        const candidate = acceptExtraction(analysis, { pdfjs, pdfplumber: pdfplumber ?? undefined, ocr: ocr ?? undefined, mistral }, { expect });
         const better = (candidate.accepted && !assembled.accepted) || candidate.selection.confidence > assembled.selection.confidence;
         pdfLog("route.accept_after_mistral", {
           verdict: candidate.verdict,

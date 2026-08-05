@@ -59,6 +59,9 @@ async function runPipelineBeforeWorker(
       fileHash,
       force: options.force,
       enhancedOcr: options.enhancedOcr,
+      // Explicit, though it is also the default: this path IS a bank statement,
+      // so completeness and reconciliation must gate acceptance.
+      expect: "bank_statement",
       onStage: options.onStage,
     });
     const meta = extractionProcessingMetadata(pipeline);

@@ -3,11 +3,20 @@
 // pure-native parse of a pristine digital PDF is scrutinised exactly as hard as
 // a scanned document that needed two OCR engines.
 //
-// A result is "validated" ONLY when all four checks pass:
-//   1. extraction   — some content was actually recovered
-//   2. completeness — the fields a statement must have are present
-//   3. reconciliation — the arithmetic balances
-//   4. agreement    — no material conflict between extraction sources
+// WHICH checks apply depends on what the document is expected to be:
+//
+//   expect: "bank_statement"          expect: "document"
+//   1. extraction    ✓                1. extraction    ✓
+//   2. completeness  ✓                2. completeness  — n/a
+//   3. reconciliation ✓               3. reconciliation — n/a
+//   4. agreement     ✓                4. agreement     ✓
+//
+// The statement checks demand transaction rows and opening/closing balances.
+// Applying them to an invoice, contract or ID would reject a perfectly good
+// extraction and escalate it through both OCR engines for no benefit — so for a
+// generic document, "text was extracted and the sources agree" IS success.
+// Statement validation is still computed and returned either way; under
+// "document" it simply does not cause rejection.
 //
 // Engine-reported OCR confidence is deliberately NOT one of these checks. A high
 // Tesseract or Mistral confidence means the characters were legible, not that
@@ -32,6 +41,30 @@ export type AcceptanceCandidates = {
   ocr?: ExtractionResult;
   mistral?: ExtractionResult;
 };
+
+/**
+ * What the caller expects the document to be. Defaults to "bank_statement"
+ * everywhere so a caller that forgets to declare it keeps the STRICTER checks —
+ * losing reconciliation on a real statement is a correctness bug, whereas an
+ * unnecessary strict pass on a generic document only costs an escalation.
+ */
+export type ExtractionExpectation = "bank_statement" | "document";
+
+export type AcceptanceOptions = { expect?: ExtractionExpectation };
+
+// Generic-document quality floor: on a multi-page document, text recovered from
+// only a handful of pages means the extraction partially FAILED (a mixed PDF
+// where some pages are scanned images), which is worth escalating to OCR. This
+// is document-agnostic — it measures extraction quality, not banking semantics.
+export const GENERIC_MIN_PAGE_COVERAGE = 0.5;
+const PAGE_HAS_TEXT_MIN_CHARS = 20;
+
+function pageCoverage(merged: ExtractionResult): number | null {
+  // Only meaningful when we have per-page detail for a multi-page document.
+  if (merged.pageCount <= 1 || merged.pages.length === 0) return null;
+  const withText = merged.pages.filter((p) => (p.text || "").trim().length > PAGE_HAS_TEXT_MIN_CHARS).length;
+  return withText / merged.pageCount;
+}
 
 export type AcceptanceResult = {
   selection: ParserSelection;
@@ -74,38 +107,61 @@ function buildComparison(candidates: AcceptanceCandidates, winner: OcrEngineId |
   }));
 }
 
-export function acceptExtraction(analysis: PdfAnalysis, candidates: AcceptanceCandidates): AcceptanceResult {
+export function acceptExtraction(analysis: PdfAnalysis, candidates: AcceptanceCandidates, options: AcceptanceOptions = {}): AcceptanceResult {
+  const expect = options.expect ?? "bank_statement";
+  const isStatement = expect === "bank_statement";
   const { selection, merged } = mergeExtractionResults(analysis, candidates);
+  // Always computed and returned, so the UI can show reconciliation for anything
+  // that turns out to carry statement figures. Only GATES acceptance for statements.
   const validation = validateBankStatement(merged);
 
   const rejectionReasons: string[] = [];
 
-  // 1. Extraction — did anything come back at all?
+  // 1. Extraction — did anything come back at all? Applies to every document.
   const hasText = merged.combinedText.trim().length > 0;
   const hasTransactions = merged.transactions.length > 0;
   if (!hasText && !hasTransactions) {
     rejectionReasons.push("No readable content was extracted.");
-  } else if (!hasTransactions) {
+  } else if (isStatement && !hasTransactions) {
+    // Only a defect for a statement. For a contract or an ID, zero transaction
+    // rows is the expected outcome, not a failure.
     rejectionReasons.push("Text was extracted but no transaction rows were detected.");
   }
 
-  // 2. Completeness — the fields a statement must carry.
-  if (merged.metadata.openingBalance == null) rejectionReasons.push("Opening balance is missing.");
-  if (merged.metadata.closingBalance == null) rejectionReasons.push("Closing balance is missing.");
-
-  // 3. Reconciliation.
-  if (!validation.valid) {
-    const diff = validation.difference;
-    rejectionReasons.push(diff != null ? `Reconciliation failed (difference ${diff.toFixed(2)}).` : "Reconciliation could not be completed.");
+  if (!isStatement && hasText) {
+    // Generic quality floor: partial recovery on a multi-page document means
+    // some pages yielded nothing, which OCR may be able to fix. Nothing here
+    // assumes the document is financial.
+    const coverage = pageCoverage(merged);
+    if (coverage != null && coverage < GENERIC_MIN_PAGE_COVERAGE) {
+      rejectionReasons.push(
+        `Text recovered from only ${Math.round(coverage * 100)}% of pages (minimum ${Math.round(GENERIC_MIN_PAGE_COVERAGE * 100)}%).`,
+      );
+    }
   }
 
-  // 4. Agreement between sources — surfaced, never silently resolved.
+  if (isStatement) {
+    // 2. Completeness — the fields a statement must carry.
+    if (merged.metadata.openingBalance == null) rejectionReasons.push("Opening balance is missing.");
+    if (merged.metadata.closingBalance == null) rejectionReasons.push("Closing balance is missing.");
+
+    // 3. Reconciliation.
+    if (!validation.valid) {
+      const diff = validation.difference;
+      rejectionReasons.push(diff != null ? `Reconciliation failed (difference ${diff.toFixed(2)}).` : "Reconciliation could not be completed.");
+    }
+  }
+
+  // 4. Agreement between sources — surfaced, never silently resolved. Applies to
+  // every document: two engines reading different text is a defect regardless of
+  // what the document is.
   for (const disagreement of selection.disagreements) {
     rejectionReasons.push(disagreement.detail);
   }
 
-  // The merge layer's own low-confidence / review flag still counts.
-  if (selection.requiresReview && !rejectionReasons.length) {
+  // The merge layer's own low-confidence flag is transaction-weighted
+  // (scoreExtraction), so it is only meaningful for a statement.
+  if (isStatement && selection.requiresReview && !rejectionReasons.length) {
     rejectionReasons.push(`Extraction confidence is low (${selection.confidence}).`);
   }
 
