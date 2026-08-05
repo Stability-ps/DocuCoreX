@@ -13,6 +13,7 @@ const read = (p: string) => readFileSync(join(root, p), "utf8");
 const { scoreExtraction } = await import("@/lib/pdf/scoreExtraction.ts");
 const { analyzeExtraction } = await import("@/lib/pdf/analyzePdf.ts");
 const { mergeExtractionResults } = await import("@/lib/pdf/mergeExtractionResults.ts");
+const { selectExtractionStrategy } = await import("@/lib/pdf/extractionStrategy.ts");
 const { validateBankStatement } = await import("@/lib/accounting/validateBankStatement.ts");
 const { buildWorkerInput, extractionProcessingMetadata, parserMethodLabel } = await import("@/lib/pdf/workerHandoff.ts");
 const { computeFileHash, getCachedExtraction, setCachedExtraction, clearExtractionCache } = await import("@/lib/pdf/extractionCache.ts");
@@ -69,7 +70,18 @@ test("parserMethodLabel renders the Processed-with message", () => {
   assert.equal(parserMethodLabel("pdfjs"), "Processed with PDF.js");
   assert.equal(parserMethodLabel("pdfplumber"), "Processed with pdfplumber");
   assert.equal(parserMethodLabel("ocr"), "Processed with OCR");
+  assert.equal(parserMethodLabel("mistral_ocr"), "Processed with Mistral OCR");
   assert.equal(parserMethodLabel("hybrid"), "Processed with hybrid extraction");
+});
+
+test("migration 017 adds the OCR-engine provenance columns", () => {
+  const sql = read("supabase/migrations/017_ocr_engine.sql");
+  for (const column of ["ocr_engine", "extraction_strategy", "acceptance_verdict", "ocr_engine_comparison"]) {
+    assert.match(sql, new RegExp(`add column if not exists ${column}\\b`), `migration must add ${column}`);
+  }
+  // Additive and safe to apply before/after the code ships.
+  assert.match(sql, /alter table if exists/);
+  assert.match(sql, /notify pgrst, 'reload schema'/);
 });
 
 test("migration adds the processing-metadata columns", () => {
@@ -81,9 +93,13 @@ test("migration adds the processing-metadata columns", () => {
 
 test("route surfaces the real reason and parser debug on worker failure", () => {
   const route = read("app/api/accounting/fnb/process/route.ts");
-  // Passes the debug to the worker and logs it (with a text sample) before the call.
+  // Passes the debug to the worker and logs content-free diagnostics before the call.
   assert.match(route, /extraction_debug: debug/, "passes extraction debug to the worker");
-  assert.match(route, /preExtractedTextSample: workerInput\.preExtractedText\.slice\(0, 1000\)/, "logs first 1000 chars before the worker");
+  // The route used to log the first 1000 chars of the extracted text. That is a
+  // document-content leak into the log stream, so only LENGTHS are logged now —
+  // matching the redaction discipline the rest of the pipeline follows.
+  assert.ok(!/preExtractedTextSample/.test(route), "must not log a sample of the extracted document text");
+  assert.match(route, /preExtractedTextLength: workerInput\.preExtractedText\.length/, "logs the length instead");
   // Overrides the generic message with the real reason, and returns parserDebug.
   assert.match(route, /pipelineDebug\?\.reasonNoTransactions/);
   assert.match(route, /error = pipelineDebug\.reasonNoTransactions/);
@@ -194,29 +210,34 @@ test("OCR extractor calls /api/ocr-text with logging and a timeout", () => {
 });
 
 test("OCR endpoint: binary health, fallback chain, exact reasons, full debug", () => {
+  // The OCR implementation now lives in the shared engine (used by BOTH the HTTP
+  // route and the in-process worker path); the route keeps auth + the GET handler.
+  const engine = read("lib/pdf/ocrEngine.ts");
   const route = read("app/api/ocr-text/route.ts");
-  // Returns the required response shape (text, pages, confidence, warnings, ...).
-  assert.match(route, /text,\s*\n?\s*pages,\s*\n?\s*confidence,\s*\n?\s*warnings/, "returns text/pages/confidence/warnings");
-  assert.match(route, /OCR_TIMEOUT_MS/, "time-bounded so processing cannot hang");
+  // Returns the required response shape.
+  for (const field of ["text", "pages", "confidence", "warnings"]) {
+    assert.match(engine, new RegExp(`\\b${field}\\b`), `payload must carry ${field}`);
+  }
+  assert.match(engine, /OCR_TIMEOUT_MS/, "time-bounded so processing cannot hang");
   assert.match(route, /x-docucorex-worker-secret/, "worker-mode auth");
   // Task 3: GET binary health (which ocrmypdf/tesseract/gs + --list-langs).
   assert.match(route, /export async function GET/);
-  assert.match(route, /--list-langs/);
-  assert.match(route, /ghostscript: which\("gs"\)/);
+  assert.match(engine, /--list-langs/);
+  assert.match(engine, /ghostscript: which\("gs"\)/);
   // Task 5: fallback chain force-ocr -> skip-text -> redo-ocr.
-  assert.match(route, /--force-ocr/);
-  assert.match(route, /--skip-text/);
-  assert.match(route, /--redo-ocr/);
+  assert.match(engine, /--force-ocr/);
+  assert.match(engine, /--skip-text/);
+  assert.match(engine, /--redo-ocr/);
   // Task 6: exact reason for encrypted / malformed / ghostscript.
-  assert.match(route, /encrypted \/ password-protected/);
-  assert.match(route, /malformed or unreadable/);
+  assert.match(engine, /encrypted \/ password-protected/);
+  assert.match(engine, /malformed or unreadable/);
   // Task 8: full debug block with the required fields.
   for (const field of ["ocr_endpoint", "ocr_status", "ocr_exit_code", "ocr_stderr_sample", "sidecar_exists", "sidecar_size", "ocr_text_length"]) {
-    assert.match(route, new RegExp(field), `ocrDebug must include ${field}`);
+    assert.match(engine, new RegExp(field), `ocrDebug must include ${field}`);
   }
   // Task 4: logs content-type, file size, temp path, exit code, stderr, sidecar.
-  assert.match(route, /request received/);
-  assert.match(route, /wrote temp input/);
+  assert.match(engine, /request received/);
+  assert.match(engine, /wrote temp input/);
   // Dependencies are installed on the conversion worker.
   const dockerfile = read("workers/conversion_worker/Dockerfile");
   assert.match(dockerfile, /ocrmypdf/);
@@ -308,7 +329,7 @@ test("pipeline is fault-tolerant: pdfplumber and OCR run even if PDF.js fails", 
   const pipeline = read("lib/pdf/runExtractionPipeline.ts");
   // pdfplumber ALWAYS runs (independent of PDF.js), so a PDF.js failure can never
   // silently skip native parsing — its text feeds the OCR decision.
-  assert.match(pipeline, /Stage 2 — pdfplumber\. ALWAYS runs/);
+  assert.match(pipeline, /pdfplumber ALWAYS runs, independent of PDF\.js/);
   assert.match(pipeline, /pdfplumber = await extractWithPdfplumber\(pdfplumberBuf, fileName\);/);
   // OCR routing is evidence-based (decideOcrNeed) on the BEST native text from
   // PDF.js OR pdfplumber: readable text skips OCR, but when neither extractor
@@ -383,16 +404,17 @@ test("digital PDF (>500 chars) skips OCR; scanned (<=20 chars) routes straight t
   const scanned = { parser: "pdfjs", pageCount: 3, pages: [page(""), page(""), page("")], combinedText: "", transactions: [], metadata: {}, warnings: [] };
   assert.equal(analyzeExtraction(scanned as never).kind, "scanned");
 
-  // Pipeline source: the fast-routing thresholds + skip decisions.
+  // The ad-hoc skipOcrFastPath / scannedFastPath booleans have been replaced by
+  // one named strategy decision. Assert the BEHAVIOUR rather than the constants:
+  // a dense digital layer must not run OCR upfront; a scanned one must.
+  assert.equal(selectExtractionStrategy(analyzeExtraction(digital as never)).ocrUpfront, false, "digital text layer skips OCR");
+  assert.equal(selectExtractionStrategy(analyzeExtraction(scanned as never)).ocrUpfront, true, "scanned PDF routes to OCR");
+  assert.equal(selectExtractionStrategy(analyzeExtraction(scanned as never)).strategy, "ocr_primary");
+
+  // pdfplumber ALWAYS runs so OCR routing has both extractors' evidence.
   const pipeline = read("lib/pdf/runExtractionPipeline.ts");
-  assert.match(pipeline, /DIGITAL_TEXT_LAYER_MIN_CHARS = 500/);
-  assert.match(pipeline, /SCANNED_TEXT_LAYER_MAX_CHARS = 20/);
-  assert.match(pipeline, /const skipOcrFastPath = pdfjsChars > DIGITAL_TEXT_LAYER_MIN_CHARS/);
-  assert.match(pipeline, /const scannedFastPath = pdfjsChars <= SCANNED_TEXT_LAYER_MAX_CHARS && analysis\.kind === "scanned"/);
-  // pdfplumber ALWAYS runs so OCR routing has both extractors' evidence; a dense
-  // digital text layer still skips OCR.
-  assert.match(pipeline, /Stage 2 — pdfplumber\. ALWAYS runs/);
-  assert.match(pipeline, /digital text layer \(>500 chars\) — OCR skipped/);
+  assert.match(pipeline, /pdfplumber ALWAYS runs, independent of PDF\.js/);
+  assert.match(pipeline, /pdfplumber = await extractWithPdfplumber\(pdfplumberBuf, fileName\);/);
 });
 
 test("pipeline enforces per-parser time budgets (Req 2)", () => {
@@ -433,7 +455,7 @@ test("the full native pipeline is never bypassed on a bad guess (Req 6)", () => 
   const pipeline = read("lib/pdf/runExtractionPipeline.ts");
   // pdfplumber now ALWAYS runs (no scanned skip), so a PDF.js mis-classification
   // can never bypass native parsing — the fallback is satisfied by design.
-  assert.match(pipeline, /Stage 2 — pdfplumber\. ALWAYS runs/);
+  assert.match(pipeline, /pdfplumber ALWAYS runs, independent of PDF\.js/);
   assert.match(pipeline, /pdfplumber = await extractWithPdfplumber\(pdfplumberBuf, fileName\);/);
   // PDF.js is raced against a budget so a hang can never block the pipeline.
   assert.match(pipeline, /function withTimeout/);
@@ -442,18 +464,19 @@ test("the full native pipeline is never bypassed on a bad guess (Req 6)", () => 
 });
 
 test("OCR worker runs the fastest mode first and escalates only on failure (Req 4)", () => {
-  const route = read("app/api/ocr-text/route.ts");
-  const skipIdx = route.indexOf("--skip-text");
-  const forceIdx = route.indexOf("--force-ocr");
-  const redoIdx = route.indexOf("--redo-ocr");
+  const engine = read("lib/pdf/ocrEngine.ts");
+  const skipIdx = engine.indexOf("--skip-text");
+  const forceIdx = engine.indexOf("--force-ocr");
+  const redoIdx = engine.indexOf("--redo-ocr");
   assert.ok(skipIdx > 0, "uses --skip-text");
   assert.ok(forceIdx > skipIdx, "--force-ocr comes after --skip-text (heavier recovery mode)");
   assert.ok(redoIdx > forceIdx, "--redo-ocr comes last");
-  assert.match(route, /OCR_TIMEOUT_MS = readTimeoutMs\([^)]*, 120_000\)/, "OCR per-attempt cap is 120s");
-  assert.match(route, /OCR_TOTAL_BUDGET_MS = readTimeoutMs\([^)]*, OCR_TIMEOUT_MS\)/, "total OCR budget defaults to the 120s cap");
-  assert.match(route, /total OCR budget exhausted/, "stops escalating once the budget is spent");
+  // Budgets are now resolved at call time in timeouts(); the defaults are unchanged.
+  assert.match(engine, /const perAttempt = readTimeoutMs\([^)]*, 120_000\)/, "OCR per-attempt cap is 120s");
+  assert.match(engine, /const total = readTimeoutMs\([^)]*, perAttempt\)/, "total OCR budget defaults to the per-attempt cap");
+  assert.match(engine, /total OCR budget exhausted/, "stops escalating once the budget is spent");
   // Only escalates when the previous attempt produced no text.
-  assert.match(route, /if \(sidecarText\.trim\(\)\.length > 0\) \{\s*\n\s*text = sidecarText;\s*\n\s*break;/);
+  assert.match(engine, /if \(sidecarText\.trim\(\)\.length > 0\) \{\s*\n\s*text = sidecarText;\s*\n\s*break;/);
 });
 
 test("UI shows the processing steps, elapsed time, and long-processing notice (Req 5)", () => {
@@ -471,34 +494,38 @@ test("UI shows the processing steps, elapsed time, and long-processing notice (R
 // ── OCR reliability (502 handling, controlled timeout, logging, caching) ──────
 
 test("OCR worker runs the plain single-threaded command first (Req 5)", () => {
-  const route = read("app/api/ocr-text/route.ts");
+  const engine = read("lib/pdf/ocrEngine.ts");
   // First attempt: ocrmypdf -l eng --jobs 1 --sidecar ... (no mode flag).
-  assert.match(route, /\["-l", "eng", "--jobs", "1", "--sidecar"/, "plain --jobs 1 --sidecar command runs first");
+  assert.match(engine, /\["-l", "eng", "--jobs", "1", "--sidecar"/, "plain --jobs 1 --sidecar command runs first");
   // --jobs 1 caps memory to avoid an OOM-triggered raw 502.
-  assert.match(route, /--jobs 1 caps memory/);
+  assert.match(engine, /--jobs 1 caps memory/);
 });
 
 test("OCR endpoint returns a controlled 504 on timeout instead of crashing (Req 3/7/8)", () => {
+  const engine = read("lib/pdf/ocrEngine.ts");
   const route = read("app/api/ocr-text/route.ts");
-  // Detects a spawnSync timeout (SIGTERM / ETIMEDOUT) and returns JSON, not a 502.
-  assert.match(route, /result\.signal === "SIGTERM" \|\| \(result\.error as NodeJS\.ErrnoException \| undefined\)\?\.code === "ETIMEDOUT"/);
-  assert.match(route, /ocr_status: 504/, "controlled 504 status in ocrDebug");
-  assert.match(route, /OCR timed out — the PDF is too large/, "timeout reason returned as JSON");
-  assert.match(route, /status: 504 \}/, "responds 504, never a raw crash");
+  // Detects a spawnSync timeout (SIGTERM / ETIMEDOUT) and returns a structured
+  // result, not a crash.
+  assert.match(engine, /result\.signal === "SIGTERM" \|\| \(result\.error as NodeJS\.ErrnoException \| undefined\)\?\.code === "ETIMEDOUT"/);
+  assert.match(engine, /ocr_status: 504/, "controlled 504 status in ocrDebug");
+  assert.match(engine, /OCR timed out — the PDF is too large/, "timeout reason carried in the payload");
+  assert.match(engine, /status: 504,/, "engine reports 504, never a raw crash");
+  // The route forwards the engine's status verbatim, so the HTTP contract holds.
+  assert.match(route, /NextResponse\.json\(result\.body, \{ status: result\.status \}\)/);
   // Does not escalate to heavier modes after a timeout (Req 6).
-  assert.match(route, /A timeout is not a "clear content failure"/);
+  assert.match(engine, /A timeout is not a "clear content failure"/);
 });
 
 test("OCR endpoint logs the full lifecycle (Req 2)", () => {
-  const route = read("app/api/ocr-text/route.ts");
+  const engine = read("lib/pdf/ocrEngine.ts");
   for (const phrase of ["request received", "wrote temp input", "OCR command started", "OCR command finished"]) {
-    assert.match(route, new RegExp(phrase), `logs "${phrase}"`);
+    assert.match(engine, new RegExp(phrase), `logs "${phrase}"`);
   }
   // exit code, stderr, sidecar size, text length are all logged on finish.
-  assert.match(route, /exitCode: result\.status/);
-  assert.match(route, /stderrSample: lastStderr/);
-  assert.match(route, /sidecarSize: sidecarSizeNow/);
-  assert.match(route, /textLength: sidecarText\.trim\(\)\.length/);
+  assert.match(engine, /exitCode: result\.status/);
+  assert.match(engine, /stderrSample: lastStderr/);
+  assert.match(engine, /sidecarSize: sidecarSizeNow/);
+  assert.match(engine, /textLength: sidecarText\.trim\(\)\.length/);
 });
 
 test("OCR client retries once on 502 then flags review (Req 9)", () => {
@@ -510,8 +537,10 @@ test("OCR client retries once on 502 then flags review (Req 9)", () => {
   assert.match(ocr, /ocr\.retry/, "logs the retry");
   // Pipeline honours the review flag and surfaces it with parserDebug.ocr.
   const pipeline = read("lib/pdf/runExtractionPipeline.ts");
-  assert.match(pipeline, /const ocrUnavailable = Boolean\(ocr\?\.metadata\?\._ocrRequiresReview\)/);
-  assert.match(pipeline, /requiresReview = assembled\.selection\.requiresReview \|\| assembled\.validation\.requiresReview \|\| ocrUnavailable/);
+  assert.match(pipeline, /const ocrUnavailable = Boolean\(ocrText\?\.metadata\?\._ocrRequiresReview\)/);
+  // Review is now driven by the single acceptance verdict — which subsumes the
+  // old selection/validation checks and adds completeness + engine agreement.
+  assert.match(pipeline, /const requiresReview = !assembled\.accepted \|\| ocrUnavailable/);
 });
 
 test("successful OCR is cached; unavailable OCR is not (so it can retry) (Req 10)", () => {

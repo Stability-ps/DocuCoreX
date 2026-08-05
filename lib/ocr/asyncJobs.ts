@@ -127,16 +127,24 @@ export async function finalizeDocumentStatus(context: WorkspaceContext, document
 
 // Background OCR: runs the provider (may take ~43s), stores the result, and marks
 // the job completed/failed. Called from `after()` so the browser is not blocked.
-export async function runOcrJob(context: WorkspaceContext, document: DocumentRecord, jobId: string): Promise<void> {
+export async function runOcrJob(context: WorkspaceContext, document: DocumentRecord, jobId: string, options: { enhanced?: boolean } = {}): Promise<void> {
   try {
-    const adapters = createWorkflowAdapters();
+    const adapters = createWorkflowAdapters({ enhanced: options.enhanced });
     const ocr = await adapters.ocr.run(document);
     await context.supabase.from("ocr_results").insert({
       document_id: document.id,
       language: ocr.language,
       confidence: ocr.confidence,
       text: ocr.text,
-      layout: { status: ocr.layoutStatus, provider: adapters.ocr.name },
+      // `layout` is already jsonb — the engine winner rides along here, so no
+      // migration is needed for the generic document path.
+      layout: {
+        status: ocr.layoutStatus,
+        provider: adapters.ocr.name,
+        engine: ocr.engine ?? null,
+        engineConfidence: ocr.engineConfidence ?? null,
+        strategy: ocr.strategy ?? null,
+      },
     });
     await completeJob(context, jobId, "OCR completed");
     // Move the document out of "processing" even for an OCR-only run (no pending

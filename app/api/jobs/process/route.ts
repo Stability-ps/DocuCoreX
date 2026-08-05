@@ -175,7 +175,13 @@ export async function POST(request: Request) {
           language: ocr.language,
           confidence: ocr.confidence,
           text: ocr.text,
-          layout: { status: ocr.layoutStatus, provider: providers.ocr.name },
+          layout: {
+            status: ocr.layoutStatus,
+            provider: providers.ocr.name,
+            engine: ocr.engine ?? null,
+            engineConfidence: ocr.engineConfidence ?? null,
+            strategy: ocr.strategy ?? null,
+          },
         });
         const { data: existingExtraction } = await context.supabase
           .from("extraction_results")

@@ -5,7 +5,7 @@
 import type { PdfKind } from "@/lib/pdf/types";
 import type { OcrEngine } from "@/lib/providers/selection";
 
-export type ExtractionMethod = "pdfjs" | "pdfplumber" | OcrEngine;
+export type ExtractionMethod = "pdfjs" | "pdfplumber" | "mistral_ocr" | OcrEngine;
 
 export type MethodPlan = {
   /** The engine whose output is authoritative for this document. */

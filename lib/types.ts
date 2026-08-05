@@ -60,10 +60,17 @@ export type OcrResult = {
   id: string;
   documentId: string;
   language: string;
+  /** Extraction-quality confidence 0..100 from the acceptance engine. */
   confidence: number;
   text: string;
   layoutStatus: "queued" | "analysing" | "complete";
   createdAt: string;
+  /** Which OCR engine produced the accepted text (null for native extraction). */
+  engine?: "tesseract" | "mistral_ocr" | null;
+  /** The engine's own reported confidence — recorded for comparison only. */
+  engineConfidence?: number | null;
+  /** Extraction strategy chosen from the document analysis. */
+  strategy?: string | null;
 };
 
 export type ExtractionResult = {

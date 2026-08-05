@@ -1,4 +1,4 @@
-import type { ExtractionMetadata, ExtractionPipelineResult, ParserMethod, PdfKind } from "@/lib/pdf/types";
+import type { AcceptanceVerdict, ExtractionMetadata, ExtractionPipelineResult, ExtractionStrategy, OcrEngineComparison, OcrEngineId, ParserMethod, PdfKind } from "@/lib/pdf/types";
 
 // Turn a pipeline result into the input the accounting worker should receive, and
 // into the processing metadata stored on the run / shown on the review page.
@@ -23,6 +23,12 @@ export type ProcessingExtractionMetadata = {
   warnings: string[];
   reconciliationDifference: number | null;
   missingTransactionCount: number | null;
+  // Which strategy the analysis chose, which OCR engine won, and the head-to-head
+  // record when more than one engine ran.
+  strategy: ExtractionStrategy;
+  ocrEngine: OcrEngineId | null;
+  ocrEngineComparison: OcrEngineComparison[];
+  verdict: AcceptanceVerdict;
 };
 
 // Requirement 2: pdfjs/pdfplumber → pass extracted text/tables/transactions;
@@ -53,10 +59,17 @@ export function extractionProcessingMetadata(result: ExtractionPipelineResult): 
     extractionConfidence: result.selection?.confidence ?? 0,
     ocrUsed: Boolean(result.ocrUsed),
     detectedPdfType: result.analysis?.kind ?? "scanned",
+    // "valid" reflects reconciliation alone; the overall acceptance verdict
+    // (which also covers completeness and cross-engine agreement) is carried
+    // separately in `verdict` and must not be collapsed into this field.
     validationStatus: result.validation?.valid ? "valid" : "review_required",
     warnings: result.warnings ?? [],
     reconciliationDifference: result.validation?.difference ?? null,
     missingTransactionCount: result.validation?.missingTransactionCount ?? null,
+    strategy: result.strategy ?? "native",
+    ocrEngine: result.ocrEngine ?? null,
+    ocrEngineComparison: result.ocrEngineComparison ?? [],
+    verdict: result.verdict ?? "review_required",
   };
 }
 
@@ -69,6 +82,8 @@ export function parserMethodLabel(method: string | null | undefined): string {
       return "Processed with pdfplumber";
     case "ocr":
       return "Processed with OCR";
+    case "mistral_ocr":
+      return "Processed with Mistral OCR";
     case "hybrid":
       return "Processed with hybrid extraction";
     default:

@@ -22,6 +22,8 @@ export type ProviderDetection = {
     googleVision: boolean;
     aws: boolean;
     azureFormRecognizer: boolean;
+    /** Secondary OCR engine — escalation only, never the primary selection. */
+    mistral: boolean;
   };
 };
 
@@ -155,6 +157,9 @@ export function detectProviderConfig(): ProviderDetection {
     googleVision: Boolean(process.env.GOOGLE_VISION_API_KEY || process.env.GOOGLE_APPLICATION_CREDENTIALS),
     aws: Boolean(process.env.AWS_ACCESS_KEY_ID && process.env.AWS_SECRET_ACCESS_KEY),
     azureFormRecognizer: Boolean(process.env.AZURE_FORM_RECOGNIZER_ENDPOINT && process.env.AZURE_FORM_RECOGNIZER_KEY),
+    // Reported truthfully: Mistral is an escalation engine inside the pipeline,
+    // not a selectable primary provider, so it never appears as `ocr` below.
+    mistral: Boolean(process.env.MISTRAL_API_KEY),
   };
 
   const ocr: ProviderName = configured.googleVision
@@ -183,7 +188,7 @@ export function detectProviderConfig(): ProviderDetection {
   };
 }
 
-export function createWorkflowAdapters() {
+export function createWorkflowAdapters(options: { enhanced?: boolean } = {}) {
   const detection = detectProviderConfig();
   // Mock is permissible ONLY when there is genuinely no Supabase backend (local
   // dev / demo). A real production backend NEVER silently uses mock output.
@@ -213,19 +218,19 @@ export function createWorkflowAdapters() {
 
   return {
     detection,
-    ocr: buildOcrProvider(ocrSelection),
+    ocr: buildOcrProvider(ocrSelection, options.enhanced === true),
     extraction: buildExtractionProvider(extractionSelection),
     conversion: new MockConversionProvider(),
   };
 }
 
-function buildOcrProvider(selection: ReturnType<typeof selectOcrProvider>): OCRProvider {
+function buildOcrProvider(selection: ReturnType<typeof selectOcrProvider>, enhanced = false): OCRProvider {
   if (isSelectionError(selection)) return new UnavailableOcrProvider(selection.error);
   switch (selection.provider) {
     case "openai_vision":
-      return new OpenAIVisionOcrProvider();
+      return new OpenAIVisionOcrProvider(enhanced);
     case "tesseract":
-      return new PipelineOcrProvider(false);
+      return new PipelineOcrProvider(false, enhanced);
     case "mock":
       return new MockOCRProvider();
     default:

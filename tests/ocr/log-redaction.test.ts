@@ -19,6 +19,16 @@ test("extractWithOcr does NOT log the OCR'd document text", () => {
   assert.match(src, /textLength:\s*combinedText\.trim\(\)\.length/);
 });
 
+test("the shared OCR engine does NOT log the recognised text", () => {
+  const src = read("lib/pdf/ocrEngine.ts");
+  // The route previously logged `sample: trimmed.slice(0, 1000)` on every OCR —
+  // a full 1000 characters of the scanned document into the log stream.
+  assert.doesNotMatch(src, /sample:\s*trimmed/);
+  assert.doesNotMatch(src, /console\.[a-z]+\([^)]*\btext\b\s*[,)]/s);
+  // Safe counts are retained.
+  assert.match(src, /ocr_text_length:\s*trimmed\.length/);
+});
+
 test("runExtractionPipeline debug carries no document text (sampleText blanked)", () => {
   const src = read("lib/pdf/runExtractionPipeline.ts");
   assert.doesNotMatch(src, /sampleText:\s*assembled\.merged\.combinedText/);

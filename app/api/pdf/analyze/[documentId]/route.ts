@@ -5,8 +5,11 @@ import { runExtractionPipeline } from "@/lib/pdf/runExtractionPipeline";
 // Runs the multi-parser extraction pipeline (PDF.js → pdfplumber → OCR → score →
 // merge → validate) for a stored document and returns the summary for the UI.
 // Additive: does not touch upload / convert / download / delete / export flows.
-export async function GET(_request: Request, { params }: { params: Promise<{ documentId: string }> }) {
+export async function GET(request: Request, { params }: { params: Promise<{ documentId: string }> }) {
   const { documentId } = await params;
+  // Enhanced OCR: force the secondary engine to run so both engines can be
+  // compared side by side. Absent ⇒ standard behaviour.
+  const enhanced = new URL(request.url).searchParams.get("enhanced") === "1";
 
   try {
     const context = await getWorkspaceContext();
@@ -36,7 +39,7 @@ export async function GET(_request: Request, { params }: { params: Promise<{ doc
     }
 
     const buffer = new Uint8Array(await file.arrayBuffer());
-    const result = await runExtractionPipeline(buffer, row.name || "document.pdf");
+    const result = await runExtractionPipeline(buffer, row.name || "document.pdf", { enhancedOcr: enhanced, force: enhanced });
 
     // Trim the heavy page/word payload — the UI only needs the summary.
     return NextResponse.json({
@@ -48,6 +51,13 @@ export async function GET(_request: Request, { params }: { params: Promise<{ doc
       validation: result.validation,
       warnings: result.warnings,
       requiresReview: result.requiresReview,
+      // Additive: strategy chosen from the analysis, the winning OCR engine, the
+      // head-to-head comparison, and the single acceptance verdict.
+      strategy: result.strategy,
+      ocrEngine: result.ocrEngine,
+      ocrEngineComparison: result.ocrEngineComparison,
+      verdict: result.verdict,
+      disagreements: result.selection.disagreements,
       transactionCount: result.merged.transactions.length,
       metadata: result.merged.metadata,
     });
