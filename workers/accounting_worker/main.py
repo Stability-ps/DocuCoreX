@@ -27,7 +27,48 @@ from engine.bootstrap import register_default_parsers
 from engine.registry import BankRegistry
 
 
-app = FastAPI(title="DocuCoreX Accounting Worker")
+def api_docs_enabled() -> bool:
+    """Whether to serve /docs, /redoc and /openapi.json.
+
+    These are a local-development affordance. In production they publish the
+    exact request schema of every endpoint on a service that holds the Supabase
+    service-role key — including which payload shape gets past validation to the
+    auth check. That is free reconnaissance, so production serves 404 instead.
+
+    ACCOUNTING_WORKER_DOCS forces the answer either way. Without it, docs are
+    enabled ONLY when this is demonstrably not a deployment: presence of a
+    platform marker means production, absence means a developer's machine. Render
+    always sets RENDER_SERVICE_ID — the live /health response reports it — so this
+    needs no configuration on the service to take effect.
+    """
+    override = (os.getenv("ACCOUNTING_WORKER_DOCS") or "").strip().lower()
+    if override:
+        return override in {"1", "true", "yes", "on"}
+
+    platform_markers = (
+        "RENDER",
+        "RENDER_SERVICE_ID",
+        "RENDER_SERVICE_NAME",
+        "VERCEL",
+        "FLY_APP_NAME",
+        "K_SERVICE",
+        "DYNO",
+        "AWS_EXECUTION_ENV",
+    )
+    return not any((os.getenv(marker) or "").strip() for marker in platform_markers)
+
+
+API_DOCS_ENABLED = api_docs_enabled()
+
+# Passing None removes the route entirely, so production 404s rather than
+# answering with an empty schema. /health and /version are unaffected — they are
+# plain routes and Render's health check must keep reaching them.
+app = FastAPI(
+    title="DocuCoreX Accounting Worker",
+    docs_url="/docs" if API_DOCS_ENABLED else None,
+    redoc_url="/redoc" if API_DOCS_ENABLED else None,
+    openapi_url="/openapi.json" if API_DOCS_ENABLED else None,
+)
 logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"))
 logger = logging.getLogger("docucorex.accounting_worker")
 WORKER_PARSER_VERSION = "fnb_business_v1"

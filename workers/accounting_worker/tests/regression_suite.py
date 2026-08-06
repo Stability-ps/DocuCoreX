@@ -1150,10 +1150,15 @@ def test_worker_auth_fails_closed() -> None:
     """An unconfigured secret must reject every request, not admit every request.
 
     The old verify_worker_token returned early when ACCOUNTING_WORKER_TOKEN was
-    unset, and it was never set on Render — so /process-statement was callable by
-    anyone who knew the hostname (verified live, HTTP 422 on an unauthenticated
-    POST). The unconfigured case is the one that actually shipped, so it is the
-    one asserted first.
+    unset. The variable IS set on Render, so the guard was live and the service
+    was never open — re-probed with a schema-valid body it answered 401. (An
+    earlier version of this docstring cited an unauthenticated POST returning 422
+    as proof it was open. That was wrong: FastAPI validates the body against
+    ProcessRequest before the handler runs, so a 422 never reaches the auth check
+    and says nothing either way.)
+
+    What shipped was therefore a latent fail-open, not an exploited one, and the
+    unconfigured case is the one the code got wrong — so it is asserted first.
     """
     import auth
 
@@ -1306,11 +1311,123 @@ def test_mutating_endpoints_are_all_authenticated() -> None:
         )
 
 
+PLATFORM_MARKERS = (
+    "RENDER",
+    "RENDER_SERVICE_ID",
+    "RENDER_SERVICE_NAME",
+    "VERCEL",
+    "FLY_APP_NAME",
+    "K_SERVICE",
+    "DYNO",
+    "AWS_EXECUTION_ENV",
+)
+
+
+def test_api_docs_are_closed_on_deployments() -> None:
+    """/docs, /redoc and /openapi.json must not be served from a deployment.
+
+    They publish the exact request schema of every endpoint on a service that
+    holds the Supabase service-role key — including which payload shape reaches
+    the auth check, which is precisely what made the last auth probe against this
+    worker ambiguous (a 422 from body validation, before verify_worker_token ran).
+
+    The decision is env-only, so it is asserted as a truth table over
+    api_docs_enabled(). Whether the decision is WIRED to FastAPI is a separate
+    failure mode, asserted statically below — the stub at the top of this file
+    swallows the constructor kwargs, so app.docs_url cannot be read here.
+    """
+    saved = {name: os.environ.pop(name, None) for name in PLATFORM_MARKERS}
+    saved["ACCOUNTING_WORKER_DOCS"] = os.environ.pop("ACCOUNTING_WORKER_DOCS", None)
+    try:
+        # A developer's machine: no marker, no override -> docs stay available.
+        assert main.api_docs_enabled() is True, "docs should be on with no platform marker"
+
+        # Each marker on its own is sufficient to close them.
+        for marker in PLATFORM_MARKERS:
+            os.environ[marker] = "1"
+            try:
+                assert main.api_docs_enabled() is False, f"{marker} did not close the docs"
+            finally:
+                del os.environ[marker]
+
+        # An empty or whitespace-only marker is not a deployment. Render exports
+        # some vars empty, and treating "" as production would close docs on
+        # every developer machine that sources a stray .env.
+        for blank in ("", "   "):
+            os.environ["RENDER"] = blank
+            try:
+                assert main.api_docs_enabled() is True, f"blank marker {blank!r} read as a deployment"
+            finally:
+                del os.environ["RENDER"]
+
+        # The override wins in both directions, including over a live marker.
+        for value in ("1", "true", "TRUE", "yes", "on", " on "):
+            os.environ["ACCOUNTING_WORKER_DOCS"] = value
+            os.environ["RENDER_SERVICE_ID"] = "srv-abc123"
+            try:
+                assert main.api_docs_enabled() is True, f"override {value!r} did not reopen docs"
+            finally:
+                del os.environ["RENDER_SERVICE_ID"]
+
+        for value in ("0", "false", "off", "no", "nonsense"):
+            os.environ["ACCOUNTING_WORKER_DOCS"] = value
+            assert main.api_docs_enabled() is False, f"override {value!r} did not close docs"
+    finally:
+        for name, previous in saved.items():
+            os.environ.pop(name, None)
+            if previous is not None:
+                os.environ[name] = previous
+
+
+def test_api_docs_decision_is_wired_to_the_app() -> None:
+    """api_docs_enabled() is worthless if FastAPI is not actually gated on it.
+
+    Parses main.py rather than reading app.docs_url, for the same reason as
+    test_mutating_endpoints_are_all_authenticated: this suite runs against a
+    FastAPI stub whose __init__ discards its kwargs, so a runtime assertion would
+    pass no matter what the real constructor received.
+
+    Each URL must be a conditional on the module-level flag with None on the
+    false branch. None removes the route entirely — an empty string or a kept
+    route with no schema would still answer 200 and confirm the service.
+    """
+    import ast
+
+    tree = ast.parse((ROOT / "workers" / "accounting_worker" / "main.py").read_text())
+
+    call = None
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Assign):
+            continue
+        targets = {t.id for t in node.targets if isinstance(t, ast.Name)}
+        if "app" not in targets or not isinstance(node.value, ast.Call):
+            continue
+        func = node.value.func
+        if isinstance(func, ast.Name) and func.id == "FastAPI":
+            call = node.value
+            break
+
+    assert call is not None, "no `app = FastAPI(...)` assignment found — the parser is wrong, not the code"
+
+    kwargs = {kw.arg: kw.value for kw in call.keywords}
+    for name in ("docs_url", "redoc_url", "openapi_url"):
+        value = kwargs.get(name)
+        assert value is not None, f"FastAPI() does not gate {name}; it defaults to serving the route"
+        assert isinstance(value, ast.IfExp), f"{name} is not conditional on the docs flag"
+        names = {n.id for n in ast.walk(value.test) if isinstance(n, ast.Name)}
+        assert "API_DOCS_ENABLED" in names, f"{name} is gated on {names} rather than API_DOCS_ENABLED"
+        assert isinstance(value.orelse, ast.Constant) and value.orelse.value is None, (
+            f"{name} must fall back to None so the route is removed, not served empty"
+        )
+
+
 def run() -> None:
     test_worker_auth_fails_closed()
     test_worker_auth_matches_pdf_plumber_contract()
     test_worker_token_check_raises_on_unconfigured_secret()
     test_mutating_endpoints_are_all_authenticated()
+    test_api_docs_are_closed_on_deployments()
+    test_api_docs_decision_is_wired_to_the_app()
     test_descriptionless_fee_rows_are_preserved()
     test_unnamed_fee_rows_are_labelled_from_statement_figures_only()
     test_informational_rows_are_kept_but_not_counted()
