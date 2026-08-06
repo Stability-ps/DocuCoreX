@@ -1,10 +1,45 @@
 # Structured extraction — architecture review & implementation plan
 
-**Status:** proposal. Nothing implemented.
+**Status:** partially implemented — see the status table below.
 **Scope:** make Azure Document Intelligence a first-class *structured parser*, and
 generalise that capability so every provider can expose structure.
 **Explicit constraint:** provider ORDER is unchanged. Azure remains an escalation
 after the acceptance gate rejects native extraction.
+
+---
+
+## Implementation status
+
+Last verified against the tree on 2026-08-06 (`main` @ 24837a7).
+
+| Phase | Status | Evidence |
+|---|---|---|
+| **1. Three confidences** | ✅ **shipped** | `lib/accounting/confidence.ts` (`buildConfidenceTrio`, `reconciliationConfidence`); migration `019_confidence_split.sql`; PRs #25, #26 |
+| **2. Azure structured parsing** | ❌ **not started** | no `lib/pdf/azure/` folder; no `structured` field on `ExtractionResult` in `lib/pdf/types.ts` |
+| **3. Structured scoring + ranking** | ❌ **not started** | `scoreExtraction.ts` unchanged; no structured signals |
+| **4. Worker protocol v2** | ❌ **not started** | `buildWorkerInput` still returns `preExtractedText: string` only (`lib/pdf/workerHandoff.ts:38`); worker has no `transactions_from_rows` |
+| **5. Shadow measurement** | ⚠️ **built, never run** | `lib/pdf/shadowComparison.ts`, migrations `018`, `020`; PRs #25, #26 — but see below |
+| **6. Persist structure** | ⚠️ **partial** | `018`/`020` persist *shadow* comparisons; no `structured_summary` column exists |
+
+### Two things that are not obvious from the table
+
+**Phase 5 has produced no data.** The sampling gate, the comparison table and the
+skip accounting are all built and tested, but `ACCOUNTING_SHADOW_AZURE` is set in
+no environment — it is commented out in `.env.example` and absent from
+`.env.local` and `.env.production`. Shadow mode has therefore never executed and
+`extraction_shadow_comparisons` is empty. **§0's decision gate is still open**:
+the plan says measure before committing to phase 4, and nothing has been
+measured. Enabling the flag costs one variable.
+
+**Phase 4 has no producer.** Azure's structure is discarded before it ever
+reaches the handoff. `toExtractionTables`
+(`extractWithAzureDocumentIntelligence.ts:111`) flattens `cells[]` into
+`string[][]`, dropping `rowSpan`, `columnSpan`, `polygon`, per-cell
+`confidence` and `kind` — everything §4 depends on. The result is attached to
+page 1 only (`:234`) and is used for scoring, never for transactions. So phase 4
+cannot consume `StructuredRow[]` until phase 2 produces them: **2 → 3 → 4 is a
+hard ordering, not a preference.** Building 4 first means writing a consumer
+against a contract that has no implementation to validate it.
 
 ---
 
@@ -321,19 +356,35 @@ an OCR problem, and it never was.
 
 Phased so each lands independently and is separately revertible.
 
-| Phase | Work | Risk | Value without later phases |
-|---|---|---|---|
-| **1. Three confidences** | Split the metric; API + UI; no extraction change | very low | **High** — ends the misdiagnosis |
-| **2. Azure structured parsing** | `lib/pdf/azure/*`, contract in types, rows from tables, geometry joining | low | Node-side scoring only |
-| **3. Structured scoring + ranking** | Extend `scoreExtraction`, `mergeExtractionResults` | medium | Better provider choice |
-| **4. Worker protocol v2** | `main.py` structured path, `rows_are_usable`, regression suite | **high** | **This is where users see it** |
-| **5. Shadow measurement** | Option C from §0 — run Azure on accepted statements, record only | low | Data to justify §0 option B |
-| **6. Persist structure** | Migration 018, diagnostics UI | low | Auditability |
+| Phase | Work | Risk | Value without later phases | Status |
+|---|---|---|---|---|
+| **1. Three confidences** | Split the metric; API + UI; no extraction change | very low | **High** — ends the misdiagnosis | ✅ shipped |
+| **2. Azure structured parsing** | `lib/pdf/azure/*`, contract in types, rows from tables, geometry joining | low | Node-side scoring only | ❌ not started |
+| **3. Structured scoring + ranking** | Extend `scoreExtraction`, `mergeExtractionResults` | medium | Better provider choice | ❌ not started |
+| **4. Worker protocol v2** | `main.py` structured path, `rows_are_usable`, regression suite | **high** | **This is where users see it** | ❌ blocked on 2 |
+| **5. Shadow measurement** | Option C from §0 — run Azure on accepted statements, record only | low | Data to justify §0 option B | ⚠️ built, flag never set |
+| **6. Persist structure** | Migration 018, diagnostics UI | low | Auditability | ⚠️ shadow only |
 
 **Phase 1 first.** It is a day of work, it is the actual fix for the reported
 confusion, and it is independent of everything else. **Phase 4 is the one that
 matters** for output quality, and it is the riskiest — the FNB parser is ~4,000
 lines built around text lines.
+
+### Revised sequencing (2026-08-06)
+
+Phase 1 is done and phase 5 is written but idle, so the next step is one of:
+
+1. **Set `ACCOUNTING_SHADOW_AZURE=true`** and let phase 5 do the job it was built
+   for. One variable, no code. Until this runs, §0's option A/B/C question is
+   being answered by assertion rather than evidence, and phases 2–4 are being
+   justified by a benefit nobody has measured.
+2. **Phase 2**, which is the real prerequisite for phase 4 and is low-risk on its
+   own (it is additive to the Azure provider and changes no decision).
+
+Phase 4 should not start before phase 2 lands. Its worker-side contract is
+defined in §5, but with no producer the structured path could only be exercised
+by synthetic fixtures written to match the same assumptions the code makes —
+which tests nothing.
 
 ### API changes
 
@@ -407,11 +458,21 @@ absent.
 
 ## 10. Open questions for you
 
-1. **§0 option A, B or C?** This determines whether the work pays off. My
-   recommendation: **C now, decide B on the data.**
+1. ~~**§0 option A, B or C?**~~ **Answered: C.** The shadow-mode machinery was
+   built (PRs #25, #26). **But the question it was meant to settle is still
+   open**, because the flag enabling it was never set, so no comparison has ever
+   been recorded. C is implemented, not performed.
 2. Is a per-document-type provider order (statements → Azure first) within
-   bounds, or does "do not change provider order" mean globally fixed?
-3. Should phase 1 ship on its own immediately? It is independent and fixes the
-   reporting problem that prompted the last three investigations.
+   bounds, or does "do not change provider order" mean globally fixed? — **still
+   open**, and cannot be answered without the data from (1).
+3. ~~Should phase 1 ship on its own immediately?~~ **Answered: yes, and it did.**
 4. Do you want key-value pairs? It needs `features=keyValuePairs`, adds cost,
-   and account number / period already parse reliably from text.
+   and account number / period already parse reliably from text. — **still open.**
+
+### New question
+
+5. **Is Azure escalation firing at all in production?** §0 noted that Azure runs
+   only when the acceptance gate rejects native extraction, and that current
+   statements reconcile at R0.00 and therefore pass. If that is still true, the
+   entire structured-extraction investment applies to zero documents today, and
+   the shadow numbers from (1) would show it immediately.
