@@ -144,6 +144,18 @@ BANK_FINGERPRINTS: tuple[BankFingerprint, ...] = (
 )
 
 
+def bank_name_for(profile_id: str | None) -> str:
+    """Display name for a bank profile id. Unrecognised ids read as Unknown."""
+    for fingerprint in BANK_FINGERPRINTS:
+        if fingerprint.profile_id == profile_id:
+            return fingerprint.bank_name
+    return UNKNOWN_BANK_NAME
+
+
+def is_supported_bank(profile_id: str | None) -> bool:
+    return any(fingerprint.profile_id == profile_id for fingerprint in BANK_FINGERPRINTS)
+
+
 def normalise_statement_text(text: str) -> str:
     """Lowercase and collapse whitespace so markers match across layouts.
 

@@ -28,11 +28,21 @@ class ParserProfile:
 class BankParser(Protocol):
     profile: ParserProfile
 
-    def matches(self, text_sample: str, file_name: str) -> bool:
-        ...
-
 
 class BankRegistry:
+    """A catalogue of bank profiles and their capabilities.
+
+    This registry no longer decides which parser reads a statement. It used to,
+    via a `detect(text_sample, file_name)` that matched keywords against the two
+    concatenated — and since every accounting upload is stored under
+    ".../accounting/fnb/...", the literal "fnb" in that path matched the FNB
+    parser for every document ever uploaded, so the statement's own text was
+    never reached. When nothing matched it returned `_parsers[0]`, FNB again.
+
+    Detection now lives in engine/detection.py, reads statement text only, and
+    can return `unknown`.
+    """
+
     _parsers: list[BankParser] = []
 
     @classmethod
@@ -45,10 +55,5 @@ class BankRegistry:
         return list(cls._parsers)
 
     @classmethod
-    def detect(cls, text_sample: str, file_name: str) -> BankParser | None:
-        lowered_file = file_name.lower()
-        lowered_text = text_sample.lower()
-        for parser in cls._parsers:
-            if parser.matches(lowered_text, lowered_file):
-                return parser
-        return cls._parsers[0] if cls._parsers else None
+    def get(cls, profile_id: str) -> BankParser | None:
+        return next((parser for parser in cls._parsers if parser.profile.id == profile_id), None)

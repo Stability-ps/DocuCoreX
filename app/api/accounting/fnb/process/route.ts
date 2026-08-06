@@ -1,6 +1,5 @@
 import { NextResponse, after } from "next/server";
 import { recordAuditLog } from "@/lib/audit";
-import { detectBankProfile } from "@/lib/accounting/engine/registry";
 import { bankDetectionHints, detectBankFromText } from "@/lib/accounting/engine/bank-detection";
 import { isNoTransactionsFailure } from "@/lib/accounting/workerFailure";
 import { getAccountingRunDetail } from "@/lib/accounting/server";
@@ -26,6 +25,8 @@ type PipelineDebug = {
   parserMethod: string;
   ocrUsed: boolean;
   detectedPdfType: string;
+  detectedBank: string;
+  detectedBankConfidence: number;
   extractionConfidence: number;
   pdfjsTextLength: number;
   pdfplumberTextLength: number;
@@ -131,6 +132,8 @@ async function runPipelineBeforeWorker(
       parserMethod: meta.selectedParser,
       ocrUsed: meta.ocrUsed,
       detectedPdfType: meta.detectedPdfType,
+      detectedBank: bankDetection.profileId,
+      detectedBankConfidence: bankDetection.confidence,
       extractionConfidence: meta.extractionConfidence,
       pdfjsTextLength: pipeline.debug.pdfjsTextLength,
       pdfplumberTextLength: pipeline.debug.pdfplumberTextLength,
@@ -525,7 +528,6 @@ async function processStatementInBackground(context: WorkspaceContext, detail: A
     }
   };
 
-  const parserProfile = detectBankProfile({ bank: detail.run.bank, fileName: detail.run.sourceStoragePath });
   const workerEndpoint = buildWorkerEndpoint(workerUrl, "/process-statement");
 
   // One attempt at the accounting worker. Returns a discriminated outcome so the
@@ -550,7 +552,9 @@ async function processStatementInBackground(context: WorkspaceContext, detail: A
       resolvedAccountingWorkerUrl: workerUrl,
       endpoint: workerEndpoint,
       runId,
-      parserProfile,
+      // The parser is chosen by the worker from the statement text; there is
+      // nothing to declare here that would not be a guess.
+      declaredBank: detail.run.bank,
     });
 
     const controller = new AbortController();
@@ -657,7 +661,7 @@ async function processStatementInBackground(context: WorkspaceContext, detail: A
       entityId: runId,
       metadata: {
         bank: detail.run.bank,
-        parserProfile,
+        detectedBank: pipelineDebug?.detectedBank ?? null,
         worker: "fastapi",
         extractionStrategy: pipelineDebug?.strategy ?? null,
         ocrEngine: pipelineDebug?.ocrEngine ?? null,

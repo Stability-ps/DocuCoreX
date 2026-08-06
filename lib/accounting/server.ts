@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { recordAuditLog } from "@/lib/audit";
-import { detectBankProfile } from "@/lib/accounting/engine/registry";
+import { PENDING_BANK_NAME, PENDING_PARSER_PROFILE } from "@/lib/accounting/engine/bank-detection";
 import { BASE_MERCHANT_KNOWLEDGE } from "@/lib/accounting/engine/merchant-kb";
 import { getWorkspaceContext } from "@/lib/server-documents";
 import { createDocumentVersionRecord } from "@/lib/supabase-server-adapter";
@@ -361,7 +361,7 @@ async function ensureMerchantKnowledgeBase() {
 
 function assertFnbPdf(file: File) {
   if (!file.name.toLowerCase().endsWith(".pdf") && file.type !== "application/pdf") {
-    throw new Error("Phase 1 only supports FNB South Africa business bank statement PDFs.");
+    throw new Error("Upload a bank statement PDF.");
   }
 
   if (file.size <= 0) {
@@ -373,9 +373,17 @@ function assertFnbPdf(file: File) {
   }
 }
 
+// Bank-neutral by necessity, not by taste. This used to be ".../accounting/fnb/",
+// and the accounting worker folded the storage path into its bank-keyword
+// haystack, so the literal "fnb" in every path matched the FNB parser for every
+// statement ever uploaded. Detection no longer reads paths at all; the segment
+// stays neutral so no future detector can be poisoned by it either.
+//
+// Runs uploaded before this keeps their old path. Nothing reads the bank out of
+// a path any more, so those runs route on their text like everything else.
 function accountingStoragePath(workspaceId: string, fileName: string) {
   const safeName = fileName.replace(/[^a-zA-Z0-9._-]/g, "_");
-  return `${workspaceId}/accounting/fnb/${randomUUID()}-${safeName}`;
+  return `${workspaceId}/accounting/statements/${randomUUID()}-${safeName}`;
 }
 
 export async function createFnbAccountingRun(file: File) {
@@ -387,7 +395,11 @@ export async function createFnbAccountingRun(file: File) {
   }
 
   const storagePath = accountingStoragePath(context.workspaceId, file.name);
-  const parserProfile = detectBankProfile({ bank: "FNB South Africa", fileName: file.name });
+  // At upload nothing has read the PDF yet, so the bank is genuinely not known.
+  // It used to be recorded as FNB here — a guess that the UI then displayed as
+  // fact, and that survived on every run that failed before the worker could
+  // correct it. The worker overwrites both fields from the detected bank.
+  const parserProfile = PENDING_PARSER_PROFILE;
   const upload = await context.supabase.storage.from("documents").upload(storagePath, file, {
     contentType: file.type || "application/pdf",
     upsert: false,
@@ -409,7 +421,7 @@ export async function createFnbAccountingRun(file: File) {
       status: "queued",
       detected_type: "bank_statement",
       storage_path: storagePath,
-      tags: ["Accounting Intelligence", "FNB", "Bank Statement"],
+      tags: ["Accounting Intelligence", "Bank Statement"],
     })
     .select("id")
     .single();
@@ -418,7 +430,7 @@ export async function createFnbAccountingRun(file: File) {
     throw new Error(documentError?.message ?? "Unable to create accounting document.");
   }
 
-  await createDocumentVersionRecord(document.id, storagePath, "Original FNB statement upload");
+  await createDocumentVersionRecord(document.id, storagePath, "Original statement upload");
 
   await context.supabase.from("uploads").insert({
     workspace_id: context.workspaceId,
@@ -453,7 +465,7 @@ export async function createFnbAccountingRun(file: File) {
       workspace_id: context.workspaceId,
       document_id: document.id,
       processing_job_id: job.id,
-      bank: "FNB South Africa",
+      bank: PENDING_BANK_NAME,
       parser_profile: parserProfile,
       parser_version: parserProfile,
       status: "queued",
@@ -471,14 +483,14 @@ export async function createFnbAccountingRun(file: File) {
     action: "accounting_statement_uploaded",
     entityType: "document",
     entityId: document.id,
-    metadata: { runId: run.id, bank: "FNB South Africa", fileName: file.name },
+    metadata: { runId: run.id, bank: PENDING_BANK_NAME, fileName: file.name },
   });
 
   await recordAccountingActionAudit({
     action: "statement_uploaded",
     entityType: "accounting_statement_run",
     entityId: run.id,
-    newValue: { bank: "FNB South Africa", parserProfile, fileName: file.name },
+    newValue: { bank: PENDING_BANK_NAME, parserProfile, fileName: file.name },
   });
 
   await ensureMerchantKnowledgeBase();

@@ -8,7 +8,7 @@ register("./alias-hook.mjs", pathToFileURL(new URL(".", import.meta.url).pathnam
 const { detectBankFromText, bankDetectionHints, UNKNOWN_BANK_ID, normaliseStatementText } = await import(
   "@/lib/accounting/engine/bank-detection.ts"
 );
-const { detectBankProfile } = await import("@/lib/accounting/engine/registry.ts");
+const registry = await import("@/lib/accounting/engine/registry.ts");
 
 // A real 37-page Standard Bank statement extracted cleanly (66k-78k characters
 // across pdfjs / pdfplumber / Azure / Mistral, account number and opening
@@ -150,11 +150,13 @@ test("detection takes statement text only — no path can reach it", () => {
   // a path matches FNB for every document ever uploaded.
   assert.equal(detectBankFromText.length, 1, "detectBankFromText must take exactly one argument: the text");
 
-  const storagePath = "ws-1/accounting/fnb/2f6c-Standard_Bank_Statement.pdf";
+  // Runs uploaded before the path went neutral still carry ".../accounting/fnb/".
+  // They must route on their text like everything else.
+  const legacyStoragePath = "ws-1/accounting/fnb/2f6c-Standard_Bank_Statement.pdf";
   assert.equal(detectBankFromText(STANDARD_BANK_SAMPLE).profileId, "standard_bank_business_v1");
+  assert.ok(legacyStoragePath.includes("fnb"), "the legacy path really does contain the token");
 
-  // The legacy detector, recorded as it still behaves in this change. Routing
-  // does not move to the evidence-based detector until the following PRs.
-  assert.equal(detectBankProfile({ bank: "FNB South Africa", fileName: storagePath }), "fnb_business_v1");
-  assert.equal(detectBankProfile({ bank: "Standard Bank", fileName: storagePath }), "fnb_business_v1");
+  // The path-aware detector is gone, not merely unused. Leaving it exported is
+  // an invitation to call it again.
+  assert.equal("detectBankProfile" in registry, false, "detectBankProfile must not exist any more");
 });

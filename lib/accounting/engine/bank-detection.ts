@@ -23,6 +23,18 @@ import type { DetectedBankId } from "@/lib/accounting/engine/types";
 export const UNKNOWN_BANK_ID = "unknown" as const;
 export const UNKNOWN_BANK_NAME = "Unknown" as const;
 
+/**
+ * What a run carries between upload and the worker's verdict. At upload nothing
+ * has read the PDF, so the bank is not merely unknown — it has not been looked
+ * for yet, and saying "FNB South Africa" there put a guess in front of the user
+ * as fact. The worker overwrites both when it detects.
+ */
+export const PENDING_BANK_NAME = "Detecting…" as const;
+export const PENDING_PARSER_PROFILE = "pending_detection" as const;
+
+/** The parser that reads every statement that is not FNB. */
+export const GENERIC_PARSER_PROFILE = "generic_bank_statement_v1" as const;
+
 /** The letterhead: a full first page of any of the six layouts, and no more. */
 export const HEADER_CHARS = 3000;
 

@@ -24,14 +24,21 @@ from pydantic import BaseModel
 from supabase import Client, create_client
 from auth import OK as AUTH_OK, STATUS_FOR_VERDICT, auth_compare_diagnostics, check_bearer
 from engine.bootstrap import register_default_parsers
-from engine.detection import detect_bank
-from engine.registry import BankRegistry
+from engine.detection import UNKNOWN_PROFILE_ID, bank_name_for, detect_bank, is_supported_bank
 
 
 app = FastAPI(title="DocuCoreX Accounting Worker")
 logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"))
 logger = logging.getLogger("docucorex.accounting_worker")
 WORKER_PARSER_VERSION = "fnb_business_v1"
+# Two different things, kept apart on purpose.
+#
+# The BANK PROFILE is which bank issued the statement (fnb_business_v1,
+# standard_bank_business_v1, ... or "unknown"). The PARSER PROFILE is which
+# implementation read it: the FNB parser, or the generic one. Collapsing the two
+# is what made "not FNB" mean "cannot be processed".
+FNB_PROFILE_ID = "fnb_business_v1"
+GENERIC_PARSER_PROFILE_ID = "generic_bank_statement_v1"
 WORKER_BUILD_FALLBACK = "local-dev"
 DEFAULT_AI_MODEL = "gpt-4o-mini"
 AI_CLASSIFICATION_CACHE: dict[str, dict[str, Any]] = {}
@@ -89,6 +96,55 @@ def worker_version() -> dict[str, str]:
 
 def with_worker_version(payload: dict[str, Any]) -> dict[str, Any]:
     return {**payload, "worker": worker_version()}
+
+
+def resolve_bank_profile(
+    worker_profile: str,
+    worker_confidence: float,
+    node_profile: str | None,
+    node_confidence: float | None,
+) -> dict[str, Any]:
+    """Settle on one bank from the two detections, and say why.
+
+    Two sides look at the same statement through different text. The Node
+    pipeline reads the merged best extraction across pdfjs, pdfplumber, Azure
+    and Mistral; this worker reads its own pdfplumber/PyMuPDF output, or the
+    provided text when that yields more. Either can be the better witness — a
+    scanned page this worker cannot read at all is legible to Azure, and an OCR
+    reflow that mangles a letterhead is clean in the native extraction.
+
+    So: a side that identified a bank beats a side that did not, agreement wins
+    outright, and a genuine conflict goes to the more confident reading — with
+    the worker breaking an exact tie, because it is reading the text it is about
+    to parse. Unrecognised ids from a newer frontend count as no identification
+    rather than as a bank this worker cannot parse.
+
+    Returns `unknown` when neither side identified anything. That is a routing
+    outcome (the generic parser), not a failure.
+    """
+    worker_known = is_supported_bank(worker_profile)
+    node_known = is_supported_bank(node_profile)
+
+    if worker_known and node_known:
+        if worker_profile == node_profile:
+            source, profile, reason = "agreed", worker_profile, "both sides identified the same bank"
+        elif (node_confidence or 0.0) > worker_confidence:
+            source, profile, reason = "node", node_profile, "conflict resolved by higher node confidence"
+        else:
+            source, profile, reason = "worker", worker_profile, "conflict resolved by worker confidence"
+    elif worker_known:
+        source, profile, reason = "worker", worker_profile, "only the worker identified a bank"
+    elif node_known:
+        source, profile, reason = "node", node_profile, "only the node pipeline identified a bank"
+    else:
+        source, profile, reason = "none", UNKNOWN_PROFILE_ID, "no side identified a bank"
+
+    return {
+        "bank_profile": profile,
+        "bank_name": bank_name_for(profile),
+        "source": source,
+        "reason": reason,
+    }
 
 
 class ProcessRequest(BaseModel):
@@ -296,7 +352,12 @@ def parse_date(value: str | None) -> str | None:
     if not value:
         return None
     value = value.strip()
-    for fmt in ("%d/%m/%Y", "%d/%m/%y", "%Y-%m-%d", "%d %b %Y", "%d %B %Y"):
+    # "%d %b %y" — a two-digit year after a month name ("30 Apr 25") is how
+    # Standard Bank prints every transaction date. Without it parse_date returned
+    # None, normalize_transaction_date then appended the statement year to make
+    # "30 Apr 25 2025", which failed too, and every row was dropped for want of a
+    # date. Numeric two-digit years ("30/04/25") were already accepted.
+    for fmt in ("%d/%m/%Y", "%d/%m/%y", "%Y-%m-%d", "%d %b %Y", "%d %B %Y", "%d %b %y", "%d %B %y"):
         try:
             return datetime.strptime(value, fmt).date().isoformat()
         except ValueError:
@@ -1406,9 +1467,28 @@ def parse_table_transactions(pages: list[dict[str, Any]], metadata: dict[str, An
                 raw_date = raw_date_match.group("date")
 
                 description_index = find_header_index(active_headers, "description")
-                amount_index = find_header_index(active_headers, "amount", "debit", "credit")
                 balance_index = find_header_index(active_headers, "balance")
                 charges_index = find_header_index(active_headers, "accrued_charges")
+
+                # A layout with BOTH money columns — Payments/Deposits,
+                # Debit/Credit, Money out/Money in — is read as a pair.
+                #
+                # This used to resolve a single amount column with
+                # find_header_index(headers, "amount", "debit", "credit"), which
+                # returns the FIRST of the three that exists. On a two-column
+                # statement that is the debit column, and every row whose money
+                # sits in the other one was read as having no amount at all and
+                # dropped. On a Standard Bank Payments/Deposits layout that is
+                # every single deposit.
+                #
+                # Single-amount layouts (FNB's "Amount" column) are unaffected:
+                # they have no column pair, so they take the same path as before.
+                debit_index = find_header_index(active_headers, "debit")
+                credit_index = find_header_index(active_headers, "credit")
+                paired_money_columns = debit_index is not None and credit_index is not None
+                amount_index = find_header_index(active_headers, "amount")
+                if amount_index is None and not paired_money_columns:
+                    amount_index = debit_index if debit_index is not None else credit_index
 
                 if not active_headers and len(cells) >= 4:
                     description_index = 1 if len(cells) > 1 else None
@@ -1429,15 +1509,15 @@ def parse_table_transactions(pages: list[dict[str, Any]], metadata: dict[str, An
                 credit: float | None = None
                 balance = decimal_to_float(parse_money_cell(row_value(cells, balance_index)))
 
-                if amount_index is not None:
+                if paired_money_columns:
+                    debit_amount = parse_money_cell(row_value(cells, debit_index))
+                    credit_amount = parse_money_cell(row_value(cells, credit_index))
+                    debit = decimal_to_float(debit_amount.copy_abs()) if debit_amount is not None else None
+                    credit = decimal_to_float(credit_amount.copy_abs()) if credit_amount is not None else None
+                elif amount_index is not None:
                     parsed_amount = parse_transaction_amount_cell(row_value(cells, amount_index))
                     if parsed_amount:
                         debit, credit = parsed_amount
-                elif find_header_index(active_headers, "debit") is not None or find_header_index(active_headers, "credit") is not None:
-                    debit_amount = parse_money_cell(row_value(cells, find_header_index(active_headers, "debit")))
-                    credit_amount = parse_money_cell(row_value(cells, find_header_index(active_headers, "credit")))
-                    debit = decimal_to_float(debit_amount.copy_abs()) if debit_amount is not None else None
-                    credit = decimal_to_float(credit_amount.copy_abs()) if credit_amount is not None else None
 
                 if debit is None and credit is None:
                     continue
@@ -1704,7 +1784,50 @@ def normalize_transactions_from_balances(
     return normalized
 
 
-def parse_transactions(pages: list[dict[str, Any]], metadata: dict[str, Any], full_text: str = "") -> list[ParsedTransaction]:
+def parse_transactions(
+    pages: list[dict[str, Any]],
+    metadata: dict[str, Any],
+    full_text: str,
+    profile: str,
+) -> list[ParsedTransaction]:
+    """Route to the parser for the detected bank.
+
+    `profile` is required and has no default. A default would be a bank, and
+    defaulting to a bank is exactly what routed Standard Bank statements into
+    the FNB parser.
+    """
+    if profile == FNB_PROFILE_ID:
+        return parse_fnb_transactions(pages, metadata, full_text)
+    return parse_generic_transactions(pages, metadata, full_text)
+
+
+def parse_generic_transactions(
+    pages: list[dict[str, Any]],
+    metadata: dict[str, Any],
+    full_text: str = "",
+) -> list[ParsedTransaction]:
+    """Bank-independent parsing for every statement that is not FNB.
+
+    Built from the helpers that were already provider-neutral:
+    parse_table_transactions reads header roles (date / description /
+    debit-withdrawal-payment / credit-deposit-receipt / balance), and
+    parse_text_transactions scans dated money lines. Neither knows anything
+    about FNB, and none of the FNB fee reconstruction runs here — those infer
+    rows from FNB's own fee summary and would invent transactions on any other
+    bank's statement.
+
+    This is deliberately the floor, not the ceiling: a dedicated generic parser
+    for wrapped descriptions, Dr/Cr suffixes, date inheritance and
+    Payments/Deposits column pairs replaces the body of this function next.
+    """
+    table_transactions = parse_table_transactions(pages, metadata)
+    if table_transactions:
+        merged = dedupe_transactions(table_transactions)
+        return normalize_transactions_from_balances(merged, metadata.get("opening_balance"))
+    return dedupe_transactions(parse_text_transactions(pages, metadata))
+
+
+def parse_fnb_transactions(pages: list[dict[str, Any]], metadata: dict[str, Any], full_text: str = "") -> list[ParsedTransaction]:
     section_transactions = parse_fnb_section_transactions(full_text, metadata) if full_text else []
     if section_transactions:
         service_fee_transactions = parse_fnb_service_fee_transactions(full_text, metadata) if full_text else []
@@ -1803,12 +1926,23 @@ def resolve_amount_direction_from_continuity(
 def parse_structured_rows(
     rows: list[dict[str, Any]],
     metadata: dict[str, Any],
+    profile: str,
 ) -> tuple[list[ParsedTransaction], dict[str, Any]]:
     """Provider-agnostic StructuredRow[] -> ParsedTransaction[].
 
     This only transforms rows. Selection happens separately; the existing text
     parser remains intact and is always evaluated in parallel.
+
+    The row transformation itself is bank-independent — date inheritance, Dr/Cr
+    suffixes, bracketed negatives, zero-value informational rows and
+    balance-continuity direction resolution all read the row, not the bank. Three
+    steps are not: recovering a row from its raw text with the FNB line parser,
+    naming FNB's descriptionless fee rows, and inferring FNB service fees from a
+    running-balance gap. Those reconstruct rows from FNB's own fee summary and
+    would invent transactions on any other bank's statement, so `profile` gates
+    them. It is required for that reason and has no default.
     """
+    is_fnb = profile == FNB_PROFILE_ID
     transactions: list[ParsedTransaction] = []
     rejected_reasons: dict[str, int] = {}
     date_inferred_count = 0
@@ -1850,7 +1984,7 @@ def parse_structured_rows(
                 date_inferred = True
 
         raw_row_value = str(row.get("raw") or "").strip()
-        recovered_from_raw = parse_fnb_transaction_line(raw_row_value, metadata) if raw_row_value else None
+        recovered_from_raw = parse_fnb_transaction_line(raw_row_value, metadata) if (raw_row_value and is_fnb) else None
 
         description = description_cell or reference_cell
         if not description and recovered_from_raw is not None:
@@ -1986,10 +2120,13 @@ def parse_structured_rows(
             previous_running_balance = decimal_amount(transaction.running_balance)
 
     deduped = dedupe_transactions(transactions)
-    label_unnamed_fee_rows(deduped, metadata)
-    deduped = insert_inferred_fnb_service_fees(deduped, metadata)
+    if is_fnb:
+        label_unnamed_fee_rows(deduped, metadata)
+        deduped = insert_inferred_fnb_service_fees(deduped, metadata)
 
     diagnostics = {
+        "profile": profile,
+        "fnb_reconstruction_applied": is_fnb,
         "received_rows": len(rows),
         "parsed_rows": len(transactions),
         "deduped_rows": len(deduped),
@@ -2152,8 +2289,16 @@ def select_transactions_from_sources(
     metadata: dict[str, Any],
     full_text: str,
     structured_rows: list[dict[str, Any]] | None,
+    profile: str,
 ) -> tuple[list[ParsedTransaction], dict[str, Any]]:
+    """Parse both sources under the SAME profile and keep the better result.
+
+    Structured rows stay the preferred source for every bank — they are already
+    provider-agnostic. `profile` only decides which text parser runs and whether
+    the FNB-specific row reconstruction is allowed to fire.
+    """
     diagnostics: dict[str, Any] = {
+        "profile": profile,
         "selected_path": "text",
         "fallback_reason": None,
         "structured_rows_received": len(structured_rows or []),
@@ -2166,7 +2311,7 @@ def select_transactions_from_sources(
     structured_transactions: list[ParsedTransaction] = []
     structured_metrics: dict[str, Any] | None = None
     if structured_rows:
-        structured_transactions, parse_diag = parse_structured_rows(structured_rows, metadata)
+        structured_transactions, parse_diag = parse_structured_rows(structured_rows, metadata, profile)
         structured_metrics = (
             transaction_quality_snapshot(metadata, structured_transactions)
             if structured_transactions
@@ -2180,7 +2325,7 @@ def select_transactions_from_sources(
     else:
         diagnostics["fallback_reason"] = "structured_rows_absent"
 
-    text_transactions = parse_transactions(pages, metadata, full_text) or []
+    text_transactions = parse_transactions(pages, metadata, full_text, profile) or []
     text_metrics = transaction_quality_snapshot(metadata, text_transactions)
     diagnostics["text_metrics"] = text_metrics
 
@@ -4533,9 +4678,14 @@ def process_fnb_statement(payload: ProcessRequest, authorization: str | None = H
     supabase = get_supabase()
     bucket = os.getenv("SUPABASE_BUCKET", "documents")
     process_started = time.perf_counter()
-    parser_profile = WORKER_PARSER_VERSION
-    parser_version = WORKER_PARSER_VERSION
-    bank_name = "FNB South Africa"
+    # Defaults for the paths that fail before detection runs (a storage download
+    # that never returns, say). "Unknown" is the truth at that point; the old
+    # default said FNB and so mislabelled every failure that never got far enough
+    # to look at the document.
+    bank_profile = UNKNOWN_PROFILE_ID
+    bank_name = bank_name_for(UNKNOWN_PROFILE_ID)
+    parser_profile = GENERIC_PARSER_PROFILE_ID
+    parser_version = GENERIC_PARSER_PROFILE_ID
 
     log_event(
         "worker.process_request",
@@ -4635,27 +4785,26 @@ def process_fnb_statement(payload: ProcessRequest, authorization: str | None = H
                     native_rows=native_rows,
                     reason="native text yields at least as many transaction candidates",
                 )
-        parser = BankRegistry.detect(full_text[:4000], payload.storage_path)
-        if parser is None:
-            raise HTTPException(status_code=422, detail="No parser profile is registered for this statement.")
-        parser_profile = parser.profile.id
-        parser_version = parser.profile.version
-        bank_name = parser.profile.bank_name
-        # Evidence-based detection, observed only — routing below is unchanged.
+        # Which bank issued this statement, and therefore which parser reads it.
         #
-        # BankRegistry.detect (above) folds payload.storage_path into its keyword
-        # haystack, and every accounting upload is stored under
-        # ".../accounting/fnb/...", so it matches FNB for EVERY document and the
-        # statement's own text is never reached. detect_bank reads the text and
-        # nothing else. Logging the two side by side quantifies how often that
-        # misroutes a real statement before the routing itself is changed.
+        # This replaces BankRegistry.detect, which folded payload.storage_path
+        # into its keyword haystack. Every accounting upload is stored under
+        # ".../accounting/fnb/...", so that matched FNB for EVERY document, the
+        # statement's own text was never reached, and a Standard Bank statement
+        # died on "No FNB transactions could be parsed from this PDF".
         detection = detect_bank(full_text)
-        # What the Node pipeline concluded, if it looked at all. It reads the
-        # merged best extraction across four providers; this worker reads its own
-        # pdfplumber/PyMuPDF text or the provided text, so the two can legitimately
-        # differ. Neither decides routing yet — recording both is how we learn
-        # which source to trust before the switch.
         node_detected_bank = (payload.detected_bank or "").strip() or None
+        resolution = resolve_bank_profile(
+            worker_profile=detection.profile_id,
+            worker_confidence=detection.confidence,
+            node_profile=node_detected_bank,
+            node_confidence=payload.detected_bank_confidence,
+        )
+        bank_profile = resolution["bank_profile"]
+        bank_name = resolution["bank_name"]
+        # Not FNB is not an error. It selects the generic parser.
+        parser_profile = FNB_PROFILE_ID if bank_profile == FNB_PROFILE_ID else GENERIC_PARSER_PROFILE_ID
+        parser_version = parser_profile
         log_event(
             "worker.bank_detected",
             run_id=payload.run_id,
@@ -4672,8 +4821,11 @@ def process_fnb_statement(payload: ProcessRequest, authorization: str | None = H
             node_detection_evidence=payload.detected_bank_evidence,
             node_detection_present=node_detected_bank is not None,
             node_worker_agreement=(node_detected_bank == detection.profile_id) if node_detected_bank else None,
-            routed_parser_profile=parser_profile,
-            routing_disagreement=detection.profile_id != parser_profile,
+            resolved_bank_profile=bank_profile,
+            resolved_bank_name=bank_name,
+            resolution_source=resolution["source"],
+            resolution_reason=resolution["reason"],
+            selected_parser_profile=parser_profile,
         )
         if node_detected_bank and node_detected_bank != detection.profile_id:
             log_warning(
@@ -4686,39 +4838,21 @@ def process_fnb_statement(payload: ProcessRequest, authorization: str | None = H
                 worker_detection_confidence=detection.confidence,
                 worker_detection_evidence=list(detection.evidence),
                 extraction_source=payload.extraction_source,
+                resolved_bank_profile=bank_profile,
+                resolution_source=resolution["source"],
                 note="the two sides read different text and reached different banks",
-            )
-        if detection.profile_id != parser_profile:
-            log_warning(
-                "worker.bank_routing_disagreement",
-                run_id=payload.run_id,
-                storage_path=payload.storage_path,
-                detected_bank=detection.profile_id,
-                detected_bank_name=detection.bank_name,
-                detection_confidence=detection.confidence,
-                detection_reason=detection.reason,
-                detection_evidence=list(detection.evidence),
-                routed_parser_profile=parser_profile,
-                note="statement text identifies a different bank than the profile this run is routed to",
-            )
-        if parser_profile != "fnb_business_v1":
-            raise HTTPException(
-                status_code=422,
-                detail=with_worker_version(
-                    {
-                        "message": f"Detected parser profile {parser_profile}, but only fnb_business_v1 is implemented for extraction in this phase.",
-                        "status": "parser_profile_not_implemented",
-                    }
-                ),
             )
         log_event(
             "worker.text_extracted",
             run_id=payload.run_id,
             pages=len(pages),
             characters=len(full_text),
+            bank_profile=bank_profile,
             parser_profile=parser_profile,
         )
         metadata = parse_metadata(full_text)
+        metadata["bank_profile"] = bank_profile
+        metadata["bank_name"] = bank_name
         metadata["parser_profile"] = parser_profile
         metadata["parser_version"] = parser_version
         metadata["source_file"] = os.path.basename(payload.storage_path).split(".pdf")[0][:80] or "28 Feb 2026 - (Free)"
@@ -4746,6 +4880,7 @@ def process_fnb_statement(payload: ProcessRequest, authorization: str | None = H
             metadata,
             full_text,
             payload.pre_extracted_rows if isinstance(payload.pre_extracted_rows, list) else None,
+            parser_profile,
         )
         transactions = selected_transactions or []
         classification_rules = fetch_classification_rules(supabase, payload.workspace_id) or []
@@ -4802,8 +4937,19 @@ def process_fnb_statement(payload: ProcessRequest, authorization: str | None = H
                 "reason_no_transactions": pipeline_debug.get("reasonNoTransactions"),
                 "selected_path": structured_selection.get("selected_path"),
                 "structured_fallback_reason": structured_selection.get("fallback_reason"),
+                "bank_profile": bank_profile,
+                "bank_name": bank_name,
+                "parser_profile": parser_profile,
             }
-            reason = parser_debug["reason_no_transactions"] or "No FNB transactions could be parsed from this PDF."
+            # Name the parser that actually ran. "No FNB transactions" on a
+            # Standard Bank statement described the misroute, not the document,
+            # and sent every investigation looking at the wrong parser.
+            default_reason = (
+                "No FNB transactions could be parsed from this PDF."
+                if parser_profile == FNB_PROFILE_ID
+                else f"No transactions could be parsed from this {bank_name} statement."
+            )
+            reason = parser_debug["reason_no_transactions"] or default_reason
             log_warning("worker.no_transactions_parsed", run_id=payload.run_id, diagnostics=diagnostics, parser_debug=parser_debug)
             raise HTTPException(
                 status_code=422,

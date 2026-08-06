@@ -7,12 +7,15 @@ from .registry import BankParser, ParserCapabilities, ParserProfile
 
 @dataclass(frozen=True)
 class KeywordBankParser(BankParser):
+    """A bank profile and its capabilities.
+
+    `keywords` is retained as documentation of each bank's identifying tokens;
+    it is no longer used to route. Detection is scored against statement text in
+    engine/detection.py, which never sees a file name or storage path.
+    """
+
     profile: ParserProfile
     keywords: tuple[str, ...]
-
-    def matches(self, text_sample: str, file_name: str) -> bool:
-        haystack = f"{text_sample} {file_name}"
-        return any(keyword in haystack for keyword in self.keywords)
 
 
 FNB_PARSER = KeywordBankParser(
