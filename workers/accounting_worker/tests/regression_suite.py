@@ -1068,6 +1068,20 @@ def run_local_real_statement_files_case() -> None:
         assert_equal(str(summary["total_credits"]), case["credits"], f"{case['id']} credits")
         assert_equal(str(summary["total_debits"]), case["debits"], f"{case['id']} debits")
         assert_equal(str(validation["closing_balance"]), case["closing"], f"{case['id']} closing")
+        extraction_check = main.validate_extraction(metadata, transactions)
+        missing_rows = main.missing_transaction_count_for_storage(extraction_check, len(transactions))
+        extraction_confidence = main.extraction_confidence_score(
+            metadata,
+            extraction_check,
+            transactions,
+            pages,
+            missing_rows,
+            unresolved_amount_directions=0,
+        )
+        if extraction_confidence is None or extraction_confidence < 98:
+            raise AssertionError(
+                f"{case['id']}: fully reconciled real statement should score at least 98 extraction confidence, got {extraction_confidence}"
+            )
         summary_counts = validation_summary(transactions)
         REAL_STATEMENT_RESULTS[case["id"]] = {
             "ledger_rows": summary_counts["ledger_row_count"],
@@ -1075,6 +1089,7 @@ def run_local_real_statement_files_case() -> None:
             "informational": summary_counts["informational_row_count"],
             "credits": summary_counts["credit_count"],
             "debits": summary_counts["debit_count"],
+            "extraction_confidence": extraction_confidence,
         }
 
 
@@ -1416,6 +1431,15 @@ def run() -> None:
     test_structured_unsigned_amount_credit_proven_by_balance_continuity()
     test_structured_unsigned_amount_unresolved_falls_back_to_text()
     test_structured_unsigned_amount_unresolved_never_persisted_as_debit()
+    test_extraction_confidence_scores_financially_complete_statement_near_100()
+    test_extraction_confidence_large_fully_reconciled_statement_near_100()
+    test_extraction_confidence_is_independent_from_classification_confidence()
+    test_extraction_confidence_drops_when_one_transaction_is_missing()
+    test_extraction_confidence_drops_on_debit_total_mismatch()
+    test_extraction_confidence_drops_on_running_balance_gap()
+    test_extraction_confidence_normalises_when_optional_summary_fields_absent()
+    test_extraction_confidence_ignores_informational_rows()
+    test_extraction_confidence_equivalent_for_structured_and_text_financially_identical_results()
     run_fnb_extraction_case()
     run_statement_period_case()
     run_missing_column_fallback_case()
@@ -1787,6 +1811,258 @@ def test_structured_unsigned_amount_unresolved_never_persisted_as_debit() -> Non
     assert_equal(diag["rejected_reasons"].get("ambiguous_unsigned_amount_direction"), 1, "ambiguity reason counted")
     debits = [txn for txn in txns if txn.debit_amount == 200.0]
     assert_equal(len(debits), 0, "ambiguous unsigned row was not stored as debit")
+
+
+def test_extraction_confidence_scores_financially_complete_statement_near_100() -> None:
+    import main
+
+    metadata = {
+        "opening_balance": 1000.00,
+        "closing_balance": 900.00,
+        "expected_transaction_count": 2,
+        "expected_credit_count": 1,
+        "expected_debit_count": 1,
+        "declared_credit_total": 250.00,
+        "declared_debit_total": 350.00,
+    }
+    credit = main.build_transaction("01 Mar", "Deposit", None, 250.0, 1250.0, metadata, 1, "01 Mar Deposit 250.00Cr 1,250.00 Cr", 92)
+    debit = main.build_transaction("01 Mar", "Card Purchase", 350.0, None, 900.0, metadata, 1, "01 Mar Card Purchase 350.00 900.00 Cr", 92)
+    assert credit is not None and debit is not None
+    txns = [credit, debit]
+    extraction_check = main.validate_extraction(metadata, txns)
+    missing_rows = main.missing_transaction_count_for_storage(extraction_check, len(txns))
+    score = main.extraction_confidence_score(
+        metadata,
+        extraction_check,
+        txns,
+        [{"page": 1, "text": "seed", "tables": []}],
+        missing_rows,
+        unresolved_amount_directions=0,
+    )
+    assert score is not None
+    if score < 95:
+        raise AssertionError(f"clean reconciled statement should score near 100, got {score}")
+
+
+def test_extraction_confidence_is_independent_from_classification_confidence() -> None:
+    import main
+
+    metadata = {
+        "opening_balance": 1000.00,
+        "closing_balance": 900.00,
+        "expected_transaction_count": 2,
+        "expected_credit_count": 1,
+        "expected_debit_count": 1,
+        "declared_credit_total": 250.00,
+        "declared_debit_total": 350.00,
+    }
+    credit = main.build_transaction("01 Mar", "Deposit", None, 250.0, 1250.0, metadata, 1, "01 Mar Deposit 250.00Cr 1,250.00 Cr", 92)
+    debit = main.build_transaction("01 Mar", "Card Purchase", 350.0, None, 900.0, metadata, 1, "01 Mar Card Purchase 350.00 900.00 Cr", 92)
+    assert credit is not None and debit is not None
+    txns = [credit, debit]
+    extraction_check = main.validate_extraction(metadata, txns)
+    missing_rows = main.missing_transaction_count_for_storage(extraction_check, len(txns))
+    baseline = main.extraction_confidence_score(
+        metadata,
+        extraction_check,
+        txns,
+        [{"page": 1, "text": "seed", "tables": []}],
+        missing_rows,
+        unresolved_amount_directions=0,
+    )
+    for txn in txns:
+        txn.confidence = 12
+        txn.review_status = "needs_review"
+    after_low_classification = main.extraction_confidence_score(
+        metadata,
+        extraction_check,
+        txns,
+        [{"page": 1, "text": "seed", "tables": []}],
+        missing_rows,
+        unresolved_amount_directions=0,
+    )
+    assert_equal(after_low_classification, baseline, "extraction confidence must not depend on classification confidence")
+
+
+def _confidence_score(main, metadata, txns, pages=None, unresolved=0):
+    extraction_check = main.validate_extraction(metadata, txns)
+    missing_rows = main.missing_transaction_count_for_storage(extraction_check, len(txns))
+    return main.extraction_confidence_score(
+        metadata,
+        extraction_check,
+        txns,
+        pages or [{"page": 1, "text": "seed", "tables": []}],
+        missing_rows,
+        unresolved_amount_directions=unresolved,
+    )
+
+
+def test_extraction_confidence_large_fully_reconciled_statement_near_100() -> None:
+    import main
+
+    text, metadata = _build_acapolite_style_statement()
+    txns = main.parse_transactions([], metadata, text)
+    score = _confidence_score(main, metadata, txns, pages=[{"page": 1, "text": text, "tables": []}])
+    assert score is not None
+    if score < 95:
+        raise AssertionError(f"large fully reconciled statement should score near 100, got {score}")
+
+
+def test_extraction_confidence_drops_when_one_transaction_is_missing() -> None:
+    import main
+
+    text, metadata = _build_acapolite_style_statement()
+    txns = main.parse_transactions([], metadata, text)
+    baseline = _confidence_score(main, metadata, txns, pages=[{"page": 1, "text": text, "tables": []}])
+    reduced = txns[:-1]
+    lower = _confidence_score(main, metadata, reduced, pages=[{"page": 1, "text": text, "tables": []}])
+    assert baseline is not None and lower is not None
+    if not lower < baseline:
+        raise AssertionError(f"score should drop when one row is missing: baseline={baseline}, missing={lower}")
+
+
+def test_extraction_confidence_drops_on_debit_total_mismatch() -> None:
+    import main
+
+    metadata = {
+        "opening_balance": 1000.00,
+        "closing_balance": 900.00,
+        "expected_transaction_count": 2,
+        "expected_credit_count": 1,
+        "expected_debit_count": 1,
+        "declared_credit_total": 250.00,
+        "declared_debit_total": 350.00,
+    }
+    credit = main.build_transaction("01 Mar", "Deposit", None, 250.0, 1250.0, metadata, 1, "01 Mar Deposit 250.00Cr 1,250.00 Cr", 92)
+    debit = main.build_transaction("01 Mar", "Card Purchase", 350.0, None, 900.0, metadata, 1, "01 Mar Card Purchase 350.00 900.00 Cr", 92)
+    assert credit is not None and debit is not None
+    txns = [credit, debit]
+    baseline = _confidence_score(main, metadata, txns)
+    mismatch_meta = dict(metadata)
+    mismatch_meta["declared_debit_total"] = 999.00
+    lowered = _confidence_score(main, mismatch_meta, txns)
+    assert baseline is not None and lowered is not None
+    if not lowered < baseline:
+        raise AssertionError(f"score should drop on debit-total mismatch: baseline={baseline}, mismatch={lowered}")
+
+
+def test_extraction_confidence_drops_on_running_balance_gap() -> None:
+    import main
+
+    metadata = {
+        "opening_balance": 1000.00,
+        "closing_balance": 900.00,
+        "expected_transaction_count": 2,
+        "expected_credit_count": 1,
+        "expected_debit_count": 1,
+        "declared_credit_total": 250.00,
+        "declared_debit_total": 350.00,
+    }
+    credit = main.build_transaction("01 Mar", "Deposit", None, 250.0, 1250.0, metadata, 1, "01 Mar Deposit 250.00Cr 1,250.00 Cr", 92)
+    debit_ok = main.build_transaction("01 Mar", "Card Purchase", 350.0, None, 900.0, metadata, 1, "01 Mar Card Purchase 350.00 900.00 Cr", 92)
+    debit_gap = main.build_transaction("01 Mar", "Card Purchase", 350.0, None, 910.0, metadata, 1, "01 Mar Card Purchase 350.00 910.00 Cr", 92)
+    assert credit is not None and debit_ok is not None and debit_gap is not None
+    baseline = _confidence_score(main, metadata, [credit, debit_ok])
+    gapped = _confidence_score(main, metadata, [credit, debit_gap])
+    assert baseline is not None and gapped is not None
+    if not gapped < baseline:
+        raise AssertionError(f"score should drop on running-balance gaps: baseline={baseline}, gap={gapped}")
+
+
+def test_extraction_confidence_normalises_when_optional_summary_fields_absent() -> None:
+    import main
+
+    metadata = {
+        "opening_balance": 1000.00,
+        "closing_balance": 900.00,
+        # Intentionally no expected/declared count/totals fields.
+    }
+    credit = main.build_transaction("01 Mar", "Deposit", None, 250.0, 1250.0, metadata, 1, "01 Mar Deposit 250.00Cr 1,250.00 Cr", 92)
+    debit = main.build_transaction("01 Mar", "Card Purchase", 350.0, None, 900.0, metadata, 1, "01 Mar Card Purchase 350.00 900.00 Cr", 92)
+    assert credit is not None and debit is not None
+    score = _confidence_score(main, metadata, [credit, debit])
+    assert score is not None
+    if score < 90:
+        raise AssertionError(f"missing optional summary fields should not force a low score, got {score}")
+
+
+def test_extraction_confidence_ignores_informational_rows() -> None:
+    import main
+
+    metadata = {
+        "opening_balance": 1000.00,
+        "closing_balance": 900.00,
+        "expected_transaction_count": 2,
+        "expected_credit_count": 1,
+        "expected_debit_count": 1,
+        "declared_credit_total": 250.00,
+        "declared_debit_total": 350.00,
+    }
+    credit = main.build_transaction("01 Mar", "Deposit", None, 250.0, 1250.0, metadata, 1, "01 Mar Deposit 250.00Cr 1,250.00 Cr", 92)
+    debit = main.build_transaction("01 Mar", "Card Purchase", 350.0, None, 900.0, metadata, 1, "01 Mar Card Purchase 350.00 900.00 Cr", 92)
+    info = main.build_transaction("01 Mar", "Express Pmt Pending", 0.0, None, 900.0, metadata, 1, "01 Mar Express Pmt Pending 0.00 900.00 Cr", 92)
+    assert credit is not None and debit is not None and info is not None
+    without_info = _confidence_score(main, metadata, [credit, debit])
+    with_info = _confidence_score(main, metadata, [credit, debit, info])
+    assert_equal(with_info, without_info, "informational rows must not lower extraction confidence")
+
+
+def test_extraction_confidence_equivalent_for_structured_and_text_financially_identical_results() -> None:
+    import main
+
+    metadata = {"statement_period_end": "2026-03-31"}
+    text = "\n".join(
+        [
+            "Transactions in Rand (ZAR)",
+            "01 Mar EFT Deposit Client 1,000.00Cr 1,000.00 Cr",
+            "01 Mar Card Purchase Fuel 300.00 700.00 Cr",
+        ]
+    )
+    text_txns = main.parse_transactions([], metadata, text)
+    for txn in text_txns:
+        if txn.source_page is None:
+            txn.source_page = 1
+    structured_rows = [
+        {
+            "pageNumber": 1,
+            "cells": {
+                "date": "01 Mar",
+                "description": "EFT Deposit Client",
+                "credit": "1,000.00",
+                "balance": "1,000.00 Cr",
+            },
+        },
+        {
+            "pageNumber": 1,
+            "cells": {
+                "date": "01 Mar",
+                "description": "Card Purchase Fuel",
+                "debit": "300.00",
+                "balance": "700.00 Cr",
+            },
+        },
+    ]
+    structured_txns, diag = main.parse_structured_rows(structured_rows, metadata)
+    assert_equal(diag["rejected_reasons"].get("ambiguous_unsigned_amount_direction", 0), 0, "structured rows parsed cleanly")
+
+    # Use extraction checks generated from each source's own rows; if the financial
+    # facts are identical, extraction confidence must be equivalent.
+    text_meta = main.parse_metadata(text)
+    structured_meta = main.parse_metadata(text)
+    text_check = main.validate_extraction(text_meta, text_txns)
+    structured_check = main.validate_extraction(structured_meta, structured_txns)
+    text_missing = main.missing_transaction_count_for_storage(text_check, len(text_txns))
+    structured_missing = main.missing_transaction_count_for_storage(structured_check, len(structured_txns))
+    text_score = main.extraction_confidence_score(text_meta, text_check, text_txns, [{"page": 1, "text": text, "tables": []}], text_missing, unresolved_amount_directions=0)
+    structured_score = main.extraction_confidence_score(
+        structured_meta,
+        structured_check,
+        structured_txns,
+        [{"page": 1, "text": text, "tables": []}],
+        structured_missing,
+        unresolved_amount_directions=0,
+    )
+    assert_equal(structured_score, text_score, "equivalent financial outputs must score equally")
 
 
 if __name__ == "__main__":

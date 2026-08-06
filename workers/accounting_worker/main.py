@@ -2368,6 +2368,187 @@ def reconciliation_confidence(extraction_check: dict[str, Any], missing_rows: in
     return round(max(0.0, min(100.0, score)), 2)
 
 
+def _check_pass_map(extraction_check: dict[str, Any]) -> dict[str, bool]:
+    checks = extraction_check.get("checks")
+    if not isinstance(checks, list):
+        return {}
+    return {str(check.get("name")): bool(check.get("ok")) for check in checks if check.get("name")}
+
+
+def _weighted_average(components: list[tuple[float, float | None]]) -> float | None:
+    available = [(weight, value) for weight, value in components if value is not None]
+    if not available:
+        return None
+    total_weight = sum(weight for weight, _ in available)
+    if total_weight <= 0:
+        return None
+    earned = sum(weight * (value or 0.0) for weight, value in available)
+    return earned / total_weight
+
+
+def extraction_confidence_score(
+    metadata: dict[str, Any],
+    extraction_check: dict[str, Any],
+    transactions: list[ParsedTransaction],
+    pages: list[dict[str, Any]],
+    missing_rows: int | None,
+    unresolved_amount_directions: int = 0,
+) -> float | None:
+    """Extraction Confidence 0..100 focused on financial correctness.
+
+    This score is intentionally independent from transaction-classification
+    confidence. It reflects whether statement amounts and balances were
+    extracted and reconstructed correctly.
+    """
+    breakdown = extraction_confidence_breakdown(
+        metadata,
+        extraction_check,
+        transactions,
+        pages,
+        missing_rows,
+        unresolved_amount_directions=unresolved_amount_directions,
+    )
+    return breakdown.get("score")
+
+
+def extraction_confidence_breakdown(
+    metadata: dict[str, Any],
+    extraction_check: dict[str, Any],
+    transactions: list[ParsedTransaction],
+    pages: list[dict[str, Any]],
+    missing_rows: int | None,
+    unresolved_amount_directions: int = 0,
+) -> dict[str, Any]:
+    checks = _check_pass_map(extraction_check)
+    if not checks and extraction_check.get("status") is None:
+        return {"score": None, "components": [], "normalized_weight_total": 0.0, "reasons": ["no_validation_evidence"]}
+
+    financial_transactions, _informational_transactions = split_ledger_rows(transactions)
+    financial_count = max(len(financial_transactions), 0)
+    expected_count_raw = extraction_check.get("expected_transaction_count")
+    expected_count: int | None = None
+    if expected_count_raw is not None:
+        try:
+            expected_count = int(str(expected_count_raw).strip())
+        except Exception:
+            expected_count = None
+
+    duplicate_rows = max(0, len(financial_transactions) - len(dedupe_transactions(financial_transactions)))
+    gap_count = len(balance_gap_diagnostics(metadata, financial_transactions))
+
+    transaction_count_score: float | None = None
+    if expected_count and expected_count > 0:
+        transaction_count_score = max(0.0, 1.0 - (abs(financial_count - expected_count) / expected_count))
+    elif "transaction_count" in checks:
+        transaction_count_score = 1.0 if checks["transaction_count"] else 0.0
+
+    missing_rows_score: float | None = None
+    if missing_rows is not None:
+        denom = expected_count if expected_count and expected_count > 0 else max(financial_count, 1)
+        missing_rows_score = max(0.0, 1.0 - (min(max(missing_rows, 0), denom) / denom))
+
+    duplicate_score = max(0.0, 1.0 - (duplicate_rows / max(financial_count, 1)))
+    unresolved_score = max(0.0, 1.0 - (max(unresolved_amount_directions, 0) / max(financial_count, 1)))
+    row_completeness_score = missing_rows_score if missing_rows_score is not None else transaction_count_score
+    completeness_score = _weighted_average([(0.7, row_completeness_score), (0.2, duplicate_score), (0.1, unresolved_score)])
+
+    debit_side_score = _weighted_average(
+        [
+            (0.5, 1.0 if checks.get("debit_count") else 0.0 if "debit_count" in checks else None),
+            (0.5, 1.0 if checks.get("debit_total") else 0.0 if "debit_total" in checks else None),
+        ]
+    )
+    credit_side_score = _weighted_average(
+        [
+            (0.5, 1.0 if checks.get("credit_count") else 0.0 if "credit_count" in checks else None),
+            (0.5, 1.0 if checks.get("credit_total") else 0.0 if "credit_total" in checks else None),
+        ]
+    )
+    counts_totals_score = _weighted_average([(0.5, debit_side_score), (0.5, credit_side_score)])
+
+    opening_score = 1.0 if checks.get("opening_balance") else 0.0 if "opening_balance" in checks else None
+    closing_score = 1.0 if checks.get("closing_balance") else 0.0 if "closing_balance" in checks else None
+    balance_accuracy_score = _weighted_average([(0.5, opening_score), (0.5, closing_score)])
+
+    continuity_score: float | None = None
+    if metadata.get("opening_balance") is not None and financial_count > 0:
+        continuity_score = max(0.0, 1.0 - (gap_count / financial_count))
+
+    recon_rule_score = 1.0 if checks.get("reconciliation") else 0.0 if "reconciliation" in checks else None
+    recon_diff_score: float | None = None
+    recon_diff_raw = extraction_check.get("reconciliation_difference")
+    if recon_diff_raw is not None:
+        recon_diff = decimal_amount(recon_diff_raw).copy_abs()
+        if recon_diff == Decimal("0.00"):
+            recon_diff_score = 1.0
+        elif recon_diff <= Decimal("1.00"):
+            recon_diff_score = 0.8
+        elif recon_diff <= Decimal("10.00"):
+            recon_diff_score = 0.5
+        else:
+            recon_diff_score = 0.0
+    reconciliation_score = recon_diff_score if recon_diff_score is not None else recon_rule_score
+
+    page_coverage_score: float | None = None
+    page_count = len(pages)
+    source_pages = {t.source_page for t in financial_transactions if isinstance(t.source_page, int) and t.source_page > 0}
+    # Missing source-page coordinates are absence of optional evidence, not a
+    # proven extraction defect. Exclude this sub-signal when unavailable.
+    if page_count > 0 and financial_count > 0 and source_pages:
+        page_coverage_score = min(1.0, len(source_pages) / page_count)
+
+    token_quality_score: float | None = None
+    if financial_count > 0:
+        rows_with_raw = [t for t in financial_transactions if isinstance(t.raw_text, str) and t.raw_text.strip()]
+        if rows_with_raw:
+            amount_token_rows = sum(1 for t in rows_with_raw if MONEY_TOKEN.search(t.raw_text or ""))
+            token_quality_score = min(1.0, amount_token_rows / len(rows_with_raw))
+    page_token_quality_score = _weighted_average([(0.6, page_coverage_score), (0.4, token_quality_score)])
+
+    components: list[dict[str, Any]] = [
+        {"name": "transaction_completeness", "configured_weight": 25.0, "score": completeness_score},
+        {"name": "debit_credit_accuracy", "configured_weight": 25.0, "score": counts_totals_score},
+        {"name": "opening_closing_balance_accuracy", "configured_weight": 15.0, "score": balance_accuracy_score},
+        {"name": "running_balance_continuity", "configured_weight": 15.0, "score": continuity_score},
+        {"name": "overall_reconciliation", "configured_weight": 15.0, "score": reconciliation_score},
+        {"name": "page_token_quality", "configured_weight": 5.0, "score": page_token_quality_score},
+    ]
+    available_weight_total = sum(c["configured_weight"] for c in components if c["score"] is not None)
+    weighted_sum = sum(c["configured_weight"] * float(c["score"]) for c in components if c["score"] is not None)
+    score: float | None
+    if available_weight_total <= 0:
+        status = extraction_check.get("status")
+        if status is None:
+            score = None
+        else:
+            score = 100.0 if status == "ok" else 40.0
+    else:
+        score = round(max(0.0, min(100.0, (weighted_sum / available_weight_total) * 100.0)), 2)
+
+    reasons: list[str] = []
+    if missing_rows is not None and missing_rows > 0:
+        reasons.append(f"missing_rows:{missing_rows}")
+    if duplicate_rows > 0:
+        reasons.append(f"duplicate_rows:{duplicate_rows}")
+    if unresolved_amount_directions > 0:
+        reasons.append(f"unresolved_amount_directions:{unresolved_amount_directions}")
+    if gap_count > 0:
+        reasons.append(f"running_balance_gaps:{gap_count}")
+    if recon_diff_raw is not None and decimal_amount(recon_diff_raw).copy_abs() > Decimal("0.00"):
+        reasons.append(f"reconciliation_difference:{recon_diff_raw}")
+    for component in components:
+        if component["score"] is not None and component["score"] < 1.0:
+            reasons.append(f"{component['name']}:{round(float(component['score']), 4)}")
+
+    return {
+        "score": score,
+        "components": components,
+        "normalized_weight_total": available_weight_total,
+        "weighted_sum": weighted_sum,
+        "reasons": reasons,
+    }
+
+
 def missing_transaction_count_for_storage(extraction_check: dict[str, Any], transaction_count: int) -> int | None:
     expected_count = extraction_check.get("expected_transaction_count")
     if expected_count is None:
@@ -4685,6 +4866,22 @@ def process_fnb_statement(payload: ProcessRequest, authorization: str | None = H
         processing_duration_ms = round((time.perf_counter() - process_started) * 1000, 2)
         review_required = status == "review"
         validation = {**(validation or {}), **{f"extraction_{k}": v for k, v in extraction_check.items() if k != "checks"}}
+        missing_rows = missing_transaction_count_for_storage(extraction_check, len(transactions))
+        unresolved_amount_directions = 0
+        if structured_selection.get("selected_path") == "structured":
+            parse_diag = structured_selection.get("structured_parse_diagnostics")
+            if isinstance(parse_diag, dict):
+                rejected_reasons = parse_diag.get("rejected_reasons")
+                if isinstance(rejected_reasons, dict):
+                    unresolved_amount_directions = int(rejected_reasons.get("ambiguous_unsigned_amount_direction") or 0)
+        extraction_confidence = extraction_confidence_score(
+            metadata,
+            extraction_check,
+            transactions,
+            pages,
+            missing_rows,
+            unresolved_amount_directions=unresolved_amount_directions,
+        )
 
         update_statement_run(
             supabase,
@@ -4703,17 +4900,18 @@ def process_fnb_statement(payload: ProcessRequest, authorization: str | None = H
                 "review_reason": run_error,
                 "validation_status": extraction_check.get("status"),
                 "reconciliation_difference": extraction_check.get("reconciliation_difference"),
-                "missing_transaction_count": missing_transaction_count_for_storage(extraction_check, len(transactions)),
+                "missing_transaction_count": missing_rows,
                 "requires_review": review_required,
                 "processing_duration_ms": int(processing_duration_ms),
                 "extraction_accuracy": round(avg_confidence, 2),
+                "extraction_confidence": extraction_confidence,
                 # DEPRECATED: `confidence` has always carried the CLASSIFICATION
                 # score and continues to, so existing readers are unaffected.
                 # New readers should use classification_confidence.
                 "confidence": round(avg_confidence, 2),
                 "classification_confidence": round(avg_confidence, 2),
                 "reconciliation_confidence": reconciliation_confidence(
-                    extraction_check, missing_transaction_count_for_storage(extraction_check, len(transactions))
+                    extraction_check, missing_rows
                 ),
                 "error": run_error,
                 "updated_at": datetime.utcnow().isoformat(),
@@ -4740,6 +4938,7 @@ def process_fnb_statement(payload: ProcessRequest, authorization: str | None = H
             transactions=len(transactions),
             workbook_storage_path=workbook_path,
             confidence=round(avg_confidence, 2),
+            extraction_confidence=extraction_confidence,
             validation={key: str(value) for key, value in validation.items()} if validation else None,
             review_issue=review_issue,
             ai_diagnostics=ai_stats,
