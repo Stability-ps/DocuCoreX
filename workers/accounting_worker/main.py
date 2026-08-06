@@ -113,6 +113,16 @@ class ProcessRequest(BaseModel):
     structured_row_count: int | None = None
     structured_diagnostics: dict[str, Any] | None = None
     extraction_debug: dict[str, Any] | None = None
+    # Which bank the Node pipeline concluded issued this statement, decided from
+    # the merged best extraction across pdfjs / pdfplumber / Azure / Mistral.
+    # "unknown" means that side looked and found nothing; None means the request
+    # came from a deploy that predates bank detection. The two are not the same,
+    # and neither changes routing yet — this worker re-detects independently.
+    detected_bank: str | None = None
+    detected_bank_name: str | None = None
+    detected_bank_confidence: float | None = None
+    detected_bank_reason: str | None = None
+    detected_bank_evidence: list[str] | None = None
 
 
 class CombineRequest(BaseModel):
@@ -4640,6 +4650,12 @@ def process_fnb_statement(payload: ProcessRequest, authorization: str | None = H
         # nothing else. Logging the two side by side quantifies how often that
         # misroutes a real statement before the routing itself is changed.
         detection = detect_bank(full_text)
+        # What the Node pipeline concluded, if it looked at all. It reads the
+        # merged best extraction across four providers; this worker reads its own
+        # pdfplumber/PyMuPDF text or the provided text, so the two can legitimately
+        # differ. Neither decides routing yet — recording both is how we learn
+        # which source to trust before the switch.
+        node_detected_bank = (payload.detected_bank or "").strip() or None
         log_event(
             "worker.bank_detected",
             run_id=payload.run_id,
@@ -4649,9 +4665,29 @@ def process_fnb_statement(payload: ProcessRequest, authorization: str | None = H
             detection_reason=detection.reason,
             detection_evidence=list(detection.evidence),
             detection_scores=detection.scores,
+            node_detected_bank=node_detected_bank,
+            node_detected_bank_name=payload.detected_bank_name,
+            node_detection_confidence=payload.detected_bank_confidence,
+            node_detection_reason=payload.detected_bank_reason,
+            node_detection_evidence=payload.detected_bank_evidence,
+            node_detection_present=node_detected_bank is not None,
+            node_worker_agreement=(node_detected_bank == detection.profile_id) if node_detected_bank else None,
             routed_parser_profile=parser_profile,
             routing_disagreement=detection.profile_id != parser_profile,
         )
+        if node_detected_bank and node_detected_bank != detection.profile_id:
+            log_warning(
+                "worker.bank_detection_mismatch",
+                run_id=payload.run_id,
+                node_detected_bank=node_detected_bank,
+                node_detection_confidence=payload.detected_bank_confidence,
+                node_detection_evidence=payload.detected_bank_evidence,
+                worker_detected_bank=detection.profile_id,
+                worker_detection_confidence=detection.confidence,
+                worker_detection_evidence=list(detection.evidence),
+                extraction_source=payload.extraction_source,
+                note="the two sides read different text and reached different banks",
+            )
         if detection.profile_id != parser_profile:
             log_warning(
                 "worker.bank_routing_disagreement",

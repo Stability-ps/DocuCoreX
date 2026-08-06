@@ -54,6 +54,22 @@ export type BankDetection = {
   scores: Record<string, number>;
 };
 
+/**
+ * The detection as it travels to the accounting worker — snake_case to match
+ * the worker's ProcessRequest fields (workers/accounting_worker/main.py).
+ *
+ * Every field is always sent, including an `unknown` verdict: the worker needs
+ * to know that this side looked and found nothing, which is different from an
+ * older frontend that did not look at all (those fields arrive as null).
+ */
+export type BankDetectionHints = {
+  detected_bank: DetectedBankId;
+  detected_bank_name: string;
+  detected_bank_confidence: number;
+  detected_bank_reason: string;
+  detected_bank_evidence: string[];
+};
+
 export const BANK_FINGERPRINTS: BankFingerprint[] = [
   {
     profileId: "fnb_business_v1",
@@ -193,5 +209,20 @@ export function detectBankFromText(text: string | null | undefined): BankDetecti
     reason: "matched_bank_markers",
     evidence: evidenceByProfile[bestProfile],
     scores,
+  };
+}
+
+/**
+ * Shape a detection for the accounting worker payload. `scores` is deliberately
+ * left behind — it is diagnostic detail for this side's logs, not part of the
+ * contract the worker consumes.
+ */
+export function bankDetectionHints(detection: BankDetection): BankDetectionHints {
+  return {
+    detected_bank: detection.profileId,
+    detected_bank_name: detection.bankName,
+    detected_bank_confidence: detection.confidence,
+    detected_bank_reason: detection.reason,
+    detected_bank_evidence: detection.evidence,
   };
 }

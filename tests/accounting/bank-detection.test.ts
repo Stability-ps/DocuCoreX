@@ -5,7 +5,7 @@ import { pathToFileURL } from "node:url";
 
 register("./alias-hook.mjs", pathToFileURL(new URL(".", import.meta.url).pathname));
 
-const { detectBankFromText, UNKNOWN_BANK_ID, normaliseStatementText } = await import(
+const { detectBankFromText, bankDetectionHints, UNKNOWN_BANK_ID, normaliseStatementText } = await import(
   "@/lib/accounting/engine/bank-detection.ts"
 );
 const { detectBankProfile } = await import("@/lib/accounting/engine/registry.ts");
@@ -106,6 +106,42 @@ test("a letterhead broken across lines by OCR is still detected", () => {
   const broken = "STANDARD\n  BANK\n  6 month   statement\nwww.standardbank.co.za\n";
   assert.equal(detectBankFromText(broken).profileId, "standard_bank_business_v1");
   assert.equal(normaliseStatementText("STANDARD  BANK\n"), "standard bank");
+});
+
+// ── Worker handoff ────────────────────────────────────────────────────────────
+
+test("the detection travels to the worker under its ProcessRequest field names", () => {
+  const hints = bankDetectionHints(detectBankFromText(STANDARD_BANK_SAMPLE));
+  assert.deepEqual(Object.keys(hints).sort(), [
+    "detected_bank",
+    "detected_bank_confidence",
+    "detected_bank_evidence",
+    "detected_bank_name",
+    "detected_bank_reason",
+  ]);
+  assert.equal(hints.detected_bank, "standard_bank_business_v1");
+  assert.equal(hints.detected_bank_name, "Standard Bank");
+  assert.equal(hints.detected_bank_reason, "matched_bank_markers");
+  assert.ok(hints.detected_bank_confidence >= 90);
+  assert.ok(Array.isArray(hints.detected_bank_evidence) && hints.detected_bank_evidence.length > 0);
+});
+
+test("an unknown verdict is still sent — silence would look like an older deploy", () => {
+  const hints = bankDetectionHints(detectBankFromText("Ledger Export\nDate Description Debit Credit Balance\n"));
+  assert.equal(hints.detected_bank, UNKNOWN_BANK_ID);
+  assert.equal(hints.detected_bank_name, "Unknown");
+  assert.equal(hints.detected_bank_confidence, 0);
+  assert.deepEqual(hints.detected_bank_evidence, []);
+  // The worker reads `detected_bank: null` as "this side never looked", so an
+  // unknown verdict must never be sent as null or omitted.
+  assert.notEqual(hints.detected_bank, null);
+});
+
+test("the handoff carries no diagnostic scores into the worker contract", () => {
+  const detection = detectBankFromText(STANDARD_BANK_SAMPLE);
+  assert.ok(Object.keys(detection.scores).length > 0, "scores exist for this side's logs");
+  assert.equal("scores" in bankDetectionHints(detection), false);
+  assert.equal("detected_bank_scores" in bankDetectionHints(detection), false);
 });
 
 test("detection takes statement text only — no path can reach it", () => {

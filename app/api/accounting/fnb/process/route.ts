@@ -1,6 +1,7 @@
 import { NextResponse, after } from "next/server";
 import { recordAuditLog } from "@/lib/audit";
 import { detectBankProfile } from "@/lib/accounting/engine/registry";
+import { bankDetectionHints, detectBankFromText } from "@/lib/accounting/engine/bank-detection";
 import { isNoTransactionsFailure } from "@/lib/accounting/workerFailure";
 import { getAccountingRunDetail } from "@/lib/accounting/server";
 import { getWorkspaceContext } from "@/lib/server-documents";
@@ -72,6 +73,11 @@ async function runPipelineBeforeWorker(
     });
     const meta = extractionProcessingMetadata(pipeline);
     const workerInput = buildWorkerInput(pipeline);
+    // Which bank issued this statement, decided from the extracted text — the
+    // merged best source across pdfjs / pdfplumber / Azure / Mistral. The worker
+    // re-detects from its own text; sending this lets it see both verdicts,
+    // because the two sides do not always read the same characters.
+    const bankDetection = detectBankFromText(workerInput.preExtractedText);
 
     // Persist the pipeline summary (separate update so a missing migration never
     // blocks worker processing — the metadata is simply not stored until applied).
@@ -165,6 +171,10 @@ async function runPipelineBeforeWorker(
       transactionCandidates: workerInput.transactionCandidateCount,
       structuredRowCount: workerInput.structuredRowCount ?? 0,
       structuredProvider: workerInput.structuredProvider ?? null,
+      detectedBank: bankDetection.profileId,
+      detectedBankConfidence: bankDetection.confidence,
+      detectedBankReason: bankDetection.reason,
+      detectedBankEvidence: bankDetection.evidence,
       reasonNoTransactions: pipeline.debug.reasonNoTransactions,
       disagreements: pipeline.selection.disagreements.map((d) => d.field),
       ocr: pipeline.debug.ocr,
@@ -178,6 +188,10 @@ async function runPipelineBeforeWorker(
       extraction_source: workerInput.parser,
       ocr_used: meta.ocrUsed,
       extraction_debug: debug,
+      // Always sent, `unknown` included: the worker must be able to tell "this
+      // side looked and found nothing" from "this side is an older deploy that
+      // did not look at all", which arrives as null.
+      ...bankDetectionHints(bankDetection),
     };
     if (workerInput.useProvidedText && workerInput.preExtractedText.trim()) {
       hints.pre_extracted_text = workerInput.preExtractedText;
