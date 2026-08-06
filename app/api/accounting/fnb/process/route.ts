@@ -190,6 +190,30 @@ async function runPipelineBeforeWorker(
   }
 }
 
+/**
+ * TEMPORARY (2026-08-06) — every field of a PostgREST/Postgres error.
+ *
+ * The previous logging took `.message` only, which is the one field that does
+ * NOT distinguish the candidate causes: an RLS refusal (42501), a constraint
+ * violation (23xxx) and a stale schema cache (PGRST2xx) all surface as prose
+ * there. `code`, `details` and `hint` are what separate them.
+ *
+ * Contains no row data and no credentials — only the database's own description
+ * of why it refused.
+ */
+function describeDbError(error: unknown): Record<string, unknown> | null {
+  if (!error) return null;
+  const e = error as { message?: unknown; code?: unknown; details?: unknown; hint?: unknown; name?: unknown; status?: unknown };
+  return {
+    name: typeof e.name === "string" ? e.name : null,
+    code: e.code ?? null,
+    status: e.status ?? null,
+    message: typeof e.message === "string" ? e.message : String(error),
+    details: e.details ?? null,
+    hint: e.hint ?? null,
+  };
+}
+
 // Shadow mode (Phase C). Opt-IN: set ACCOUNTING_SHADOW_AZURE=true to enable.
 // Default off so nothing changes until the observation is deliberately started.
 const SHADOW_AZURE_ENABLED = process.env.ACCOUNTING_SHADOW_AZURE === "true";
@@ -252,6 +276,7 @@ async function runShadowComparison(context: WorkspaceContext, detail: Accounting
     if (!sampleDecision.sample) {
       // Record the skip — a skipped run is evidence too — and never call Azure.
       pdfLog("shadow.skipped_by_gate", { runId, reason: sampleDecision.reason });
+      console.info("[accounting/shadow] INSERT attempt (skip row) — before", { runId, table: "extraction_shadow_comparisons" });
       const { error: skipError } = await context.supabase.from("extraction_shadow_comparisons").insert({
         ...baseRow,
         azure_available: false,
@@ -261,7 +286,7 @@ async function runShadowComparison(context: WorkspaceContext, detail: Accounting
         reason: "Skipped by the sampling gate — Azure not called.",
         metrics: [],
       });
-      if (skipError) console.warn("[accounting/shadow] skip not recorded (migration 018/020 not applied?)", { runId, error: skipError.message });
+      console.info("[accounting/shadow] INSERT result (skip row) — after", { runId, ok: !skipError, error: describeDbError(skipError) });
       return;
     }
 
@@ -281,6 +306,13 @@ async function runShadowComparison(context: WorkspaceContext, detail: Accounting
       durationMs,
     });
 
+    // TEMPORARY (2026-08-06) — the insert has never produced a row and the old
+    // one-line warning reported only `.message`, which omits the Postgres code.
+    // 42501 (insufficient_privilege) vs 23xxx (constraint) vs PGRST2xx (schema
+    // cache) are three different faults that read identically through `.message`
+    // alone. Bracketed before/after so a THROW is distinguishable from a
+    // returned error — supabase-js returns errors, but the transport can throw.
+    console.info("[accounting/shadow] INSERT attempt (comparison row) — before", { runId, table: "extraction_shadow_comparisons" });
     const { error: insertError } = await context.supabase.from("extraction_shadow_comparisons").insert({
       ...baseRow,
       current_provider: comparison.currentProvider,
@@ -294,14 +326,16 @@ async function runShadowComparison(context: WorkspaceContext, detail: Accounting
       azure_debug: (azure?.metadata?._azureDebug as Record<string, unknown> | undefined) ?? null,
       azure_duration_ms: durationMs,
     });
-    if (insertError) {
-      console.warn("[accounting/shadow] comparison not persisted (migration 018 not applied?)", { runId, error: insertError.message });
-    }
+    console.info("[accounting/shadow] INSERT result (comparison row) — after", { runId, ok: !insertError, error: describeDbError(insertError) });
   } catch (shadowError) {
     // Never surface: the run has already succeeded.
+    // TEMPORARY (2026-08-06): full error + stack. If the insert throws rather
+    // than returning an error, this is the only place it lands, and `.message`
+    // alone would not say where it came from.
     console.warn("[accounting/shadow] comparison failed — run unaffected", {
       runId,
-      error: shadowError instanceof Error ? shadowError.message : String(shadowError),
+      error: describeDbError(shadowError),
+      stack: shadowError instanceof Error ? shadowError.stack?.split("\n").slice(0, 6).join(" | ") : null,
     });
   }
 }
