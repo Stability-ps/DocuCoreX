@@ -22,7 +22,7 @@ from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
 from pydantic import BaseModel
 from supabase import Client, create_client
-from auth import OK as AUTH_OK, STATUS_FOR_VERDICT, check_bearer
+from auth import OK as AUTH_OK, STATUS_FOR_VERDICT, auth_compare_diagnostics, check_bearer
 from engine.bootstrap import register_default_parsers
 from engine.registry import BankRegistry
 
@@ -187,7 +187,26 @@ def verify_worker_token(authorization: str | None) -> None:
     callable by anyone who knew the hostname. It now fails closed: no secret
     means the service refuses to serve rather than serving everybody.
     """
-    verdict = check_bearer(authorization, os.getenv("ACCOUNTING_WORKER_TOKEN"))
+    expected = os.getenv("ACCOUNTING_WORKER_TOKEN")
+    verdict = check_bearer(authorization, expected)
+
+    # TEMPORARY (2026-08-06) — inbound half of the shared-secret comparison.
+    # Digest/length/presence only; never the token or the header. Remove with the
+    # caller-side auth_outbound logging. Disable without a redeploy:
+    # WORKER_AUTH_DIAGNOSTICS=false.
+    if (os.getenv("WORKER_AUTH_DIAGNOSTICS") or "").strip().lower() != "false":
+        try:
+            log_event(
+                "accounting_worker.auth_compare",
+                verdict=verdict,
+                render_service_id=os.getenv("RENDER_SERVICE_ID", ""),
+                render_service_name=os.getenv("RENDER_SERVICE_NAME", ""),
+                commit=os.getenv("RENDER_GIT_COMMIT", ""),
+                **auth_compare_diagnostics(authorization, expected),
+            )
+        except Exception as exc:  # noqa: BLE001 - diagnostics must never break auth
+            logger.warning("auth diagnostics failed: %s", type(exc).__name__)
+
     if verdict == AUTH_OK:
         return
     status, detail = STATUS_FOR_VERDICT[verdict]
