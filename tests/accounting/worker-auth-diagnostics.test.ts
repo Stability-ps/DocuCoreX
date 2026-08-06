@@ -235,3 +235,78 @@ test("the outbound log is emitted immediately before fetch, server-side only", (
   assert.ok(!/NextResponse|res\.json|return .*token_sha256/.test(between), "must not reach the browser");
   assert.match(route, /console\.info\(JSON\.stringify\(buildOutboundDiagnostics/);
 });
+
+// ── /api/system/worker-config extraction diagnostics ─────────────────────────
+
+const { getExtractionConfig } = await import("@/lib/system-worker-config.ts");
+
+function withEnv<T>(vars: Record<string, string | undefined>, run: () => T): T {
+  const saved: Record<string, string | undefined> = {};
+  for (const [k, v] of Object.entries(vars)) {
+    saved[k] = process.env[k];
+    if (v === undefined) delete process.env[k];
+    else process.env[k] = v;
+  }
+  try {
+    return run();
+  } finally {
+    for (const [k, v] of Object.entries(saved)) {
+      if (v === undefined) delete process.env[k];
+      else process.env[k] = v;
+    }
+  }
+}
+
+test("extraction diagnostics report each Azure half separately", () => {
+  // The exact production failure: key set, endpoint absent, so isAzureConfigured
+  // is false and Azure was inert — with nothing saying WHICH half was missing.
+  withEnv(
+    { AZURE_DOCUMENT_INTELLIGENCE_ENDPOINT: undefined, AZURE_DOCUMENT_INTELLIGENCE_KEY: "k", ACCOUNTING_SHADOW_AZURE: "true" },
+    () => {
+      const c = getExtractionConfig();
+      assert.equal(c.azureDocumentIntelligence.configured, false);
+      assert.equal(c.azureDocumentIntelligence.endpointPresent, false);
+      assert.equal(c.azureDocumentIntelligence.keyPresent, true);
+      assert.equal(c.shadowMode.enabled, true, "the flag is on...");
+      assert.equal(c.shadowMode.effective, false, "...but useless without the endpoint");
+    },
+  );
+
+  withEnv(
+    { AZURE_DOCUMENT_INTELLIGENCE_ENDPOINT: "https://x.cognitiveservices.azure.com", AZURE_DOCUMENT_INTELLIGENCE_KEY: "k", ACCOUNTING_SHADOW_AZURE: "true" },
+    () => {
+      const c = getExtractionConfig();
+      assert.equal(c.azureDocumentIntelligence.configured, true);
+      assert.equal(c.azureDocumentIntelligence.endpointPresent, true);
+      assert.equal(c.azureDocumentIntelligence.keyPresent, true);
+      assert.equal(c.shadowMode.effective, true);
+    },
+  );
+});
+
+test("shadowMode.enabled matches the route's own gate exactly", () => {
+  // The route tests === "true". Truthiness would disagree with the code it
+  // describes, which is worse than not reporting it at all.
+  for (const [value, expected] of [["true", true], ["TRUE", false], ["1", false], ["yes", false], [undefined, false]] as const) {
+    withEnv({ ACCOUNTING_SHADOW_AZURE: value }, () => {
+      assert.equal(getExtractionConfig().shadowMode.enabled, expected, `ACCOUNTING_SHADOW_AZURE=${String(value)}`);
+    });
+  }
+});
+
+test("no credential value can surface through the extraction diagnostics", () => {
+  withEnv(
+    {
+      AZURE_DOCUMENT_INTELLIGENCE_ENDPOINT: "https://secret-endpoint.example.com",
+      AZURE_DOCUMENT_INTELLIGENCE_KEY: "azure-secret-key-value",
+      MISTRAL_API_KEY: "mistral-secret-value",
+      OPENAI_API_KEY: "openai-secret-value",
+    },
+    () => {
+      const blob = JSON.stringify(getExtractionConfig());
+      for (const s of ["azure-secret-key-value", "mistral-secret-value", "openai-secret-value", "secret-endpoint.example.com"]) {
+        assert.ok(!blob.includes(s), `leaked ${s}`);
+      }
+    },
+  );
+});
