@@ -34,7 +34,14 @@ export type OutboundAuthDiagnostics = {
   /** True when the token is not pure ASCII — a pasted homoglyph or zero-width char. */
   token_is_ascii: boolean;
   authorization_header_added: boolean;
+  /** Literal scheme placed in the header. Constant by construction; logged so the
+   *  trace records what was SENT rather than what the code is assumed to send. */
+  authorization_scheme: string | null;
+  /** Host only — the endpoint path can carry identifiers. */
   worker_endpoint: string;
+  /** The configured ACCOUNTING_WORKER_URL. Not a secret, and the whole question
+   *  is which worker this runtime is addressing. */
+  accounting_worker_url: string | null;
   vercel_environment: string | null;
   vercel_deployment_id: string | null;
   vercel_commit: string | null;
@@ -85,7 +92,9 @@ export function buildOutboundDiagnostics(input: {
     token_has_inner_whitespace: /\s/.test(trimmed),
     token_is_ascii: /^[\x20-\x7e]*$/.test(trimmed),
     authorization_header_added: present,
+    authorization_scheme: present ? "Bearer" : null,
     worker_endpoint: sanitizeEndpoint(input.workerEndpoint),
+    accounting_worker_url: process.env.ACCOUNTING_WORKER_URL ?? null,
     vercel_environment: process.env.VERCEL_ENV ?? null,
     vercel_deployment_id: process.env.VERCEL_DEPLOYMENT_ID ?? process.env.VERCEL_URL ?? null,
     vercel_commit: process.env.VERCEL_GIT_COMMIT_SHA ?? null,

@@ -200,3 +200,38 @@ test("the runtime endpoint requires an authenticated workspace", () => {
   assert.match(route, /export const dynamic = "force-dynamic"/);
   assert.ok(!/process\.env\.ACCOUNTING_WORKER_TOKEN/.test(route), "the route never touches the raw token itself");
 });
+
+test("outbound record carries the scheme and the configured worker URL", () => {
+  const previousUrl = process.env.ACCOUNTING_WORKER_URL;
+  try {
+    process.env.ACCOUNTING_WORKER_URL = "https://docucorex.onrender.com";
+    const d = buildOutboundDiagnostics({ rawToken: SECRET, workerEndpoint: ENDPOINT });
+    assert.equal(d.authorization_scheme, "Bearer");
+    assert.equal(d.accounting_worker_url, "https://docucorex.onrender.com");
+    assert.equal(d.worker_endpoint, "docucorex.onrender.com", "endpoint stays host-only");
+    assertNoLeak(d, SECRET);
+
+    const absent = buildOutboundDiagnostics({ rawToken: undefined, workerEndpoint: ENDPOINT });
+    assert.equal(absent.authorization_scheme, null, "no scheme when no header is sent");
+    assert.equal(absent.authorization_header_added, false);
+  } finally {
+    if (previousUrl === undefined) delete process.env.ACCOUNTING_WORKER_URL;
+    else process.env.ACCOUNTING_WORKER_URL = previousUrl;
+  }
+});
+
+test("the outbound log is emitted immediately before fetch, server-side only", () => {
+  const root = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
+  const route = readFileSync(join(root, "app/api/accounting/fnb/process/route.ts"), "utf8");
+
+  const logAt = route.indexOf("buildOutboundDiagnostics(");
+  const fetchAt = route.indexOf("await fetch(workerEndpoint");
+  assert.ok(logAt > 0 && fetchAt > 0, "both sites present");
+  assert.ok(logAt < fetchAt, "the diagnostic must be logged before the request is made");
+
+  // Server-side only: console, never a response body. The route's JSON responses
+  // must not carry the digest to the browser.
+  const between = route.slice(logAt, fetchAt);
+  assert.ok(!/NextResponse|res\.json|return .*token_sha256/.test(between), "must not reach the browser");
+  assert.match(route, /console\.info\(JSON\.stringify\(buildOutboundDiagnostics/);
+});
