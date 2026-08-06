@@ -6,6 +6,13 @@ export type BankProfileId =
   | "capitec_business_v1"
   | "investec_business_v1";
 
+/**
+ * What bank detection may conclude. `unknown` is a first-class outcome: an
+ * unidentified statement must never be presented as a supported bank, because
+ * that is what routed Standard Bank statements into the FNB parser.
+ */
+export type DetectedBankId = BankProfileId | "unknown";
+
 export type BankCapability =
   | "ocr_required"
   | "supports_multi_page"

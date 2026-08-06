@@ -24,6 +24,7 @@ from pydantic import BaseModel
 from supabase import Client, create_client
 from auth import OK as AUTH_OK, STATUS_FOR_VERDICT, auth_compare_diagnostics, check_bearer
 from engine.bootstrap import register_default_parsers
+from engine.detection import detect_bank
 from engine.registry import BankRegistry
 
 
@@ -4630,6 +4631,40 @@ def process_fnb_statement(payload: ProcessRequest, authorization: str | None = H
         parser_profile = parser.profile.id
         parser_version = parser.profile.version
         bank_name = parser.profile.bank_name
+        # Evidence-based detection, observed only — routing below is unchanged.
+        #
+        # BankRegistry.detect (above) folds payload.storage_path into its keyword
+        # haystack, and every accounting upload is stored under
+        # ".../accounting/fnb/...", so it matches FNB for EVERY document and the
+        # statement's own text is never reached. detect_bank reads the text and
+        # nothing else. Logging the two side by side quantifies how often that
+        # misroutes a real statement before the routing itself is changed.
+        detection = detect_bank(full_text)
+        log_event(
+            "worker.bank_detected",
+            run_id=payload.run_id,
+            detected_bank=detection.profile_id,
+            detected_bank_name=detection.bank_name,
+            detection_confidence=detection.confidence,
+            detection_reason=detection.reason,
+            detection_evidence=list(detection.evidence),
+            detection_scores=detection.scores,
+            routed_parser_profile=parser_profile,
+            routing_disagreement=detection.profile_id != parser_profile,
+        )
+        if detection.profile_id != parser_profile:
+            log_warning(
+                "worker.bank_routing_disagreement",
+                run_id=payload.run_id,
+                storage_path=payload.storage_path,
+                detected_bank=detection.profile_id,
+                detected_bank_name=detection.bank_name,
+                detection_confidence=detection.confidence,
+                detection_reason=detection.reason,
+                detection_evidence=list(detection.evidence),
+                routed_parser_profile=parser_profile,
+                note="statement text identifies a different bank than the profile this run is routed to",
+            )
         if parser_profile != "fnb_business_v1":
             raise HTTPException(
                 status_code=422,

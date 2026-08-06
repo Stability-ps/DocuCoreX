@@ -1412,7 +1412,175 @@ def test_auth_diagnostics_hash_exactly_what_is_compared() -> None:
     assert padded["compare_digest_result"] is True
 
 
+# ── Bank detection ────────────────────────────────────────────────────────────
+#
+# A real 37-page Standard Bank statement extracted cleanly (66k-78k characters
+# from four extractors, account number and opening balance both found) and then
+# failed with "No FNB transactions could be parsed from this PDF", because it
+# was routed to parser_profile fnb_business_v1. These cases pin the detection
+# that stops that happening.
+
+STANDARD_BANK_SAMPLE = """
+STANDARD BANK 6 month statement
+Website:
+www.standardbank.co.za
+Customer Care Line 0860 123 000
+Account Number 123 456 789
+Date Description Payments Deposits Balance
+STATEMENT OPENING BALANCE -992,452.57
+30 Apr 25 ADT JHB 1,204.55 -993,657.12
+30 Apr 25 SBSARETAIL 340.00 -993,997.12
+02 May 25 SALARY DEPOSIT 45,000.00 -948,997.12
+"""
+
+FNB_SAMPLE = """
+FIRST NATIONAL BANK
+A division of FirstRand Bank Limited
+www.fnb.co.za
+Platinum Business Account
+Statement Number 118
+Transactions in RAND (ZAR)
+01 Mar EFT Deposit Client 1,000.00Cr 1,000.00 Cr
+01 Mar Card Purchase Fuel 300.00 700.00 Cr
+"""
+
+BANK_SAMPLES = {
+    "fnb_business_v1": FNB_SAMPLE,
+    "standard_bank_business_v1": STANDARD_BANK_SAMPLE,
+    "absa_business_v1": "ABSA BANK LIMITED\nwww.absa.co.za\nCheque Account Statement\nDate Description Debit Credit Balance\n",
+    "nedbank_business_v1": "NEDBANK LIMITED\nwww.nedbank.co.za\nBusiness Account Statement\nDate Description Debit Credit Balance\n",
+    "capitec_business_v1": "CAPITEC BANK LIMITED\nwww.capitecbank.co.za\nBusiness Account Statement\nDate Description Money In Money Out Balance\n",
+    "investec_business_v1": "INVESTEC BANK LIMITED\nwww.investec.co.za\nPrivate Bank Account Statement\nDate Description Debit Credit Balance\n",
+}
+
+
+def test_bank_detection_identifies_standard_bank_from_text() -> None:
+    from engine.detection import detect_bank
+
+    detection = detect_bank(STANDARD_BANK_SAMPLE)
+    assert_equal(detection.profile_id, "standard_bank_business_v1", "Standard Bank detected from its own text")
+    assert_equal(detection.bank_name, "Standard Bank", "Standard Bank name reported")
+    assert_equal(detection.reason, "matched_bank_markers", "detection reason is evidence, not a default")
+    if detection.confidence < 90:
+        raise AssertionError(f"unopposed Standard Bank evidence should be high confidence, got {detection.confidence}")
+    if not detection.evidence:
+        raise AssertionError("a positive detection must name the evidence it used")
+
+
+def test_bank_detection_covers_every_supported_bank() -> None:
+    from engine.detection import detect_bank
+
+    for expected_profile, sample in BANK_SAMPLES.items():
+        detection = detect_bank(sample)
+        assert_equal(detection.profile_id, expected_profile, f"{expected_profile} detected from statement text")
+
+
+def test_bank_detection_keeps_fnb_unchanged() -> None:
+    """The FNB path must not regress: this is the one bank with a real parser."""
+    from engine.detection import detect_bank
+
+    detection = detect_bank(FNB_SAMPLE)
+    assert_equal(detection.profile_id, "fnb_business_v1", "FNB still detected from its own text")
+    assert_equal(detection.bank_name, "FNB South Africa", "FNB name unchanged")
+
+
+def test_bank_detection_never_defaults_to_a_bank() -> None:
+    """No text, unrecognised text and a bankless ledger must all be `unknown`.
+
+    BankRegistry.detect returns `_parsers[0]` — FNB — when nothing matches, so
+    every unsupported bank became an FNB statement. There is no default here.
+    """
+    from engine.detection import UNKNOWN_PROFILE_ID, detect_bank
+
+    for label, sample in (
+        ("empty text", ""),
+        ("whitespace only", "   \n\t  "),
+        ("no bank markers", "Ledger Export\nDate Description Debit Credit Balance\n01 Jan Opening 0.00 0.00 100.00"),
+    ):
+        detection = detect_bank(sample)
+        assert_equal(detection.profile_id, UNKNOWN_PROFILE_ID, f"{label} is unknown, not a default bank")
+        assert_equal(detection.confidence, 0.0, f"{label} carries no confidence")
+
+
+def test_bank_detection_ignores_a_counterparty_named_in_a_transaction() -> None:
+    """A bank named in a description is not the issuer.
+
+    Both directions are checked: an FNB statement paying Standard Bank stays
+    FNB, and a Standard Bank statement paying FNB stays Standard Bank. The
+    second case is also the storage-path guard — the literal token "fnb" in the
+    body must not pull the statement back to the FNB parser.
+    """
+    from engine.detection import detect_bank
+
+    fnb_paying_standard_bank = FNB_SAMPLE + "\n02 Mar EFT STANDARD BANK TRANSFER 5,000.00 -4,300.00\n"
+    detection = detect_bank(fnb_paying_standard_bank)
+    assert_equal(detection.profile_id, "fnb_business_v1", "FNB letterhead outweighs a Standard Bank payee")
+
+    standard_bank_paying_fnb = STANDARD_BANK_SAMPLE + "\n05 May 25 EFT FNB TRANSFER 2,500.00 -951,497.12\n"
+    detection = detect_bank(standard_bank_paying_fnb)
+    assert_equal(detection.profile_id, "standard_bank_business_v1", "Standard Bank letterhead outweighs an FNB payee")
+
+
+def test_bank_detection_reads_no_file_path() -> None:
+    """The reported defect, pinned.
+
+    Every accounting upload is stored at "{workspace}/accounting/fnb/{uuid}-{name}"
+    (accountingStoragePath, lib/accounting/server.ts). BankRegistry.detect folds
+    that path into its keyword haystack, so the literal "fnb" in it matched the
+    FNB parser for every document and the statement text was never reached.
+
+    detect_bank takes text only — there is no parameter through which a path
+    could reach it. The legacy assertion below records the behaviour that is
+    still live in this change; the routing switch removes it.
+    """
+    import inspect
+
+    from engine.bootstrap import register_default_parsers
+    from engine.detection import detect_bank
+    from engine.registry import BankRegistry
+
+    parameters = list(inspect.signature(detect_bank).parameters)
+    if "text" not in parameters:
+        raise AssertionError(f"detect_bank must take statement text, got {parameters}")
+    for parameter in parameters:
+        if any(token in parameter for token in ("path", "file", "name")):
+            raise AssertionError(f"detect_bank must not accept a path/file input, found {parameter!r}")
+
+    storage_path = "ws-1/accounting/fnb/2f6c-Standard_Bank_Statement.pdf"
+    assert_equal(detect_bank(STANDARD_BANK_SAMPLE).profile_id, "standard_bank_business_v1", "text-only detection is correct")
+
+    register_default_parsers()
+    legacy = BankRegistry.detect(STANDARD_BANK_SAMPLE[:4000].lower(), storage_path)
+    assert_equal(legacy.profile.id, "fnb_business_v1", "legacy path-aware detection still misroutes (routing unchanged in this PR)")
+
+
+def test_bank_detection_is_ambiguous_rather_than_wrong() -> None:
+    """Balanced evidence for two banks is `unknown`, not a coin flip."""
+    from engine.detection import UNKNOWN_PROFILE_ID, detect_bank
+
+    detection = detect_bank("STANDARD BANK\nNEDBANK\nDate Description Debit Credit Balance\n")
+    assert_equal(detection.profile_id, UNKNOWN_PROFILE_ID, "two equally-evidenced banks resolve to unknown")
+    if not detection.reason.startswith("ambiguous"):
+        raise AssertionError(f"expected an ambiguity reason, got {detection.reason!r}")
+
+
+def test_bank_detection_survives_broken_letterhead_whitespace() -> None:
+    """OCR breaks a letterhead across lines and pads it with non-breaking spaces."""
+    from engine.detection import detect_bank
+
+    broken = "STANDARD\n  BANK\n  6 month   statement\nwww.standardbank.co.za\n"
+    assert_equal(detect_bank(broken).profile_id, "standard_bank_business_v1", "wrapped letterhead still detected")
+
+
 def run() -> None:
+    test_bank_detection_identifies_standard_bank_from_text()
+    test_bank_detection_covers_every_supported_bank()
+    test_bank_detection_keeps_fnb_unchanged()
+    test_bank_detection_never_defaults_to_a_bank()
+    test_bank_detection_ignores_a_counterparty_named_in_a_transaction()
+    test_bank_detection_reads_no_file_path()
+    test_bank_detection_is_ambiguous_rather_than_wrong()
+    test_bank_detection_survives_broken_letterhead_whitespace()
     test_worker_auth_fails_closed()
     test_worker_auth_matches_pdf_plumber_contract()
     test_worker_token_check_raises_on_unconfigured_secret()
