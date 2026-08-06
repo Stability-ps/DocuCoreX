@@ -44,6 +44,42 @@ export function getWorkerConfig(): WorkerConfig {
   };
 }
 
+/**
+ * Which extraction providers this runtime can actually reach, and whether
+ * shadow mode is armed.
+ *
+ * Booleans only — never a key, never an endpoint. The point is to answer
+ * "is it configured HERE" without a secret leaving the process.
+ *
+ * This exists because a half-configured provider is invisible: Azure shipped
+ * with AZURE_DOCUMENT_INTELLIGENCE_KEY set and
+ * AZURE_DOCUMENT_INTELLIGENCE_ENDPOINT absent, isAzureConfigured() requires
+ * both, and so the provider was silently inert in production with nothing
+ * anywhere reporting it. The endpoint/key booleans are reported SEPARATELY for
+ * exactly that reason — "azure: false" would not have shown which half was
+ * missing.
+ */
+export function getExtractionConfig() {
+  const present = (value: string | undefined) => Boolean(value?.trim());
+  const azureEndpoint = present(process.env.AZURE_DOCUMENT_INTELLIGENCE_ENDPOINT);
+  const azureKey = present(process.env.AZURE_DOCUMENT_INTELLIGENCE_KEY);
+  return {
+    azure: {
+      configured: azureEndpoint && azureKey,
+      endpointPresent: azureEndpoint,
+      keyPresent: azureKey,
+    },
+    mistral: { configured: present(process.env.MISTRAL_API_KEY) },
+    openai: { configured: present(process.env.OPENAI_API_KEY) },
+    // Matches the route's own gate exactly: === "true", not truthiness.
+    shadowMode: {
+      enabled: process.env.ACCOUNTING_SHADOW_AZURE === "true",
+      // Armed but useless: shadow calls Azure, and Azure needs both halves.
+      effective: process.env.ACCOUNTING_SHADOW_AZURE === "true" && azureEndpoint && azureKey,
+    },
+  };
+}
+
 export function buildWorkerEndpoint(baseUrl: string, endpointPath: string): string {
   const normalizedPath = endpointPath.startsWith("/") ? endpointPath : `/${endpointPath}`;
   return `${baseUrl.replace(/\/$/, "")}${normalizedPath}`;
