@@ -92,6 +92,43 @@ export function buildOutboundDiagnostics(input: {
   };
 }
 
+/**
+ * TEMPORARY (2026-08-06) — what the RUNNING Next.js runtime holds, as opposed to
+ * what the Vercel dashboard displays.
+ *
+ * Serves the same purpose as the worker-side auth_compare, from the other end:
+ * the two digests can be compared directly, because both are taken of the
+ * trimmed token — the exact bytes that go after "Bearer ".
+ *
+ * Returns ONLY presence, length and digest. Never the token, never a prefix,
+ * never the Authorization header, and nothing about any other secret.
+ */
+export type RuntimeTokenReport = {
+  token_present: boolean;
+  token_length: number;
+  token_sha256: string | null;
+  accounting_worker_url: string | null;
+  vercel_env: string | null;
+  deployment_id: string | null;
+  commit_sha: string | null;
+};
+
+export function buildRuntimeTokenReport(env: NodeJS.ProcessEnv = process.env): RuntimeTokenReport {
+  const token = env.ACCOUNTING_WORKER_TOKEN?.trim() ?? "";
+  const present = token.length > 0;
+  return {
+    token_present: present,
+    token_length: token.length,
+    // Null rather than the digest of "" — hashing the empty string would return
+    // a real-looking 64-char value for a token that does not exist.
+    token_sha256: present ? sha256(token) : null,
+    accounting_worker_url: env.ACCOUNTING_WORKER_URL ?? null,
+    vercel_env: env.VERCEL_ENV ?? null,
+    deployment_id: env.VERCEL_DEPLOYMENT_ID ?? null,
+    commit_sha: env.VERCEL_GIT_COMMIT_SHA ?? null,
+  };
+}
+
 /** Thrown before any worker call when the token is absent — never silently omitted. */
 export class WorkerTokenMissingError extends Error {
   constructor() {

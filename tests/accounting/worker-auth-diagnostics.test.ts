@@ -117,3 +117,86 @@ test("the route refuses to call the worker unauthenticated", () => {
   assert.match(route, /kind: "config"/, "an absent token returns a config outcome before any request");
   assert.match(route, /Worker said: \$\{detail\}/, "the worker's own 401 detail is preserved, not discarded");
 });
+
+// ── /api/system/accounting-worker-runtime ────────────────────────────────────
+
+const { buildRuntimeTokenReport } = await import("@/lib/accounting/workerAuthDiagnostics.ts");
+
+const RUNTIME_ROUTE = "app/api/system/accounting-worker-runtime/route.ts";
+
+test("runtime report returns only length and digest — never the token", () => {
+  const report = buildRuntimeTokenReport({
+    ACCOUNTING_WORKER_TOKEN: SECRET,
+    ACCOUNTING_WORKER_URL: "https://docucorex.onrender.com",
+    VERCEL_ENV: "preview",
+    VERCEL_DEPLOYMENT_ID: "dpl_abc123",
+    VERCEL_GIT_COMMIT_SHA: "deadbeef",
+  } as NodeJS.ProcessEnv);
+
+  assert.equal(report.token_present, true);
+  assert.equal(report.token_length, SECRET.length);
+  assert.equal(report.token_sha256, SECRET_SHA);
+  assert.equal(report.token_sha256?.length, 64);
+  assert.equal(report.accounting_worker_url, "https://docucorex.onrender.com");
+  assert.equal(report.vercel_env, "preview");
+  assert.equal(report.deployment_id, "dpl_abc123");
+  assert.equal(report.commit_sha, "deadbeef");
+  assertNoLeak(report, SECRET);
+
+  // The response shape is closed: exactly these keys, so a future edit cannot
+  // widen it into leaking something adjacent.
+  assert.deepEqual(Object.keys(report).sort(), [
+    "accounting_worker_url", "commit_sha", "deployment_id", "token_length",
+    "token_present", "token_sha256", "vercel_env",
+  ]);
+});
+
+test("an absent token reports present=false, length=0 and a null digest", () => {
+  for (const raw of [undefined, "", "   "]) {
+    const report = buildRuntimeTokenReport({ ACCOUNTING_WORKER_TOKEN: raw } as NodeJS.ProcessEnv);
+    assert.equal(report.token_present, false, JSON.stringify(raw));
+    assert.equal(report.token_length, 0);
+    // Not the digest of "" — that would be a real-looking 64-char value for a
+    // token that does not exist.
+    assert.equal(report.token_sha256, null);
+  }
+});
+
+test("the digest is of the trimmed token, matching what the worker hashes", () => {
+  const report = buildRuntimeTokenReport({ ACCOUNTING_WORKER_TOKEN: `  ${SECRET}\n` } as NodeJS.ProcessEnv);
+  assert.equal(report.token_sha256, SECRET_SHA, "directly comparable with the worker's received_sha256");
+  assert.equal(report.token_length, SECRET.length);
+});
+
+test("no other secret is reachable through the report", () => {
+  const report = buildRuntimeTokenReport({
+    ACCOUNTING_WORKER_TOKEN: SECRET,
+    AZURE_DOCUMENT_INTELLIGENCE_KEY: "azure-secret-value",
+    SUPABASE_SERVICE_ROLE_KEY: "supabase-secret-value",
+    OPENAI_API_KEY: "openai-secret-value",
+    CONVERSION_WORKER_SECRET: "conversion-secret-value",
+  } as NodeJS.ProcessEnv);
+  const blob = JSON.stringify(report);
+  for (const secret of ["azure-secret-value", "supabase-secret-value", "openai-secret-value", "conversion-secret-value"]) {
+    assert.ok(!blob.includes(secret), `leaked ${secret}`);
+  }
+});
+
+test("the runtime endpoint requires an authenticated workspace", () => {
+  const root = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
+  const route = readFileSync(join(root, RUNTIME_ROUTE), "utf8");
+
+  assert.match(route, /getWorkspaceContext\(\)/, "auth is checked");
+  assert.match(route, /status:\s*401/, "unauthenticated callers get 401");
+  // The auth check must come before the report is built, or an unauthenticated
+  // caller could confirm a guessed token against the digest.
+  assert.ok(
+    route.indexOf("getWorkspaceContext") < route.indexOf("buildRuntimeTokenReport("),
+    "auth must be checked before the digest is computed",
+  );
+  // Node runtime + per-request evaluation: node:crypto is unavailable on edge,
+  // and a statically-optimized handler would defeat the endpoint's purpose.
+  assert.match(route, /export const runtime = "nodejs"/);
+  assert.match(route, /export const dynamic = "force-dynamic"/);
+  assert.ok(!/process\.env\.ACCOUNTING_WORKER_TOKEN/.test(route), "the route never touches the raw token itself");
+});
