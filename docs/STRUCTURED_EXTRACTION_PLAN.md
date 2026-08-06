@@ -23,13 +23,29 @@ Last verified against the tree on 2026-08-06 (`main` @ 24837a7).
 
 ### Two things that are not obvious from the table
 
-**Phase 5 has produced no data.** The sampling gate, the comparison table and the
-skip accounting are all built and tested, but `ACCOUNTING_SHADOW_AZURE` is set in
-no environment — it is commented out in `.env.example` and absent from
-`.env.local` and `.env.production`. Shadow mode has therefore never executed and
-`extraction_shadow_comparisons` is empty. **§0's decision gate is still open**:
-the plan says measure before committing to phase 4, and nothing has been
-measured. Enabling the flag costs one variable.
+**Phase 5 has produced no data, and the reason is worse than a missing flag.**
+The sampling gate, the comparison table and the skip accounting are all built and
+tested. `extraction_shadow_comparisons` exists — migrations 018 and 020 are
+applied — and holds **0 rows**, verified against the live database on 2026-08-06.
+
+The cause is not the shadow flag. `ACCOUNTING_SHADOW_AZURE` *is* configured on
+Vercel Production. What is missing is **`AZURE_DOCUMENT_INTELLIGENCE_ENDPOINT`,
+which exists in no Vercel environment at all** — only
+`AZURE_DOCUMENT_INTELLIGENCE_KEY` is set, and `isAzureConfigured()` requires
+both.
+
+The consequence is larger than shadow mode:
+
+> **Azure Document Intelligence has never been callable in production.** The
+> escalation rung added as a "first-class extraction provider" in PR #24 has been
+> inert since it shipped, because half its configuration was never deployed. Every
+> statement that failed the acceptance gate fell through to Mistral without Azure
+> ever being tried.
+
+So **§0's decision gate is still open**, and would have stayed shut even with the
+shadow flag on: shadow mode would have recorded `azure_available: false` for
+every run. `AZURE_FORM_RECOGNIZER_ENDPOINT` *is* set and is a different, legacy
+variable — a plausible source of the original confusion.
 
 **Phase 4 now has a producer, and did not before.** Until phase 2 landed, Azure's
 structure was discarded at the door: `toExtractionTables` flattened `cells[]`
@@ -396,11 +412,21 @@ lines built around text lines.
 
 Phases 1 and 2 are done. Phase 4 is unblocked but should still not be next:
 
-1. **Set `ACCOUNTING_SHADOW_AZURE=true`** and let phase 5 do the job it was built
-   for. One variable, no code. Until this runs, §0's option A/B/C question is
-   being answered by assertion rather than evidence, and phases 3–4 are justified
-   by a benefit nobody has measured. Phase 2 makes this measurement strictly
-   better: the shadow record can now compare *structure* recovered, not only text.
+1. **Set `AZURE_DOCUMENT_INTELLIGENCE_ENDPOINT`**, then
+   `ACCOUNTING_SHADOW_AZURE=true`. In that order — the flag alone does nothing
+   while the endpoint is absent. Note that supplying the endpoint also revives
+   the Azure rung in the *live* escalation ladder, which has never run in
+   production; that is a real behaviour and cost change, not only an observation.
+   Until this runs, §0's option A/B/C question is being answered by assertion
+   rather than evidence, and phases 3–4 are justified by a benefit nobody has
+   measured. Phase 2 makes the measurement strictly better: the shadow record can
+   now compare *structure* recovered, not only text.
+
+   Staged on **Preview** as of 2026-08-06 (endpoint + flag added there only) so
+   the wiring can be proven before production is touched. Note that Preview
+   currently lacks `ACCOUNTING_WORKER_URL` / `ACCOUNTING_WORKER_TOKEN`, so an
+   accounting run cannot complete there and shadow mode will not fire until those
+   are supplied too.
 2. **Phase 3**, which turns phase 2's descriptive `StructuredQuality` counts into
    scoring signals. Medium risk, because it changes which candidate wins a merge.
 3. **Phase 4** last, and only with shadow data in hand — it is the phase that
