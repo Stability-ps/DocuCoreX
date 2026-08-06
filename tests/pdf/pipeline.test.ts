@@ -45,6 +45,87 @@ test("buildWorkerInput hands the worker the best source and keeps PDF fallback",
   // Thin / low-confidence text -> do not trust the provided text (PDF fallback).
   const thin = buildWorkerInput(pipelineResult({ merged: { parser: "pdfjs", pageCount: 1, pages: [], combinedText: "short", transactions: [], metadata: {}, warnings: [] }, selection: { selectedParser: "pdfjs", confidence: 20, reasons: [], warnings: [], requiresReview: true, extractionScores: {} } }) as never);
   assert.equal(thin.useProvidedText, false);
+  assert.equal(thin.extractionFormatVersion, undefined);
+  assert.equal(thin.preExtractedRows, undefined);
+});
+
+test("buildWorkerInput includes structured payload fields only when rows are usable", () => {
+  const withStructured = buildWorkerInput(
+    pipelineResult({
+      merged: {
+        parser: "azure_di",
+        pageCount: 1,
+        pages: [],
+        combinedText: "01 Jan Payment 100.00 900.00 Cr",
+        transactions: [{ debit: 100 }],
+        metadata: {},
+        warnings: [],
+        structured: {
+          tables: [],
+          rows: [{
+            pageNumber: 1,
+            cells: { date: "01 Jan", description: "Payment", amount: "100.00", balance: "900.00 Cr" },
+            raw: "01 Jan Payment 100.00 900.00 Cr",
+            confidence: 0.98,
+          }],
+          layout: [],
+          pageMeta: [{ pageNumber: 1, width: 8.5, height: 11, unit: "inch", angle: 0 }],
+          quality: {
+            tableCount: 1,
+            transactionTableCount: 1,
+            rowCount: 1,
+            rowContinuity: 1,
+            resolvedRoles: ["date", "description", "amount", "balance"],
+            joinedRowCount: 0,
+            droppedFurnitureCount: 0,
+          },
+        },
+      },
+    }) as never,
+  );
+  assert.equal(withStructured.extractionFormatVersion, 2);
+  assert.equal(withStructured.structuredProvider, "azure_di");
+  assert.equal(withStructured.structuredPageCount, 1);
+  assert.equal(withStructured.structuredRowCount, 1);
+  assert.equal(withStructured.structuredRowContinuity, 1);
+  assert.equal(withStructured.preExtractedRows?.length, 1);
+  const serialized = JSON.stringify(withStructured.structuredDiagnostics);
+  assert.ok(!serialized.includes("Payment"), "diagnostics must not contain raw statement content");
+  assert.ok(!serialized.includes("01 Jan"));
+});
+
+test("buildWorkerInput omits structured fields when structured rows are absent", () => {
+  const absent = buildWorkerInput(
+    pipelineResult({
+      merged: {
+        parser: "azure_di",
+        pageCount: 1,
+        pages: [],
+        combinedText: "text-only path",
+        transactions: [{ debit: 100 }],
+        metadata: {},
+        warnings: [],
+        structured: {
+          tables: [],
+          rows: [],
+          layout: [],
+          pageMeta: [{ pageNumber: 1, width: 8.5, height: 11, unit: "inch", angle: 0 }],
+          quality: {
+            tableCount: 0,
+            transactionTableCount: 0,
+            rowCount: 0,
+            rowContinuity: 0,
+            resolvedRoles: [],
+            joinedRowCount: 0,
+            droppedFurnitureCount: 0,
+          },
+        },
+      },
+    }) as never,
+  );
+  assert.equal(absent.extractionFormatVersion, undefined);
+  assert.equal(absent.preExtractedRows, undefined);
+  assert.equal(absent.structuredDiagnostics, undefined);
 });
 
 test("extractionProcessingMetadata maps the stored fields", () => {
@@ -233,9 +314,13 @@ test("pipeline distinguishes OCR-not-configured from OCR-ran-empty", () => {
 test("worker logs pre_extracted_text and adds parser_debug to the 422", () => {
   const worker = read("workers/accounting_worker/main.py");
   assert.match(worker, /worker\.pre_extracted_text_received/);
+  assert.match(worker, /worker\.pre_extracted_rows_received/);
   assert.match(worker, /worker\.pre_extracted_text_rejected/);
   assert.match(worker, /"parser_debug": parser_debug/);
   assert.match(worker, /"reason_no_transactions"/);
+  // pre_extracted_text remains the active parser input path.
+  assert.match(worker, /provided = \(payload\.pre_extracted_text or ""\)\.strip\(\)/);
+  assert.ok(!/payload\.pre_extracted_rows[^\n]*transaction_candidate_lines/.test(worker), "structured rows must not alter text selection yet");
 });
 
 test("process route auto-runs the pipeline before the worker with a safe fallback", () => {
@@ -247,6 +332,14 @@ test("process route auto-runs the pipeline before the worker with a safe fallbac
   assert.match(route, /requires_review: pipeline\.requiresReview/);
   // Passes the best text to the worker, keeping the PDF as fallback.
   assert.match(route, /hints\.pre_extracted_text = workerInput\.preExtractedText/);
+  // Structured payload is additive and maps camelCase -> snake_case at HTTP boundary.
+  assert.match(route, /hints\.extraction_format_version = workerInput\.extractionFormatVersion/);
+  assert.match(route, /hints\.pre_extracted_rows = workerInput\.preExtractedRows/);
+  assert.match(route, /hints\.structured_provider = workerInput\.structuredProvider/);
+  assert.match(route, /hints\.structured_row_continuity = workerInput\.structuredRowContinuity/);
+  assert.match(route, /hints\.structured_page_count = workerInput\.structuredPageCount/);
+  assert.match(route, /hints\.structured_row_count = workerInput\.structuredRowCount/);
+  assert.match(route, /hints\.structured_diagnostics = workerInput\.structuredDiagnostics/);
   // Safe fallback: pipeline failure records a warning and continues.
   assert.match(route, /Extraction pipeline error/);
   assert.match(route, /using original worker path/);

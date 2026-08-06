@@ -163,6 +163,8 @@ async function runPipelineBeforeWorker(
       azureTextLength: pipeline.debug.azureTextLength,
       preExtractedTextLength: workerInput.preExtractedText.length,
       transactionCandidates: workerInput.transactionCandidateCount,
+      structuredRowCount: workerInput.structuredRowCount ?? 0,
+      structuredProvider: workerInput.structuredProvider ?? null,
       reasonNoTransactions: pipeline.debug.reasonNoTransactions,
       disagreements: pipeline.selection.disagreements.map((d) => d.field),
       ocr: pipeline.debug.ocr,
@@ -179,6 +181,15 @@ async function runPipelineBeforeWorker(
     };
     if (workerInput.useProvidedText && workerInput.preExtractedText.trim()) {
       hints.pre_extracted_text = workerInput.preExtractedText;
+    }
+    if (workerInput.preExtractedRows && workerInput.preExtractedRows.length > 0) {
+      hints.extraction_format_version = workerInput.extractionFormatVersion;
+      hints.pre_extracted_rows = workerInput.preExtractedRows;
+      hints.structured_provider = workerInput.structuredProvider;
+      hints.structured_row_continuity = workerInput.structuredRowContinuity;
+      hints.structured_page_count = workerInput.structuredPageCount;
+      hints.structured_row_count = workerInput.structuredRowCount;
+      hints.structured_diagnostics = workerInput.structuredDiagnostics;
     }
     return { hints, warning: null, debug };
   } catch (pipelineError) {

@@ -1,4 +1,14 @@
-import type { AcceptanceVerdict, ExtractionMetadata, ExtractionPipelineResult, ExtractionStrategy, OcrEngineComparison, OcrEngineId, ParserMethod, PdfKind } from "@/lib/pdf/types";
+import type {
+  AcceptanceVerdict,
+  ExtractionMetadata,
+  ExtractionPipelineResult,
+  ExtractionStrategy,
+  OcrEngineComparison,
+  OcrEngineId,
+  ParserMethod,
+  PdfKind,
+  StructuredRow,
+} from "@/lib/pdf/types";
 
 // Turn a pipeline result into the input the accounting worker should receive, and
 // into the processing metadata stored on the run / shown on the review page.
@@ -12,6 +22,14 @@ export type WorkerExtractionInput = {
   transactionCandidateCount: number;
   metadata: ExtractionMetadata;
   ocrUsed: boolean;
+  extractionFormatVersion?: number;
+  preExtractedRows?: StructuredRow[];
+  structuredProvider?: ParserMethod;
+  // 0..1, copied from StructuredQuality.rowContinuity (not an overall confidence score).
+  structuredRowContinuity?: number;
+  structuredPageCount?: number;
+  structuredRowCount?: number;
+  structuredDiagnostics?: Record<string, unknown>;
 };
 
 export type ProcessingExtractionMetadata = {
@@ -38,11 +56,13 @@ export type ProcessingExtractionMetadata = {
 export function buildWorkerInput(result: ExtractionPipelineResult): WorkerExtractionInput {
   const text = result.merged?.combinedText ?? "";
   const transactions = result.merged?.transactions ?? [];
+  const structured = result.merged?.structured;
+  const structuredRows = structured?.rows ?? [];
   // Send the extracted text whenever there is a non-trivial amount of it; the
   // worker makes the final call (it compares against its own native extraction),
   // so we don't over-gate here on confidence.
   const useProvidedText = text.trim().length >= 50;
-  return {
+  const input: WorkerExtractionInput = {
     parser: result.parserMethod,
     useProvidedText,
     preExtractedText: text,
@@ -50,6 +70,23 @@ export function buildWorkerInput(result: ExtractionPipelineResult): WorkerExtrac
     metadata: result.merged?.metadata ?? {},
     ocrUsed: Boolean(result.ocrUsed),
   };
+  if (structuredRows.length > 0) {
+    input.extractionFormatVersion = 2;
+    input.preExtractedRows = structuredRows;
+    input.structuredProvider = result.merged?.parser ?? result.parserMethod;
+    input.structuredRowContinuity = structured?.quality?.rowContinuity ?? 0;
+    input.structuredPageCount = structured?.pageMeta?.length ?? 0;
+    input.structuredRowCount = structuredRows.length;
+    input.structuredDiagnostics = {
+      tableCount: structured?.quality?.tableCount ?? 0,
+      transactionTableCount: structured?.quality?.transactionTableCount ?? 0,
+      rowContinuity: structured?.quality?.rowContinuity ?? 0,
+      resolvedRoles: structured?.quality?.resolvedRoles ?? [],
+      joinedRowCount: structured?.quality?.joinedRowCount ?? 0,
+      droppedFurnitureCount: structured?.quality?.droppedFurnitureCount ?? 0,
+    };
+  }
+  return input;
 }
 
 // Requirement 4: the metadata persisted with the run and surfaced in the UI.

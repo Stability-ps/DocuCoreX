@@ -103,6 +103,14 @@ class ProcessRequest(BaseModel):
     extraction_source: str | None = None
     ocr_used: bool | None = None
     pre_extracted_text: str | None = None
+    extraction_format_version: int | None = None
+    pre_extracted_rows: list[dict[str, Any]] | None = None
+    structured_provider: str | None = None
+    # 0..1 row continuity from structured quality (not a global structured confidence score).
+    structured_row_continuity: float | None = None
+    structured_page_count: int | None = None
+    structured_row_count: int | None = None
+    structured_diagnostics: dict[str, Any] | None = None
     extraction_debug: dict[str, Any] | None = None
 
 
@@ -3946,6 +3954,17 @@ def process_fnb_statement(payload: ProcessRequest, authorization: str | None = H
             parser_method=payload.parser_method,
             extraction_source=payload.extraction_source,
             ocr_used=bool(payload.ocr_used),
+        )
+        provided_structured_rows = payload.pre_extracted_rows or []
+        log_event(
+            "worker.pre_extracted_rows_received",
+            run_id=payload.run_id,
+            received=bool(provided_structured_rows),
+            extraction_format_version=payload.extraction_format_version,
+            structured_provider=payload.structured_provider,
+            structured_row_count=payload.structured_row_count if payload.structured_row_count is not None else len(provided_structured_rows),
+            structured_page_count=payload.structured_page_count,
+            structured_row_continuity=payload.structured_row_continuity,
         )
         # Choose the text that actually PARSES, not the one that is longest.
         #
