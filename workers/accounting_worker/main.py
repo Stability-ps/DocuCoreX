@@ -25,6 +25,9 @@ from supabase import Client, create_client
 from auth import OK as AUTH_OK, STATUS_FOR_VERDICT, auth_compare_diagnostics, check_bearer
 from engine.bootstrap import register_default_parsers
 from engine.detection import UNKNOWN_PROFILE_ID, bank_name_for, detect_bank, is_supported_bank
+from engine.generic_parser import count_candidate_lines as generic_candidate_lines
+from engine.generic_parser import extract_generic_rows
+from engine.lexicon import LOOSE_DATE, LOOSE_MONEY, MONEY_TOKEN
 
 
 app = FastAPI(title="DocuCoreX Accounting Worker")
@@ -46,10 +49,6 @@ AI_CLASSIFICATION_BATCH_SIZE = 30
 ACCOUNTING_REPORT_DISCLAIMER = (
     "Draft management report generated from bank-statement data only. "
     "This is not a final IFRS or Companies Act financial statement and requires accountant review."
-)
-MONEY_TOKEN = re.compile(
-    r"(?<![A-Za-z0-9])(?P<negative>-)?(?:R\s*)?(?P<bracket>\()?(?P<amount>(?:\d{1,3}(?:,\d{3})+|\d+)\.\d{2})(?:\))?\s*(?P<suffix>Cr|CR|Dr|DR)?(?!\d)",
-    re.IGNORECASE,
 )
 MAX_DATABASE_AMOUNT = Decimal("999999999999.99")
 CENT = Decimal("0.01")
@@ -552,13 +551,22 @@ def parse_metadata(full_text: str) -> dict[str, Any]:
         flags=re.IGNORECASE,
     )
 
+    # `(?::|-(?=\s))?` — a colon separates, and so does a dash with a space after
+    # it, but a minus sign printed hard against the figure belongs to the figure.
+    #
+    # The old `[:\-]?` swallowed that minus as punctuation, so an overdrawn
+    # statement's "STATEMENT OPENING BALANCE -992,452.57" was recorded as
+    # +992,452.57. Every balance-continuity check then failed by twice the
+    # opening balance, and on a statement whose amounts carry no sign of their
+    # own that is fatal: direction is inferred from the arithmetic, so a wrongly
+    # signed opening balance means no row can be resolved at all.
     opening_balance = find_first([
-        r"Opening\s*Balance\s*[:\-]?\s*R?\s*([0-9,.\-() ]+)",
-        r"Balance\s*Brought\s*Forward\s*[:\-]?\s*R?\s*([0-9,.\-() ]+)",
+        r"Opening\s*Balance\s*(?::|-(?=\s))?\s*R?\s*([0-9,.\-() ]+)",
+        r"Balance\s*Brought\s*Forward\s*(?::|-(?=\s))?\s*R?\s*([0-9,.\-() ]+)",
     ], full_text)
     closing_balance = find_first([
-        r"Closing\s*Balance\s*[:\-]?\s*R?\s*([0-9,.\-() ]+)",
-        r"Balance\s*Carried\s*Forward\s*[:\-]?\s*R?\s*([0-9,.\-() ]+)",
+        r"Closing\s*Balance\s*(?::|-(?=\s))?\s*R?\s*([0-9,.\-() ]+)",
+        r"Balance\s*Carried\s*Forward\s*(?::|-(?=\s))?\s*R?\s*([0-9,.\-() ]+)",
     ], full_text)
 
     # Statement summary block — the statement's OWN declared totals. These are the
@@ -627,10 +635,6 @@ TRANSACTION_LINE = re.compile(
 # the lookahead rejects "550" (from 550.00) and "15" (from 15.00) while still
 # accepting "01 Apr 2025". Rows WITH a description were unaffected because their
 # next token is text, which is why only the fee rows vanished.
-LOOSE_DATE = re.compile(
-    r"(?P<date>\d{1,2}[/-]\d{1,2}(?:[/-]\d{2,4}(?![\d.,]))?|\d{1,2}\s+[A-Za-z]{3,9}(?:\s+\d{2,4}(?![\d.,]))?)"
-)
-LOOSE_MONEY = re.compile(r"(?:R\s*)?-?\(?\d[\d,\s]*\.\d{2}\)?-?")
 FNB_PAGE_ARTIFACT = re.compile(
     r"\b(?:Page\s+\d+\s+of\s+\d+|Delivery\s+Method|Branch\s+Number|Account\s+Number|"
     r"PLATINUM\s+BUSINESS\s+ACCOUNT|Accrued\s+Date\s+Description\s+Amount\s+Balance\s+Bank\s+Charges|"
@@ -1816,15 +1820,43 @@ def parse_generic_transactions(
     rows from FNB's own fee summary and would invent transactions on any other
     bank's statement.
 
-    This is deliberately the floor, not the ceiling: a dedicated generic parser
-    for wrapped descriptions, Dr/Cr suffixes, date inheritance and
-    Payments/Deposits column pairs replaces the body of this function next.
+    Two readings are taken and the better one wins:
+
+    - extracted TABLES, when the PDF yields them, keep their true column
+      positions, so a Payments/Deposits pair can be read off the columns
+      directly;
+    - TEXT is read by engine.generic_parser into structured rows, which then go
+      through parse_structured_rows — the same transformer the Azure and Mistral
+      row providers use, so date inheritance, Dr/Cr suffixes, informational rows
+      and balance-continuity direction resolution behave identically however the
+      rows were obtained.
+
+    A tie goes to the tables, which know which column a figure was printed in;
+    text has to infer that from the arithmetic.
     """
     table_transactions = parse_table_transactions(pages, metadata)
     if table_transactions:
-        merged = dedupe_transactions(table_transactions)
-        return normalize_transactions_from_balances(merged, metadata.get("opening_balance"))
-    return dedupe_transactions(parse_text_transactions(pages, metadata))
+        table_transactions = normalize_transactions_from_balances(
+            dedupe_transactions(table_transactions), metadata.get("opening_balance")
+        )
+
+    # full_text is the authoritative text — it may be a provider extraction that
+    # beat this worker's own. Only fall back to the pages when it is absent or is
+    # simply their concatenation, since the pages carry real page numbers.
+    native_text = "\n".join((page.get("text") or "") for page in pages)
+    if full_text.strip() and full_text.strip() != native_text.strip():
+        row_pages = [{"page": 1, "text": full_text, "tables": []}]
+    else:
+        row_pages = pages
+
+    generic_rows = extract_generic_rows(row_pages)
+    row_transactions: list[ParsedTransaction] = []
+    if generic_rows:
+        row_transactions, _ = parse_structured_rows(generic_rows, metadata, GENERIC_PARSER_PROFILE_ID)
+
+    if financial_transaction_count(table_transactions) >= financial_transaction_count(row_transactions):
+        return table_transactions
+    return row_transactions
 
 
 def parse_fnb_transactions(pages: list[dict[str, Any]], metadata: dict[str, Any], full_text: str = "") -> list[ParsedTransaction]:
@@ -1948,7 +1980,15 @@ def parse_structured_rows(
     date_inferred_count = 0
     informational_row_count = 0
     last_date_value = ""
-    previous_running_balance: Decimal | None = None
+    # Seed continuity with the statement's opening balance. Without it the FIRST
+    # row has nothing to compare against, so an unsigned amount there could not
+    # be resolved into a debit or a credit and the row was rejected — losing the
+    # opening transaction of every statement whose direction is carried by the
+    # arithmetic rather than by a sign.
+    opening_balance_seed = metadata.get("opening_balance")
+    previous_running_balance: Decimal | None = (
+        decimal_amount(opening_balance_seed) if opening_balance_seed is not None else None
+    )
 
     def reject(reason: str) -> None:
         rejected_reasons[reason] = rejected_reasons.get(reason, 0) + 1
@@ -4760,9 +4800,40 @@ def process_fnb_statement(payload: ProcessRequest, authorization: str | None = H
         # PDF, where pdfplumber and PyMuPDF both return nothing), the provided
         # text is all there is — use it even if neither yields candidate rows,
         # otherwise a scanned statement would be parsed from an empty string.
-        provided_rows = len(transaction_candidate_lines(provided)) if provided else 0
-        native_rows = len(transaction_candidate_lines(native_text)) if native_text else 0
+        #
+        # Count with the counter that matches the BANK. transaction_candidate_lines
+        # only enters a transaction section after FNB's "Transactions in RAND"
+        # heading, so on every other bank it returns 0 for both texts, the
+        # comparison is 0 > 0, and the provided text loses by default. That is how
+        # a Standard Bank statement's 78,697-character Mistral extraction was
+        # discarded in favour of this worker's own — for a parser that was never
+        # going to read it anyway.
+        #
+        # The bank has to be read from text, so take a preliminary reading first:
+        # the Node pipeline's verdict when it sent one, otherwise whichever
+        # extraction is available.
+        preliminary_profile = payload.detected_bank if is_supported_bank(payload.detected_bank) else None
+        if preliminary_profile is None:
+            preliminary = detect_bank(provided) if provided else detect_bank(native_text)
+            if not preliminary.is_known and provided and native_text:
+                preliminary = detect_bank(native_text)
+            preliminary_profile = preliminary.profile_id
+        count_candidates = (
+            (lambda text: len(transaction_candidate_lines(text)))
+            if preliminary_profile == FNB_PROFILE_ID
+            else generic_candidate_lines
+        )
+        provided_rows = count_candidates(provided) if provided else 0
+        native_rows = count_candidates(native_text) if native_text else 0
         native_is_empty = not native_text.strip()
+        log_event(
+            "worker.text_source_compared",
+            run_id=payload.run_id,
+            preliminary_profile=preliminary_profile,
+            counter="fnb" if preliminary_profile == FNB_PROFILE_ID else "generic",
+            provided_rows=provided_rows,
+            native_rows=native_rows,
+        )
         if provided and (native_is_empty or provided_rows > native_rows):
             full_text = provided
             log_event(

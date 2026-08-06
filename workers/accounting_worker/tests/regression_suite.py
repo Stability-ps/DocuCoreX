@@ -1744,7 +1744,224 @@ def test_parser_profile_not_implemented_rejection_is_gone() -> None:
         raise AssertionError("the not-implemented message must be gone")
 
 
+# ── Generic parser ────────────────────────────────────────────────────────────
+
+STANDARD_BANK_TEXT_STATEMENT = """STANDARD BANK 6 month statement
+www.standardbank.co.za
+Page 1 of 37
+Date Description Payments Deposits Balance
+STATEMENT OPENING BALANCE -992,452.57
+30 Apr 25 ADT JHB SECURITY SERVICES
+MONTHLY CONTRACT 1,204.55 -993,657.12
+30 Apr 25 SBSARETAIL 340.00 -993,997.12
+02 May 25 SALARY DEPOSIT 45,000.00 -948,997.12
+02 May 25 DEBIT ORDER INSURANCE 890.00 -949,887.12
+FUNERAL COVER 220.00 -950,107.12
+09 May 25 CLIENT EFT PAYMENT
+INVOICE 20551 12,500.00 -937,607.12
+Page 2 of 37
+Date Description Payments Deposits Balance
+TOTAL PAYMENTS 2,654.55
+"""
+
+
+def _generic_text_pages(text: str) -> list[dict]:
+    return [{"page": 1, "text": text, "tables": []}]
+
+
+def test_generic_parser_reads_a_text_only_statement_end_to_end() -> None:
+    """No tables at all — the realistic shape of a provider extraction."""
+    import main
+
+    pages = _generic_text_pages(STANDARD_BANK_TEXT_STATEMENT)
+    metadata = main.parse_metadata(STANDARD_BANK_TEXT_STATEMENT)
+    transactions = main.parse_transactions(pages, metadata, STANDARD_BANK_TEXT_STATEMENT, GENERIC_PROFILE)
+    summary = main.validation_summary(transactions)
+
+    assert_equal(len(transactions), 6, "every printed movement recovered")
+    assert_equal(summary["debit_count"], 4, "four payments")
+    assert_equal(summary["credit_count"], 2, "two deposits")
+    assert_equal(str(summary["total_debits"]), "2654.55", "debit total")
+    assert_equal(str(summary["total_credits"]), "57500.00", "credit total")
+
+    # The whole point of a ledger: opening plus movements must land on the
+    # printed closing balance.
+    opening = main.decimal_amount(metadata["opening_balance"])
+    closing = opening - summary["total_debits"] + summary["total_credits"]
+    assert_equal(str(closing), "-937607.12", "reconciles to the printed closing balance")
+
+
+def test_generic_parser_merges_wrapped_descriptions() -> None:
+    """A description that wraps must not become a row of its own."""
+    import main
+
+    pages = _generic_text_pages(STANDARD_BANK_TEXT_STATEMENT)
+    metadata = main.parse_metadata(STANDARD_BANK_TEXT_STATEMENT)
+    transactions = main.parse_transactions(pages, metadata, STANDARD_BANK_TEXT_STATEMENT, GENERIC_PROFILE)
+
+    descriptions = [t.description for t in transactions]
+    if "ADT JHB SECURITY SERVICES MONTHLY CONTRACT" not in descriptions:
+        raise AssertionError(f"wrapped description not rejoined: {descriptions}")
+    if "CLIENT EFT PAYMENT INVOICE 20551" not in descriptions:
+        raise AssertionError(f"wrapped description not rejoined: {descriptions}")
+    for description in descriptions:
+        if description in {"MONTHLY CONTRACT", "INVOICE 20551"}:
+            raise AssertionError(f"description fragment became its own row: {description}")
+
+
+def test_generic_parser_inherits_the_date_of_a_grouped_movement() -> None:
+    """Banks print the date once per date group; the rows under it are separate."""
+    import main
+
+    pages = _generic_text_pages(STANDARD_BANK_TEXT_STATEMENT)
+    metadata = main.parse_metadata(STANDARD_BANK_TEXT_STATEMENT)
+    transactions = main.parse_transactions(pages, metadata, STANDARD_BANK_TEXT_STATEMENT, GENERIC_PROFILE)
+
+    funeral = next((t for t in transactions if t.description == "FUNERAL COVER"), None)
+    if funeral is None:
+        raise AssertionError("the dateless grouped movement was dropped")
+    assert_equal(funeral.transaction_date, "2025-05-02", "inherited the date of its group")
+    assert_equal(funeral.debit_amount, 220.0, "and kept its own amount")
+
+
+def test_generic_parser_infers_direction_from_balance_continuity() -> None:
+    """Text loses the column a figure was printed in; the arithmetic recovers it.
+
+    "45,000.00" on a Payments/Deposits statement carries no sign and no column
+    once flattened to text. The balance moving UP by exactly that amount is what
+    makes it a deposit.
+    """
+    import main
+
+    pages = _generic_text_pages(STANDARD_BANK_TEXT_STATEMENT)
+    metadata = main.parse_metadata(STANDARD_BANK_TEXT_STATEMENT)
+    transactions = main.parse_transactions(pages, metadata, STANDARD_BANK_TEXT_STATEMENT, GENERIC_PROFILE)
+
+    salary = next(t for t in transactions if t.description == "SALARY DEPOSIT")
+    assert_equal(salary.credit_amount, 45000.0, "balance rose, so it is a credit")
+    assert_equal(main.decimal_amount(salary.debit_amount), main.decimal_amount(0), "and not a debit")
+
+    fee = next(t for t in transactions if t.description == "SBSARETAIL")
+    assert_equal(fee.debit_amount, 340.0, "balance fell, so it is a debit")
+    assert_equal(main.decimal_amount(fee.credit_amount), main.decimal_amount(0), "and not a credit")
+
+
+def test_generic_parser_drops_page_furniture_and_totals() -> None:
+    """Repeated headers, page numbers and summary totals are not transactions."""
+    import main
+
+    pages = _generic_text_pages(STANDARD_BANK_TEXT_STATEMENT)
+    metadata = main.parse_metadata(STANDARD_BANK_TEXT_STATEMENT)
+    transactions = main.parse_transactions(pages, metadata, STANDARD_BANK_TEXT_STATEMENT, GENERIC_PROFILE)
+
+    for transaction in transactions:
+        lowered = (transaction.description or "").lower()
+        for forbidden in ("page 1 of", "page 2 of", "total payments", "date description", "standard bank"):
+            if forbidden in lowered:
+                raise AssertionError(f"furniture parsed as a transaction: {transaction.description!r}")
+    if str(main.decimal_amount(2654.55)) in [str(main.decimal_amount(t.credit_amount)) for t in transactions]:
+        raise AssertionError("the totals line was read as a credit")
+
+
+def test_generic_parser_reads_a_debit_credit_layout() -> None:
+    """The other common column pair, with Dr/Cr suffixes carrying the sign."""
+    import main
+
+    text = """NEDBANK LIMITED
+www.nedbank.co.za
+Date Description Debit Credit Balance
+Opening Balance 5,000.00
+03 Jun 2025 EFT RECEIVED 2,500.00Cr 7,500.00
+04 Jun 2025 SERVICE FEE 125.00Dr 7,375.00
+"""
+    pages = _generic_text_pages(text)
+    metadata = main.parse_metadata(text)
+    transactions = main.parse_transactions(pages, metadata, text, GENERIC_PROFILE)
+
+    assert_equal(len(transactions), 2, "both rows read")
+    received = next(t for t in transactions if "EFT RECEIVED" in t.description)
+    fee = next(t for t in transactions if "SERVICE FEE" in t.description)
+    assert_equal(received.credit_amount, 2500.0, "Cr suffix read as a credit")
+    assert_equal(fee.debit_amount, 125.0, "Dr suffix read as a debit")
+
+
+def test_negative_opening_balance_keeps_its_sign() -> None:
+    """An overdrawn statement's opening balance is negative.
+
+    The separator pattern used to swallow the minus, so -992,452.57 was recorded
+    as +992,452.57 — and on a statement whose amounts carry no sign of their own,
+    that made every row unresolvable.
+    """
+    import main
+
+    assert_equal(
+        main.parse_metadata("STATEMENT OPENING BALANCE -992,452.57")["opening_balance"],
+        -992452.57,
+        "a minus against the figure is a sign",
+    )
+    assert_equal(
+        main.parse_metadata("Opening Balance - 1,000.00")["opening_balance"],
+        1000.0,
+        "a dash with a space after it is a separator",
+    )
+    assert_equal(main.parse_metadata("Opening Balance: -50.25")["opening_balance"], -50.25, "colon then sign")
+    assert_equal(main.parse_metadata("Balance Brought Forward 342.37")["opening_balance"], 342.37, "unsigned is positive")
+
+
+def test_candidate_counting_is_bank_independent() -> None:
+    """The text-source comparison must not be blind on non-FNB statements.
+
+    transaction_candidate_lines only enters a section after FNB's "Transactions
+    in RAND" heading, so it returns 0 for every other bank. Comparing 0 with 0
+    is how a Standard Bank statement's provider extraction lost to this worker's
+    own text.
+    """
+    import main
+    from engine.generic_parser import count_candidate_lines
+
+    assert_equal(len(main.transaction_candidate_lines(STANDARD_BANK_TEXT_STATEMENT)), 0, "the FNB counter is blind here")
+    if count_candidate_lines(STANDARD_BANK_TEXT_STATEMENT) < 6:
+        raise AssertionError("the generic counter must see the Standard Bank rows")
+    # And it must still count an FNB statement, so the comparison stays sane if
+    # a preliminary detection is wrong.
+    if count_candidate_lines(FNB_SAMPLE) < 2:
+        raise AssertionError("the generic counter must also see FNB rows")
+
+
+def test_generic_rows_and_provider_rows_take_the_same_path() -> None:
+    """Text rows and Azure/Mistral rows converge on one transformer.
+
+    Two transformers would mean two sets of Dr/Cr, date-inheritance and
+    informational-row rules, drifting apart.
+    """
+    import main
+    from engine.generic_parser import extract_generic_rows
+
+    rows = extract_generic_rows(_generic_text_pages(STANDARD_BANK_TEXT_STATEMENT))
+    if not rows:
+        raise AssertionError("the generic parser produced no rows")
+    for row in rows:
+        if not isinstance(row.get("cells"), dict):
+            raise AssertionError(f"row is not in StructuredRow shape: {row}")
+        if "raw" not in row or "pageNumber" not in row:
+            raise AssertionError(f"row is missing StructuredRow fields: {row}")
+
+    # The rows go through the same function the providers' rows do.
+    transactions, diagnostics = main.parse_structured_rows(rows, main.parse_metadata(STANDARD_BANK_TEXT_STATEMENT), GENERIC_PROFILE)
+    assert_equal(len(transactions), 6, "the shared transformer reads the generic rows")
+    assert_equal(diagnostics["fnb_reconstruction_applied"], False, "and applies no FNB reconstruction")
+
+
 def run() -> None:
+    test_generic_parser_reads_a_text_only_statement_end_to_end()
+    test_generic_parser_merges_wrapped_descriptions()
+    test_generic_parser_inherits_the_date_of_a_grouped_movement()
+    test_generic_parser_infers_direction_from_balance_continuity()
+    test_generic_parser_drops_page_furniture_and_totals()
+    test_generic_parser_reads_a_debit_credit_layout()
+    test_negative_opening_balance_keeps_its_sign()
+    test_candidate_counting_is_bank_independent()
+    test_generic_rows_and_provider_rows_take_the_same_path()
     test_standard_bank_is_not_routed_to_the_fnb_parser()
     test_standard_bank_layout_parses_payments_and_deposits()
     test_generic_parser_never_invents_fnb_fee_rows()
