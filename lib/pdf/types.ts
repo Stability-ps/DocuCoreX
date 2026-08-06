@@ -31,6 +31,127 @@ export type ExtractionResult = {
   // to call a result validated; see acceptExtraction().
   confidence?: number | null;
   confidenceSource?: string | null;
+  // Provider-supplied document structure — tables with real cells, rows the
+  // provider itself segmented, and reading order. OPTIONAL and ignored by every
+  // current consumer: providers that cannot produce structure (PDF.js, Tesseract,
+  // Mistral) simply omit it and are scored on the text signals alone.
+  structured?: StructuredExtraction;
+};
+
+// ── Structured extraction contract (phase 2) ────────────────────────────────
+//
+// Every field is optional on ExtractionResult and no decision reads it yet.
+// Producing it is phase 2; scoring on it is phase 3; sending it to the
+// accounting worker is phase 4. It exists separately from ExtractionTable
+// (`{ rows: string[][] }`) because that shape has already lost what matters:
+// spans, geometry, per-cell confidence and which column means what.
+
+/** Azure polygon order: 4 corner points, 8 numbers, clockwise from top-left. */
+export type Region = { pageNumber: number; polygon: number[] };
+
+export type PageMeta = {
+  pageNumber: number;
+  width: number;
+  height: number;
+  unit: string;
+  /** Detected skew in degrees. Recorded, not yet corrected for — see geometry.ts. */
+  angle: number;
+};
+
+/**
+ * What a column means, resolved from its header label rather than its index —
+ * column order varies between banks and even between pages of one statement.
+ *
+ * "amount" is not in the original plan's union and is deliberate: FNB prints a
+ * single signed Amount column with a Cr/Dr suffix rather than separate debit and
+ * credit columns, so without it the most important column on a real statement
+ * resolves to "unknown".
+ */
+export type ColumnRole =
+  | "date"
+  | "description"
+  | "debit"
+  | "credit"
+  | "amount"
+  | "balance"
+  | "reference"
+  | "unknown";
+
+export type StructuredCell = {
+  rowIndex: number;
+  columnIndex: number;
+  rowSpan: number;
+  columnSpan: number;
+  content: string;
+  kind?: "columnHeader" | "rowHeader" | "content";
+  /** Minimum word confidence within the cell (0..1), or null when unknown. */
+  confidence?: number | null;
+  region?: Region;
+};
+
+export type StructuredTable = {
+  pageNumber: number;
+  rowCount: number;
+  columnCount: number;
+  headers: Array<{ index: number; label: string; role: ColumnRole }>;
+  cells: StructuredCell[];
+  region?: Region;
+};
+
+export type StructuredRow = {
+  pageNumber: number;
+  /** Cell text by resolved role. Absent roles are null, never undefined. */
+  cells: Partial<Record<ColumnRole, string | null>>;
+  raw: string;
+  /** Minimum cell confidence in the row (0..1), or null when unknown. */
+  confidence: number | null;
+  /**
+   * Source table row indexes whose wrapped description was folded into this row.
+   *
+   * The plan called this `continuationOf` — a pointer FROM a continuation row TO
+   * its parent — which only makes sense if continuation rows are emitted
+   * separately. They are not: joining happens here, where the polygons are, so
+   * the worker never has to redo geometry in Python. What remains worth
+   * recording is the reverse direction, for auditing an over-merge.
+   */
+  absorbedRows?: number[];
+  region?: Region;
+};
+
+export type LayoutBlock = {
+  /** Reading order across the document. */
+  order: number;
+  role: "title" | "sectionHeading" | "pageHeader" | "pageFooter" | "pageNumber" | "paragraph";
+  content: string;
+  pageNumber: number;
+  region?: Region;
+};
+
+/**
+ * Descriptive counts only — how much structure was recovered, not whether it is
+ * good enough to use. Turning these into a score and a ranking is phase 3.
+ */
+export type StructuredQuality = {
+  tableCount: number;
+  /** Tables whose headers resolved a date plus at least one amount-ish column. */
+  transactionTableCount: number;
+  rowCount: number;
+  /** Rows carrying a date and at least one amount, over rowCount. 0..1. */
+  rowContinuity: number;
+  /** Distinct roles resolved from headers, excluding "unknown". */
+  resolvedRoles: ColumnRole[];
+  /** Continuation rows joined into their parent. */
+  joinedRowCount: number;
+  /** Layout blocks dropped as page furniture (headers/footers/page numbers). */
+  droppedFurnitureCount: number;
+};
+
+export type StructuredExtraction = {
+  tables: StructuredTable[];
+  rows: StructuredRow[];
+  layout: LayoutBlock[];
+  pageMeta: PageMeta[];
+  quality: StructuredQuality;
 };
 
 export type ExtractionTransaction = {
