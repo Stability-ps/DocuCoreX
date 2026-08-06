@@ -13,6 +13,11 @@ const read = (p: string) => readFileSync(join(root, p), "utf8");
 const azure = await import("@/lib/pdf/extractWithAzureDocumentIntelligence.ts");
 const { decideAzureExtraction } = await import("@/lib/pdf/azureDecision.ts");
 const { acceptExtraction } = await import("@/lib/pdf/acceptExtraction.ts");
+const { roleForLabel, isTransactionTable } = await import("@/lib/pdf/azure/columnRoles.ts");
+const { rowsFromTable, isContinuationCandidate } = await import("@/lib/pdf/azure/rowsFromTables.ts");
+const { normalizeTable } = await import("@/lib/pdf/azure/normalizeTables.ts");
+const { toLayoutBlocks, contentBlocks } = await import("@/lib/pdf/azure/layout.ts");
+const { buildStructured, structuredSummary } = await import("@/lib/pdf/azure/buildStructured.ts");
 
 const ENDPOINT = "https://example.cognitiveservices.azure.com";
 const KEY = "placeholder-not-a-real-key";
@@ -389,4 +394,102 @@ test("an Enhanced request is not satisfied by a standard cached result", () => {
 test("OCR_ENGINE_KEYS is gone (it was exported and never consumed)", () => {
   const merge = read("lib/pdf/mergeExtractionResults.ts");
   assert.ok(!/OCR_ENGINE_KEYS/.test(merge));
+});
+
+// ── Structured extraction (phase 2, additive only) ───────────────────────────
+
+const box = (left: number, top: number, right: number, bottom: number) => [left, top, right, top, right, bottom, left, bottom];
+const region = (pageNumber: number, l: number, t: number, r: number, b: number) => [{ pageNumber, polygon: box(l, t, r, b) }];
+
+test("column role mapping keeps FNB signed Amount as amount and not unknown", () => {
+  assert.equal(roleForLabel("Amount"), "amount");
+  assert.equal(roleForLabel("Debit Amount"), "debit");
+  assert.equal(roleForLabel("Credit Amount"), "credit");
+  assert.equal(roleForLabel("Balance Amount"), "balance");
+  assert.equal(roleForLabel("Sequence"), "unknown");
+});
+
+test("transaction table detection requires a date and at least one money role", () => {
+  assert.equal(isTransactionTable([{ role: "date" }, { role: "amount" }] as never), true);
+  assert.equal(isTransactionTable([{ role: "description" }, { role: "amount" }] as never), false);
+  assert.equal(isTransactionTable([{ role: "date" }, { role: "description" }] as never), false);
+});
+
+test("continuation candidacy is money-based, not date-absence based", () => {
+  assert.equal(isContinuationCandidate({ description: "WRAPPED" }), true);
+  assert.equal(isContinuationCandidate({ description: "REAL", amount: "10.00" }), false);
+  assert.equal(isContinuationCandidate({ description: "REAL", balance: "10.00" }), false);
+  assert.equal(isContinuationCandidate({ date: "01 Apr", description: "REAL" }), false);
+});
+
+test("date-grouped FNB rows with amounts are preserved as transactions", () => {
+  const table = normalizeTable(
+    {
+      rowCount: 4,
+      columnCount: 4,
+      cells: [
+        { rowIndex: 0, columnIndex: 0, content: "Date", kind: "columnHeader" },
+        { rowIndex: 0, columnIndex: 1, content: "Description", kind: "columnHeader" },
+        { rowIndex: 0, columnIndex: 2, content: "Amount", kind: "columnHeader" },
+        { rowIndex: 0, columnIndex: 3, content: "Balance", kind: "columnHeader" },
+        { rowIndex: 1, columnIndex: 0, content: "01 Apr", boundingRegions: region(1, 0, 1, 1, 1.4) },
+        { rowIndex: 1, columnIndex: 1, content: "Eft Credit Customer", boundingRegions: region(1, 1.2, 1, 6, 1.4) },
+        { rowIndex: 1, columnIndex: 2, content: "37000.00", boundingRegions: region(1, 6.5, 1, 7.5, 1.4) },
+        { rowIndex: 1, columnIndex: 3, content: "35660.05", boundingRegions: region(1, 8, 1, 9, 1.4) },
+        { rowIndex: 2, columnIndex: 1, content: "Internal Debit Order Fnbfuneral", boundingRegions: region(1, 1.2, 1.5, 6, 1.9) },
+        { rowIndex: 2, columnIndex: 2, content: "676.02", boundingRegions: region(1, 6.5, 1.5, 7.5, 1.9) },
+        { rowIndex: 2, columnIndex: 3, content: "333.65", boundingRegions: region(1, 8, 1.5, 9, 1.9) },
+        { rowIndex: 3, columnIndex: 1, content: "Excess Item Fee", boundingRegions: region(1, 1.2, 2, 6, 2.4) },
+        { rowIndex: 3, columnIndex: 2, content: "310.00", boundingRegions: region(1, 6.5, 2, 7.5, 2.4) },
+        { rowIndex: 3, columnIndex: 3, content: "23.65", boundingRegions: region(1, 8, 2, 9, 2.4) },
+      ],
+    } as never,
+    [],
+  );
+  const { rows, joined } = rowsFromTable(table);
+  assert.equal(joined, 0);
+  assert.equal(rows.length, 3);
+  assert.deepEqual(rows.map((r) => r.cells.amount), ["37000.00", "676.02", "310.00"]);
+});
+
+test("layout keeps unknown roles as content and drops furniture roles only", () => {
+  const blocks = toLayoutBlocks([
+    { role: "pageHeader", content: "FNB Business", boundingRegions: region(1, 0, 0, 9, 0.5) },
+    { content: "01 Apr PURCHASE 10.00", boundingRegions: region(1, 0, 1, 9, 1.5) },
+    { role: "footnote", content: "Terms apply", boundingRegions: region(1, 0, 2, 9, 2.5) },
+    { role: "pageFooter", content: "Page 1 of 4", boundingRegions: region(1, 0, 10, 9, 10.5) },
+  ] as never);
+  assert.deepEqual(blocks.map((b) => b.role), ["pageHeader", "paragraph", "paragraph", "pageFooter"]);
+  assert.deepEqual(contentBlocks(blocks).map((b) => b.content), ["01 Apr PURCHASE 10.00", "Terms apply"]);
+});
+
+test("structured summary stays counts-only and is attached additively", async () => {
+  const analyze = {
+    content: "01 Apr PURCHASE 10.00 990.00",
+    pages: [{ pageNumber: 1, width: 8.5, height: 11, unit: "inch", angle: 0, words: [], spans: [{ offset: 0, length: 28 }] }],
+    paragraphs: [{ role: "pageHeader", content: "FNB", boundingRegions: region(1, 0, 0, 9, 0.5) }, { content: "01 Apr PURCHASE 10.00 990.00", boundingRegions: region(1, 0, 1, 9, 1.5) }],
+    tables: [{ rowCount: 2, columnCount: 3, cells: [{ rowIndex: 0, columnIndex: 0, content: "Date", kind: "columnHeader" }, { rowIndex: 0, columnIndex: 1, content: "Description", kind: "columnHeader" }, { rowIndex: 0, columnIndex: 2, content: "Balance", kind: "columnHeader" }, { rowIndex: 1, columnIndex: 0, content: "01 Apr", boundingRegions: region(1, 0, 1, 1, 1.4) }, { rowIndex: 1, columnIndex: 1, content: "PURCHASE", boundingRegions: region(1, 1.2, 1, 6, 1.4) }, { rowIndex: 1, columnIndex: 2, content: "990.00", boundingRegions: region(1, 8, 1, 9, 1.4) }] }],
+  };
+  const structured = buildStructured(analyze as never);
+  const summary = structuredSummary(structured);
+  assert.ok(summary);
+  assert.equal(summary?.rowCount, 1);
+  assert.equal(summary?.transactionTableCount, 1);
+  assert.ok(!JSON.stringify(summary).includes("polygon"));
+  assert.ok(!JSON.stringify(summary).includes("PURCHASE"));
+
+  const f = scriptFetch([accepted202(), succeeded(analyze as never)]);
+  try {
+    const result = await withEnv(
+      { AZURE_DOCUMENT_INTELLIGENCE_ENDPOINT: ENDPOINT, AZURE_DOCUMENT_INTELLIGENCE_KEY: KEY, AZURE_DOCUMENT_INTELLIGENCE_POLL_MS: "1" },
+      () => azure.extractWithAzureDocumentIntelligence(PDF, "s.pdf"),
+    );
+    assert.ok(result?.structured);
+    assert.equal(result?.combinedText, "01 Apr PURCHASE 10.00 990.00");
+    assert.equal(result?.confidenceSource, null);
+    const debug = result?.metadata?._azureDebug as Record<string, unknown>;
+    assert.ok("structured" in debug);
+  } finally {
+    f.restore();
+  }
 });

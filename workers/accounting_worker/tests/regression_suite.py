@@ -1408,6 +1408,14 @@ def run() -> None:
     test_descriptionless_fee_rows_are_preserved()
     test_unnamed_fee_rows_are_labelled_from_statement_figures_only()
     test_informational_rows_are_kept_but_not_counted()
+    test_structured_rows_are_selected_when_equal_or_better()
+    test_structured_rows_fallback_to_text_when_weaker_or_unusable()
+    test_structured_rows_preserve_empty_date_fee_info_and_overdrawn_balance()
+    test_no_structured_rows_keeps_text_path_unchanged()
+    test_structured_unsigned_amount_debit_proven_by_balance_continuity()
+    test_structured_unsigned_amount_credit_proven_by_balance_continuity()
+    test_structured_unsigned_amount_unresolved_falls_back_to_text()
+    test_structured_unsigned_amount_unresolved_never_persisted_as_debit()
     run_fnb_extraction_case()
     run_statement_period_case()
     run_missing_column_fallback_case()
@@ -1501,6 +1509,284 @@ def test_unnamed_fee_rows_are_labelled_from_statement_figures_only() -> None:
     assert unknown.description == main.UNNAMED_FEE_DESCRIPTION
     # Amounts are never altered by labelling.
     assert fee.debit_amount == 15.0 and unknown.debit_amount == 30.0
+
+
+def test_structured_rows_are_selected_when_equal_or_better() -> None:
+    import main
+
+    metadata = {"statement_period_end": "2026-03-31"}
+    full_text = "\n".join(
+        [
+            "Transactions in Rand (ZAR)",
+            "01 Mar EFT Deposit Client 1,000.00Cr 1,000.00 Cr",
+            "01 Mar Card Purchase Fuel 300.00 700.00 Cr",
+        ]
+    )
+    structured_rows = [
+        {
+            "pageNumber": 1,
+            "confidence": 0.95,
+            "raw": "01 Mar EFT Deposit Client 1,000.00Cr 1,000.00 Cr",
+            "cells": {
+                "date": "01 Mar",
+                "description": "EFT Deposit Client",
+                "credit": "1,000.00",
+                "balance": "1,000.00 Cr",
+            },
+        },
+        {
+            "pageNumber": 1,
+            "confidence": 0.94,
+            "raw": "01 Mar Card Purchase Fuel 300.00 700.00 Cr",
+            "cells": {
+                "date": "01 Mar",
+                "description": "Card Purchase Fuel",
+                "debit": "300.00",
+                "balance": "700.00 Cr",
+            },
+        },
+    ]
+
+    selected, diagnostics = main.select_transactions_from_sources([], metadata, full_text, structured_rows)
+    assert diagnostics["selected_path"] == "structured", diagnostics
+    summary = main.validation_summary(selected)
+    assert_equal(summary["transaction_count"], 2, "structured-selected financial count")
+    assert_equal(str(summary["total_credits"]), "1000.00", "structured-selected credit total")
+    assert_equal(str(summary["total_debits"]), "300.00", "structured-selected debit total")
+
+    # Better-than-text case: no extractable text transactions, but structured rows
+    # still produce a valid ledger.
+    selected_better, diagnostics_better = main.select_transactions_from_sources(
+        [],
+        metadata,
+        "Statement header only",
+        structured_rows,
+    )
+    assert diagnostics_better["selected_path"] == "structured", diagnostics_better
+    assert_equal(main.financial_transaction_count(selected_better), 2, "structured better-than-text selection")
+
+
+def test_structured_rows_fallback_to_text_when_weaker_or_unusable() -> None:
+    import main
+
+    text, metadata = _build_acapolite_style_statement()
+    weak_rows = [
+        {
+            "pageNumber": 1,
+            "raw": "01 Mar Card Purchase Example 100.00 3,290.09 Cr",
+            "cells": {"date": "01 Mar", "description": "Card Purchase Example", "debit": "100.00", "balance": "3,290.09 Cr"},
+        }
+    ]
+    selected_weak, weak_diag = main.select_transactions_from_sources([], metadata, text, weak_rows)
+    assert weak_diag["selected_path"] == "text", weak_diag
+    assert str(weak_diag.get("fallback_reason") or "").startswith("structured_weaker_than_text"), weak_diag
+    assert_equal(len(selected_weak), FNB_EXPECTED["transaction_count"], "weak structured falls back to full text parse")
+
+    unusable_rows = [{"pageNumber": 1, "cells": {"date": "", "description": "", "amount": ""}}]
+    selected_unusable, unusable_diag = main.select_transactions_from_sources([], metadata, text, unusable_rows)
+    assert unusable_diag["selected_path"] == "text", unusable_diag
+    assert str(unusable_diag.get("fallback_reason") or "").startswith("structured_unusable"), unusable_diag
+    assert_equal(len(selected_unusable), FNB_EXPECTED["transaction_count"], "unusable structured falls back to text")
+
+
+def test_structured_rows_preserve_empty_date_fee_info_and_overdrawn_balance() -> None:
+    import main
+
+    metadata = {"statement_period_end": "2026-03-31"}
+    rows = [
+        {
+            "pageNumber": 1,
+            "confidence": 0.91,
+            "raw": "01 Mar Card Purchase Supplier 75,496.08 72,814.46 Dr",
+            "cells": {
+                "date": "01 Mar",
+                "description": "Card Purchase Supplier",
+                "reference": "ABCD123",
+                "debit": "75,496.08",
+                "balance": "72,814.46 Dr",
+            },
+        },
+        {
+            "pageNumber": 1,
+            "confidence": 0.90,
+            "raw": "Service Fees 523.80 73,338.26 Dr",
+            "cells": {
+                "date": "",
+                "description": "Service Fees",
+                "debit": "523.80",
+                "balance": "73,338.26 Dr",
+            },
+        },
+        {
+            "pageNumber": 1,
+            "confidence": 0.88,
+            "raw": "Express Pmt Pending",
+            "cells": {
+                "date": "",
+                "description": "Express Pmt Pending",
+                "amount": "0.00",
+                "balance": "73,338.26 Dr",
+            },
+        },
+        {
+            "pageNumber": 1,
+            "confidence": 0.86,
+            "raw": "26 Apr 550.00 148,157.78Cr",
+            "cells": {
+                "date": "",
+                "description": "",
+                "debit": "550.00",
+                "balance": "148,157.78Cr",
+            },
+        },
+    ]
+
+    txns, parse_diag = main.parse_structured_rows(rows, metadata)
+    assert_equal(len(txns), 4, "structured rows parsed")
+    assert parse_diag["date_inferred_rows"] >= 2, parse_diag
+
+    first = txns[0]
+    assert_equal(first.running_balance, -72814.46, "Dr balance parsed as negative")
+    assert "reference: ABCD123" in (first.notes or ""), first.notes
+
+    second = txns[1]
+    assert second.transaction_date == first.transaction_date, "empty-date row must inherit group date"
+
+    fee = next((txn for txn in txns if txn.debit_amount == 550.0), None)
+    assert fee is not None, "descriptionless fee row must be preserved"
+    assert fee.description in {"Transaction Fee", main.UNNAMED_FEE_DESCRIPTION}, fee.description
+
+    financial, informational = main.split_ledger_rows(txns)
+    assert_equal(len(financial), 3, "structured financial row count")
+    assert_equal(len(informational), 1, "structured informational row count")
+
+
+def test_no_structured_rows_keeps_text_path_unchanged() -> None:
+    import main
+
+    text, metadata = _build_acapolite_style_statement()
+    expected = main.parse_transactions([], metadata, text)
+    selected, diagnostics = main.select_transactions_from_sources([], metadata, text, None)
+
+    assert diagnostics["selected_path"] == "text", diagnostics
+    assert diagnostics["fallback_reason"] == "structured_rows_absent", diagnostics
+    assert_equal(len(selected), len(expected), "no structured rows should keep text output count")
+    expected_summary = main.validation_summary(expected)
+    selected_summary = main.validation_summary(selected)
+    assert_equal(expected_summary["transaction_count"], selected_summary["transaction_count"], "text transaction count unchanged")
+    assert_equal(str(expected_summary["total_debits"]), str(selected_summary["total_debits"]), "text debit total unchanged")
+    assert_equal(str(expected_summary["total_credits"]), str(selected_summary["total_credits"]), "text credit total unchanged")
+
+
+def test_structured_unsigned_amount_debit_proven_by_balance_continuity() -> None:
+    import main
+
+    metadata = {"statement_period_end": "2026-03-31"}
+    rows = [
+        {
+            "pageNumber": 1,
+            "cells": {
+                "date": "01 Mar",
+                "description": "Seed credit",
+                "credit": "1,000.00",
+                "balance": "1,000.00 Cr",
+            },
+        },
+        {
+            "pageNumber": 1,
+            "cells": {
+                "date": "01 Mar",
+                "description": "Unsigned amount row",
+                "amount": "200.00",
+                "balance": "800.00 Cr",
+            },
+        },
+    ]
+    txns, diag = main.parse_structured_rows(rows, metadata)
+    assert_equal(diag["rejected_reasons"].get("ambiguous_unsigned_amount_direction", 0), 0, "no ambiguity rejection")
+    assert_equal(len(txns), 2, "both rows parsed")
+    assert_equal(txns[1].debit_amount, 200.0, "unsigned amount resolved to debit")
+    assert_equal(txns[1].credit_amount, None, "unsigned amount not credit")
+
+
+def test_structured_unsigned_amount_credit_proven_by_balance_continuity() -> None:
+    import main
+
+    metadata = {"statement_period_end": "2026-03-31"}
+    rows = [
+        {
+            "pageNumber": 1,
+            "cells": {
+                "date": "01 Mar",
+                "description": "Seed credit",
+                "credit": "1,000.00",
+                "balance": "1,000.00 Cr",
+            },
+        },
+        {
+            "pageNumber": 1,
+            "cells": {
+                "date": "01 Mar",
+                "description": "Unsigned amount row",
+                "amount": "200.00",
+                "balance": "1,200.00 Cr",
+            },
+        },
+    ]
+    txns, diag = main.parse_structured_rows(rows, metadata)
+    assert_equal(diag["rejected_reasons"].get("ambiguous_unsigned_amount_direction", 0), 0, "no ambiguity rejection")
+    assert_equal(len(txns), 2, "both rows parsed")
+    assert_equal(txns[1].credit_amount, 200.0, "unsigned amount resolved to credit")
+    assert_equal(txns[1].debit_amount, None, "unsigned amount not debit")
+
+
+def test_structured_unsigned_amount_unresolved_falls_back_to_text() -> None:
+    import main
+
+    metadata = {"statement_period_end": "2026-03-31"}
+    text = "\n".join(
+        [
+            "Transactions in Rand (ZAR)",
+            "01 Mar EFT Deposit Seed 1,000.00Cr 1,000.00 Cr",
+            "01 Mar Card Purchase Proven Debit 200.00 800.00 Cr",
+        ]
+    )
+    rows = [
+        {
+            "pageNumber": 1,
+            "cells": {
+                "date": "01 Mar",
+                "description": "Unsigned amount row",
+                "amount": "200.00",
+            },
+        }
+    ]
+    selected, diagnostics = main.select_transactions_from_sources([], metadata, text, rows)
+    assert diagnostics["selected_path"] == "text", diagnostics
+    assert str(diagnostics.get("fallback_reason") or "").startswith("structured_unusable"), diagnostics
+    assert "ambiguous_unsigned_amount_direction" in str(diagnostics.get("structured_parse_diagnostics", {}).get("rejected_reasons", {}))
+    assert_equal(main.financial_transaction_count(selected), 2, "text fallback keeps financial rows")
+
+
+def test_structured_unsigned_amount_unresolved_never_persisted_as_debit() -> None:
+    import main
+
+    metadata = {"statement_period_end": "2026-03-31"}
+    rows = [
+        {
+            "pageNumber": 1,
+            "cells": {
+                "date": "01 Mar",
+                "description": "Unsigned amount row",
+                "amount": "200.00",
+            },
+        }
+    ]
+    txns, diag = main.parse_structured_rows(rows, metadata)
+    assert_equal(len(txns), 0, "ambiguous unsigned row is rejected")
+    assert_equal(diag["rejected_reasons"].get("ambiguous_unsigned_amount_direction"), 1, "ambiguity reason counted")
+    debits = [txn for txn in txns if txn.debit_amount == 200.0]
+    assert_equal(len(debits), 0, "ambiguous unsigned row was not stored as debit")
 
 
 if __name__ == "__main__":

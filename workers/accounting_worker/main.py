@@ -103,6 +103,14 @@ class ProcessRequest(BaseModel):
     extraction_source: str | None = None
     ocr_used: bool | None = None
     pre_extracted_text: str | None = None
+    extraction_format_version: int | None = None
+    pre_extracted_rows: list[dict[str, Any]] | None = None
+    structured_provider: str | None = None
+    # 0..1 row continuity from structured quality (not a global structured confidence score).
+    structured_row_continuity: float | None = None
+    structured_page_count: int | None = None
+    structured_row_count: int | None = None
+    structured_diagnostics: dict[str, Any] | None = None
     extraction_debug: dict[str, Any] | None = None
 
 
@@ -1752,6 +1760,441 @@ def is_non_financial_informational_row(
     if not description:
         return False
     return any(pattern in description for pattern in INFORMATIONAL_ROW_PATTERNS)
+
+
+def append_note(transaction: ParsedTransaction, note: str) -> None:
+    cleaned = note.strip()
+    if not cleaned:
+        return
+    if transaction.notes:
+        transaction.notes = f"{transaction.notes}; {cleaned}"
+    else:
+        transaction.notes = cleaned
+
+
+def resolve_amount_direction_from_continuity(
+    amount_abs: Decimal,
+    previous_balance: Decimal | None,
+    current_balance: Decimal | None,
+) -> str | None:
+    if previous_balance is None or current_balance is None:
+        return None
+    debit_candidate = (previous_balance - amount_abs).quantize(CENT, rounding=ROUND_HALF_UP)
+    credit_candidate = (previous_balance + amount_abs).quantize(CENT, rounding=ROUND_HALF_UP)
+    target = current_balance.quantize(CENT, rounding=ROUND_HALF_UP)
+    debit_matches = debit_candidate == target
+    credit_matches = credit_candidate == target
+    if debit_matches == credit_matches:
+        return None
+    return "debit" if debit_matches else "credit"
+
+
+def parse_structured_rows(
+    rows: list[dict[str, Any]],
+    metadata: dict[str, Any],
+) -> tuple[list[ParsedTransaction], dict[str, Any]]:
+    """Provider-agnostic StructuredRow[] -> ParsedTransaction[].
+
+    This only transforms rows. Selection happens separately; the existing text
+    parser remains intact and is always evaluated in parallel.
+    """
+    transactions: list[ParsedTransaction] = []
+    rejected_reasons: dict[str, int] = {}
+    date_inferred_count = 0
+    informational_row_count = 0
+    last_date_value = ""
+    previous_running_balance: Decimal | None = None
+
+    def reject(reason: str) -> None:
+        rejected_reasons[reason] = rejected_reasons.get(reason, 0) + 1
+
+    for row_index, row in enumerate(rows, start=1):
+        if not isinstance(row, dict):
+            reject("row_not_an_object")
+            continue
+        cells = row.get("cells")
+        if not isinstance(cells, dict):
+            reject("cells_missing_or_invalid")
+            continue
+
+        date_cell = normalize_cell(cells.get("date"))
+        description_cell = normalize_cell(cells.get("description"))
+        reference_cell = normalize_cell(cells.get("reference"))
+        debit_cell = normalize_cell(cells.get("debit"))
+        credit_cell = normalize_cell(cells.get("credit"))
+        amount_cell = normalize_cell(cells.get("amount"))
+        balance_cell = normalize_cell(cells.get("balance"))
+
+        raw_date = date_cell
+        date_inferred = False
+        if date_cell:
+            last_date_value = date_cell
+        elif last_date_value:
+            raw_date = last_date_value
+            date_inferred = True
+        else:
+            fallback_date = str(metadata.get("statement_period_end") or metadata.get("statement_date") or "").strip()
+            if fallback_date:
+                raw_date = fallback_date
+                date_inferred = True
+
+        raw_row_value = str(row.get("raw") or "").strip()
+        recovered_from_raw = parse_fnb_transaction_line(raw_row_value, metadata) if raw_row_value else None
+
+        description = description_cell or reference_cell
+        if not description and recovered_from_raw is not None:
+            description = recovered_from_raw.description
+        if not description and raw_date:
+            description = "Structured ledger row"
+        if not description:
+            reject("description_missing")
+            continue
+
+        debit_amount: float | None = None
+        credit_amount: float | None = None
+
+        parsed_debit = parse_money_cell(debit_cell)
+        parsed_credit = parse_money_cell(credit_cell)
+        if parsed_debit is not None:
+            debit_amount = decimal_to_float(parsed_debit.copy_abs())
+        if parsed_credit is not None:
+            credit_amount = decimal_to_float(parsed_credit.copy_abs())
+
+        if debit_amount is None and credit_amount is None and amount_cell:
+            amount_value = parse_money_cell(amount_cell)
+            if amount_value is not None:
+                amount_abs = amount_value.copy_abs()
+                if amount_abs == Decimal("0.00"):
+                    amount_value = None
+                else:
+                    matches = list(MONEY_TOKEN.finditer(amount_cell.replace("\u00a0", " ").strip()))
+                    last_match = matches[-1] if matches else None
+                    suffix = (last_match.group("suffix") or "").lower() if last_match else ""
+                    has_negative_marker = bool(last_match and (last_match.group("negative") or last_match.group("bracket")))
+                    if suffix == "cr":
+                        credit_amount = decimal_to_float(amount_abs)
+                    elif suffix == "dr" or has_negative_marker or amount_value < 0:
+                        debit_amount = decimal_to_float(amount_abs)
+                    else:
+                        continuity_direction = resolve_amount_direction_from_continuity(
+                            amount_abs,
+                            previous_running_balance,
+                            parse_money_cell(balance_cell),
+                        )
+                        if continuity_direction == "debit":
+                            debit_amount = decimal_to_float(amount_abs)
+                        elif continuity_direction == "credit":
+                            credit_amount = decimal_to_float(amount_abs)
+                        else:
+                            reject("ambiguous_unsigned_amount_direction")
+                            continue
+
+        if recovered_from_raw is not None and not amount_cell:
+            if debit_amount is None and recovered_from_raw.debit_amount is not None:
+                debit_amount = recovered_from_raw.debit_amount
+            if credit_amount is None and recovered_from_raw.credit_amount is not None:
+                credit_amount = recovered_from_raw.credit_amount
+
+        balance_amount = decimal_to_float(parse_money_cell(balance_cell))
+        if balance_amount is None and recovered_from_raw is not None and recovered_from_raw.running_balance is not None:
+            balance_amount = recovered_from_raw.running_balance
+
+        informational_row = False
+        if debit_amount is None and credit_amount is None:
+            zero_like = any(
+                parse_money_cell(value) == Decimal("0.00")
+                for value in (debit_cell, credit_cell, amount_cell)
+                if value
+            )
+            if zero_like or balance_amount is not None:
+                debit_amount = 0.0
+                credit_amount = 0.0
+                informational_row = True
+            else:
+                reject("no_amount_information")
+                continue
+
+        raw_text = raw_row_value
+        if not raw_text:
+            raw_text = " | ".join(
+                value
+                for value in (
+                    date_cell,
+                    description_cell,
+                    reference_cell,
+                    debit_cell,
+                    credit_cell,
+                    amount_cell,
+                    balance_cell,
+                )
+                if value
+            ).strip()
+        if not raw_text:
+            raw_text = f"structured_row_{row_index}"
+
+        row_confidence = row.get("confidence")
+        scaled_row_confidence: float | None = None
+        if isinstance(row_confidence, (int, float)):
+            scaled = float(row_confidence)
+            if scaled <= 1:
+                scaled *= 100.0
+            scaled_row_confidence = max(0.0, min(100.0, scaled))
+        base_confidence = scaled_row_confidence if scaled_row_confidence is not None else 84.0
+
+        page_number = row.get("pageNumber")
+        source_page = page_number if isinstance(page_number, int) and page_number > 0 else None
+        transaction = build_transaction(
+            raw_date,
+            description,
+            debit_amount,
+            credit_amount,
+            balance_amount,
+            metadata,
+            source_page,
+            raw_text,
+            base_confidence,
+        )
+        if transaction is None:
+            reject("transaction_build_failed")
+            continue
+
+        transaction.source_row = row_index
+        if reference_cell:
+            append_note(transaction, f"reference: {reference_cell}")
+        if date_inferred:
+            append_note(transaction, "date_inferred_from_previous_row: true")
+            date_inferred_count += 1
+        if informational_row:
+            append_note(transaction, "informational_row: true")
+            informational_row_count += 1
+        if scaled_row_confidence is not None:
+            append_note(transaction, f"row_confidence: {round(scaled_row_confidence, 2)}")
+
+        transactions.append(transaction)
+        if transaction.running_balance is not None:
+            previous_running_balance = decimal_amount(transaction.running_balance)
+
+    deduped = dedupe_transactions(transactions)
+    label_unnamed_fee_rows(deduped, metadata)
+    deduped = insert_inferred_fnb_service_fees(deduped, metadata)
+
+    diagnostics = {
+        "received_rows": len(rows),
+        "parsed_rows": len(transactions),
+        "deduped_rows": len(deduped),
+        "rejected_rows": max(len(rows) - len(transactions), 0),
+        "rejected_reasons": rejected_reasons,
+        "date_inferred_rows": date_inferred_count,
+        "informational_rows": informational_row_count,
+    }
+    return deduped, diagnostics
+
+
+def transaction_quality_snapshot(metadata: dict[str, Any], transactions: list[ParsedTransaction]) -> dict[str, Any]:
+    summary = validation_summary(transactions)
+    extraction = validate_extraction(metadata, transactions)
+    failures = extraction.get("failures") if isinstance(extraction.get("failures"), list) else []
+
+    expected_count = metadata.get("expected_transaction_count")
+    expected_credit_count = metadata.get("expected_credit_count")
+    expected_debit_count = metadata.get("expected_debit_count")
+    declared_credit_total = metadata.get("declared_credit_total")
+    declared_debit_total = metadata.get("declared_debit_total")
+
+    recon_raw = extraction.get("reconciliation_difference")
+    recon_abs = decimal_amount(recon_raw).copy_abs() if recon_raw is not None else None
+    duplicate_rows = max(0, len(transactions) - len(dedupe_transactions(transactions)))
+    balance_gaps = len(balance_gap_diagnostics(metadata, transactions))
+    financial_count = financial_transaction_count(transactions)
+
+    return {
+        "ledger_rows": len(transactions),
+        "financial_count": financial_count,
+        "debit_count": int(summary["debit_count"]),
+        "credit_count": int(summary["credit_count"]),
+        "debit_total": summary["total_debits"],
+        "credit_total": summary["total_credits"],
+        "opening_balance_evidence": 1 if metadata.get("opening_balance") is not None else 0,
+        "closing_balance_evidence": 1 if metadata.get("closing_balance") is not None else 0,
+        "reconciliation_difference_abs": recon_abs,
+        "failed_checks_count": len(failures),
+        "balance_gap_count": balance_gaps,
+        "duplicate_rows": duplicate_rows,
+        "transaction_count_mismatch": (
+            abs(financial_count - int(expected_count)) if expected_count is not None else None
+        ),
+        "debit_count_mismatch": (
+            abs(int(summary["debit_count"]) - int(expected_debit_count)) if expected_debit_count is not None else None
+        ),
+        "credit_count_mismatch": (
+            abs(int(summary["credit_count"]) - int(expected_credit_count)) if expected_credit_count is not None else None
+        ),
+        "debit_total_variance_abs": (
+            (summary["total_debits"] - decimal_amount(declared_debit_total)).copy_abs()
+            if declared_debit_total is not None
+            else None
+        ),
+        "credit_total_variance_abs": (
+            (summary["total_credits"] - decimal_amount(declared_credit_total)).copy_abs()
+            if declared_credit_total is not None
+            else None
+        ),
+        "status": extraction.get("status"),
+    }
+
+
+def rows_are_usable(
+    structured_rows: list[dict[str, Any]],
+    structured_transactions: list[ParsedTransaction],
+    parse_diagnostics: dict[str, Any],
+) -> tuple[bool, str]:
+    if not structured_rows:
+        return False, "no_rows_received"
+    if not structured_transactions:
+        return False, "no_transactions_parsed_from_rows"
+
+    parsed_rows = int(parse_diagnostics.get("parsed_rows") or 0)
+    if parsed_rows <= 0:
+        return False, "parsed_rows_is_zero"
+
+    financial_count = financial_transaction_count(structured_transactions)
+    if financial_count <= 0:
+        return False, "no_financial_transactions"
+
+    duplicate_rows = max(0, len(structured_transactions) - len(dedupe_transactions(structured_transactions)))
+    if duplicate_rows > max(5, len(structured_transactions) // 4):
+        return False, f"too_many_duplicates:{duplicate_rows}"
+
+    return True, "usable"
+
+
+def structured_is_at_least_as_reliable(
+    structured_metrics: dict[str, Any],
+    text_metrics: dict[str, Any],
+) -> tuple[bool, str]:
+    worsened: list[str] = []
+
+    def greater_is_worse(name: str) -> None:
+        candidate = structured_metrics.get(name)
+        baseline = text_metrics.get(name)
+        if candidate is None or baseline is None:
+            return
+        if candidate > baseline:
+            worsened.append(name)
+
+    def smaller_is_worse(name: str) -> None:
+        candidate = structured_metrics.get(name)
+        baseline = text_metrics.get(name)
+        if candidate is None or baseline is None:
+            return
+        if candidate < baseline:
+            worsened.append(name)
+
+    smaller_is_worse("financial_count")
+    greater_is_worse("failed_checks_count")
+    greater_is_worse("balance_gap_count")
+    greater_is_worse("duplicate_rows")
+    greater_is_worse("transaction_count_mismatch")
+    greater_is_worse("debit_count_mismatch")
+    greater_is_worse("credit_count_mismatch")
+    greater_is_worse("debit_total_variance_abs")
+    greater_is_worse("credit_total_variance_abs")
+    greater_is_worse("reconciliation_difference_abs")
+    smaller_is_worse("opening_balance_evidence")
+    smaller_is_worse("closing_balance_evidence")
+
+    if worsened:
+        return False, "worse_metrics:" + ",".join(sorted(set(worsened)))
+
+    improved = False
+    for name in (
+        "financial_count",
+        "opening_balance_evidence",
+        "closing_balance_evidence",
+    ):
+        candidate = structured_metrics.get(name)
+        baseline = text_metrics.get(name)
+        if candidate is not None and baseline is not None and candidate > baseline:
+            improved = True
+
+    for name in (
+        "failed_checks_count",
+        "balance_gap_count",
+        "duplicate_rows",
+        "transaction_count_mismatch",
+        "debit_count_mismatch",
+        "credit_count_mismatch",
+        "debit_total_variance_abs",
+        "credit_total_variance_abs",
+        "reconciliation_difference_abs",
+    ):
+        candidate = structured_metrics.get(name)
+        baseline = text_metrics.get(name)
+        if candidate is not None and baseline is not None and candidate < baseline:
+            improved = True
+
+    return True, "better" if improved else "equal"
+
+
+def select_transactions_from_sources(
+    pages: list[dict[str, Any]],
+    metadata: dict[str, Any],
+    full_text: str,
+    structured_rows: list[dict[str, Any]] | None,
+) -> tuple[list[ParsedTransaction], dict[str, Any]]:
+    diagnostics: dict[str, Any] = {
+        "selected_path": "text",
+        "fallback_reason": None,
+        "structured_rows_received": len(structured_rows or []),
+        "structured_rows_usable": False,
+        "structured_rejection_reason": "no_rows_received",
+        "text_metrics": None,
+        "structured_metrics": None,
+    }
+
+    structured_transactions: list[ParsedTransaction] = []
+    structured_metrics: dict[str, Any] | None = None
+    if structured_rows:
+        structured_transactions, parse_diag = parse_structured_rows(structured_rows, metadata)
+        structured_metrics = (
+            transaction_quality_snapshot(metadata, structured_transactions)
+            if structured_transactions
+            else None
+        )
+        diagnostics["structured_parse_diagnostics"] = parse_diag
+        diagnostics["structured_metrics"] = structured_metrics
+        usable, reason = rows_are_usable(structured_rows, structured_transactions, parse_diag)
+        diagnostics["structured_rows_usable"] = usable
+        diagnostics["structured_rejection_reason"] = None if usable else reason
+    else:
+        diagnostics["fallback_reason"] = "structured_rows_absent"
+
+    text_transactions = parse_transactions(pages, metadata, full_text) or []
+    text_metrics = transaction_quality_snapshot(metadata, text_transactions)
+    diagnostics["text_metrics"] = text_metrics
+
+    if not structured_rows:
+        return text_transactions, diagnostics
+
+    if not diagnostics["structured_rows_usable"]:
+        reason = str(diagnostics.get("structured_rejection_reason") or "unusable")
+        diagnostics["fallback_reason"] = f"structured_unusable:{reason}"
+        return text_transactions, diagnostics
+
+    if structured_metrics is None:
+        diagnostics["fallback_reason"] = "structured_metrics_unavailable"
+        return text_transactions, diagnostics
+
+    not_worse, compare_reason = structured_is_at_least_as_reliable(structured_metrics, text_metrics)
+    if not_worse:
+        diagnostics["selected_path"] = "structured"
+        diagnostics["fallback_reason"] = None
+        diagnostics["structured_rejection_reason"] = compare_reason
+        return structured_transactions, diagnostics
+
+    diagnostics["fallback_reason"] = f"structured_weaker_than_text:{compare_reason}"
+    diagnostics["structured_rejection_reason"] = compare_reason
+    return text_transactions, diagnostics
 
 
 def split_ledger_rows(transactions: list[ParsedTransaction]) -> tuple[list[ParsedTransaction], list[ParsedTransaction]]:
@@ -3947,6 +4390,17 @@ def process_fnb_statement(payload: ProcessRequest, authorization: str | None = H
             extraction_source=payload.extraction_source,
             ocr_used=bool(payload.ocr_used),
         )
+        provided_structured_rows = payload.pre_extracted_rows or []
+        log_event(
+            "worker.pre_extracted_rows_received",
+            run_id=payload.run_id,
+            received=bool(provided_structured_rows),
+            extraction_format_version=payload.extraction_format_version,
+            structured_provider=payload.structured_provider,
+            structured_row_count=payload.structured_row_count if payload.structured_row_count is not None else len(provided_structured_rows),
+            structured_page_count=payload.structured_page_count,
+            structured_row_continuity=payload.structured_row_continuity,
+        )
         # Choose the text that actually PARSES, not the one that is longest.
         #
         # This previously accepted the provided text whenever it was at least half
@@ -4035,11 +4489,19 @@ def process_fnb_statement(payload: ProcessRequest, authorization: str | None = H
             step_label="Parsing transactions",
             progress=70,
         )
-        transactions = parse_transactions(pages, metadata, full_text) or []
+        selected_transactions, structured_selection = select_transactions_from_sources(
+            pages,
+            metadata,
+            full_text,
+            payload.pre_extracted_rows if isinstance(payload.pre_extracted_rows, list) else None,
+        )
+        transactions = selected_transactions or []
         classification_rules = fetch_classification_rules(supabase, payload.workspace_id) or []
         learned_rules_applied = apply_learned_classification_rules(transactions, classification_rules)
         # Accounting-parser diagnostics (null-safe).
         _summary = validation_summary(transactions)
+        structured_metrics = structured_selection.get("structured_metrics") or {}
+        text_metrics = structured_selection.get("text_metrics") or {}
         log_event(
             "worker.accounting_parser",
             run_id=payload.run_id,
@@ -4049,6 +4511,17 @@ def process_fnb_statement(payload: ProcessRequest, authorization: str | None = H
             credit_count=_summary.get("credit_count"),
             debit_count=_summary.get("debit_count"),
             parser_method=payload.parser_method,
+            selected_path=structured_selection.get("selected_path"),
+            structured_rows_received=structured_selection.get("structured_rows_received"),
+            structured_rows_usable=structured_selection.get("structured_rows_usable"),
+            structured_rejection_reason=structured_selection.get("structured_rejection_reason"),
+            fallback_reason=structured_selection.get("fallback_reason"),
+            structured_financial_count=structured_metrics.get("financial_count"),
+            structured_debit_total=str(structured_metrics.get("debit_total")) if structured_metrics.get("debit_total") is not None else None,
+            structured_credit_total=str(structured_metrics.get("credit_total")) if structured_metrics.get("credit_total") is not None else None,
+            text_financial_count=text_metrics.get("financial_count"),
+            text_debit_total=str(text_metrics.get("debit_total")) if text_metrics.get("debit_total") is not None else None,
+            text_credit_total=str(text_metrics.get("credit_total")) if text_metrics.get("credit_total") is not None else None,
         )
         log_event(
             "worker.statement_parsed",
@@ -4059,6 +4532,7 @@ def process_fnb_statement(payload: ProcessRequest, authorization: str | None = H
             parser_version=parser_version,
             service_fee_rows=sum(1 for transaction in transactions if transaction.description.startswith("#")),
             learned_rules_applied=learned_rules_applied,
+            selected_path=structured_selection.get("selected_path"),
         )
 
         if not transactions:
@@ -4074,6 +4548,8 @@ def process_fnb_statement(payload: ProcessRequest, authorization: str | None = H
                 "pre_extracted_text_length": pipeline_debug.get("preExtractedTextLength", len((payload.pre_extracted_text or "").strip())),
                 "sample_text": (full_text or "")[:1000],
                 "reason_no_transactions": pipeline_debug.get("reasonNoTransactions"),
+                "selected_path": structured_selection.get("selected_path"),
+                "structured_fallback_reason": structured_selection.get("fallback_reason"),
             }
             reason = parser_debug["reason_no_transactions"] or "No FNB transactions could be parsed from this PDF."
             log_warning("worker.no_transactions_parsed", run_id=payload.run_id, diagnostics=diagnostics, parser_debug=parser_debug)

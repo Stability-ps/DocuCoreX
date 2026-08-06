@@ -26,6 +26,8 @@
 import type { ExtractionResult, ExtractionPage } from "@/lib/pdf/types";
 import { parseStatementMetadata, parseTransactionsFromText } from "@/lib/pdf/metadata";
 import { pdfLog } from "@/lib/pdf/log";
+import type { AzureAnalyzeResult, AzureOperation, AzurePage } from "@/lib/pdf/azure/azureTypes";
+import { buildStructured, structuredSummary } from "@/lib/pdf/azure/buildStructured";
 
 const AZURE_API_VERSION = "2024-11-30";
 const AZURE_MODEL = "prebuilt-layout";
@@ -59,25 +61,11 @@ export function buildAnalyzeUrl(endpoint: string, model = AZURE_MODEL): string {
   return `${endpoint.replace(/\/$/, "")}/documentintelligence/documentModels/${model}:analyze?_overload=analyzeDocument&api-version=${AZURE_API_VERSION}`;
 }
 
-type AzurePage = {
-  pageNumber?: number;
-  words?: Array<{ content?: string; confidence?: number }>;
-  lines?: Array<{ content?: string }>;
-  spans?: Array<{ offset?: number; length?: number }>;
-};
-
-type AzureAnalyzeResult = {
-  content?: string;
-  pages?: AzurePage[];
-  tables?: Array<{ rowCount?: number; columnCount?: number; cells?: Array<{ rowIndex?: number; columnIndex?: number; content?: string }> }>;
-  paragraphs?: Array<{ content?: string }>;
-};
-
-type AzureOperation = {
-  status?: "notStarted" | "running" | "succeeded" | "failed" | string;
-  analyzeResult?: AzureAnalyzeResult;
-  error?: { code?: string; message?: string };
-};
+// Raw response shapes live in ./azure/azureTypes so the structured normalizers
+// share exactly the declaration this provider parses against. They were widened
+// in phase 2: the previous local types declared only the fields this file read,
+// which is why cells, geometry and per-word confidence had no route into the
+// pipeline even though Azure was already returning them on every call.
 
 /** Diagnostics surfaced in parser debug alongside the other providers. */
 export type AzureDebug = {
@@ -90,6 +78,8 @@ export type AzureDebug = {
   confidence: number | null;
   duration_ms: number;
   status: number | string;
+  /** Structured-extraction counts (phase 2). Null when nothing was recovered. */
+  structured: ReturnType<typeof structuredSummary>;
 };
 
 // Pure: mean per-word confidence, scaled to 0..100. Azure reports 0..1.
@@ -237,6 +227,19 @@ export async function extractWithAzureDocumentIntelligence(buffer: Uint8Array, f
     const confidence = meanWordConfidence(azurePages);
     const wordCount = azurePages.reduce((sum, p) => sum + (p.words?.length ?? 0), 0);
 
+    // Phase 2: keep the structure Azure returned instead of discarding it. This
+    // is attached to the result and read by NO decision — combinedText,
+    // transactions, metadata and confidence below are all computed exactly as
+    // before. A throw here must not cost us a successful extraction, so it
+    // degrades to no structure rather than failing the provider.
+    let structured: ExtractionResult["structured"];
+    try {
+      structured = buildStructured(analyze);
+    } catch (error) {
+      structured = undefined;
+      pdfLog("azure.structured.failed", { error: error instanceof Error ? error.message : String(error) });
+    }
+
     const debug: AzureDebug = {
       provider: "azure_di",
       model: AZURE_MODEL,
@@ -247,6 +250,7 @@ export async function extractWithAzureDocumentIntelligence(buffer: Uint8Array, f
       confidence,
       duration_ms: Date.now() - started,
       status: 200,
+      structured: structuredSummary(structured),
     };
 
     pdfLog("azure_finished", {
@@ -267,6 +271,7 @@ export async function extractWithAzureDocumentIntelligence(buffer: Uint8Array, f
       warnings: combinedText.trim().length === 0 ? ["Azure Document Intelligence returned no text."] : [],
       confidence,
       confidenceSource: confidence == null ? null : "azure-word",
+      structured,
     };
   } catch (error) {
     const timedOut = error instanceof Error && (error.name === "TimeoutError" || error.name === "AbortError");
