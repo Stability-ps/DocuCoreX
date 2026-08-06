@@ -15,7 +15,7 @@ Last verified against the tree on 2026-08-06 (`main` @ 24837a7).
 | Phase | Status | Evidence |
 |---|---|---|
 | **1. Three confidences** | ✅ **shipped** | `lib/accounting/confidence.ts` (`buildConfidenceTrio`, `reconciliationConfidence`); migration `019_confidence_split.sql`; PRs #25, #26 |
-| **2. Azure structured parsing** | ❌ **not started** | no `lib/pdf/azure/` folder; no `structured` field on `ExtractionResult` in `lib/pdf/types.ts` |
+| **2. Azure structured parsing** | ✅ **shipped** | `lib/pdf/azure/*` (geometry, columnRoles, normalizeTables, layout, rowsFromTables, buildStructured); `structured?` on `ExtractionResult`; `tests/pdf/azure-structured.test.ts`. Three deviations from §3/§4 — see below |
 | **3. Structured scoring + ranking** | ❌ **not started** | `scoreExtraction.ts` unchanged; no structured signals |
 | **4. Worker protocol v2** | ❌ **not started** | `buildWorkerInput` still returns `preExtractedText: string` only (`lib/pdf/workerHandoff.ts:38`); worker has no `transactions_from_rows` |
 | **5. Shadow measurement** | ⚠️ **built, never run** | `lib/pdf/shadowComparison.ts`, migrations `018`, `020`; PRs #25, #26 — but see below |
@@ -31,15 +31,37 @@ no environment — it is commented out in `.env.example` and absent from
 the plan says measure before committing to phase 4, and nothing has been
 measured. Enabling the flag costs one variable.
 
-**Phase 4 has no producer.** Azure's structure is discarded before it ever
-reaches the handoff. `toExtractionTables`
-(`extractWithAzureDocumentIntelligence.ts:111`) flattens `cells[]` into
-`string[][]`, dropping `rowSpan`, `columnSpan`, `polygon`, per-cell
-`confidence` and `kind` — everything §4 depends on. The result is attached to
-page 1 only (`:234`) and is used for scoring, never for transactions. So phase 4
-cannot consume `StructuredRow[]` until phase 2 produces them: **2 → 3 → 4 is a
-hard ordering, not a preference.** Building 4 first means writing a consumer
-against a contract that has no implementation to validate it.
+**Phase 4 now has a producer, and did not before.** Until phase 2 landed, Azure's
+structure was discarded at the door: `toExtractionTables` flattened `cells[]`
+into `string[][]`, dropping `rowSpan`, `columnSpan`, `polygon`, per-cell
+`confidence` and `kind` — everything §4 depends on. **2 → 3 → 4 is a hard
+ordering, not a preference**; building 4 first would have meant writing a
+consumer against a contract with no implementation to validate it.
+
+### Where the implementation deviates from this plan
+
+The plan is not authoritative where it is wrong. Three corrections, all made in
+phase 2 and all covered by tests:
+
+1. **§4b's continuation rule is wrong for FNB and was not implemented as
+   written.** The plan treats "empty date + populated description" as a wrapped
+   description. FNB prints the date **once per date group**, so every later
+   transaction in a group has no date of its own — that rule folds real debits
+   into the previous row and loses them, which is precisely the ACAPOLITE
+   failure the accounting regression fixture exists to catch. The discriminator
+   is **money, not date**: a row qualifies only with no date, no value in any
+   money column, and some description text.
+2. **`ColumnRole` gains `"amount"`.** FNB prints one signed Amount column with a
+   Cr/Dr suffix rather than separate debit and credit columns; without it the
+   most important column on a real statement resolves to `"unknown"`.
+3. **`StructuredRow.absorbedRows` replaces `continuationOf`.** Joining happens
+   in Node where the polygons are, so continuation rows are merged rather than
+   emitted separately and the worker never redoes geometry in Python. The useful
+   record is therefore the reverse direction — which source rows were folded in.
+
+Also **not** implemented: `keyValues.ts`. It requires the
+`features=keyValuePairs` add-on, which bills per page, and §10 question 4 is
+unanswered — requesting it would start the spend before the decision.
 
 ---
 
@@ -359,9 +381,9 @@ Phased so each lands independently and is separately revertible.
 | Phase | Work | Risk | Value without later phases | Status |
 |---|---|---|---|---|
 | **1. Three confidences** | Split the metric; API + UI; no extraction change | very low | **High** — ends the misdiagnosis | ✅ shipped |
-| **2. Azure structured parsing** | `lib/pdf/azure/*`, contract in types, rows from tables, geometry joining | low | Node-side scoring only | ❌ not started |
+| **2. Azure structured parsing** | `lib/pdf/azure/*`, contract in types, rows from tables, geometry joining | low | Node-side scoring only | ✅ shipped |
 | **3. Structured scoring + ranking** | Extend `scoreExtraction`, `mergeExtractionResults` | medium | Better provider choice | ❌ not started |
-| **4. Worker protocol v2** | `main.py` structured path, `rows_are_usable`, regression suite | **high** | **This is where users see it** | ❌ blocked on 2 |
+| **4. Worker protocol v2** | `main.py` structured path, `rows_are_usable`, regression suite | **high** | **This is where users see it** | ❌ unblocked, not started |
 | **5. Shadow measurement** | Option C from §0 — run Azure on accepted statements, record only | low | Data to justify §0 option B | ⚠️ built, flag never set |
 | **6. Persist structure** | Migration 018, diagnostics UI | low | Auditability | ⚠️ shadow only |
 
@@ -372,19 +394,17 @@ lines built around text lines.
 
 ### Revised sequencing (2026-08-06)
 
-Phase 1 is done and phase 5 is written but idle, so the next step is one of:
+Phases 1 and 2 are done. Phase 4 is unblocked but should still not be next:
 
 1. **Set `ACCOUNTING_SHADOW_AZURE=true`** and let phase 5 do the job it was built
    for. One variable, no code. Until this runs, §0's option A/B/C question is
-   being answered by assertion rather than evidence, and phases 2–4 are being
-   justified by a benefit nobody has measured.
-2. **Phase 2**, which is the real prerequisite for phase 4 and is low-risk on its
-   own (it is additive to the Azure provider and changes no decision).
-
-Phase 4 should not start before phase 2 lands. Its worker-side contract is
-defined in §5, but with no producer the structured path could only be exercised
-by synthetic fixtures written to match the same assumptions the code makes —
-which tests nothing.
+   being answered by assertion rather than evidence, and phases 3–4 are justified
+   by a benefit nobody has measured. Phase 2 makes this measurement strictly
+   better: the shadow record can now compare *structure* recovered, not only text.
+2. **Phase 3**, which turns phase 2's descriptive `StructuredQuality` counts into
+   scoring signals. Medium risk, because it changes which candidate wins a merge.
+3. **Phase 4** last, and only with shadow data in hand — it is the phase that
+   touches a ~4,000-line text-oriented FNB parser, and the only one users see.
 
 ### API changes
 
