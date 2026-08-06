@@ -56,15 +56,20 @@ export function getWorkerConfig(): WorkerConfig {
  * AZURE_DOCUMENT_INTELLIGENCE_ENDPOINT absent, isAzureConfigured() requires
  * both, and so the provider was silently inert in production with nothing
  * anywhere reporting it. The endpoint/key booleans are reported SEPARATELY for
- * exactly that reason — "azure: false" would not have shown which half was
- * missing.
+ * exactly that reason: a single `configured: false` would have been correct for
+ * a month while saying nothing about WHICH half was missing.
  */
 export function getExtractionConfig() {
   const present = (value: string | undefined) => Boolean(value?.trim());
   const azureEndpoint = present(process.env.AZURE_DOCUMENT_INTELLIGENCE_ENDPOINT);
   const azureKey = present(process.env.AZURE_DOCUMENT_INTELLIGENCE_KEY);
   return {
-    azure: {
+    // Named for the product, not the vendor shorthand: AZURE_FORM_RECOGNIZER_*
+    // also exists in this project and is a DIFFERENT, legacy credential. A bare
+    // "azure" key invites reading a Form Recognizer value as a Document
+    // Intelligence one, which is close to the confusion that let the missing
+    // endpoint go unnoticed for a month.
+    azureDocumentIntelligence: {
       configured: azureEndpoint && azureKey,
       endpointPresent: azureEndpoint,
       keyPresent: azureKey,
