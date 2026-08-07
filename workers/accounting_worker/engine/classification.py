@@ -30,6 +30,44 @@ fixtures — not from a general-purpose fee vocabulary.
 from __future__ import annotations
 
 import re
+from dataclasses import dataclass
+
+# How much weight a classification carries, and therefore what may revise it.
+#
+# The distinction was previously implicit in a confidence number, which two
+# different things were reading as a proxy: the review UI inferred the
+# classification's SOURCE from it, and row_needs_ai inferred its TRUSTWORTHINESS
+# from it. A number cannot carry both, and it carried neither reliably — a
+# merchant-keyword guess and a fee the bank named itself could both score 84.
+#
+# HARD    the bank's own terminology about the account. Settled.
+# LEARNED approved by this workspace against a real correction. Settled.
+# SOFT    a useful heuristic — a merchant keyword, a direction guess. Revisable.
+# NONE    nothing matched. Unresolved, and it must not read as an answer.
+STRENGTH_HARD = "hard"
+STRENGTH_LEARNED = "learned"
+STRENGTH_SOFT = "soft"
+STRENGTH_NONE = "none"
+
+# The strengths a later stage may revise. HARD and LEARNED are not in it, so a
+# stronger classification cannot be quietly replaced by a weaker one.
+REVISABLE_STRENGTHS = frozenset({STRENGTH_SOFT, STRENGTH_NONE})
+
+
+@dataclass(frozen=True)
+class Classification:
+    """A classification and the standing of the rule that produced it."""
+
+    category: str
+    vat_treatment: str
+    bank_charge: bool
+    confidence: float
+    strength: str
+    reason: str
+
+    @property
+    def is_revisable(self) -> bool:
+        return self.strength in REVISABLE_STRENGTHS
 
 # Unambiguous bank fees. Each of these names a service only a bank performs on
 # your account, so no further context is needed.

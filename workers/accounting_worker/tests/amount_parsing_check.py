@@ -247,9 +247,12 @@ def run():
     assert_equal(fee_bc, True, "cash deposit fee bank_charge flag")
 
     # Generic (not name-specific) related-party / suspense classification.
-    assert_equal(classify_transaction("FNB App Rtc Pmt To Thabo", 5000.0, None)[0], "Related Party / Drawings", "payment to a name")
+    # A payment to an unrecognised name is unresolved, not an owner withdrawal.
+    # Drawings now requires the statement to say so (engine/classification.py).
+    assert_equal(classify_transaction("FNB App Rtc Pmt To Thabo", 5000.0, None)[0], "Suspense / Review Required", "payment to a name is unresolved")
     assert_equal(classify_transaction("FNB App Payment To 819035690", 3000.0, None)[0], "Suspense / Review Required", "payment to a number")
-    assert_equal(classify_transaction("PayShap To Nomsa", 1200.0, None)[0], "Related Party / Drawings", "payshap to a name")
+    assert_equal(classify_transaction("PayShap To Nomsa", 1200.0, None)[0], "Suspense / Review Required", "payshap to a name is unresolved")
+    assert_equal(classify_transaction("FNB App Payment To Owner Drawings", 1200.0, None)[0], "Director Loan / Drawings", "explicit drawings terminology still classifies")
     # An unknown debit must NOT become an Operating Expense by default.
     assert_equal(classify_transaction("Some Unknown Vendor XYZ", 999.0, None)[0], "Suspense / Review Required", "unknown debit is suspense")
     assert_equal(classify_transaction("Magtape Credit 047-Gp Hea-000052034", None, 1234021.00)[0], "Sales / Revenue", "government health receipt account")
@@ -324,7 +327,7 @@ def run():
     acap_meta = parse_metadata(acap_statement)
     assert_equal(acap_meta["expected_transaction_count"], 143, "acapolite expected turnover count")
 
-    txns = parse_transactions([], acap_meta, acap_statement)
+    txns = parse_transactions([], acap_meta, acap_statement, "fnb_business_v1")
     descriptions = " || ".join(t.description.lower() for t in txns)
     for fragment in [
         "internal debit order fnbfuneral",
@@ -447,7 +450,7 @@ def run():
     outside_fees = parse_fnb_service_fee_transactions(outside_section_text, metadata)
     assert_equal(len(outside_fees), 4, "outside-section fee transaction count")
     assert_equal(sum(Decimal(str(row.debit_amount or 0)) for row in outside_fees), Decimal("695.00"), "outside-section fee total")
-    merged_transactions = parse_transactions([], metadata, outside_section_text)
+    merged_transactions = parse_transactions([], metadata, outside_section_text, "fnb_business_v1")
     assert_equal(len(merged_transactions), 5, "merged section plus fee transaction count")
     assert_equal(sum(Decimal(str(row.debit_amount or 0)) for row in merged_transactions), Decimal("695.00"), "merged fee total")
     diag = extraction_diagnostics(
