@@ -2645,7 +2645,121 @@ def test_classification_changes_do_not_touch_the_ledger() -> None:
     assert_equal(after, before, "classification left every extracted field untouched")
 
 
+# ── Rule strength ─────────────────────────────────────────────────────────────
+
+
+def test_every_classification_reports_the_standing_of_its_rule() -> None:
+    """A settled classification and a guess must be distinguishable."""
+    import main
+    from engine.classification import STRENGTH_HARD, STRENGTH_NONE, STRENGTH_SOFT
+
+    cases = [
+        ("ACC 301981485 SERVICE FEE", STRENGTH_HARD, "Bank Charges"),
+        ("OWNER WITHDRAWAL", STRENGTH_HARD, "Director Loan / Drawings"),
+        ("ENGEN GARAGE WELKOM", STRENGTH_SOFT, "Motor Vehicle Expenses"),
+        ("ZZZ UNRECOGNISED 12345", STRENGTH_NONE, "Suspense / Review Required"),
+        ("Payshap Payment To Joe Bloggs", STRENGTH_NONE, "Suspense / Review Required"),
+    ]
+    for description, expected_strength, expected_category in cases:
+        result = main.classify_transaction_detailed(description, 100.0, None)
+        assert_equal(result.strength, expected_strength, f"{description!r} standing")
+        assert_equal(result.category, expected_category, f"{description!r} category")
+        if not result.reason:
+            raise AssertionError(f"{description!r} must say why it was classified that way")
+
+
+def test_the_compatibility_wrapper_cannot_drift_from_the_detailed_form() -> None:
+    """Two views of one decision, never two decisions."""
+    import main
+
+    for description in ("ACC 301981485 SERVICE FEE", "ENGEN GARAGE", "ZZZ UNKNOWN", "OWNER DRAWINGS"):
+        detailed = main.classify_transaction_detailed(description, 100.0, None)
+        legacy = main.classify_transaction(description, 100.0, None)
+        assert_equal(
+            legacy,
+            (detailed.category, detailed.vat_treatment, detailed.bank_charge, detailed.confidence),
+            f"{description!r} agrees between both views",
+        )
+
+
+def test_settled_classifications_are_not_sent_to_ai() -> None:
+    """Standing decides, not the confidence number.
+
+    A merchant-keyword guess and a fee the bank named itself both scored in the
+    eighties, so a confidence threshold could not tell them apart — and sent 98%
+    of a real 615-row statement to the model.
+    """
+    import main
+    from engine.classification import STRENGTH_HARD, STRENGTH_LEARNED, STRENGTH_NONE, STRENGTH_SOFT
+
+    def row(strength, review=False, vat_claim="Standard"):
+        return {"rule_strength": strength, "review_required": review, "vat_claim_status": vat_claim}
+
+    assert_equal(main.row_needs_ai(row(STRENGTH_HARD)), False, "a bank-named fee is settled")
+    assert_equal(main.row_needs_ai(row(STRENGTH_LEARNED)), False, "a workspace correction is settled")
+    assert_equal(main.row_needs_ai(row(STRENGTH_SOFT)), True, "a keyword guess is revisable")
+    assert_equal(main.row_needs_ai(row(STRENGTH_NONE)), True, "an unresolved row is revisable")
+    assert_equal(main.row_needs_ai(row(STRENGTH_HARD, review=True)), False, "settled stays settled")
+
+
+def test_a_workspace_correction_upgrades_the_standing() -> None:
+    """A person's decision outranks a keyword guess."""
+    import main
+    from engine.classification import STRENGTH_LEARNED, STRENGTH_SOFT
+
+    transaction = main.ParsedTransaction(
+        transaction_date="2025-05-02", description="ENGEN GARAGE WELKOM",
+        debit_amount=900.0, confidence=84.0, classification_strength=STRENGTH_SOFT,
+    )
+    rule = {"merchant_key": main.normalize_merchant_key(transaction.description),
+            "account_category": "Motor Vehicle Expenses", "vat_treatment": "standard",
+            "review_status": "ready", "confidence": 96, "reason": "Learned from accountant correction."}
+    main.apply_learned_classification_rules([transaction], [rule])
+    assert_equal(transaction.classification_strength, STRENGTH_LEARNED, "standing upgraded")
+    assert_equal(main.row_needs_ai({"rule_strength": transaction.classification_strength}), False, "and no longer needs AI")
+
+
+def test_standing_does_not_reopen_the_ai_recovery_cap() -> None:
+    """PR #36 protections are unaffected by the new standing field."""
+    import main
+    from engine.classification import STRENGTH_LEARNED
+
+    transaction = main.ParsedTransaction(
+        transaction_date="2025-05-02", description="CARTRACK CART25D5S58NYRV ACCOUNT PAYMENT",
+        debit_amount=1710.15, confidence=54.0, review_status="needs_review", notes=main.AI_RECOVERY_NOTE,
+    )
+    rule = {"merchant_key": main.normalize_merchant_key(transaction.description),
+            "account_category": "Motor Vehicle Expenses", "vat_treatment": "standard",
+            "review_status": "ready", "confidence": 96}
+    main.apply_learned_classification_rules([transaction], [rule])
+
+    # The CLASSIFICATION is now a person's decision; the EXTRACTION is still a
+    # model's guess, and those are different certainties.
+    assert_equal(transaction.classification_strength, STRENGTH_LEARNED, "classification standing upgraded")
+    assert_equal(transaction.confidence, 54.0, "extraction confidence still capped")
+    assert_equal(transaction.review_status, "needs_review", "and the row stays flagged")
+
+
+def test_standing_is_not_persisted_so_no_schema_change_is_needed() -> None:
+    """It is a processing-time concept until the provenance columns land."""
+    import main
+
+    transaction = main.ParsedTransaction(
+        transaction_date="2025-05-02", description="ACC 1 SERVICE FEE", debit_amount=10.0,
+    )
+    row = main.transaction_insert_row(transaction, "run-1", "ws-1")
+    for field in ("classification_strength", "classification_reason"):
+        if field in row:
+            raise AssertionError(f"{field} must not be written until its column exists")
+
+
 def run() -> None:
+    test_every_classification_reports_the_standing_of_its_rule()
+    test_the_compatibility_wrapper_cannot_drift_from_the_detailed_form()
+    test_settled_classifications_are_not_sent_to_ai()
+    test_a_workspace_correction_upgrades_the_standing()
+    test_standing_does_not_reopen_the_ai_recovery_cap()
+    test_standing_is_not_persisted_so_no_schema_change_is_needed()
     test_bank_fee_terminology_classifies_as_bank_charges()
     test_an_explicit_bank_fee_is_never_owner_drawings()
     test_non_bank_fees_are_not_swept_into_bank_charges()

@@ -25,7 +25,16 @@ from supabase import Client, create_client
 from auth import OK as AUTH_OK, STATUS_FOR_VERDICT, auth_compare_diagnostics, check_bearer
 from engine.bootstrap import register_default_parsers
 from engine.detection import UNKNOWN_PROFILE_ID, bank_name_for, detect_bank, is_supported_bank
-from engine.classification import bank_charge_evidence, owner_drawings_evidence
+from engine.classification import (
+    STRENGTH_HARD,
+    STRENGTH_LEARNED,
+    STRENGTH_NONE,
+    STRENGTH_SOFT,
+    REVISABLE_STRENGTHS,
+    Classification,
+    bank_charge_evidence,
+    owner_drawings_evidence,
+)
 from engine.ai_recovery import SYSTEM_PROMPT as AI_RECOVERY_SYSTEM_PROMPT
 from engine.ai_recovery import batches as ai_batches
 from engine.ai_recovery import build_prompt as build_ai_recovery_prompt
@@ -264,6 +273,12 @@ class ParsedTransaction(BaseModel):
     source_page: int | None = None
     source_row: int | None = None
     raw_text: str | None = None
+    # The standing of the rule that classified this row. Carried in memory only —
+    # transaction_insert_row does not persist it, so this adds no schema change.
+    # It exists so later stages can tell a settled classification from a
+    # revisable one without inferring it from the confidence number.
+    classification_strength: str = STRENGTH_SOFT
+    classification_reason: str = ""
 
 
 def get_supabase() -> Client:
@@ -328,6 +343,12 @@ def apply_learned_classification_rules(transactions: list[ParsedTransaction], ru
         else:
             transaction.review_status = str(matched_rule.get("review_status") or transaction.review_status)
             transaction.confidence = max(float(transaction.confidence or 0), float(matched_rule.get("confidence") or 94))
+        # A rule this workspace approved against a real correction is settled
+        # evidence, whatever the deterministic rules made of the row — including
+        # for AI-recovered rows, whose confidence stays capped above but whose
+        # CLASSIFICATION is now a decision a person actually made.
+        transaction.classification_strength = STRENGTH_LEARNED
+        transaction.classification_reason = str(matched_rule.get("reason") or "workspace-approved classification rule")
         applied += 1
     return applied
 
@@ -761,6 +782,17 @@ def normalize_transaction_date(raw_date: str, metadata: dict[str, Any]) -> str |
 
 
 def classify_transaction(description: str, debit: float | None, credit: float | None) -> tuple[str, str, bool, float]:
+    """Backwards-compatible view of classify_transaction_detailed.
+
+    Every existing caller wants the four fields it always returned. The rule's
+    standing is available from the detailed form, which this delegates to, so
+    the two can never disagree about the same description.
+    """
+    result = classify_transaction_detailed(description, debit, credit)
+    return result.category, result.vat_treatment, result.bank_charge, result.confidence
+
+
+def classify_transaction_detailed(description: str, debit: float | None, credit: float | None) -> Classification:
     text = description.lower()
     # HARD rule, ahead of everything else: a charge the bank names as its own.
     #
@@ -771,7 +803,7 @@ def classify_transaction(description: str, debit: float | None, credit: float | 
     # Related Party / Drawings at out-of-scope VAT — losing both the expense and
     # the input VAT on a legitimate bank charge.
     if bank_charge_evidence(description):
-        return "Bank Charges", "standard", True, 97
+        return Classification("Bank Charges", "standard", True, 97, STRENGTH_HARD, f"bank fee terminology ({bank_charge_evidence(description)})")
     # HARD rule: the statement explicitly says this is an owner withdrawal.
     #
     # Positive evidence, checked wherever it appears rather than only when a
@@ -780,9 +812,9 @@ def classify_transaction(description: str, debit: float | None, credit: float | 
     # supersedes the narrower ("drawings", "director loan", ...) keyword rule
     # that used to sit further down the list.
     if owner_drawings_evidence(description):
-        return "Director Loan / Drawings", "out_of_scope", False, 88
+        return Classification("Director Loan / Drawings", "out_of_scope", False, 88, STRENGTH_HARD, f"explicit drawings terminology ({owner_drawings_evidence(description)})")
     if debit and debit > 0 and looks_like_business_supplier_payment(text):
-        return "Supplier Payments", "review", False, 88
+        return Classification("Supplier Payments", "review", False, 88, STRENGTH_SOFT, "description resembles a business supplier payment")
     # Ordered deterministic rules — most specific first. VAT is kept conservative
     # ("review") wherever an invoice is needed, but the account is still assigned
     # so transactions do not fall through to "Uncategorised".
@@ -831,6 +863,7 @@ def classify_transaction(description: str, debit: float | None, credit: float | 
         # Refunds
         (("refund", "reversal"), "Refund / Suspense", "review", False, 74),
         # Levies
+        (("emporers ridge utili", "emporers ridge utility", "utility payment", "utilities"), "Utilities", "standard", False, 84),
         (("levy", "levies", "body corporate", "hoa ", "h/o/a", "emporers ridge"), "Levies", "review", False, 84),
         # Software / IT
         (("google chatgpt", "chatgpt", "openai", "microsoft", "office365", "microsoft 365", "adobe",
@@ -842,7 +875,6 @@ def classify_transaction(description: str, debit: float | None, credit: float | 
         (("dhl", "paygate*dhl", "paygate dhl", "courier", "aramex", "the courier guy", "courier guy", "postnet"), "Courier / Delivery", "standard", False, 84),
         # Meals / entertainment
         (("uber eats", "mr d food", "mr d", "restaurant", "checkers sixty60", "woolworths"), "Staff Welfare / Meals / Entertainment", "review", False, 80),
-        (("emporers ridge utili", "emporers ridge utility", "utility payment", "utilities"), "Utilities", "standard", False, 84),
         # Government / tender receipts. These are customer receipts for work or
         # services supplied, not welfare/meal merchants and not generic income.
         (("magtape credit 047-gp hea", "gp hea-", "gauteng health", "department of health", "dept of health", "health department"),
@@ -879,7 +911,7 @@ def classify_transaction(description: str, debit: float | None, credit: float | 
     ]
     for needles, category, vat, bank_charge, confidence in rules:
         if any(needle in text for needle in needles):
-            return category, vat, bank_charge, confidence
+            return Classification(category, vat, bank_charge, confidence, STRENGTH_SOFT, "matched a merchant/keyword rule")
 
     # Generic person-to-person / instant payments (any name, never hardcoded).
     # A payment to a NAME is a related-party / drawings movement; a payment to a
@@ -896,14 +928,14 @@ def classify_transaction(description: str, debit: float | None, credit: float | 
             "engen", "shell", "sasol", "caltex", "customer", "invoice", "inv",
         )
         if looks_like_business_supplier_payment(tail):
-            return "Supplier Payments", "review", False, 88
+            return Classification("Supplier Payments", "review", False, 88, STRENGTH_SOFT, "payee resembles a business supplier")
         if any(hint in tail for hint in business_hints):
             if credit and credit > 0:
-                return "Sales / Revenue", "standard", False, 82
+                return Classification("Sales / Revenue", "standard", False, 82, STRENGTH_SOFT, "inbound payment with a business hint")
             if debit and debit > 0:
-                return "Operating Expenses", "review", False, 78
+                return Classification("Operating Expenses", "review", False, 78, STRENGTH_SOFT, "outbound payment with a business hint")
         if re.search(r"\d{5,}", tail) and not re.search(r"[a-z]{3,}", tail):
-            return "Suspense / Review Required", "review", False, 60
+            return Classification("Suspense / Review Required", "review", False, 60, STRENGTH_NONE, "payment to a numeric reference; payee unidentified")
         # A payment through a person-to-person channel is NOT evidence of owner
         # drawings. This used to return Related Party / Drawings for anything
         # that reached here — the definition of a fallback — so an unrecognised
@@ -915,15 +947,15 @@ def classify_transaction(description: str, debit: float | None, credit: float | 
         # is the harder error to spot afterwards, so it now requires the
         # statement to actually say so. Everything else is unresolved, which is
         # a review outcome rather than a wrong answer.
-        return "Suspense / Review Required", "review", False, 58
+        return Classification("Suspense / Review Required", "review", False, 58, STRENGTH_NONE, "payment through a person-to-person channel; payee unidentified")
 
     # Direction-based fallbacks — conservative: never assume an unknown debit is a
     # normal operating expense. Unknown outflows are suspense/review.
     if credit and credit > 0:
-        return "Revenue Review", "review", False, 66
+        return Classification("Revenue Review", "review", False, 66, STRENGTH_NONE, "unidentified inbound payment")
     if debit and debit > 0:
-        return "Suspense / Review Required", "review", False, 55
-    return "Uncategorised", "review", False, 50
+        return Classification("Suspense / Review Required", "review", False, 55, STRENGTH_NONE, "unidentified outbound payment")
+    return Classification("Uncategorised", "review", False, 50, STRENGTH_NONE, "no classification evidence")
 
 
 def looks_like_business_supplier_payment(text: str) -> bool:
@@ -1099,7 +1131,13 @@ def build_transaction(
     if debit is None and credit is None:
         return None
 
-    category, vat, bank_charge, rule_confidence = classify_transaction(normalized_description, debit, credit)
+    classification = classify_transaction_detailed(normalized_description, debit, credit)
+    category, vat, bank_charge, rule_confidence = (
+        classification.category,
+        classification.vat_treatment,
+        classification.bank_charge,
+        classification.confidence,
+    )
     confidence = min(99, rule_confidence)
     review_status = "ready" if confidence >= 80 and vat != "review" and category != "Review Required" else "needs_review"
 
@@ -1117,6 +1155,8 @@ def build_transaction(
         review_status=review_status,
         source_page=page_number,
         raw_text=raw_text,
+        classification_strength=classification.strength,
+        classification_reason=classification.reason,
     )
 
 
@@ -3692,6 +3732,7 @@ def professional_transaction_row(transaction: ParsedTransaction, source_file: st
         "date": workbook_date(transaction.transaction_date),
         "month": transaction_month(transaction),
         "description": transaction.description,
+        "rule_strength": transaction.classification_strength,
         "money_in": money_in,
         "money_out": money_out,
         "amount": amount,
@@ -3792,34 +3833,27 @@ def ai_diagnostics(enabled: bool | None = None) -> dict[str, Any]:
 
 
 def row_needs_ai(row: dict[str, Any]) -> bool:
-    description = str(row.get("description") or "").lower()
-    account = str(row.get("account") or "")
-    group = str(row.get("group") or "")
-    confidence = float(row.get("rule_confidence") or 0)
-    money_in = decimal_amount(row.get("money_in"))
-    money_out = decimal_amount(row.get("money_out"))
-    if account == "Bank Charges" and confidence >= 94:
+    """Would a model add anything to this row's classification?
+
+    Decided from the STANDING of the rule that classified it, not from its
+    confidence number. Those are different questions, and the number could not
+    answer this one: a merchant-keyword guess and a fee the bank named itself
+    both scored in the eighties, so the previous confidence-threshold test sent
+    98% of a real 615-row statement to the model — including rows nothing could
+    improve.
+
+    HARD and LEARNED classifications are settled. A bank fee the bank named, and
+    a category this workspace corrected by hand, are not questions for a model.
+    Everything else is revisable, and a row flagged for review is worth a look
+    whatever produced it.
+    """
+    strength = str(row.get("rule_strength") or STRENGTH_SOFT)
+    if strength in {STRENGTH_HARD, STRENGTH_LEARNED}:
         return False
     return (
         bool(row.get("review_required"))
-        or confidence < 94
+        or strength in REVISABLE_STRENGTHS
         or row.get("vat_claim_status") in {"Review", "Output/Review"}
-        or account in {
-            "Unclassified Expense",
-            "Review Required",
-            "Review Required Suspense",
-            "Meals / Groceries - Non Deductible Review",
-            "Other Income / Review",
-            "Suspense / Review Required",
-            "Related Party / Drawings",
-            "Revenue Review",
-            "Operating Expenses",
-            "Supplier Payments",
-        }
-        or group in {"Review", "Operating Expenses", "Income", "Meals/Groceries", "Payroll/Personal"}
-        or money_in >= Decimal("5000.00")
-        or money_out >= Decimal("5000.00")
-        or any(token in description for token in ("app payment to", "app rtc pmt to", "magtape credit", "gp hea", "department of health", "rmsp trading", "stalitrex", "nms enterprises", "uber eats", "spa", "puppy", "photography", "sloppy kisses", "senses spa", "adore", "afrigreen", "freight aces", "naicker"))
     )
 
 
@@ -4500,6 +4534,13 @@ def transaction_insert_row(transaction: ParsedTransaction, run_id: str, workspac
     # source_row is useful for in-memory ordering/deduping, but older production
     # databases do not have this optional column yet. Keep writes compatible.
     row.pop("source_row", None)
+    # Classification standing is a processing-time concept with no column yet.
+    # This row is built by spreading model_dump(), so a new field on
+    # ParsedTransaction reaches Supabase automatically — and an insert naming a
+    # column that does not exist fails the whole batch, losing every transaction
+    # in the run. Fields land here deliberately, when their migration does.
+    row.pop("classification_strength", None)
+    row.pop("classification_reason", None)
     return row
 
 
