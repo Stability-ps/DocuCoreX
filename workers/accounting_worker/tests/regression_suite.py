@@ -2740,26 +2740,138 @@ def test_standing_does_not_reopen_the_ai_recovery_cap() -> None:
     assert_equal(transaction.review_status, "needs_review", "and the row stays flagged")
 
 
-def test_standing_is_not_persisted_so_no_schema_change_is_needed() -> None:
-    """It is a processing-time concept until the provenance columns land."""
+def test_provenance_is_written_but_never_at_the_ledgers_cost() -> None:
+    """Provenance is enrichment. A ledger is not.
+
+    transaction_insert_row is built by spreading model_dump(), so a new field
+    reaches Supabase automatically — and an insert naming a column that does not
+    exist fails the WHOLE batch, losing every transaction in the run. Migration
+    021 adds these columns; a database that has not run it yet must still get
+    its ledger.
+    """
     import main
 
     transaction = main.ParsedTransaction(
         transaction_date="2025-05-02", description="ACC 1 SERVICE FEE", debit_amount=10.0,
     )
     row = main.transaction_insert_row(transaction, "run-1", "ws-1")
-    for field in ("classification_strength", "classification_reason"):
-        if field in row:
-            raise AssertionError(f"{field} must not be written until its column exists")
+    for column in main.PROVENANCE_COLUMNS:
+        if column not in row:
+            raise AssertionError(f"{column} has a column as of migration 021 and should be written")
+
+    stripped = main.strip_provenance_columns([row])[0]
+    for column in main.PROVENANCE_COLUMNS:
+        if column in stripped:
+            raise AssertionError(f"{column} must be droppable for a database without migration 021")
+    for essential in ("transaction_date", "description", "debit_amount", "running_balance", "run_id", "workspace_id"):
+        if essential not in stripped:
+            raise AssertionError(f"the fallback dropped {essential}, which is the ledger itself")
+
+
+# ── Classification provenance ─────────────────────────────────────────────────
+
+
+def test_unresolved_is_recorded_as_unresolved_not_as_a_decision() -> None:
+    """"We do not know" must not be recorded as a deterministic classification.
+
+    On the real 615-row statement 434 rows are unresolved. Recording those as
+    `deterministic` would present a fallback as an answer, which is how the
+    review UI came to show them as confidently classified.
+    """
+    from engine.classification import (
+        SOURCE_DETERMINISTIC,
+        SOURCE_LEARNED_RULE,
+        SOURCE_UNRESOLVED,
+        STRENGTH_HARD,
+        STRENGTH_LEARNED,
+        STRENGTH_NONE,
+        STRENGTH_SOFT,
+        source_for_strength,
+    )
+
+    assert_equal(source_for_strength(STRENGTH_HARD), SOURCE_DETERMINISTIC, "a hard rule is deterministic")
+    assert_equal(source_for_strength(STRENGTH_SOFT), SOURCE_DETERMINISTIC, "a soft rule is still deterministic")
+    assert_equal(source_for_strength(STRENGTH_LEARNED), SOURCE_LEARNED_RULE, "a workspace rule is a learned rule")
+    assert_equal(source_for_strength(STRENGTH_NONE), SOURCE_UNRESOLVED, "no rule fired means unresolved")
+    assert_equal(source_for_strength("something-new"), SOURCE_UNRESOLVED, "an unknown standing is not a decision")
+
+
+def test_a_transaction_records_who_classified_it() -> None:
+    """Provenance is recorded, never inferred from the confidence number."""
+    import main
+    from engine.classification import SOURCE_DETERMINISTIC, SOURCE_UNRESOLVED
+
+    fee = main.build_transaction("01 May 2025", "ACC 301981485 SERVICE FEE", 574.30, None, -1000.0, {}, 1, "raw", 90)
+    assert_equal(fee.classification_source, SOURCE_DETERMINISTIC, "a bank fee is a deterministic classification")
+    assert_equal(fee.classification_confidence, 97, "and carries its own classification confidence")
+    if not fee.classification_reason:
+        raise AssertionError("the evidence must be recorded for the review screen")
+
+    unknown = main.build_transaction("01 May 2025", "ZZZ UNRECOGNISED 12345", 100.0, None, -1100.0, {}, 1, "raw", 90)
+    assert_equal(unknown.classification_source, SOURCE_UNRESOLVED, "an unclassified row says so")
+
+
+def test_a_learned_rule_records_itself_as_the_source() -> None:
+    import main
+    from engine.classification import SOURCE_LEARNED_RULE
+
+    transaction = main.ParsedTransaction(
+        transaction_date="2025-05-02", description="ENGEN GARAGE WELKOM", debit_amount=900.0, confidence=84.0,
+    )
+    main.apply_learned_classification_rules([transaction], [{
+        "merchant_key": main.normalize_merchant_key(transaction.description),
+        "account_category": "Motor Vehicle Expenses", "vat_treatment": "standard",
+        "review_status": "ready", "confidence": 96, "reason": "Learned from accountant correction.",
+    }])
+    assert_equal(transaction.classification_source, SOURCE_LEARNED_RULE, "the workspace rule is the source")
+    assert_equal(transaction.classification_confidence, 96.0, "with the rule's own confidence")
+
+
+def test_classification_confidence_is_not_extraction_confidence() -> None:
+    """The two numbers answer different questions and must not merge.
+
+    An AI-recovered row is capped at 60 as an EXTRACTION signal (PR #36). Its
+    CATEGORY can still be certain — a workspace correction is a person's
+    decision — and recording that must not raise the extraction cap.
+    """
+    import main
+
+    transaction = main.ParsedTransaction(
+        transaction_date="2025-05-02", description="CARTRACK CART25D5S58NYRV ACCOUNT PAYMENT",
+        debit_amount=1710.15, confidence=54.0, review_status="needs_review", notes=main.AI_RECOVERY_NOTE,
+    )
+    main.apply_learned_classification_rules([transaction], [{
+        "merchant_key": main.normalize_merchant_key(transaction.description),
+        "account_category": "Motor Vehicle Expenses", "vat_treatment": "standard",
+        "review_status": "ready", "confidence": 96,
+    }])
+    assert_equal(transaction.classification_confidence, 96.0, "the category is certain")
+    assert_equal(transaction.confidence, 54.0, "the extraction cap is untouched")
+    assert_equal(transaction.review_status, "needs_review", "and the row stays flagged")
+
+
+def test_the_migration_adds_every_column_the_worker_writes() -> None:
+    """A column the worker writes but the migration omits fails the whole insert."""
+    import main
+
+    migration = (ROOT / "supabase" / "migrations" / "021_classification_provenance.sql").read_text()
+    for column in main.PROVENANCE_COLUMNS:
+        if f"add column if not exists {column}" not in migration:
+            raise AssertionError(f"migration 021 must add {column}")
 
 
 def run() -> None:
+    test_unresolved_is_recorded_as_unresolved_not_as_a_decision()
+    test_a_transaction_records_who_classified_it()
+    test_a_learned_rule_records_itself_as_the_source()
+    test_classification_confidence_is_not_extraction_confidence()
+    test_the_migration_adds_every_column_the_worker_writes()
     test_every_classification_reports_the_standing_of_its_rule()
     test_the_compatibility_wrapper_cannot_drift_from_the_detailed_form()
     test_settled_classifications_are_not_sent_to_ai()
     test_a_workspace_correction_upgrades_the_standing()
     test_standing_does_not_reopen_the_ai_recovery_cap()
-    test_standing_is_not_persisted_so_no_schema_change_is_needed()
+    test_provenance_is_written_but_never_at_the_ledgers_cost()
     test_bank_fee_terminology_classifies_as_bank_charges()
     test_an_explicit_bank_fee_is_never_owner_drawings()
     test_non_bank_fees_are_not_swept_into_bank_charges()

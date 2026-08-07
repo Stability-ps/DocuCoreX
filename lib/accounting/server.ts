@@ -83,6 +83,12 @@ type AccountingTransactionRow = {
   review_status: AccountingTransaction["reviewStatus"];
   source_page: number | null;
   source_row?: number | null;
+  // Migration 021. Optional: rows predating it report null rather than a guess.
+  classification_source?: string | null;
+  classification_strength?: string | null;
+  classification_confidence?: number | string | null;
+  classification_reason?: string | null;
+  normalized_merchant?: string | null;
   review_comment?: string | null;
   raw_text: string | null;
   created_at: string;
@@ -272,6 +278,11 @@ function mapTransaction(row: AccountingTransactionRow): AccountingTransaction {
     supportedByInvoice: row.supported_by_invoice,
     notes: row.notes,
     confidence: toNumber(row.confidence) ?? 0,
+    classificationSource: (row.classification_source as AccountingTransaction["classificationSource"]) ?? null,
+    classificationStrength: row.classification_strength ?? null,
+    classificationConfidence: toNumber(row.classification_confidence ?? null),
+    classificationReason: row.classification_reason ?? null,
+    normalizedMerchant: row.normalized_merchant ?? null,
     reviewStatus: row.review_status,
     sourcePage: row.source_page,
     sourceRow: row.source_row ?? null,

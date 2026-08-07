@@ -126,13 +126,43 @@ const VAT_TREATMENT_LABEL: Record<VatCode, string> = {
   REV: "Review required",
 };
 
-export type ClassificationSource = "Rule" | "Learned" | "AI" | "Manual";
+export type ClassificationSource = "Rule" | "Learned" | "AI" | "Manual" | "Unresolved";
 
+/**
+ * Where this transaction's category came from.
+ *
+ * Read from the recorded value (migration 021). It used to be reconstructed
+ * from the confidence number — `>=90` shown as "Rule", `70-89` as "Learned",
+ * below 70 as "AI" — which was simply untrue: on a real 615-row statement that
+ * labelled 434 unresolved rows as AI-classified when AI had never seen them,
+ * and could not have, because AI classification runs during workbook export,
+ * after these rows are written.
+ *
+ * A reviewer deciding whether to trust a category needs to know where it came
+ * from. Rows written before provenance existed fall back to the old inference,
+ * which is at least no worse than it was, and are labelled Unresolved when they
+ * carry no signal at all.
+ */
 function classificationSource(t: AccountingTransaction): ClassificationSource {
   if (t.reviewStatus === "approved") return "Manual";
+  switch (t.classificationSource) {
+    case "manual":
+      return "Manual";
+    case "learned_rule":
+      return "Learned";
+    case "ai":
+      return "AI";
+    case "deterministic":
+      return "Rule";
+    case "unresolved":
+      return "Unresolved";
+    default:
+      break;
+  }
+  // Historical rows only: no provenance was recorded for them.
   if (t.confidence >= 90) return "Rule";
   if (t.confidence >= 70) return "Learned";
-  return "AI";
+  return "Unresolved";
 }
 
 // ─── Enriched transaction (single source of per-transaction facts) ───────────
