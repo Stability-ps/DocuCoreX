@@ -80,6 +80,24 @@ _SUMMARY_LINE = re.compile(
     re.IGNORECASE,
 )
 
+# The end of the ledger. Everything after one of these on a page is footer: the
+# statement's own turnover summary, its disclaimers, its regulatory text.
+#
+# This has to STOP the page rather than skip the line, because the footer prints
+# figures in the same shape as transactions — "Payments -R7,172,348.61" and
+# "Deposits R8,161,114.63" are a summary of the statement, not two movements —
+# and its prose would otherwise be absorbed into the last transaction's
+# description as if it were a wrapped narrative.
+_SECTION_END = re.compile(
+    r"(?:"
+    r"statement\s+summary"
+    r"|turnover\s+for\s+statement\s+period"
+    r"|end\s+of\s+statement"
+    r"|please\s+(?:verify|check)\s+all\s+transactions"
+    r")",
+    re.IGNORECASE,
+)
+
 
 @dataclass(frozen=True)
 class ColumnLayout:
@@ -231,6 +249,17 @@ def extract_generic_rows(pages: list[dict[str, Any]]) -> list[dict[str, Any]]:
       to the row above;
     - furniture is dropped, and it also closes the open row so a wrapped
       description cannot jump across a page break onto an unrelated statement.
+
+    Only lines INSIDE the ledger section are read. A statement repeats its
+    letterhead on every page — account number, holder, address, product, and an
+    available-balance figure — and that block contains both a date and a figure,
+    so read as ledger lines it produced a transaction per page dated the
+    statement date and carrying the available balance as its running balance.
+    The section therefore opens at the statement's own column header, on each
+    page, and closes at its footer.
+
+    When a statement prints no column header anywhere, the whole page is read:
+    a layout we cannot recognise is still better parsed than skipped.
     """
     rows: list[dict[str, Any]] = []
     all_lines = [_normalise(line) for page in pages for line in (page.get("text") or "").splitlines()]
@@ -240,6 +269,7 @@ def extract_generic_rows(pages: list[dict[str, Any]]) -> list[dict[str, Any]]:
         page_number = page.get("page")
         last_date = ""
         open_row: dict[str, Any] | None = None
+        in_section = layout is None
 
         def close() -> None:
             nonlocal open_row
@@ -250,6 +280,17 @@ def extract_generic_rows(pages: list[dict[str, Any]]) -> list[dict[str, Any]]:
         for raw_line in (page.get("text") or "").splitlines():
             line = _normalise(raw_line)
             if not line:
+                continue
+            # The column header opens the section — checked before furniture,
+            # which the header itself is.
+            if header_roles(line):
+                close()
+                in_section = True
+                continue
+            if _SECTION_END.search(line):
+                close()
+                break
+            if not in_section:
                 continue
             if is_furniture(line):
                 close()

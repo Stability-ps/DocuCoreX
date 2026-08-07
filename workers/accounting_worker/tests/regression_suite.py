@@ -2277,7 +2277,144 @@ def test_an_ai_recovered_run_can_never_report_completed() -> None:
         raise AssertionError("every AI row must be traceable in the ledger itself")
 
 
+# ── Ledger section boundaries ─────────────────────────────────────────────────
+#
+# Modelled on the real 37-page Standard Bank statement (SBSA_Statement_2025-10-27,
+# run 27142721-ab81-4981-ad66-89fb8f299ed1), which cannot be committed: it is a
+# client bank statement. The structure is reproduced exactly — a letterhead
+# repeated on every page carrying both a date and an available-balance figure,
+# the column header, transactions whose narrative wraps onto the next line, and
+# a footer whose summary prints figures in transaction shape.
+#
+# On the real document this shape produced 4 rows that appear nowhere on the
+# statement and 15 running-balance gaps.
+
+def _sbsa_shaped_page(page_number: int, body: list[str], footer: bool = False) -> dict:
+    letterhead = [
+        "Customer Care: 0860 123 000",
+        "Website: www.standardbank.co.za",
+        "STANDARD BANK 6 month statement",
+        "From: 30 Apr 25",
+        "To: 27 Oct 25",
+        # A bare date line. It opens a row unless the section is closed.
+        "27 Oct 2025",
+        "Account number: 30 198 148 5 Address:",
+        "Account holder: TEST HOLDER PTY LTD 3 UITKYK ST",
+        "Product name: CURRENT ACC FLAMINGO PARK",
+        # Carries a figure, and completes the row the bare date opened.
+        "Transaction details Available Balance: R96,313.45",
+        "Date Description Payments Deposits Balance",
+    ]
+    tail = [
+        "Please verify all transactions reflected on this statement and notify any discrepancies to the bank.",
+        "Statement Summary",
+        "Payments -R2,000.00",
+        "Deposits R5,000.00",
+        "Today's debits have not yet been paid",
+        "The Standard Bank of South Africa Limited (Reg. No. 1962/000738/06).",
+    ] if footer else []
+    return {"page": page_number, "text": "\n".join(letterhead + body + tail), "tables": []}
+
+
+SBSA_SHAPED_PAGES = [
+    _sbsa_shaped_page(1, [
+        "STATEMENT OPENING BALANCE -1,000.00",
+        "30 Apr 25 ADT JHB 2117556751ADT5087498 -380.00 -1,380.00",
+        "ACCOUNT PAYMENT",
+        "30 Apr 25 SBSARETAIL895F 00040202771 -620.00 -2,000.00",
+        "LOAN REPAYMENT",
+    ]),
+    _sbsa_shaped_page(2, [
+        "02 May 25 CLIENT SETTLEMENT 20250502 5,000.00 3,000.00",
+        "ELECTRONIC TRANSFER CREDIT",
+        "05 May 25 CARTRACK CART25D5S58NYRV -1,000.00 2,000.00",
+        "ACCOUNT PAYMENT",
+    ], footer=True),
+]
+
+
+def test_the_repeated_letterhead_is_not_read_as_a_transaction() -> None:
+    """The defect the real Standard Bank statement exposed.
+
+    The letterhead carries a bare statement date and an available-balance
+    figure. Read as ledger lines, the date opened a row, the address block wrapped
+    into it, and the available balance completed it — one invented transaction
+    per page, each breaking the running-balance chain twice.
+    """
+    import main
+
+    full_text = "\n".join(page["text"] for page in SBSA_SHAPED_PAGES)
+    metadata = main.parse_metadata(full_text)
+    transactions = main.parse_transactions(SBSA_SHAPED_PAGES, metadata, full_text, GENERIC_PROFILE)
+
+    for transaction in transactions:
+        for forbidden in ("Account number", "Available Balance", "Account holder", "Product name"):
+            if forbidden in transaction.description:
+                raise AssertionError(f"letterhead read as a transaction: {transaction.description!r}")
+    if any(main.decimal_amount(t.running_balance) == main.decimal_amount(96313.45) for t in transactions if t.running_balance is not None):
+        raise AssertionError("the available-balance figure became a running balance")
+
+
+def test_the_footer_summary_is_not_read_as_transactions() -> None:
+    """"Payments -R2,000.00" is a summary of the statement, not a movement."""
+    import main
+
+    full_text = "\n".join(page["text"] for page in SBSA_SHAPED_PAGES)
+    metadata = main.parse_metadata(full_text)
+    transactions = main.parse_transactions(SBSA_SHAPED_PAGES, metadata, full_text, GENERIC_PROFILE)
+
+    descriptions = [t.description for t in transactions]
+    for forbidden in ("Payments", "Deposits", "Today's debits"):
+        if any(description.strip().startswith(forbidden) for description in descriptions):
+            raise AssertionError(f"footer summary read as a transaction: {forbidden}")
+    # The closing disclaimer must not be absorbed into the last transaction either.
+    for description in descriptions:
+        if "Please verify all transactions" in description:
+            raise AssertionError(f"footer prose absorbed as a wrapped description: {description!r}")
+
+
+def test_the_section_bounded_ledger_reconciles_exactly() -> None:
+    """With both boundaries in place the chain is continuous and ties out.
+
+    This is the shape that, on the real 37-page statement, produced 615
+    transactions whose debit and credit totals match the bank's own declared
+    Payments and Deposits to the cent, with zero running-balance gaps.
+    """
+    import main
+
+    full_text = "\n".join(page["text"] for page in SBSA_SHAPED_PAGES)
+    metadata = main.parse_metadata(full_text)
+    transactions = main.parse_transactions(SBSA_SHAPED_PAGES, metadata, full_text, GENERIC_PROFILE)
+    summary = main.validation_summary(transactions)
+
+    assert_equal(len(transactions), 4, "the four printed movements, and nothing else")
+    assert_equal(str(summary["total_debits"]), "2000.00", "debits match the statement's declared Payments")
+    assert_equal(str(summary["total_credits"]), "5000.00", "credits match the statement's declared Deposits")
+    assert_equal(len(main.balance_gap_diagnostics(metadata, transactions)), 0, "the running balance is continuous")
+
+    check = main.validate_extraction(metadata, transactions)
+    assert_equal(check["status"], "ok", "a continuous, complete ledger")
+
+
+def test_a_statement_with_no_column_header_is_still_read() -> None:
+    """A layout we cannot recognise is better parsed than skipped."""
+    import main
+
+    text = "\n".join([
+        "SOME BANK LIMITED",
+        "01 Jun 2025 EFT RECEIVED 2,500.00Cr 7,500.00",
+        "02 Jun 2025 SERVICE FEE 125.00Dr 7,375.00",
+    ])
+    pages = [{"page": 1, "text": text, "tables": []}]
+    transactions = main.parse_transactions(pages, main.parse_metadata(text), text, GENERIC_PROFILE)
+    assert_equal(len(transactions), 2, "no header means read the whole page, not none of it")
+
+
 def run() -> None:
+    test_the_repeated_letterhead_is_not_read_as_a_transaction()
+    test_the_footer_summary_is_not_read_as_transactions()
+    test_the_section_bounded_ledger_reconciles_exactly()
+    test_a_statement_with_no_column_header_is_still_read()
     test_ai_rows_must_come_from_a_line_we_sent()
     test_ai_amounts_must_appear_in_their_source_line()
     test_ai_balances_that_are_not_printed_are_dropped_but_the_row_is_kept()
