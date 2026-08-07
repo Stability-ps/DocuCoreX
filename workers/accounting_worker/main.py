@@ -33,6 +33,8 @@ from engine.classification import (
     REVISABLE_STRENGTHS,
     SOURCE_LEARNED_RULE,
     Classification,
+    is_valid_ai_account,
+    is_valid_vat_claim_status,
     bank_charge_evidence,
     owner_drawings_evidence,
     source_for_strength,
@@ -68,7 +70,12 @@ AI_RECOVERY_NOTE = "recovered_by: ai"
 AI_RECOVERED_MAX_CONFIDENCE = 60.0
 WORKER_BUILD_FALLBACK = "local-dev"
 DEFAULT_AI_MODEL = "gpt-4o-mini"
-AI_CLASSIFICATION_CACHE: dict[str, dict[str, Any]] = {}
+# Keyed by (workspace_id, normalised description). This process is long-lived
+# and serves every tenant, and the cache used to be keyed by description alone —
+# so one workspace's classification of "PAYMENT TO ABC TRADING" was served to
+# another workspace's identically-worded row. Classifications are shaped by a
+# workspace's own corrections and chart of accounts; they are not shared facts.
+AI_CLASSIFICATION_CACHE: dict[tuple[str, str], dict[str, Any]] = {}
 AI_CLASSIFICATION_BATCH_SIZE = 30
 ACCOUNTING_REPORT_DISCLAIMER = (
     "Draft management report generated from bank-statement data only. "
@@ -3927,13 +3934,24 @@ def validate_ai_item(item: Any, valid_ids: set[str]) -> dict[str, Any] | None:
     vat_claim_status = str(item.get("vat_claim_status") or "").strip()[:80]
     if not account or not group or not vat_treatment or not vat_claim_status:
         return None
-    try:
-        confidence = float(item.get("confidence"))
-    except Exception:
-        confidence = 0.6
+    # The account and the VAT claim status are closed sets. Anything else is
+    # rejected outright rather than repaired: a model that returned "Bank Fees"
+    # or invented an account produced a category professional_account cannot
+    # map, the review UI cannot offer, and a learned rule built from a
+    # correction to it would then spread. Guessing what it meant is still
+    # guessing, and VAT is where a wrong guess costs money.
+    if not is_valid_ai_account(account):
+        return None
+    if not is_valid_vat_claim_status(vat_claim_status):
+        return None
+    confidence_value = item.get("confidence")
+    if not isinstance(confidence_value, (int, float)) or isinstance(confidence_value, bool):
+        return None
+    confidence = float(confidence_value)
     if confidence > 1:
         confidence = confidence / 100
-    confidence = min(max(confidence, 0), 1)
+    if not 0 <= confidence <= 1:
+        return None
     return {
         "transaction_id": transaction_id,
         "account": account,
@@ -4152,7 +4170,27 @@ def apply_ai_result_to_row(row: dict[str, Any], result: dict[str, Any]) -> None:
     recompute_professional_vat(row)
 
 
-def apply_ai_classifications(rows: list[dict[str, Any]]) -> dict[str, Any]:
+def apply_ai_classifications(rows: list[dict[str, Any]], workspace_id: str = "") -> dict[str, Any]:
+    """Enrich classifications with a model. Never allowed to fail a run.
+
+    Classification is enrichment on top of a reconciled ledger. If OpenAI times
+    out, returns malformed JSON, returns an account outside the chart or is
+    simply unavailable, the deterministic classification stands and the rows
+    keep whatever review status they already had. Nothing here may raise into
+    the caller: the transactions are already correct, and losing them over a
+    classification hint would be absurd.
+    """
+    try:
+        return _apply_ai_classifications(rows, workspace_id)
+    except Exception as exc:  # noqa: BLE001 - enrichment must never fail a run
+        log_warning("worker.ai_classification_failed_open", workspace_id=workspace_id, error=str(exc)[:400])
+        diagnostics = ai_diagnostics()
+        diagnostics["ai_failures"] = diagnostics.get("ai_failures", 0) + 1
+        diagnostics["ai_skipped"] = "classification_error"
+        return diagnostics
+
+
+def _apply_ai_classifications(rows: list[dict[str, Any]], workspace_id: str) -> dict[str, Any]:
     diagnostics = ai_diagnostics()
     if not diagnostics["ai_enabled"]:
         return diagnostics
@@ -4165,8 +4203,9 @@ def apply_ai_classifications(rows: list[dict[str, Any]]) -> dict[str, Any]:
         if not row_needs_ai(row):
             continue
         cache_key = normalize_ai_cache_key(str(row.get("description") or ""))
-        if cache_key and cache_key in AI_CLASSIFICATION_CACHE:
-            apply_ai_result_to_row(row, AI_CLASSIFICATION_CACHE[cache_key])
+        scoped_key = (workspace_id, cache_key)
+        if cache_key and scoped_key in AI_CLASSIFICATION_CACHE:
+            apply_ai_result_to_row(row, AI_CLASSIFICATION_CACHE[scoped_key])
             diagnostics["ai_cache_hits"] += 1
             continue
         transaction_id = str(index)
@@ -4184,7 +4223,7 @@ def apply_ai_classifications(rows: list[dict[str, Any]]) -> dict[str, Any]:
             apply_ai_result_to_row(row, result)
             cache_key = cache_key_by_id.get(result["transaction_id"])
             if cache_key:
-                AI_CLASSIFICATION_CACHE[cache_key] = result
+                AI_CLASSIFICATION_CACHE[(workspace_id, cache_key)] = result
             diagnostics["ai_transactions_classified"] += 1
 
     log_event("worker.ai_classification", **diagnostics)
@@ -4295,7 +4334,12 @@ def write_vat_schedule_sheet(workbook: Workbook, rows: list[dict[str, Any]], inc
     return vat, detail_header_row, len(detail_headers)
 
 
-def build_workbook(metadata: dict[str, Any], transactions: list[ParsedTransaction], allow_ai: bool = True) -> bytes:
+def build_workbook(
+    metadata: dict[str, Any],
+    transactions: list[ParsedTransaction],
+    allow_ai: bool = True,
+    workspace_id: str = "",
+) -> bytes:
     workbook = Workbook()
     totals = validation_summary(transactions)
     status, calculated_closing = validation_status(metadata, transactions)
@@ -4309,7 +4353,7 @@ def build_workbook(metadata: dict[str, Any], transactions: list[ParsedTransactio
     rows = [professional_transaction_row(transaction, source_file) for transaction in transactions]
     ai_started = time.perf_counter()
     if allow_ai:
-        ai_stats = apply_ai_classifications(rows)
+        ai_stats = apply_ai_classifications(rows, workspace_id)
     else:
         ai_stats = ai_diagnostics(enabled=bool(os.getenv("OPENAI_API_KEY")))
         ai_stats["ai_skipped"] = "extraction_incomplete"
@@ -4716,7 +4760,11 @@ def validate_combine_runs(runs: list[dict[str, Any]], payload: CombineRequest) -
     return runs
 
 
-def build_combined_workbook(runs: list[dict[str, Any]], transactions_by_run: dict[str, list[ParsedTransaction]]) -> tuple[bytes, dict[str, Any]]:
+def build_combined_workbook(
+    runs: list[dict[str, Any]],
+    transactions_by_run: dict[str, list[ParsedTransaction]],
+    workspace_id: str = "",
+) -> tuple[bytes, dict[str, Any]]:
     generation_started = time.perf_counter()
     sorted_runs = sorted(runs, key=lambda run: str(run.get("statement_period_start") or run.get("created_at") or ""))
     first_run = sorted_runs[0]
@@ -4781,7 +4829,7 @@ def build_combined_workbook(runs: list[dict[str, Any]], transactions_by_run: dic
         rows.append(row)
 
     ai_started = time.perf_counter()
-    ai_stats = apply_ai_classifications(rows)
+    ai_stats = apply_ai_classifications(rows, workspace_id)
     ai_duration_ms = round((time.perf_counter() - ai_started) * 1000, 2)
     ai_stats["ai_classification_duration_ms"] = ai_duration_ms
     mark_possible_duplicates(rows)
@@ -5071,7 +5119,7 @@ def combine_fnb_statements(payload: CombineRequest, authorization: str | None = 
           transactions_by_run[str(run["id"])] = [parsed_transaction_from_row(row) for row in transaction_rows]
 
       export_started = time.perf_counter()
-      workbook_bytes, summary = build_combined_workbook(runs, transactions_by_run)
+      workbook_bytes, summary = build_combined_workbook(runs, transactions_by_run, payload.workspace_id)
 
       export_duration_ms = round((time.perf_counter() - export_started) * 1000, 2)
       summary["export_duration_ms"] = export_duration_ms
@@ -5578,6 +5626,7 @@ def process_fnb_statement(payload: ProcessRequest, authorization: str | None = H
             metadata,
             transactions,
             allow_ai=not extraction_incomplete and review_issue is None,
+            workspace_id=payload.workspace_id,
         )
         ai_stats = metadata.get("_ai_diagnostics") or ai_diagnostics(enabled=False)
         workbook_path = f"{payload.workspace_id}/accounting/fnb/exports/{payload.run_id}.xlsx"
