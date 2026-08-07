@@ -3430,7 +3430,135 @@ def test_matching_stays_case_insensitive() -> None:
     assert_equal(keyword_matches("loaned equipment", "loan"), False, "inside a word does not")
 
 
+# ── Merchant normalisation ────────────────────────────────────────────────────
+
+
+def test_a_known_merchant_is_identified_from_a_noisy_description() -> None:
+    """The bank's wording carries terminal ids and references around the brand."""
+    import main
+    from engine.merchants import identify_merchant
+
+    match = identify_merchant("C*FUELZONE 4278*5999 CHEQUE CARD PURCHASE")
+    if match is None:
+        raise AssertionError("FUELZONE is a known fuel retailer and must be identified")
+    assert_equal(match.canonical, "Fuelzone", "identified by name")
+    assert_equal(match.category, "Motor Vehicle Expenses", "and carries its category")
+
+
+def test_merchant_identification_is_not_substring_matching() -> None:
+    """The reason the brand is listed at all.
+
+    "fuel" as a fragment matches FUELLED CATERING as readily as FUELZONE, so a
+    fuel retailer has to be known by name rather than guessed at from letters.
+    """
+    import main
+    from engine.merchants import identify_merchant
+
+    assert_equal(identify_merchant("FUELLED CATERING CC"), None, "a fragment is not a merchant")
+    assert_equal(main.classify_transaction("FUELLED CATERING CC", 900.0, None)[0], "Suspense / Review Required", "and stays unresolved")
+    assert_equal(main.classify_transaction("C*FUELZONE 4278*5999 CHEQUE CARD PURCHASE", 900.0, None)[0], "Motor Vehicle Expenses", "while the brand is recovered")
+
+
+def test_the_bank_description_is_never_overwritten() -> None:
+    """The description is evidence; the merchant is our reading of it."""
+    import main
+
+    original = "POS PURCHASE WOOLWORTHS MENLYN 004829"
+    transaction = main.build_transaction("02 May 2025", original, 450.0, None, -1000.0, {}, 1, "raw", 90)
+    assert_equal(transaction.description, original, "the bank's wording survives untouched")
+    if not transaction.normalized_merchant:
+        raise AssertionError("the merchant should be identified alongside it")
+    if transaction.normalized_merchant == original:
+        raise AssertionError("the merchant is a separate fact, not a copy of the description")
+
+
+def test_an_unidentified_merchant_is_null_not_invented() -> None:
+    import main
+    from engine.merchants import identify_merchant
+
+    for description in ("QQQ ZZZ 4471", "PAYMENT REF 88213", ""):
+        assert_equal(identify_merchant(description), None, f"{description!r} names no known merchant")
+    transaction = main.build_transaction("02 May 2025", "QQQ ZZZ 4471", 450.0, None, -1000.0, {}, 1, "raw", 90)
+    assert_equal(transaction.normalized_merchant, None, "null rather than a guess")
+
+
+def test_a_suggested_merchant_must_appear_in_the_description() -> None:
+    """Anything a model proposes is checked against the bank's own words."""
+    from engine.merchants import merchant_is_grounded
+
+    description = "POS PURCHASE WOOLWORTHS MENLYN 004829"
+    assert_equal(merchant_is_grounded("Woolworths", description), True, "present in the text")
+    assert_equal(merchant_is_grounded("Woolworths Menlyn", description), True, "every word present")
+    assert_equal(merchant_is_grounded("Checkers", description), False, "not in the text at all")
+    assert_equal(merchant_is_grounded("Woolworths Financial Services", description), False, "extends beyond the text")
+    assert_equal(merchant_is_grounded(None, description), False, "null is not grounded")
+
+
+def test_recognising_a_merchant_does_not_make_vat_claimable() -> None:
+    """Knowing WHO was paid says nothing about a valid tax invoice."""
+    import main
+
+    for description in (
+        "C*FUELZONE 4278*5999 CHEQUE CARD PURCHASE",
+        "POS PURCHASE WOOLWORTHS MENLYN 004829",
+        "ENGEN GARAGE WELKOM",
+    ):
+        _, vat, _, _ = main.classify_transaction(description, 900.0, None)
+        if vat == "standard":
+            raise AssertionError(f"{description!r} claimed standard VAT purely from merchant recognition")
+
+
+def test_a_merchant_does_not_outrank_a_bank_fee() -> None:
+    """A fee the bank charged is a bank charge whoever else the row names."""
+    import main
+
+    category, _, bank_charge, _ = main.classify_transaction("ENGEN GARAGE FEE: PAYMENT CONFIRM - EMAIL", 25.50, None)
+    assert_equal(category, "Bank Charges", "the bank's own fee wins")
+    assert_equal(bank_charge, True, "and is flagged")
+
+
+# ── Classification sanity checks ──────────────────────────────────────────────
+
+
+def test_sanity_no_route_to_owner_drawings_without_evidence() -> None:
+    """Four ways a row used to become an owner withdrawal without saying so."""
+    import main
+
+    for description, why in (
+        ("301981485 10H00 FEE - INSTANT MONEY", "a bank fee"),
+        ("QQQ UNKNOWN PAYEE 4471", "an unknown merchant"),
+        ("FNB App Transfer To Savings 62905786151", "a transfer"),
+        ("PAYSHAP PAYMENT TO NOMSA", "a person-to-person payment"),
+    ):
+        category = main.classify_transaction(description, 5000.0, None)[0]
+        if "Drawings" in category:
+            raise AssertionError(f"{why} became drawings without evidence: {description!r}")
+
+
+def test_sanity_direction_alone_implies_nothing() -> None:
+    """A debit is not an expense and a credit is not income."""
+    import main
+
+    debit_category = main.classify_transaction("QQQ ZZZ 4471", 5000.0, None)[0]
+    credit_category = main.classify_transaction("QQQ ZZZ 4471", None, 5000.0)[0]
+
+    expense_categories = {"Operating Expenses", "Supplier Payments", "Motor Vehicle Expenses"}
+    if debit_category in expense_categories:
+        raise AssertionError(f"an unknown debit was booked as an expense: {debit_category}")
+    if credit_category == "Sales / Revenue":
+        raise AssertionError(f"an unknown credit was booked as income: {credit_category}")
+
+
 def run() -> None:
+    test_a_known_merchant_is_identified_from_a_noisy_description()
+    test_merchant_identification_is_not_substring_matching()
+    test_the_bank_description_is_never_overwritten()
+    test_an_unidentified_merchant_is_null_not_invented()
+    test_a_suggested_merchant_must_appear_in_the_description()
+    test_recognising_a_merchant_does_not_make_vat_claimable()
+    test_a_merchant_does_not_outrank_a_bank_fee()
+    test_sanity_no_route_to_owner_drawings_without_evidence()
+    test_sanity_direction_alone_implies_nothing()
     test_a_needle_no_longer_matches_inside_another_word()
     test_the_words_those_needles_are_for_still_match()
     test_phrase_rules_still_match_inside_a_longer_description()

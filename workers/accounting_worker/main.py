@@ -48,6 +48,7 @@ from engine.ai_recovery import build_prompt as build_ai_recovery_prompt
 from engine.ai_recovery import candidate_lines as ai_candidate_lines
 from engine.ai_recovery import dropped_line_count as ai_dropped_line_count
 from engine.ai_recovery import ground_rows as ground_ai_rows
+from engine.merchants import identify_merchant, merchant_is_grounded
 from engine.generic_parser import count_candidate_lines as generic_candidate_lines
 from engine.generic_parser import extract_generic_rows
 from engine.lexicon import LOOSE_DATE, LOOSE_MONEY, MONEY_TOKEN
@@ -857,6 +858,29 @@ def _classify_transaction_rules(description: str, debit: float | None, credit: f
     # that used to sit further down the list.
     if owner_drawings_evidence(description):
         return Classification("Director Loan / Drawings", "out_of_scope", False, 88, STRENGTH_HARD, f"explicit drawings terminology ({owner_drawings_evidence(description)})")
+    # A merchant we actually know, identified by name rather than by a fragment.
+    #
+    # Placed above the keyword table because a known brand is better evidence
+    # than a keyword that happens to appear: "C*FUELZONE 4278*5999" is a fuel
+    # retailer because FUELZONE is one, not because the letters "fuel" are in
+    # the string — the same letters are in FUELLED CATERING.
+    #
+    # It sits BELOW the two hard rules above, which the priority order does not
+    # say to invert and which no merchant should: a fee the bank charged is a
+    # bank charge whoever else the row names.
+    merchant = identify_merchant(description)
+    if merchant is not None:
+        return Classification(
+            merchant.category,
+            # Conservative regardless of the merchant's own default: knowing WHO
+            # was paid does not establish that input VAT is claimable, that a
+            # valid tax invoice exists, or that the purpose was business.
+            "review" if merchant.vat_treatment == "standard" else merchant.vat_treatment,
+            False,
+            merchant.confidence,
+            STRENGTH_SOFT,
+            f"merchant identified: {merchant.canonical}",
+        )
     if debit and debit > 0 and looks_like_business_supplier_payment(text):
         return Classification("Supplier Payments", "review", False, 88, STRENGTH_SOFT, "description resembles a business supplier payment")
     # Ordered deterministic rules — most specific first. VAT is kept conservative
@@ -1176,6 +1200,7 @@ def build_transaction(
         return None
 
     classification = classify_transaction_detailed(normalized_description, debit, credit)
+    identified_merchant = identify_merchant(normalized_description)
     category, vat, bank_charge, rule_confidence = (
         classification.category,
         classification.vat_treatment,
@@ -1203,6 +1228,10 @@ def build_transaction(
         classification_reason=classification.reason,
         classification_source=source_for_strength(classification.strength),
         classification_confidence=classification.confidence,
+        # Stored beside the description, never over it. The bank's wording is
+        # evidence; this is our reading of who it names, and a reviewer needs
+        # both to check one against the other.
+        normalized_merchant=identified_merchant.canonical if identified_merchant else None,
     )
 
 
@@ -4002,8 +4031,10 @@ def validate_ai_item(item: Any, valid_ids: set[str]) -> dict[str, Any] | None:
         confidence = confidence / 100
     if not 0 <= confidence <= 1:
         return None
+    merchant = str(item.get("normalized_merchant") or "").strip()[:120] or None
     return {
         "transaction_id": transaction_id,
+        "normalized_merchant": merchant,
         "account": account,
         "group": group,
         "vat_treatment": vat_treatment,
@@ -4060,7 +4091,8 @@ def request_ai_classifications(items: list[dict[str, Any]], diagnostics: dict[st
             "Return strict JSON only. Do not infer amounts, balances, dates, or reconciliation. "
             "Use conservative VAT treatment. Mark ambiguous, personal-looking, entertainment, or supplier-unknown items for review. "
             "Do not classify purely because a generic keyword appears in the description. Use merchant semantics, recurring pattern, amount direction, known supplier context, and the existing rule result. "
-            "The account holder / company name printed on the statement is context, not a merchant. Never classify a row into a category merely because the account holder's own name appears in the description."
+            "The account holder / company name printed on the statement is context, not a merchant. Never classify a row into a category merely because the account holder's own name appears in the description. "
+            "Where you can identify the merchant behind the bank's wording, return it as normalized_merchant using only words that appear in the description. If you cannot tell, return null - a null merchant is correct and an invented one is not."
         ),
         "known_supplier_guidance": [
             {"merchant": "Discovery", "account": "Insurance", "reason": "Previously approved insurance supplier pattern."},
@@ -4100,6 +4132,7 @@ def request_ai_classifications(items: list[dict[str, Any]], diagnostics: dict[st
                     "review_reason": "string",
                     "invoice_required": True,
                     "confidence": 0.72,
+                    "normalized_merchant": "string or null - the merchant behind the bank wording, using ONLY words present in the description; null if you cannot tell",
                     "reason": "string",
                     "explanation": "string",
                 }
@@ -4217,6 +4250,14 @@ def apply_ai_result_to_row(row: dict[str, Any], result: dict[str, Any]) -> None:
     row["classification_reason"] = result.get("reason") or row.get("classification_reason") or "AI classification applied to ambiguous transaction."
     row["classification_explanation"] = result.get("explanation") or row.get("classification_explanation") or ""
     row["ai_used"] = True
+    # A merchant is a claim about who was paid. It is kept only when the bank's
+    # own description contains it — a name the document does not mention is a
+    # fabrication however plausible it reads, and null is the better answer.
+    suggested = result.get("normalized_merchant")
+    if suggested and merchant_is_grounded(suggested, description):
+        row["normalized_merchant"] = suggested
+    elif suggested:
+        row["ai_merchant_rejected"] = suggested
     recompute_professional_vat(row)
 
 
@@ -4713,6 +4754,9 @@ def classify_transactions_with_ai(
         transaction.classification_strength = STRENGTH_SOFT
         transaction.classification_confidence = round(float(row.get("ai_confidence") or 0) * 100, 2)
         transaction.classification_reason = str(row.get("classification_reason") or "")[:400]
+        merchant = row.get("normalized_merchant")
+        if merchant and not transaction.normalized_merchant:
+            transaction.normalized_merchant = str(merchant)[:120]
         if row.get("review_required"):
             transaction.review_status = "needs_review"
         applied += 1

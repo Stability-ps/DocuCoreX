@@ -1,0 +1,488 @@
+{
+ "version": 1,
+ "note": "Merchant knowledge shared by the Python worker (engine/merchants.py) and TypeScript (lib/accounting/engine/merchant-kb.ts), which imports this exact file. Lives inside the worker package because the worker deploys from workers/accounting_worker.",
+ "matching": "Aliases are matched with the boundary-aware matcher in engine/classification.py, never as raw substrings. That is why FUELZONE is listed by name: 'fuel' as a fragment also matches FUELLED CATERING, so the brand has to be known rather than guessed.",
+ "vat": "vat_treatment is deliberately conservative. Recognising a merchant establishes what was bought, not whether input VAT is claimable, whether a valid tax invoice exists, or whether the purpose was business.",
+ "merchants": [
+  {
+   "canonical": "Accounting and Professional Fees",
+   "aliases": [
+    "acapolite accounting",
+    "tax practitioner",
+    "bookkeeping",
+    "accounting",
+    "audit fee"
+   ],
+   "category": "Accounting / Professional Fees",
+   "vat_treatment": "standard",
+   "confidence": 88,
+   "reason": "Professional accounting service supplier; invoice support required for VAT."
+  },
+  {
+   "canonical": "Adobe",
+   "aliases": [
+    "adobe"
+   ],
+   "category": "Software / IT",
+   "vat_treatment": "standard",
+   "confidence": 86,
+   "reason": "Software subscription merchant; invoice support required for VAT."
+  },
+  {
+   "canonical": "Amazon Web Services",
+   "aliases": [
+    "amazon web services",
+    "amazon aws",
+    "aws"
+   ],
+   "category": "Software / IT",
+   "vat_treatment": "standard",
+   "confidence": 86,
+   "reason": "Cloud software merchant; invoice support required for VAT."
+  },
+  {
+   "canonical": "Caltex",
+   "aliases": [
+    "caltex"
+   ],
+   "category": "Motor Vehicle Expenses",
+   "vat_treatment": "review",
+   "confidence": 90,
+   "reason": "Known fuel retailer."
+  },
+  {
+   "canonical": "Cartrack",
+   "aliases": [
+    "cartrack"
+   ],
+   "category": "Motor Vehicle Expenses",
+   "vat_treatment": "review",
+   "confidence": 88,
+   "reason": "Vehicle telematics subscription."
+  },
+  {
+   "canonical": "Checkers",
+   "aliases": [
+    "checkers sixty60",
+    "checkers"
+   ],
+   "category": "Meals / Groceries - Non Deductible Review",
+   "vat_treatment": "review",
+   "confidence": 76,
+   "reason": "Grocery/retail merchant; possible personal or entertainment spend."
+  },
+  {
+   "canonical": "Clicks",
+   "aliases": [
+    "clicks"
+   ],
+   "category": "Meals / Groceries - Non Deductible Review",
+   "vat_treatment": "review",
+   "confidence": 74,
+   "reason": "Pharmacy/retail merchant; expense purpose needs review."
+  },
+  {
+   "canonical": "DHL",
+   "aliases": [
+    "the courier guy",
+    "paygate dhl",
+    "courier guy",
+    "paygate*dhl",
+    "postnet",
+    "aramex",
+    "dhl"
+   ],
+   "category": "Courier / Freight",
+   "vat_treatment": "standard",
+   "confidence": 88,
+   "reason": "Courier and delivery supplier; invoice support required for VAT."
+  },
+  {
+   "canonical": "Dis-Chem",
+   "aliases": [
+    "dis chem",
+    "dis-chem"
+   ],
+   "category": "Meals / Groceries - Non Deductible Review",
+   "vat_treatment": "review",
+   "confidence": 74,
+   "reason": "Pharmacy/retail merchant; expense purpose needs review."
+  },
+  {
+   "canonical": "Discovery",
+   "aliases": [
+    "discovery insurance",
+    "discovery account",
+    "discovery insure",
+    "discovery health"
+   ],
+   "category": "Insurance",
+   "vat_treatment": "exempt",
+   "confidence": 94,
+   "reason": "Known insurance/medical supplier pattern."
+  },
+  {
+   "canonical": "Emporers Ridge Levy",
+   "aliases": [
+    "emporers ridge h oa",
+    "emporers ridge levy",
+    "body corporate",
+    "hoa levy",
+    "levy"
+   ],
+   "category": "Levies",
+   "vat_treatment": "review",
+   "confidence": 86,
+   "reason": "Property/body-corporate levy pattern; VAT depends on supporting document."
+  },
+  {
+   "canonical": "Engen",
+   "aliases": [
+    "engen"
+   ],
+   "category": "Motor Vehicle Expenses",
+   "vat_treatment": "review",
+   "confidence": 90,
+   "reason": "Known fuel retailer."
+  },
+  {
+   "canonical": "Eskom",
+   "aliases": [
+    "eskom"
+   ],
+   "category": "Utilities",
+   "vat_treatment": "standard",
+   "confidence": 88,
+   "reason": "Utility supplier; invoice support required for VAT."
+  },
+  {
+   "canonical": "FNB Bank Charges",
+   "aliases": [
+    "accrued bank charge",
+    "monthly account fee",
+    "cash deposit fee",
+    "excess item fee",
+    "#service fees",
+    "service fees",
+    "byc debit"
+   ],
+   "category": "Bank Charges",
+   "vat_treatment": "standard",
+   "confidence": 98,
+   "reason": "FNB fee pattern; bank-charge VAT treatment can be taken from the bank tax invoice."
+  },
+  {
+   "canonical": "Fuelzone",
+   "aliases": [
+    "fuelzone",
+    "fuel zone"
+   ],
+   "category": "Motor Vehicle Expenses",
+   "vat_treatment": "review",
+   "confidence": 90,
+   "reason": "Known fuel retailer. Recognised by name because 'fuel' as a fragment also matches unrelated merchants."
+  },
+  {
+   "canonical": "Google",
+   "aliases": [
+    "google workspace",
+    "google storage",
+    "google cloud",
+    "google play",
+    "google"
+   ],
+   "category": "Software / IT",
+   "vat_treatment": "standard",
+   "confidence": 84,
+   "reason": "Google merchant pattern; require invoice support before final VAT claim."
+  },
+  {
+   "canonical": "Google ChatGPT / OpenAI",
+   "aliases": [
+    "google chatgpt",
+    "google openai",
+    "chatgpt",
+    "openai"
+   ],
+   "category": "Software / IT",
+   "vat_treatment": "standard",
+   "confidence": 90,
+   "reason": "Recurring software subscription merchant; invoice support still required for VAT."
+  },
+  {
+   "canonical": "Google Xiaomi Home",
+   "aliases": [
+    "google xiaomi home",
+    "xiaomi home"
+   ],
+   "category": "Software / IT",
+   "vat_treatment": "review",
+   "confidence": 84,
+   "reason": "Google/Xiaomi app-service merchant; account is IT/software but VAT remains review."
+  },
+  {
+   "canonical": "Government Health / Tender Receipts",
+   "aliases": [
+    "magtape credit 047-gp hea",
+    "department of health",
+    "health department",
+    "dept of health",
+    "gauteng health",
+    "gp hea"
+   ],
+   "category": "Sales / Revenue",
+   "vat_treatment": "standard",
+   "confidence": 94,
+   "reason": "Inbound government or tender/service receipt; review output VAT and supporting invoice before final filing."
+  },
+  {
+   "canonical": "Inter-account Transfers",
+   "aliases": [
+    "fnb app transfer from credit",
+    "fnb app transfer to savings",
+    "transfer from credit",
+    "transfer to savings",
+    "inter-account",
+    "own account"
+   ],
+   "category": "Inter-account Transfer",
+   "vat_treatment": "out_of_scope",
+   "confidence": 95,
+   "reason": "Own-account transfer pattern; excluded from VAT and profit/loss."
+  },
+  {
+   "canonical": "IT and Electronics Suppliers",
+   "aliases": [
+    "samsung electronics",
+    "google xiaomi home",
+    "xiaomi home",
+    "global-e"
+   ],
+   "category": "Software / IT",
+   "vat_treatment": "review",
+   "confidence": 82,
+   "reason": "Technology or electronics merchant; classify to IT with VAT review."
+  },
+  {
+   "canonical": "Medical Pharmacy and Hair Suppliers",
+   "aliases": [
+    "sunnydale pharm",
+    "raquel hair",
+    "khumbu hair",
+    "hair health",
+    "hair stuff",
+    "pharmacy"
+   ],
+   "category": "Meals / Groceries - Non Deductible Review",
+   "vat_treatment": "review",
+   "confidence": 72,
+   "reason": "Personal-care or pharmacy supplier; keep in review until business purpose is confirmed."
+  },
+  {
+   "canonical": "Microsoft",
+   "aliases": [
+    "microsoft 365",
+    "microsoft",
+    "office365",
+    "msft"
+   ],
+   "category": "Software / IT",
+   "vat_treatment": "standard",
+   "confidence": 86,
+   "reason": "Software subscription merchant; invoice support required for VAT."
+  },
+  {
+   "canonical": "Mr D Food",
+   "aliases": [
+    "mr d food",
+    "mr d"
+   ],
+   "category": "Meals / Groceries - Non Deductible Review",
+   "vat_treatment": "review",
+   "confidence": 86,
+   "reason": "Food delivery merchant; keep VAT restricted/review until business purpose is confirmed."
+  },
+  {
+   "canonical": "Netcash Debit Orders",
+   "aliases": [
+    "magtape debit disc prem",
+    "magtape debit stratum",
+    "stratum netcash",
+    "disc prem",
+    "netcash"
+   ],
+   "category": "Operating Expenses",
+   "vat_treatment": "review",
+   "confidence": 76,
+   "reason": "Recurring debit-order supplier pattern; category is operational but supporting detail is needed."
+  },
+  {
+   "canonical": "Personal / Lifestyle Review Suppliers",
+   "aliases": [
+    "adore photography",
+    "sloppy kisses",
+    "puppy classes",
+    "prayer shop",
+    "senses spa"
+   ],
+   "category": "Suspense / Review Required",
+   "vat_treatment": "review",
+   "confidence": 62,
+   "reason": "Personal-looking or ambiguous supplier; accountant review required."
+  },
+  {
+   "canonical": "Sage Accounting",
+   "aliases": [
+    "pos purchase sage",
+    "sage accounting",
+    "sage acc",
+    "sage sa"
+   ],
+   "category": "Software / IT",
+   "vat_treatment": "standard",
+   "confidence": 90,
+   "reason": "Known accounting software subscription; invoice support required for VAT."
+  },
+  {
+   "canonical": "Salaries and Caregivers",
+   "aliases": [
+    "sunfield sureka reddy",
+    "brilliant care giver",
+    "waterfall salary",
+    "ana care giver",
+    "care giver",
+    "caregiver",
+    "payroll",
+    "salary",
+    "wages",
+    "nanny"
+   ],
+   "category": "Salaries / Drawings / Personal",
+   "vat_treatment": "out_of_scope",
+   "confidence": 94,
+   "reason": "Payroll or caregiver payment pattern; no VAT claim."
+  },
+  {
+   "canonical": "SARS",
+   "aliases": [
+    "provisional tax",
+    "tax deposit",
+    "efiling",
+    "vat201",
+    "sars",
+    "paye"
+   ],
+   "category": "SARS / Tax Suspense",
+   "vat_treatment": "out_of_scope",
+   "confidence": 92,
+   "reason": "Tax authority payment/receipt; classify to tax suspense, not revenue."
+  },
+  {
+   "canonical": "Sasol",
+   "aliases": [
+    "sasol"
+   ],
+   "category": "Motor Vehicle Expenses",
+   "vat_treatment": "review",
+   "confidence": 90,
+   "reason": "Known fuel retailer."
+  },
+  {
+   "canonical": "Savings and Home Loan Transfers",
+   "aliases": [
+    "fnb app transfer to credit card",
+    "scheduled payment to home loan",
+    "scheduled payment to savings",
+    "money maximizer savings",
+    "transfer to credit card",
+    "transfer to home loan",
+    "home loan payment"
+   ],
+   "category": "Loan / Liability",
+   "vat_treatment": "out_of_scope",
+   "confidence": 92,
+   "reason": "Balance-sheet transfer or loan repayment pattern; excluded from VAT and profit/loss."
+  },
+  {
+   "canonical": "Shell",
+   "aliases": [
+    "shell garage",
+    "shell ultra"
+   ],
+   "category": "Motor Vehicle Expenses",
+   "vat_treatment": "review",
+   "confidence": 88,
+   "reason": "Known fuel retailer. 'shell' alone is too generic to identify a merchant."
+  },
+  {
+   "canonical": "South African Revenue Service",
+   "aliases": [
+    "sars efiling",
+    "sars payment",
+    "sars"
+   ],
+   "category": "SARS / Tax Suspense",
+   "vat_treatment": "out_of_scope",
+   "confidence": 92,
+   "reason": "Tax authority. Held in suspense rather than assigned to a tax type, which the description does not establish."
+  },
+  {
+   "canonical": "Supplier Payments",
+   "aliases": [
+    "rmsp trading allianz holdings",
+    "industries allianz holdings",
+    "stalitrex allianz holdings",
+    "nms enterprises 5290b",
+    "bambhanani enterpris",
+    "fabric and leather",
+    "kenny s intermedia",
+    "msi industries inv",
+    "nms enterprises",
+    "msi industries",
+    "jc industries",
+    "rmsp trading",
+    "world focus",
+    "first works",
+    "midway inv",
+    "stalitrex",
+    "midway"
+   ],
+   "category": "Supplier Payments",
+   "vat_treatment": "review",
+   "confidence": 86,
+   "reason": "Named supplier/company payment pattern; invoice support required before final VAT treatment."
+  },
+  {
+   "canonical": "Takealot",
+   "aliases": [
+    "takealot"
+   ],
+   "category": "Uncategorised",
+   "vat_treatment": "review",
+   "confidence": 70,
+   "reason": "Retail merchant; needs review because goods may be personal, inventory, office, or capital."
+  },
+  {
+   "canonical": "Uber Eats",
+   "aliases": [
+    "pos purchase new uber eats",
+    "uber eats 400568",
+    "uber eats"
+   ],
+   "category": "Meals / Groceries - Non Deductible Review",
+   "vat_treatment": "review",
+   "confidence": 88,
+   "reason": "Known meal and entertainment merchant; VAT and invoice support require review."
+  },
+  {
+   "canonical": "Woolworths",
+   "aliases": [
+    "woolworths"
+   ],
+   "category": "Meals / Groceries - Non Deductible Review",
+   "vat_treatment": "review",
+   "confidence": 76,
+   "reason": "Grocery/retail merchant; possible personal or entertainment spend."
+  }
+ ]
+}
