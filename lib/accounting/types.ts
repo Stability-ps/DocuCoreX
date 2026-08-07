@@ -83,6 +83,22 @@ export type AccountingTransaction = {
   notes: string;
   confidence: number;
   reviewStatus: AccountingReviewStatus;
+  /**
+   * Where the category came from, and how sure that decision is — recorded by
+   * the worker (migration 021), not inferred. Null on rows written before
+   * provenance existed, which is honest: we do not know who classified them.
+   *
+   * `classificationConfidence` is deliberately not `confidence`. A row can be
+   * extracted perfectly and still be hard to categorise, and for an AI-recovered
+   * row `confidence` is capped as an EXTRACTION signal that classification must
+   * not raise.
+   */
+  classificationSource: ClassificationSourceValue | null;
+  classificationStrength: string | null;
+  classificationConfidence: number | null;
+  classificationReason: string | null;
+  /** Merchant behind the bank's wording. `description` stays bank evidence. */
+  normalizedMerchant: string | null;
   sourcePage: number | null;
   sourceRow?: number | null;
   reviewComment?: string;
@@ -90,6 +106,14 @@ export type AccountingTransaction = {
   createdAt: string;
   updatedAt: string;
 };
+
+/** Who classified a transaction. Matches the worker's vocabulary. */
+export type ClassificationSourceValue =
+  | "deterministic"
+  | "learned_rule"
+  | "ai"
+  | "manual"
+  | "unresolved";
 
 export type AccountingRunDetail = {
   run: AccountingStatementRun;

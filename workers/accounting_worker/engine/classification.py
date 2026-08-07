@@ -53,6 +53,35 @@ STRENGTH_NONE = "none"
 # stronger classification cannot be quietly replaced by a weaker one.
 REVISABLE_STRENGTHS = frozenset({STRENGTH_SOFT, STRENGTH_NONE})
 
+# WHO decided, which is a different question from how much weight the decision
+# carries. A deterministic rule can be hard or soft; a person's correction is
+# always learned. Both are recorded, because a reviewer asking "can I trust this
+# category" needs the source, and a later stage asking "may I revise it" needs
+# the strength.
+SOURCE_DETERMINISTIC = "deterministic"
+SOURCE_LEARNED_RULE = "learned_rule"
+SOURCE_AI = "ai"
+SOURCE_MANUAL = "manual"
+SOURCE_UNRESOLVED = "unresolved"
+
+_SOURCE_FOR_STRENGTH = {
+    STRENGTH_HARD: SOURCE_DETERMINISTIC,
+    STRENGTH_SOFT: SOURCE_DETERMINISTIC,
+    STRENGTH_LEARNED: SOURCE_LEARNED_RULE,
+    STRENGTH_NONE: SOURCE_UNRESOLVED,
+}
+
+
+def source_for_strength(strength: str) -> str:
+    """The source implied by a rule's standing.
+
+    `none` maps to `unresolved` rather than `deterministic`: no rule decided
+    anything, and recording the fallback as a deterministic classification would
+    present "we do not know" as an answer — which is how 434 rows of a real
+    statement came to be displayed as confidently classified.
+    """
+    return _SOURCE_FOR_STRENGTH.get(strength, SOURCE_UNRESOLVED)
+
 
 @dataclass(frozen=True)
 class Classification:

@@ -31,9 +31,11 @@ from engine.classification import (
     STRENGTH_NONE,
     STRENGTH_SOFT,
     REVISABLE_STRENGTHS,
+    SOURCE_LEARNED_RULE,
     Classification,
     bank_charge_evidence,
     owner_drawings_evidence,
+    source_for_strength,
 )
 from engine.ai_recovery import SYSTEM_PROMPT as AI_RECOVERY_SYSTEM_PROMPT
 from engine.ai_recovery import batches as ai_batches
@@ -279,6 +281,13 @@ class ParsedTransaction(BaseModel):
     # revisable one without inferring it from the confidence number.
     classification_strength: str = STRENGTH_SOFT
     classification_reason: str = ""
+    # Who decided, and how sure that decision is. Kept apart from `confidence`,
+    # which for an AI-recovered row is capped as an EXTRACTION signal: a row can
+    # be located by a model and still be categorised with certainty, or read
+    # perfectly and still be hard to categorise.
+    classification_source: str = ""
+    classification_confidence: float | None = None
+    normalized_merchant: str | None = None
 
 
 def get_supabase() -> Client:
@@ -349,6 +358,8 @@ def apply_learned_classification_rules(transactions: list[ParsedTransaction], ru
         # CLASSIFICATION is now a decision a person actually made.
         transaction.classification_strength = STRENGTH_LEARNED
         transaction.classification_reason = str(matched_rule.get("reason") or "workspace-approved classification rule")
+        transaction.classification_source = SOURCE_LEARNED_RULE
+        transaction.classification_confidence = float(matched_rule.get("confidence") or 94)
         applied += 1
     return applied
 
@@ -1157,6 +1168,8 @@ def build_transaction(
         raw_text=raw_text,
         classification_strength=classification.strength,
         classification_reason=classification.reason,
+        classification_source=source_for_strength(classification.strength),
+        classification_confidence=classification.confidence,
     )
 
 
@@ -4534,14 +4547,50 @@ def transaction_insert_row(transaction: ParsedTransaction, run_id: str, workspac
     # source_row is useful for in-memory ordering/deduping, but older production
     # databases do not have this optional column yet. Keep writes compatible.
     row.pop("source_row", None)
-    # Classification standing is a processing-time concept with no column yet.
-    # This row is built by spreading model_dump(), so a new field on
-    # ParsedTransaction reaches Supabase automatically — and an insert naming a
-    # column that does not exist fails the whole batch, losing every transaction
-    # in the run. Fields land here deliberately, when their migration does.
-    row.pop("classification_strength", None)
-    row.pop("classification_reason", None)
     return row
+
+
+# The provenance columns added by migration 021. Named explicitly because this
+# row is built by spreading model_dump(): a new field on ParsedTransaction
+# reaches Supabase automatically, and an insert naming a column that does not
+# exist fails the WHOLE batch — losing every transaction in the run. A field
+# only becomes writable once its migration is listed here.
+PROVENANCE_COLUMNS = (
+    "classification_source",
+    "classification_strength",
+    "classification_confidence",
+    "classification_reason",
+    "normalized_merchant",
+)
+
+
+def strip_provenance_columns(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """The same rows as they would have been written before migration 021."""
+    return [{key: value for key, value in row.items() if key not in PROVENANCE_COLUMNS} for row in rows]
+
+
+def insert_transactions(supabase: Client, rows: list[dict[str, Any]], run_id: str) -> bool:
+    """Write the transactions, degrading to the pre-provenance shape if needed.
+
+    Provenance is an enrichment. A database that has not run migration 021 yet
+    must still receive its ledger — losing 615 real transactions because a
+    reporting column is missing would be a far worse failure than not knowing
+    which rule classified them.
+
+    Returns whether provenance was persisted.
+    """
+    try:
+        supabase.table("accounting_transactions").insert(rows).execute()
+        return True
+    except Exception as exc:  # noqa: BLE001 - any insert rejection falls back
+        log_warning(
+            "worker.transaction_provenance_not_persisted",
+            run_id=run_id,
+            error=str(exc)[:400],
+            note="migration 021 not applied? retrying without the classification provenance columns",
+        )
+        supabase.table("accounting_transactions").insert(strip_provenance_columns(rows)).execute()
+        return False
 
 
 def run_period_label(run: dict[str, Any]) -> str:
@@ -5510,7 +5559,7 @@ def process_fnb_statement(payload: ProcessRequest, authorization: str | None = H
 
         supabase.table("accounting_transactions").delete().eq("run_id", payload.run_id).execute()
         rows = [transaction_insert_row(transaction, payload.run_id, payload.workspace_id) for transaction in transactions]
-        supabase.table("accounting_transactions").insert(rows).execute()
+        provenance_persisted = insert_transactions(supabase, rows, payload.run_id)
 
         # General extraction validation (count / totals / reconciliation vs the
         # statement's own declared figures). Bank charges come from the declared
@@ -5676,6 +5725,7 @@ def process_fnb_statement(payload: ProcessRequest, authorization: str | None = H
             "parser_profile": parser_profile,
             # Why this run is trusted, or is not. A run reaching "completed" on
             # zero checks would be an unverified claim of success.
+            "classification_provenance_persisted": provenance_persisted,
             "completeness_evidence": {
                 "checks_run": extraction_check.get("evidence_checks_run"),
                 "failures": extraction_check.get("failures"),
