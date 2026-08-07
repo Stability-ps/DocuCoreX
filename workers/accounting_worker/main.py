@@ -24,13 +24,30 @@ from pydantic import BaseModel
 from supabase import Client, create_client
 from auth import OK as AUTH_OK, STATUS_FOR_VERDICT, auth_compare_diagnostics, check_bearer
 from engine.bootstrap import register_default_parsers
-from engine.registry import BankRegistry
+from engine.detection import UNKNOWN_PROFILE_ID, bank_name_for, detect_bank, is_supported_bank
+from engine.ai_recovery import SYSTEM_PROMPT as AI_RECOVERY_SYSTEM_PROMPT
+from engine.ai_recovery import batches as ai_batches
+from engine.ai_recovery import build_prompt as build_ai_recovery_prompt
+from engine.ai_recovery import candidate_lines as ai_candidate_lines
+from engine.ai_recovery import dropped_line_count as ai_dropped_line_count
+from engine.ai_recovery import ground_rows as ground_ai_rows
+from engine.generic_parser import count_candidate_lines as generic_candidate_lines
+from engine.generic_parser import extract_generic_rows
+from engine.lexicon import LOOSE_DATE, LOOSE_MONEY, MONEY_TOKEN
 
 
 app = FastAPI(title="DocuCoreX Accounting Worker")
 logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"))
 logger = logging.getLogger("docucorex.accounting_worker")
 WORKER_PARSER_VERSION = "fnb_business_v1"
+# Two different things, kept apart on purpose.
+#
+# The BANK PROFILE is which bank issued the statement (fnb_business_v1,
+# standard_bank_business_v1, ... or "unknown"). The PARSER PROFILE is which
+# implementation read it: the FNB parser, or the generic one. Collapsing the two
+# is what made "not FNB" mean "cannot be processed".
+FNB_PROFILE_ID = "fnb_business_v1"
+GENERIC_PARSER_PROFILE_ID = "generic_bank_statement_v1"
 WORKER_BUILD_FALLBACK = "local-dev"
 DEFAULT_AI_MODEL = "gpt-4o-mini"
 AI_CLASSIFICATION_CACHE: dict[str, dict[str, Any]] = {}
@@ -38,10 +55,6 @@ AI_CLASSIFICATION_BATCH_SIZE = 30
 ACCOUNTING_REPORT_DISCLAIMER = (
     "Draft management report generated from bank-statement data only. "
     "This is not a final IFRS or Companies Act financial statement and requires accountant review."
-)
-MONEY_TOKEN = re.compile(
-    r"(?<![A-Za-z0-9])(?P<negative>-)?(?:R\s*)?(?P<bracket>\()?(?P<amount>(?:\d{1,3}(?:,\d{3})+|\d+)\.\d{2})(?:\))?\s*(?P<suffix>Cr|CR|Dr|DR)?(?!\d)",
-    re.IGNORECASE,
 )
 MAX_DATABASE_AMOUNT = Decimal("999999999999.99")
 CENT = Decimal("0.01")
@@ -90,6 +103,103 @@ def with_worker_version(payload: dict[str, Any]) -> dict[str, Any]:
     return {**payload, "worker": worker_version()}
 
 
+def recovery_options(
+    full_text: str,
+    pages: list[dict[str, Any]],
+    structured_rows: list[dict[str, Any]] | None,
+    structured_selection: dict[str, Any],
+) -> dict[str, Any]:
+    """What material is left to work from when no transaction was parsed.
+
+    A run is only genuinely unprocessable once nothing recoverable remains.
+    Deterministic parsing returning nothing is not the same thing: a statement
+    can carry perfectly good structured rows or perfectly readable text that
+    this parser simply could not lay out.
+
+    Reporting the two apart is the point. "We could not read it" and "there is
+    nothing to read" call for different responses, and collapsing them into one
+    failure is what made a legible 37-page statement look like a broken file.
+    """
+    text = (full_text or "").strip()
+    rows = structured_rows or []
+    table_count = sum(len(page.get("tables") or []) for page in pages)
+    generic_candidates = generic_candidate_lines(text) if text else 0
+
+    reasons: list[str] = []
+    if not text:
+        reasons.append("no usable text")
+    if not rows:
+        reasons.append("no structured rows")
+    if not table_count:
+        reasons.append("no extracted tables")
+    if not generic_candidates:
+        reasons.append("no dated money rows in the text")
+
+    # Structured rows that arrived but were rejected still count as material:
+    # they were readable enough to send, so something can be done with them.
+    recoverable = bool(rows) or bool(table_count) or generic_candidates > 0
+    return {
+        "recoverable": recoverable,
+        "summary": ", ".join(reasons) if reasons else "material remains",
+        "text_length": len(text),
+        "structured_rows_received": len(rows),
+        "structured_rows_usable": bool(structured_selection.get("structured_rows_usable")),
+        "structured_rejection_reason": structured_selection.get("structured_rejection_reason"),
+        "extracted_table_count": table_count,
+        "generic_candidate_lines": generic_candidates,
+        "page_count": len(pages),
+    }
+
+
+def resolve_bank_profile(
+    worker_profile: str,
+    worker_confidence: float,
+    node_profile: str | None,
+    node_confidence: float | None,
+) -> dict[str, Any]:
+    """Settle on one bank from the two detections, and say why.
+
+    Two sides look at the same statement through different text. The Node
+    pipeline reads the merged best extraction across pdfjs, pdfplumber, Azure
+    and Mistral; this worker reads its own pdfplumber/PyMuPDF output, or the
+    provided text when that yields more. Either can be the better witness — a
+    scanned page this worker cannot read at all is legible to Azure, and an OCR
+    reflow that mangles a letterhead is clean in the native extraction.
+
+    So: a side that identified a bank beats a side that did not, agreement wins
+    outright, and a genuine conflict goes to the more confident reading — with
+    the worker breaking an exact tie, because it is reading the text it is about
+    to parse. Unrecognised ids from a newer frontend count as no identification
+    rather than as a bank this worker cannot parse.
+
+    Returns `unknown` when neither side identified anything. That is a routing
+    outcome (the generic parser), not a failure.
+    """
+    worker_known = is_supported_bank(worker_profile)
+    node_known = is_supported_bank(node_profile)
+
+    if worker_known and node_known:
+        if worker_profile == node_profile:
+            source, profile, reason = "agreed", worker_profile, "both sides identified the same bank"
+        elif (node_confidence or 0.0) > worker_confidence:
+            source, profile, reason = "node", node_profile, "conflict resolved by higher node confidence"
+        else:
+            source, profile, reason = "worker", worker_profile, "conflict resolved by worker confidence"
+    elif worker_known:
+        source, profile, reason = "worker", worker_profile, "only the worker identified a bank"
+    elif node_known:
+        source, profile, reason = "node", node_profile, "only the node pipeline identified a bank"
+    else:
+        source, profile, reason = "none", UNKNOWN_PROFILE_ID, "no side identified a bank"
+
+    return {
+        "bank_profile": profile,
+        "bank_name": bank_name_for(profile),
+        "source": source,
+        "reason": reason,
+    }
+
+
 class ProcessRequest(BaseModel):
     run_id: str
     workspace_id: str
@@ -112,6 +222,16 @@ class ProcessRequest(BaseModel):
     structured_row_count: int | None = None
     structured_diagnostics: dict[str, Any] | None = None
     extraction_debug: dict[str, Any] | None = None
+    # Which bank the Node pipeline concluded issued this statement, decided from
+    # the merged best extraction across pdfjs / pdfplumber / Azure / Mistral.
+    # "unknown" means that side looked and found nothing; None means the request
+    # came from a deploy that predates bank detection. The two are not the same,
+    # and neither changes routing yet — this worker re-detects independently.
+    detected_bank: str | None = None
+    detected_bank_name: str | None = None
+    detected_bank_confidence: float | None = None
+    detected_bank_reason: str | None = None
+    detected_bank_evidence: list[str] | None = None
 
 
 class CombineRequest(BaseModel):
@@ -285,7 +405,12 @@ def parse_date(value: str | None) -> str | None:
     if not value:
         return None
     value = value.strip()
-    for fmt in ("%d/%m/%Y", "%d/%m/%y", "%Y-%m-%d", "%d %b %Y", "%d %B %Y"):
+    # "%d %b %y" — a two-digit year after a month name ("30 Apr 25") is how
+    # Standard Bank prints every transaction date. Without it parse_date returned
+    # None, normalize_transaction_date then appended the statement year to make
+    # "30 Apr 25 2025", which failed too, and every row was dropped for want of a
+    # date. Numeric two-digit years ("30/04/25") were already accepted.
+    for fmt in ("%d/%m/%Y", "%d/%m/%y", "%Y-%m-%d", "%d %b %Y", "%d %B %Y", "%d %b %y", "%d %B %y"):
         try:
             return datetime.strptime(value, fmt).date().isoformat()
         except ValueError:
@@ -480,13 +605,22 @@ def parse_metadata(full_text: str) -> dict[str, Any]:
         flags=re.IGNORECASE,
     )
 
+    # `(?::|-(?=\s))?` — a colon separates, and so does a dash with a space after
+    # it, but a minus sign printed hard against the figure belongs to the figure.
+    #
+    # The old `[:\-]?` swallowed that minus as punctuation, so an overdrawn
+    # statement's "STATEMENT OPENING BALANCE -992,452.57" was recorded as
+    # +992,452.57. Every balance-continuity check then failed by twice the
+    # opening balance, and on a statement whose amounts carry no sign of their
+    # own that is fatal: direction is inferred from the arithmetic, so a wrongly
+    # signed opening balance means no row can be resolved at all.
     opening_balance = find_first([
-        r"Opening\s*Balance\s*[:\-]?\s*R?\s*([0-9,.\-() ]+)",
-        r"Balance\s*Brought\s*Forward\s*[:\-]?\s*R?\s*([0-9,.\-() ]+)",
+        r"Opening\s*Balance\s*(?::|-(?=\s))?\s*R?\s*([0-9,.\-() ]+)",
+        r"Balance\s*Brought\s*Forward\s*(?::|-(?=\s))?\s*R?\s*([0-9,.\-() ]+)",
     ], full_text)
     closing_balance = find_first([
-        r"Closing\s*Balance\s*[:\-]?\s*R?\s*([0-9,.\-() ]+)",
-        r"Balance\s*Carried\s*Forward\s*[:\-]?\s*R?\s*([0-9,.\-() ]+)",
+        r"Closing\s*Balance\s*(?::|-(?=\s))?\s*R?\s*([0-9,.\-() ]+)",
+        r"Balance\s*Carried\s*Forward\s*(?::|-(?=\s))?\s*R?\s*([0-9,.\-() ]+)",
     ], full_text)
 
     # Statement summary block — the statement's OWN declared totals. These are the
@@ -555,10 +689,6 @@ TRANSACTION_LINE = re.compile(
 # the lookahead rejects "550" (from 550.00) and "15" (from 15.00) while still
 # accepting "01 Apr 2025". Rows WITH a description were unaffected because their
 # next token is text, which is why only the fee rows vanished.
-LOOSE_DATE = re.compile(
-    r"(?P<date>\d{1,2}[/-]\d{1,2}(?:[/-]\d{2,4}(?![\d.,]))?|\d{1,2}\s+[A-Za-z]{3,9}(?:\s+\d{2,4}(?![\d.,]))?)"
-)
-LOOSE_MONEY = re.compile(r"(?:R\s*)?-?\(?\d[\d,\s]*\.\d{2}\)?-?")
 FNB_PAGE_ARTIFACT = re.compile(
     r"\b(?:Page\s+\d+\s+of\s+\d+|Delivery\s+Method|Branch\s+Number|Account\s+Number|"
     r"PLATINUM\s+BUSINESS\s+ACCOUNT|Accrued\s+Date\s+Description\s+Amount\s+Balance\s+Bank\s+Charges|"
@@ -1395,9 +1525,28 @@ def parse_table_transactions(pages: list[dict[str, Any]], metadata: dict[str, An
                 raw_date = raw_date_match.group("date")
 
                 description_index = find_header_index(active_headers, "description")
-                amount_index = find_header_index(active_headers, "amount", "debit", "credit")
                 balance_index = find_header_index(active_headers, "balance")
                 charges_index = find_header_index(active_headers, "accrued_charges")
+
+                # A layout with BOTH money columns — Payments/Deposits,
+                # Debit/Credit, Money out/Money in — is read as a pair.
+                #
+                # This used to resolve a single amount column with
+                # find_header_index(headers, "amount", "debit", "credit"), which
+                # returns the FIRST of the three that exists. On a two-column
+                # statement that is the debit column, and every row whose money
+                # sits in the other one was read as having no amount at all and
+                # dropped. On a Standard Bank Payments/Deposits layout that is
+                # every single deposit.
+                #
+                # Single-amount layouts (FNB's "Amount" column) are unaffected:
+                # they have no column pair, so they take the same path as before.
+                debit_index = find_header_index(active_headers, "debit")
+                credit_index = find_header_index(active_headers, "credit")
+                paired_money_columns = debit_index is not None and credit_index is not None
+                amount_index = find_header_index(active_headers, "amount")
+                if amount_index is None and not paired_money_columns:
+                    amount_index = debit_index if debit_index is not None else credit_index
 
                 if not active_headers and len(cells) >= 4:
                     description_index = 1 if len(cells) > 1 else None
@@ -1418,15 +1567,15 @@ def parse_table_transactions(pages: list[dict[str, Any]], metadata: dict[str, An
                 credit: float | None = None
                 balance = decimal_to_float(parse_money_cell(row_value(cells, balance_index)))
 
-                if amount_index is not None:
+                if paired_money_columns:
+                    debit_amount = parse_money_cell(row_value(cells, debit_index))
+                    credit_amount = parse_money_cell(row_value(cells, credit_index))
+                    debit = decimal_to_float(debit_amount.copy_abs()) if debit_amount is not None else None
+                    credit = decimal_to_float(credit_amount.copy_abs()) if credit_amount is not None else None
+                elif amount_index is not None:
                     parsed_amount = parse_transaction_amount_cell(row_value(cells, amount_index))
                     if parsed_amount:
                         debit, credit = parsed_amount
-                elif find_header_index(active_headers, "debit") is not None or find_header_index(active_headers, "credit") is not None:
-                    debit_amount = parse_money_cell(row_value(cells, find_header_index(active_headers, "debit")))
-                    credit_amount = parse_money_cell(row_value(cells, find_header_index(active_headers, "credit")))
-                    debit = decimal_to_float(debit_amount.copy_abs()) if debit_amount is not None else None
-                    credit = decimal_to_float(credit_amount.copy_abs()) if credit_amount is not None else None
 
                 if debit is None and credit is None:
                     continue
@@ -1693,7 +1842,78 @@ def normalize_transactions_from_balances(
     return normalized
 
 
-def parse_transactions(pages: list[dict[str, Any]], metadata: dict[str, Any], full_text: str = "") -> list[ParsedTransaction]:
+def parse_transactions(
+    pages: list[dict[str, Any]],
+    metadata: dict[str, Any],
+    full_text: str,
+    profile: str,
+) -> list[ParsedTransaction]:
+    """Route to the parser for the detected bank.
+
+    `profile` is required and has no default. A default would be a bank, and
+    defaulting to a bank is exactly what routed Standard Bank statements into
+    the FNB parser.
+    """
+    if profile == FNB_PROFILE_ID:
+        return parse_fnb_transactions(pages, metadata, full_text)
+    return parse_generic_transactions(pages, metadata, full_text)
+
+
+def parse_generic_transactions(
+    pages: list[dict[str, Any]],
+    metadata: dict[str, Any],
+    full_text: str = "",
+) -> list[ParsedTransaction]:
+    """Bank-independent parsing for every statement that is not FNB.
+
+    Built from the helpers that were already provider-neutral:
+    parse_table_transactions reads header roles (date / description /
+    debit-withdrawal-payment / credit-deposit-receipt / balance), and
+    parse_text_transactions scans dated money lines. Neither knows anything
+    about FNB, and none of the FNB fee reconstruction runs here — those infer
+    rows from FNB's own fee summary and would invent transactions on any other
+    bank's statement.
+
+    Two readings are taken and the better one wins:
+
+    - extracted TABLES, when the PDF yields them, keep their true column
+      positions, so a Payments/Deposits pair can be read off the columns
+      directly;
+    - TEXT is read by engine.generic_parser into structured rows, which then go
+      through parse_structured_rows — the same transformer the Azure and Mistral
+      row providers use, so date inheritance, Dr/Cr suffixes, informational rows
+      and balance-continuity direction resolution behave identically however the
+      rows were obtained.
+
+    A tie goes to the tables, which know which column a figure was printed in;
+    text has to infer that from the arithmetic.
+    """
+    table_transactions = parse_table_transactions(pages, metadata)
+    if table_transactions:
+        table_transactions = normalize_transactions_from_balances(
+            dedupe_transactions(table_transactions), metadata.get("opening_balance")
+        )
+
+    # full_text is the authoritative text — it may be a provider extraction that
+    # beat this worker's own. Only fall back to the pages when it is absent or is
+    # simply their concatenation, since the pages carry real page numbers.
+    native_text = "\n".join((page.get("text") or "") for page in pages)
+    if full_text.strip() and full_text.strip() != native_text.strip():
+        row_pages = [{"page": 1, "text": full_text, "tables": []}]
+    else:
+        row_pages = pages
+
+    generic_rows = extract_generic_rows(row_pages)
+    row_transactions: list[ParsedTransaction] = []
+    if generic_rows:
+        row_transactions, _ = parse_structured_rows(generic_rows, metadata, GENERIC_PARSER_PROFILE_ID)
+
+    if financial_transaction_count(table_transactions) >= financial_transaction_count(row_transactions):
+        return table_transactions
+    return row_transactions
+
+
+def parse_fnb_transactions(pages: list[dict[str, Any]], metadata: dict[str, Any], full_text: str = "") -> list[ParsedTransaction]:
     section_transactions = parse_fnb_section_transactions(full_text, metadata) if full_text else []
     if section_transactions:
         service_fee_transactions = parse_fnb_service_fee_transactions(full_text, metadata) if full_text else []
@@ -1792,18 +2012,37 @@ def resolve_amount_direction_from_continuity(
 def parse_structured_rows(
     rows: list[dict[str, Any]],
     metadata: dict[str, Any],
+    profile: str,
 ) -> tuple[list[ParsedTransaction], dict[str, Any]]:
     """Provider-agnostic StructuredRow[] -> ParsedTransaction[].
 
     This only transforms rows. Selection happens separately; the existing text
     parser remains intact and is always evaluated in parallel.
+
+    The row transformation itself is bank-independent — date inheritance, Dr/Cr
+    suffixes, bracketed negatives, zero-value informational rows and
+    balance-continuity direction resolution all read the row, not the bank. Three
+    steps are not: recovering a row from its raw text with the FNB line parser,
+    naming FNB's descriptionless fee rows, and inferring FNB service fees from a
+    running-balance gap. Those reconstruct rows from FNB's own fee summary and
+    would invent transactions on any other bank's statement, so `profile` gates
+    them. It is required for that reason and has no default.
     """
+    is_fnb = profile == FNB_PROFILE_ID
     transactions: list[ParsedTransaction] = []
     rejected_reasons: dict[str, int] = {}
     date_inferred_count = 0
     informational_row_count = 0
     last_date_value = ""
-    previous_running_balance: Decimal | None = None
+    # Seed continuity with the statement's opening balance. Without it the FIRST
+    # row has nothing to compare against, so an unsigned amount there could not
+    # be resolved into a debit or a credit and the row was rejected — losing the
+    # opening transaction of every statement whose direction is carried by the
+    # arithmetic rather than by a sign.
+    opening_balance_seed = metadata.get("opening_balance")
+    previous_running_balance: Decimal | None = (
+        decimal_amount(opening_balance_seed) if opening_balance_seed is not None else None
+    )
 
     def reject(reason: str) -> None:
         rejected_reasons[reason] = rejected_reasons.get(reason, 0) + 1
@@ -1839,7 +2078,7 @@ def parse_structured_rows(
                 date_inferred = True
 
         raw_row_value = str(row.get("raw") or "").strip()
-        recovered_from_raw = parse_fnb_transaction_line(raw_row_value, metadata) if raw_row_value else None
+        recovered_from_raw = parse_fnb_transaction_line(raw_row_value, metadata) if (raw_row_value and is_fnb) else None
 
         description = description_cell or reference_cell
         if not description and recovered_from_raw is not None:
@@ -1975,10 +2214,13 @@ def parse_structured_rows(
             previous_running_balance = decimal_amount(transaction.running_balance)
 
     deduped = dedupe_transactions(transactions)
-    label_unnamed_fee_rows(deduped, metadata)
-    deduped = insert_inferred_fnb_service_fees(deduped, metadata)
+    if is_fnb:
+        label_unnamed_fee_rows(deduped, metadata)
+        deduped = insert_inferred_fnb_service_fees(deduped, metadata)
 
     diagnostics = {
+        "profile": profile,
+        "fnb_reconstruction_applied": is_fnb,
         "received_rows": len(rows),
         "parsed_rows": len(transactions),
         "deduped_rows": len(deduped),
@@ -1987,6 +2229,154 @@ def parse_structured_rows(
         "date_inferred_rows": date_inferred_count,
         "informational_rows": informational_row_count,
     }
+    return deduped, diagnostics
+
+
+def attempt_ai_recovery(
+    full_text: str,
+    structured_rows: list[dict[str, Any]] | None,
+    metadata: dict[str, Any],
+    bank_name: str,
+    run_id: str,
+) -> tuple[list[ParsedTransaction], dict[str, Any]]:
+    """Last recovery step: ask a model to LOCATE rows, then verify every one.
+
+    Returns the transactions that survived grounding, and a diagnostics record.
+    Every returned transaction is marked for review — a located row is not an
+    understood one, and a person has to see what came from here.
+    """
+    diagnostics: dict[str, Any] = {
+        "enabled": False,
+        "attempted": False,
+        "batches": 0,
+        "lines_sent": 0,
+        "lines_unsent": 0,
+        "returned_rows": 0,
+        "accepted_rows": 0,
+        "rejected_rows": {},
+        "failures": 0,
+    }
+
+    # Recovery sends statement LINES to the model, where classification sends
+    # only a description and an amount. That is a wider disclosure than the
+    # feature it reuses, so it gets its own kill switch — no redeploy or key
+    # rotation needed to stop it.
+    if os.getenv("ACCOUNTING_AI_RECOVERY", "true").strip().lower() in {"false", "0", "off", "no"}:
+        diagnostics["reason"] = "disabled_by_ACCOUNTING_AI_RECOVERY"
+        return [], diagnostics
+
+    api_key = os.getenv("OPENAI_API_KEY")
+    if not api_key:
+        diagnostics["reason"] = "no_api_key"
+        return [], diagnostics
+    diagnostics["enabled"] = True
+
+    lines = ai_candidate_lines(full_text, structured_rows)
+    if not lines:
+        diagnostics["reason"] = "no_candidate_lines"
+        return [], diagnostics
+
+    line_batches = ai_batches(lines)
+    unsent = ai_dropped_line_count(lines)
+    diagnostics.update({"attempted": True, "lines_sent": sum(len(batch) for batch in line_batches), "lines_unsent": unsent})
+    if unsent:
+        # Never let a cap look like a complete reading.
+        log_warning("worker.ai_recovery_lines_capped", run_id=run_id, unsent=unsent, total=len(lines))
+
+    accepted: list[dict[str, Any]] = []
+    rejected: dict[str, int] = {}
+    returned = 0
+
+    for index, batch in enumerate(line_batches, start=1):
+        body = {
+            "model": accounting_ai_model(),
+            "temperature": 0,
+            "max_tokens": 6000,
+            "response_format": {"type": "json_object"},
+            "messages": [
+                {"role": "system", "content": AI_RECOVERY_SYSTEM_PROMPT},
+                {"role": "user", "content": json.dumps(build_ai_recovery_prompt(batch, metadata, bank_name), default=str)},
+            ],
+        }
+        try:
+            payload = openai_chat_completion(body, api_key)
+        except Exception as exc:  # noqa: BLE001 - transport failures must not end the run here
+            diagnostics["failures"] += 1
+            log_warning("worker.ai_recovery_request_failed", run_id=run_id, batch=index, error=str(exc))
+            continue
+
+        content = payload.get("choices", [{}])[0].get("message", {}).get("content", "{}")
+        parsed = parse_ai_json_content(content)
+        rows = parsed.get("rows") if isinstance(parsed, dict) else parsed
+        if isinstance(rows, list):
+            returned += len(rows)
+        report = ground_ai_rows(rows, batch)
+        accepted.extend(report.accepted)
+        for reason, count in report.rejected.items():
+            rejected[reason] = rejected.get(reason, 0) + count
+        diagnostics["batches"] += 1
+
+    diagnostics.update({"returned_rows": returned, "accepted_rows": len(accepted), "rejected_rows": rejected})
+
+    transactions: list[ParsedTransaction] = []
+    for row in accepted:
+        debit: float | None = None
+        credit: float | None = None
+        amount_value = parse_money_cell(row["amount"])
+        if amount_value is None:
+            continue
+        magnitude = decimal_to_float(amount_value.copy_abs())
+        if row["direction"] == "credit":
+            credit = magnitude
+        elif row["direction"] == "debit":
+            debit = magnitude
+        else:
+            # The model did not read a direction off the line, and it is not
+            # allowed to guess one. Balance continuity decides, exactly as it
+            # does on the deterministic path; where it cannot, the row is kept
+            # with no direction and flagged rather than assigned one.
+            balance_value = parse_money_cell(row["balance"]) if row["balance"] else None
+            previous = decimal_amount(transactions[-1].running_balance) if transactions and transactions[-1].running_balance is not None else (
+                decimal_amount(metadata["opening_balance"]) if metadata.get("opening_balance") is not None else None
+            )
+            direction = resolve_amount_direction_from_continuity(amount_value.copy_abs(), previous, balance_value)
+            if direction == "credit":
+                credit = magnitude
+            elif direction == "debit":
+                debit = magnitude
+
+        transaction = build_transaction(
+            row["date"] or str(metadata.get("statement_period_end") or ""),
+            row["description"],
+            debit,
+            credit,
+            decimal_to_float(parse_money_cell(row["balance"])) if row["balance"] else None,
+            metadata,
+            None,
+            row["source_line"],
+            # AI-located rows never carry parser-grade confidence.
+            min(60.0, round(row["confidence"] * 60.0, 2)),
+        )
+        if transaction is None:
+            rejected["transaction_build_failed"] = rejected.get("transaction_build_failed", 0) + 1
+            continue
+        # Set after building, not just passed in: build_transaction runs
+        # classification, which raises confidence on a recognised merchant. A
+        # confidently classified row that was located by a model rather than
+        # parsed from the document must not read as a confident extraction.
+        transaction.confidence = min(transaction.confidence, round(row["confidence"] * 60.0, 2))
+        transaction.review_status = "needs_review"
+        append_note(transaction, "recovered_by: ai")
+        append_note(transaction, f"ai_confidence: {round(row['confidence'], 2)}")
+        if debit is None and credit is None:
+            append_note(transaction, "direction_unresolved: true")
+        if row["balance_dropped"]:
+            append_note(transaction, "ai_balance_discarded: not present in the source line")
+        transactions.append(transaction)
+
+    deduped = dedupe_transactions(transactions)
+    diagnostics["transactions"] = len(deduped)
+    diagnostics["rejected_rows"] = rejected
     return deduped, diagnostics
 
 
@@ -2141,8 +2531,16 @@ def select_transactions_from_sources(
     metadata: dict[str, Any],
     full_text: str,
     structured_rows: list[dict[str, Any]] | None,
+    profile: str,
 ) -> tuple[list[ParsedTransaction], dict[str, Any]]:
+    """Parse both sources under the SAME profile and keep the better result.
+
+    Structured rows stay the preferred source for every bank — they are already
+    provider-agnostic. `profile` only decides which text parser runs and whether
+    the FNB-specific row reconstruction is allowed to fire.
+    """
     diagnostics: dict[str, Any] = {
+        "profile": profile,
         "selected_path": "text",
         "fallback_reason": None,
         "structured_rows_received": len(structured_rows or []),
@@ -2155,7 +2553,7 @@ def select_transactions_from_sources(
     structured_transactions: list[ParsedTransaction] = []
     structured_metrics: dict[str, Any] | None = None
     if structured_rows:
-        structured_transactions, parse_diag = parse_structured_rows(structured_rows, metadata)
+        structured_transactions, parse_diag = parse_structured_rows(structured_rows, metadata, profile)
         structured_metrics = (
             transaction_quality_snapshot(metadata, structured_transactions)
             if structured_transactions
@@ -2169,7 +2567,7 @@ def select_transactions_from_sources(
     else:
         diagnostics["fallback_reason"] = "structured_rows_absent"
 
-    text_transactions = parse_transactions(pages, metadata, full_text) or []
+    text_transactions = parse_transactions(pages, metadata, full_text, profile) or []
     text_metrics = transaction_quality_snapshot(metadata, text_transactions)
     diagnostics["text_metrics"] = text_metrics
 
@@ -2307,11 +2705,55 @@ def validate_extraction(metadata: dict[str, Any], transactions: list[ParsedTrans
         diff = (summary["total_debits"] - declared).quantize(CENT)
         check("debit_total", abs(diff) <= tolerance, f"variance {diff}", str(summary["total_debits"]), str(declared))
 
+    # Running-balance continuity — a SUBSTITUTE for declared evidence, not an
+    # extra hurdle on top of it.
+    #
+    # Every check above compares against a figure the statement itself prints: a
+    # transaction count, a turnover total, a closing balance. A statement that
+    # prints none of them passed validation no matter how much of it was
+    # actually recovered. FNB prints all of them; an unsupported bank is under
+    # no obligation to, so for those the row chain is the only evidence there is.
+    #
+    # It is not applied when the money already ties out, because it is the weaker
+    # signal of the two: FNB prints an overdrawn balance as a magnitude with a Dr
+    # marker, so the chain shows a gap of twice the balance where nothing is
+    # actually missing, on statements whose declared totals reconcile to the cent.
+    gaps = balance_gap_diagnostics(metadata, transactions)
+    money_evidence = any(item["name"] in {"reconciliation", "credit_total", "debit_total"} for item in checks)
+    if transactions and not money_evidence and metadata.get("opening_balance") is not None:
+        check(
+            "balance_continuity",
+            not gaps,
+            f"{len(gaps)} running-balance gap(s)" if gaps else "running balances are continuous",
+            len(gaps),
+            0,
+        )
+
     bank_charges = bank_charges_from_statement(metadata, transactions)
+    # A run may only be called complete on POSITIVE evidence. When a statement
+    # declares no totals, prints no closing balance and carries no usable
+    # running balances, nothing above ran — and "no check failed" is not the
+    # same as "the extraction is right". Those runs go to review rather than
+    # being reported as a clean success.
+    evidence_checks = len(checks)
+    if not failures and evidence_checks == 0:
+        failures = ["no_completeness_evidence"]
+        checks.append(
+            {
+                "name": "no_completeness_evidence",
+                "ok": False,
+                "detail": "the statement declares no totals, closing balance or running balances to verify against",
+                "extracted": len(transactions),
+                "expected": None,
+            }
+        )
+
     return {
         "status": "ok" if not failures else "review_required",
         "failures": failures,
         "checks": checks,
+        "evidence_checks_run": evidence_checks,
+        "balance_gap_count": len(gaps),
         "reconciliation_difference": str(recon_diff) if recon_diff is not None else None,
         "extracted_transaction_count": len(transactions),
         "expected_transaction_count": expected_count,
@@ -2663,7 +3105,12 @@ def validate_statement(metadata: dict[str, Any], transactions: list[ParsedTransa
         raise HTTPException(
             status_code=422,
             detail=with_worker_version({
-                "message": "FNB parser validation failed.",
+                # Name the parser that actually validated. A Standard Bank
+                # statement reported as an FNB parser failure describes the
+                # routing, not the document.
+                "message": f"{metadata.get('bank_name') or 'Statement'} validation failed.",
+                "bank_profile": metadata.get("bank_profile"),
+                "parser_profile": metadata.get("parser_profile"),
                 "errors": errors,
                 "failed_rules": [check["name"] for check in failed_checks],
                 "checks": extraction["checks"],
@@ -3419,6 +3866,22 @@ def parse_ai_json_content(content: str) -> Any:
     return parsed
 
 
+def openai_chat_completion(request_body: dict[str, Any], api_key: str, timeout: int = 60) -> dict[str, Any]:
+    """The one place this worker talks to OpenAI.
+
+    Shared by transaction classification and by AI recovery so there is a single
+    transport to reason about: one timeout, one auth header, one endpoint.
+    """
+    request = urllib.request.Request(
+        "https://api.openai.com/v1/chat/completions",
+        data=json.dumps(request_body).encode("utf-8"),
+        headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+        method="POST",
+    )
+    with urllib.request.urlopen(request, timeout=timeout) as response:
+        return json.loads(response.read().decode("utf-8"))
+
+
 def request_ai_classifications(items: list[dict[str, Any]], diagnostics: dict[str, Any]) -> list[dict[str, Any]]:
     api_key = os.getenv("OPENAI_API_KEY")
     if not api_key or not items:
@@ -3489,14 +3952,7 @@ def request_ai_classifications(items: list[dict[str, Any]], diagnostics: dict[st
     }
 
     def send_openai_request(request_body: dict[str, Any]) -> dict[str, Any]:
-        request = urllib.request.Request(
-            "https://api.openai.com/v1/chat/completions",
-            data=json.dumps(request_body).encode("utf-8"),
-            headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
-            method="POST",
-        )
-        with urllib.request.urlopen(request, timeout=60) as response:
-            return json.loads(response.read().decode("utf-8"))
+        return openai_chat_completion(request_body, api_key)
 
     try:
         try:
@@ -4522,9 +4978,14 @@ def process_fnb_statement(payload: ProcessRequest, authorization: str | None = H
     supabase = get_supabase()
     bucket = os.getenv("SUPABASE_BUCKET", "documents")
     process_started = time.perf_counter()
-    parser_profile = WORKER_PARSER_VERSION
-    parser_version = WORKER_PARSER_VERSION
-    bank_name = "FNB South Africa"
+    # Defaults for the paths that fail before detection runs (a storage download
+    # that never returns, say). "Unknown" is the truth at that point; the old
+    # default said FNB and so mislabelled every failure that never got far enough
+    # to look at the document.
+    bank_profile = UNKNOWN_PROFILE_ID
+    bank_name = bank_name_for(UNKNOWN_PROFILE_ID)
+    parser_profile = GENERIC_PARSER_PROFILE_ID
+    parser_version = GENERIC_PARSER_PROFILE_ID
 
     log_event(
         "worker.process_request",
@@ -4599,9 +5060,40 @@ def process_fnb_statement(payload: ProcessRequest, authorization: str | None = H
         # PDF, where pdfplumber and PyMuPDF both return nothing), the provided
         # text is all there is — use it even if neither yields candidate rows,
         # otherwise a scanned statement would be parsed from an empty string.
-        provided_rows = len(transaction_candidate_lines(provided)) if provided else 0
-        native_rows = len(transaction_candidate_lines(native_text)) if native_text else 0
+        #
+        # Count with the counter that matches the BANK. transaction_candidate_lines
+        # only enters a transaction section after FNB's "Transactions in RAND"
+        # heading, so on every other bank it returns 0 for both texts, the
+        # comparison is 0 > 0, and the provided text loses by default. That is how
+        # a Standard Bank statement's 78,697-character Mistral extraction was
+        # discarded in favour of this worker's own — for a parser that was never
+        # going to read it anyway.
+        #
+        # The bank has to be read from text, so take a preliminary reading first:
+        # the Node pipeline's verdict when it sent one, otherwise whichever
+        # extraction is available.
+        preliminary_profile = payload.detected_bank if is_supported_bank(payload.detected_bank) else None
+        if preliminary_profile is None:
+            preliminary = detect_bank(provided) if provided else detect_bank(native_text)
+            if not preliminary.is_known and provided and native_text:
+                preliminary = detect_bank(native_text)
+            preliminary_profile = preliminary.profile_id
+        count_candidates = (
+            (lambda text: len(transaction_candidate_lines(text)))
+            if preliminary_profile == FNB_PROFILE_ID
+            else generic_candidate_lines
+        )
+        provided_rows = count_candidates(provided) if provided else 0
+        native_rows = count_candidates(native_text) if native_text else 0
         native_is_empty = not native_text.strip()
+        log_event(
+            "worker.text_source_compared",
+            run_id=payload.run_id,
+            preliminary_profile=preliminary_profile,
+            counter="fnb" if preliminary_profile == FNB_PROFILE_ID else "generic",
+            provided_rows=provided_rows,
+            native_rows=native_rows,
+        )
         if provided and (native_is_empty or provided_rows > native_rows):
             full_text = provided
             log_event(
@@ -4624,30 +5116,74 @@ def process_fnb_statement(payload: ProcessRequest, authorization: str | None = H
                     native_rows=native_rows,
                     reason="native text yields at least as many transaction candidates",
                 )
-        parser = BankRegistry.detect(full_text[:4000], payload.storage_path)
-        if parser is None:
-            raise HTTPException(status_code=422, detail="No parser profile is registered for this statement.")
-        parser_profile = parser.profile.id
-        parser_version = parser.profile.version
-        bank_name = parser.profile.bank_name
-        if parser_profile != "fnb_business_v1":
-            raise HTTPException(
-                status_code=422,
-                detail=with_worker_version(
-                    {
-                        "message": f"Detected parser profile {parser_profile}, but only fnb_business_v1 is implemented for extraction in this phase.",
-                        "status": "parser_profile_not_implemented",
-                    }
-                ),
+        # Which bank issued this statement, and therefore which parser reads it.
+        #
+        # This replaces BankRegistry.detect, which folded payload.storage_path
+        # into its keyword haystack. Every accounting upload is stored under
+        # ".../accounting/fnb/...", so that matched FNB for EVERY document, the
+        # statement's own text was never reached, and a Standard Bank statement
+        # died on "No FNB transactions could be parsed from this PDF".
+        detection = detect_bank(full_text)
+        node_detected_bank = (payload.detected_bank or "").strip() or None
+        resolution = resolve_bank_profile(
+            worker_profile=detection.profile_id,
+            worker_confidence=detection.confidence,
+            node_profile=node_detected_bank,
+            node_confidence=payload.detected_bank_confidence,
+        )
+        bank_profile = resolution["bank_profile"]
+        bank_name = resolution["bank_name"]
+        # Not FNB is not an error. It selects the generic parser.
+        parser_profile = FNB_PROFILE_ID if bank_profile == FNB_PROFILE_ID else GENERIC_PARSER_PROFILE_ID
+        parser_version = parser_profile
+        log_event(
+            "worker.bank_detected",
+            run_id=payload.run_id,
+            detected_bank=detection.profile_id,
+            detected_bank_name=detection.bank_name,
+            detection_confidence=detection.confidence,
+            detection_reason=detection.reason,
+            detection_evidence=list(detection.evidence),
+            detection_scores=detection.scores,
+            node_detected_bank=node_detected_bank,
+            node_detected_bank_name=payload.detected_bank_name,
+            node_detection_confidence=payload.detected_bank_confidence,
+            node_detection_reason=payload.detected_bank_reason,
+            node_detection_evidence=payload.detected_bank_evidence,
+            node_detection_present=node_detected_bank is not None,
+            node_worker_agreement=(node_detected_bank == detection.profile_id) if node_detected_bank else None,
+            resolved_bank_profile=bank_profile,
+            resolved_bank_name=bank_name,
+            resolution_source=resolution["source"],
+            resolution_reason=resolution["reason"],
+            selected_parser_profile=parser_profile,
+        )
+        if node_detected_bank and node_detected_bank != detection.profile_id:
+            log_warning(
+                "worker.bank_detection_mismatch",
+                run_id=payload.run_id,
+                node_detected_bank=node_detected_bank,
+                node_detection_confidence=payload.detected_bank_confidence,
+                node_detection_evidence=payload.detected_bank_evidence,
+                worker_detected_bank=detection.profile_id,
+                worker_detection_confidence=detection.confidence,
+                worker_detection_evidence=list(detection.evidence),
+                extraction_source=payload.extraction_source,
+                resolved_bank_profile=bank_profile,
+                resolution_source=resolution["source"],
+                note="the two sides read different text and reached different banks",
             )
         log_event(
             "worker.text_extracted",
             run_id=payload.run_id,
             pages=len(pages),
             characters=len(full_text),
+            bank_profile=bank_profile,
             parser_profile=parser_profile,
         )
         metadata = parse_metadata(full_text)
+        metadata["bank_profile"] = bank_profile
+        metadata["bank_name"] = bank_name
         metadata["parser_profile"] = parser_profile
         metadata["parser_version"] = parser_version
         metadata["source_file"] = os.path.basename(payload.storage_path).split(".pdf")[0][:80] or "28 Feb 2026 - (Free)"
@@ -4675,10 +5211,12 @@ def process_fnb_statement(payload: ProcessRequest, authorization: str | None = H
             metadata,
             full_text,
             payload.pre_extracted_rows if isinstance(payload.pre_extracted_rows, list) else None,
+            parser_profile,
         )
         transactions = selected_transactions or []
         classification_rules = fetch_classification_rules(supabase, payload.workspace_id) or []
         learned_rules_applied = apply_learned_classification_rules(transactions, classification_rules)
+        ai_recovery: dict[str, Any] = {"enabled": False, "attempted": False, "accepted_rows": 0}
         # Accounting-parser diagnostics (null-safe).
         _summary = validation_summary(transactions)
         structured_metrics = structured_selection.get("structured_metrics") or {}
@@ -4731,13 +5269,87 @@ def process_fnb_statement(payload: ProcessRequest, authorization: str | None = H
                 "reason_no_transactions": pipeline_debug.get("reasonNoTransactions"),
                 "selected_path": structured_selection.get("selected_path"),
                 "structured_fallback_reason": structured_selection.get("fallback_reason"),
+                "bank_profile": bank_profile,
+                "bank_name": bank_name,
+                "parser_profile": parser_profile,
             }
-            reason = parser_debug["reason_no_transactions"] or "No FNB transactions could be parsed from this PDF."
-            log_warning("worker.no_transactions_parsed", run_id=payload.run_id, diagnostics=diagnostics, parser_debug=parser_debug)
+            # Nothing parsed. Whether that is a failure depends on whether
+            # anything recoverable is left — a document is only unprocessable
+            # once every path over it has been exhausted.
+            recovery = recovery_options(
+                full_text=full_text,
+                pages=pages,
+                structured_rows=payload.pre_extracted_rows if isinstance(payload.pre_extracted_rows, list) else None,
+                structured_selection=structured_selection,
+            )
+            parser_debug["recovery"] = recovery
+            log_warning(
+                "worker.no_transactions_parsed",
+                run_id=payload.run_id,
+                diagnostics=diagnostics,
+                parser_debug=parser_debug,
+                recovery=recovery,
+                bank_profile=bank_profile,
+                parser_profile=parser_profile,
+            )
+
+            # Last recovery step. Only attempted when material is genuinely
+            # left; there is nothing for a model to locate in a document with no
+            # readable text.
+            if recovery["recoverable"]:
+                heartbeat_step(
+                    supabase,
+                    run_id=payload.run_id,
+                    workspace_id=payload.workspace_id,
+                    processing_job_id=payload.processing_job_id,
+                    step_label="Recovering with AI",
+                    progress=75,
+                )
+                ai_transactions, ai_recovery = attempt_ai_recovery(
+                    full_text=full_text,
+                    structured_rows=payload.pre_extracted_rows if isinstance(payload.pre_extracted_rows, list) else None,
+                    metadata=metadata,
+                    bank_name=bank_name,
+                    run_id=payload.run_id,
+                )
+                log_event(
+                    "worker.ai_recovery",
+                    run_id=payload.run_id,
+                    bank_profile=bank_profile,
+                    parser_profile=parser_profile,
+                    **{key: value for key, value in ai_recovery.items() if key != "rejected_rows"},
+                    rejected_rows=ai_recovery.get("rejected_rows"),
+                )
+                if ai_transactions:
+                    transactions = ai_transactions
+                    learned_rules_applied = apply_learned_classification_rules(transactions, classification_rules)
+                    log_warning(
+                        "worker.ai_recovery_used",
+                        run_id=payload.run_id,
+                        transactions=len(transactions),
+                        note="every row is AI-located and flagged for review; the run cannot complete unreviewed",
+                    )
+
+        if not transactions:
+            # Name the parser that actually ran. "No FNB transactions" on a
+            # Standard Bank statement described the misroute, not the document,
+            # and sent every investigation looking at the wrong parser.
+            default_reason = (
+                "No FNB transactions could be parsed from this PDF."
+                if parser_profile == FNB_PROFILE_ID
+                else f"No transactions could be parsed from this {bank_name} statement."
+            )
+            if not recovery["recoverable"]:
+                default_reason = (
+                    f"{default_reason} Nothing further could be recovered: {recovery['summary']}."
+                )
+            reason = parser_debug["reason_no_transactions"] or default_reason
             raise HTTPException(
                 status_code=422,
                 detail={
                     "message": reason,
+                    "status": "no_transactions_recoverable" if not recovery["recoverable"] else "no_transactions_parsed",
+                    "recovery": recovery,
                     "diagnostics": diagnostics,
                     "parser_debug": parser_debug,
                     "worker": worker_version(),
@@ -4844,12 +5456,23 @@ def process_fnb_statement(payload: ProcessRequest, authorization: str | None = H
 
         bank_charges_total = float(bank_charges_from_statement(metadata, transactions))
         avg_confidence = sum(transaction.confidence for transaction in transactions) / len(transactions)
+        # A ledger recovered by AI can never report as completed. Every row is
+        # already flagged, so this is belt and braces — but the guarantee is
+        # worth stating outright rather than depending on a per-row flag that a
+        # later classification pass could clear.
+        ai_recovered = bool(ai_recovery.get("accepted_rows"))
         status = "review" if (
             review_issue
             or extraction_incomplete
+            or ai_recovered
             or any(transaction.review_status == "needs_review" for transaction in transactions)
         ) else "completed"
-        if review_issue:
+        if ai_recovered and not review_issue and not extraction_incomplete:
+            run_error = (
+                f"Recovered by AI — {len(transactions)} row(s) located in the statement text and "
+                "verified against it, but not parsed deterministically. Every row needs review."
+            )
+        elif review_issue:
             run_error = review_error_message(review_issue)
         elif extraction_incomplete:
             expected_count = extraction_check.get("expected_transaction_count")
@@ -4955,7 +5578,17 @@ def process_fnb_statement(payload: ProcessRequest, authorization: str | None = H
             "validation": {key: str(value) for key, value in validation.items()} if validation else None,
             "review_issue": review_issue,
             "ai_diagnostics": ai_stats,
+            "bank_profile": bank_profile,
+            "bank_name": bank_name,
             "parser_profile": parser_profile,
+            # Why this run is trusted, or is not. A run reaching "completed" on
+            # zero checks would be an unverified claim of success.
+            "completeness_evidence": {
+                "checks_run": extraction_check.get("evidence_checks_run"),
+                "failures": extraction_check.get("failures"),
+                "balance_gap_count": extraction_check.get("balance_gap_count"),
+            },
+            "ai_recovery": ai_recovery,
             "processing_duration_ms": processing_duration_ms,
             "worker": worker_version(),
         }

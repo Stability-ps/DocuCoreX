@@ -7,7 +7,7 @@ export async function POST(request: Request) {
     const file = formData.get("file");
 
     if (!(file instanceof File)) {
-      return NextResponse.json({ error: "Choose an FNB bank statement PDF to upload." }, { status: 400 });
+      return NextResponse.json({ error: "Choose a bank statement PDF to upload." }, { status: 400 });
     }
 
     const run = await createFnbAccountingRun(file);

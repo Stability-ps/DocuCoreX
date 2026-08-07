@@ -265,11 +265,22 @@ test("with no transactions anywhere, the richest text still wins", () => {
 
 test("the worker picks statement text by parse yield, not by length", () => {
   const worker = read("workers/accounting_worker/main.py");
-  assert.match(worker, /provided_rows = len\(transaction_candidate_lines\(provided\)\)/);
-  assert.match(worker, /native_rows = len\(transaction_candidate_lines\(native_text\)\)/);
+  assert.match(worker, /provided_rows = count_candidates\(provided\)/);
+  assert.match(worker, /native_rows = count_candidates\(native_text\)/);
   assert.match(worker, /if provided and \(native_is_empty or provided_rows > native_rows\)/);
   // The old length rule must be gone.
   assert.ok(!/len\(provided\) >= max\(200, len\(native_text\) \/\/ 2\)/.test(worker), "length-based selection must not remain");
+});
+
+test("the yield counter matches the bank, so non-FNB statements are not counted blind", () => {
+  const worker = read("workers/accounting_worker/main.py");
+  // transaction_candidate_lines only enters a section after FNB's "Transactions
+  // in RAND" heading, so on any other bank it returns 0 for both candidates and
+  // the provided text loses 0 > 0 by default — which is how a Standard Bank
+  // statement's 78,697-character Mistral extraction was discarded.
+  assert.match(worker, /count_candidates = \(/, "the counter is selected, not hardcoded");
+  assert.match(worker, /if preliminary_profile == FNB_PROFILE_ID/, "FNB keeps the FNB counter");
+  assert.match(worker, /else generic_candidate_lines/, "everything else gets the bank-independent counter");
 });
 
 test("migration adds the processing-metadata columns", () => {

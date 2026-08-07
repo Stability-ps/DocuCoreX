@@ -51,4 +51,8 @@ if missing:
     )
 PY
 
+# The worker's request contract. This existed but was wired into nothing, so a
+# breaking change to ProcessRequest could reach Render without any suite noticing.
+"$PYTHON_BIN" "$WORKER_DIR/tests/request_model_check.py"
+
 "$PYTHON_BIN" "$WORKER_DIR/tests/regression_suite.py"

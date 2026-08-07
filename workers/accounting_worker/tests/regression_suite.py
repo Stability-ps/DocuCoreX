@@ -99,11 +99,15 @@ from main import (
     build_combined_workbook,
     build_workbook,
     parse_metadata,
-    parse_transactions,
+    parse_fnb_transactions,
     professional_transaction_row,
     validate_statement,
     validation_summary,
 )
+
+
+FNB_PROFILE = "fnb_business_v1"
+GENERIC_PROFILE = "generic_bank_statement_v1"
 
 
 def run_statement_period_case() -> None:
@@ -253,7 +257,7 @@ def _build_acapolite_style_statement() -> tuple[str, dict]:
 def run_fnb_extraction_case() -> None:
     case_id = "fnb-acapolite-grouped-rows"
     text, metadata = _build_acapolite_style_statement()
-    transactions = parse_transactions([], metadata, text)
+    transactions = parse_fnb_transactions([], metadata, text)
 
     # All 143 rows must be extracted — including the 6 date-grouped debits.
     assert_equal(len(transactions), FNB_EXPECTED["transaction_count"], f"{case_id} transaction count")
@@ -391,7 +395,7 @@ def run_april_missing_rows_case() -> None:
     # R1,682.32. The parser must now capture them and the fee must be Bank Charges.
     from decimal import Decimal as D
 
-    from main import parse_transactions, validate_statement, validation_summary
+    from main import parse_fnb_transactions, validate_statement, validation_summary
 
     case_id = "april-missing-rows"
     opening, closing = D("342.37"), D("368.96")
@@ -431,7 +435,7 @@ def run_april_missing_rows_case() -> None:
         "expected_transaction_count": 67, "expected_credit_count": 7, "expected_debit_count": 60,
         "declared_credit_total": 226361.00, "declared_debit_total": 226334.41,
     }
-    txns = parse_transactions([], metadata, "\n".join(lines))
+    txns = parse_fnb_transactions([], metadata, "\n".join(lines))
 
     assert_equal(len(txns), 67, f"{case_id} transaction count")
     summary = validation_summary(txns)
@@ -464,7 +468,7 @@ def run_freight_aces_case() -> None:
     # balance). Previously returned "No FNB transactions could be parsed".
     from decimal import Decimal as D
 
-    from main import extraction_diagnostics, parse_transactions, validate_statement, validation_summary
+    from main import extraction_diagnostics, parse_fnb_transactions, validate_statement, validation_summary
 
     case_id = "freight-aces-jan"
     opening, closing = D("1869.10"), D("295242.68")
@@ -515,7 +519,7 @@ def run_freight_aces_case() -> None:
         "expected_transaction_count": 140, "expected_credit_count": 24, "expected_debit_count": 116,
         "declared_credit_total": 909530.63, "declared_debit_total": 616157.05,
     }
-    txns = parse_transactions([], metadata, text)
+    txns = parse_fnb_transactions([], metadata, text)
 
     # Must NOT be rejected as unparseable; diagnostics must see the section.
     diagnostics = extraction_diagnostics([], text, metadata)
@@ -544,7 +548,7 @@ def run_december_multi_page_closing_balance_case() -> None:
     # page headers. The parser must NOT stop at that intermediate line.
     from decimal import Decimal as D
 
-    from main import parse_transactions, validate_statement, validation_summary
+    from main import parse_fnb_transactions, validate_statement, validation_summary
 
     case_id = "freight-aces-dec-multipage"
     opening, closing = D("4378.76"), D("97489.87")
@@ -597,7 +601,7 @@ def run_december_multi_page_closing_balance_case() -> None:
         "declared_credit_total": 562345.67,
         "declared_debit_total": 469234.56,
     }
-    txns = parse_transactions([], metadata, text)
+    txns = parse_fnb_transactions([], metadata, text)
     assert_equal(len(txns), 117, f"{case_id} transaction count")
     summary = validation_summary(txns)
     assert_equal(summary["credit_count"], 12, f"{case_id} credit count")
@@ -631,7 +635,7 @@ def run_compound_ocr_line_case() -> None:
         "declared_credit_total": 9500.00,
         "declared_debit_total": 1650.00,
     }
-    txns = parse_transactions([], metadata, text)
+    txns = parse_fnb_transactions([], metadata, text)
     assert_equal(len(txns), 3, f"{case_id} transaction count")
     extracted = {(t.description, f"{(t.debit_amount or t.credit_amount or 0):.2f}") for t in txns}
     for expected in {
@@ -1062,7 +1066,7 @@ def run_local_real_statement_files_case() -> None:
                 full_text_parts.append(text)
         full_text = "\n".join(full_text_parts)
         metadata = parse_metadata(full_text)
-        transactions = parse_transactions(pages, metadata, full_text)
+        transactions = parse_fnb_transactions(pages, metadata, full_text)
         validation = validate_statement(metadata, transactions)
         summary = validation_summary(transactions)
         assert_equal(str(summary["total_credits"]), case["credits"], f"{case['id']} credits")
@@ -1412,7 +1416,1046 @@ def test_auth_diagnostics_hash_exactly_what_is_compared() -> None:
     assert padded["compare_digest_result"] is True
 
 
+# ── Bank detection ────────────────────────────────────────────────────────────
+#
+# A real 37-page Standard Bank statement extracted cleanly (66k-78k characters
+# from four extractors, account number and opening balance both found) and then
+# failed with "No FNB transactions could be parsed from this PDF", because it
+# was routed to parser_profile fnb_business_v1. These cases pin the detection
+# that stops that happening.
+
+STANDARD_BANK_SAMPLE = """
+STANDARD BANK 6 month statement
+Website:
+www.standardbank.co.za
+Customer Care Line 0860 123 000
+Account Number 123 456 789
+Date Description Payments Deposits Balance
+STATEMENT OPENING BALANCE -992,452.57
+30 Apr 25 ADT JHB 1,204.55 -993,657.12
+30 Apr 25 SBSARETAIL 340.00 -993,997.12
+02 May 25 SALARY DEPOSIT 45,000.00 -948,997.12
+"""
+
+FNB_SAMPLE = """
+FIRST NATIONAL BANK
+A division of FirstRand Bank Limited
+www.fnb.co.za
+Platinum Business Account
+Statement Number 118
+Transactions in RAND (ZAR)
+01 Mar EFT Deposit Client 1,000.00Cr 1,000.00 Cr
+01 Mar Card Purchase Fuel 300.00 700.00 Cr
+"""
+
+BANK_SAMPLES = {
+    "fnb_business_v1": FNB_SAMPLE,
+    "standard_bank_business_v1": STANDARD_BANK_SAMPLE,
+    "absa_business_v1": "ABSA BANK LIMITED\nwww.absa.co.za\nCheque Account Statement\nDate Description Debit Credit Balance\n",
+    "nedbank_business_v1": "NEDBANK LIMITED\nwww.nedbank.co.za\nBusiness Account Statement\nDate Description Debit Credit Balance\n",
+    "capitec_business_v1": "CAPITEC BANK LIMITED\nwww.capitecbank.co.za\nBusiness Account Statement\nDate Description Money In Money Out Balance\n",
+    "investec_business_v1": "INVESTEC BANK LIMITED\nwww.investec.co.za\nPrivate Bank Account Statement\nDate Description Debit Credit Balance\n",
+}
+
+
+def test_bank_detection_identifies_standard_bank_from_text() -> None:
+    from engine.detection import detect_bank
+
+    detection = detect_bank(STANDARD_BANK_SAMPLE)
+    assert_equal(detection.profile_id, "standard_bank_business_v1", "Standard Bank detected from its own text")
+    assert_equal(detection.bank_name, "Standard Bank", "Standard Bank name reported")
+    assert_equal(detection.reason, "matched_bank_markers", "detection reason is evidence, not a default")
+    if detection.confidence < 90:
+        raise AssertionError(f"unopposed Standard Bank evidence should be high confidence, got {detection.confidence}")
+    if not detection.evidence:
+        raise AssertionError("a positive detection must name the evidence it used")
+
+
+def test_bank_detection_covers_every_supported_bank() -> None:
+    from engine.detection import detect_bank
+
+    for expected_profile, sample in BANK_SAMPLES.items():
+        detection = detect_bank(sample)
+        assert_equal(detection.profile_id, expected_profile, f"{expected_profile} detected from statement text")
+
+
+def test_bank_detection_keeps_fnb_unchanged() -> None:
+    """The FNB path must not regress: this is the one bank with a real parser."""
+    from engine.detection import detect_bank
+
+    detection = detect_bank(FNB_SAMPLE)
+    assert_equal(detection.profile_id, "fnb_business_v1", "FNB still detected from its own text")
+    assert_equal(detection.bank_name, "FNB South Africa", "FNB name unchanged")
+
+
+def test_bank_detection_never_defaults_to_a_bank() -> None:
+    """No text, unrecognised text and a bankless ledger must all be `unknown`.
+
+    BankRegistry.detect returns `_parsers[0]` — FNB — when nothing matches, so
+    every unsupported bank became an FNB statement. There is no default here.
+    """
+    from engine.detection import UNKNOWN_PROFILE_ID, detect_bank
+
+    for label, sample in (
+        ("empty text", ""),
+        ("whitespace only", "   \n\t  "),
+        ("no bank markers", "Ledger Export\nDate Description Debit Credit Balance\n01 Jan Opening 0.00 0.00 100.00"),
+    ):
+        detection = detect_bank(sample)
+        assert_equal(detection.profile_id, UNKNOWN_PROFILE_ID, f"{label} is unknown, not a default bank")
+        assert_equal(detection.confidence, 0.0, f"{label} carries no confidence")
+
+
+def test_bank_detection_ignores_a_counterparty_named_in_a_transaction() -> None:
+    """A bank named in a description is not the issuer.
+
+    Both directions are checked: an FNB statement paying Standard Bank stays
+    FNB, and a Standard Bank statement paying FNB stays Standard Bank. The
+    second case is also the storage-path guard — the literal token "fnb" in the
+    body must not pull the statement back to the FNB parser.
+    """
+    from engine.detection import detect_bank
+
+    fnb_paying_standard_bank = FNB_SAMPLE + "\n02 Mar EFT STANDARD BANK TRANSFER 5,000.00 -4,300.00\n"
+    detection = detect_bank(fnb_paying_standard_bank)
+    assert_equal(detection.profile_id, "fnb_business_v1", "FNB letterhead outweighs a Standard Bank payee")
+
+    standard_bank_paying_fnb = STANDARD_BANK_SAMPLE + "\n05 May 25 EFT FNB TRANSFER 2,500.00 -951,497.12\n"
+    detection = detect_bank(standard_bank_paying_fnb)
+    assert_equal(detection.profile_id, "standard_bank_business_v1", "Standard Bank letterhead outweighs an FNB payee")
+
+
+def test_bank_detection_reads_no_file_path() -> None:
+    """The reported defect, pinned.
+
+    Every accounting upload is stored at "{workspace}/accounting/fnb/{uuid}-{name}"
+    (accountingStoragePath, lib/accounting/server.ts). BankRegistry.detect folds
+    that path into its keyword haystack, so the literal "fnb" in it matched the
+    FNB parser for every document and the statement text was never reached.
+
+    detect_bank takes text only — there is no parameter through which a path
+    could reach it, and the path-aware detector is now gone rather than merely
+    unused. Runs uploaded before the storage path went neutral still carry the
+    old ".../accounting/fnb/..." prefix, so this must keep holding for them.
+    """
+    import inspect
+
+    from engine.detection import detect_bank
+    from engine.registry import BankRegistry
+
+    parameters = list(inspect.signature(detect_bank).parameters)
+    if "text" not in parameters:
+        raise AssertionError(f"detect_bank must take statement text, got {parameters}")
+    for parameter in parameters:
+        if any(token in parameter for token in ("path", "file", "name")):
+            raise AssertionError(f"detect_bank must not accept a path/file input, found {parameter!r}")
+
+    legacy_storage_path = "ws-1/accounting/fnb/2f6c-Standard_Bank_Statement.pdf"
+    assert "fnb" in legacy_storage_path
+    assert_equal(detect_bank(STANDARD_BANK_SAMPLE).profile_id, "standard_bank_business_v1", "text-only detection is correct")
+
+    if hasattr(BankRegistry, "detect"):
+        raise AssertionError("BankRegistry.detect matched bank keywords against the storage path; it must stay deleted")
+
+
+def test_bank_detection_is_ambiguous_rather_than_wrong() -> None:
+    """Balanced evidence for two banks is `unknown`, not a coin flip."""
+    from engine.detection import UNKNOWN_PROFILE_ID, detect_bank
+
+    detection = detect_bank("STANDARD BANK\nNEDBANK\nDate Description Debit Credit Balance\n")
+    assert_equal(detection.profile_id, UNKNOWN_PROFILE_ID, "two equally-evidenced banks resolve to unknown")
+    if not detection.reason.startswith("ambiguous"):
+        raise AssertionError(f"expected an ambiguity reason, got {detection.reason!r}")
+
+
+def test_bank_detection_survives_broken_letterhead_whitespace() -> None:
+    """OCR breaks a letterhead across lines and pads it with non-breaking spaces."""
+    from engine.detection import detect_bank
+
+    broken = "STANDARD\n  BANK\n  6 month   statement\nwww.standardbank.co.za\n"
+    assert_equal(detect_bank(broken).profile_id, "standard_bank_business_v1", "wrapped letterhead still detected")
+
+
+# ── Routing ───────────────────────────────────────────────────────────────────
+
+
+def _standard_bank_pages() -> list[dict]:
+    """A Standard Bank Payments/Deposits layout, as pdfplumber returns it."""
+    rows = [
+        ["Date", "Description", "Payments", "Deposits", "Balance"],
+        ["30 Apr 25", "ADT JHB", "1,204.55", "", "-993,657.12"],
+        ["02 May 25", "SALARY DEPOSIT", "", "45,000.00", "-948,657.12"],
+        ["03 May 25", "SBSARETAIL", "340.00", "", "-948,997.12"],
+    ]
+    text = "\n".join(" ".join(cell for cell in row if cell) for row in rows)
+    return [{"page": 1, "text": f"STANDARD BANK 6 month statement\nwww.standardbank.co.za\n{text}", "tables": [rows]}]
+
+
+def test_standard_bank_is_not_routed_to_the_fnb_parser() -> None:
+    """The reported failure, end to end at the routing layer."""
+    import main
+
+    resolution = main.resolve_bank_profile(
+        worker_profile="standard_bank_business_v1",
+        worker_confidence=99.0,
+        node_profile="standard_bank_business_v1",
+        node_confidence=99.0,
+    )
+    assert_equal(resolution["bank_profile"], "standard_bank_business_v1", "Standard Bank resolved")
+    assert_equal(resolution["bank_name"], "Standard Bank", "Standard Bank named")
+
+    parser_profile = FNB_PROFILE if resolution["bank_profile"] == FNB_PROFILE else GENERIC_PROFILE
+    assert_equal(parser_profile, GENERIC_PROFILE, "Standard Bank selects the generic parser, not FNB")
+
+
+def test_standard_bank_layout_parses_payments_and_deposits() -> None:
+    """Both money columns are read. Reading only the first dropped every deposit."""
+    import main
+
+    pages = _standard_bank_pages()
+    metadata = main.parse_metadata(pages[0]["text"])
+    transactions = main.parse_transactions(pages, metadata, pages[0]["text"], GENERIC_PROFILE)
+
+    assert_equal(len(transactions), 3, "all three Standard Bank rows parsed")
+    debits = [t for t in transactions if t.debit_amount]
+    credits = [t for t in transactions if t.credit_amount]
+    assert_equal(len(debits), 2, "both payments read as debits")
+    assert_equal(len(credits), 1, "the deposit read as a credit")
+    assert_equal(credits[0].credit_amount, 45000.0, "deposit amount")
+    assert_equal(debits[0].debit_amount, 1204.55, "payment amount")
+
+
+def test_generic_parser_never_invents_fnb_fee_rows() -> None:
+    """FNB fee reconstruction infers rows from FNB's own fee summary.
+
+    Running it on another bank's statement would add transactions that are not
+    printed anywhere on the document.
+    """
+    import main
+
+    pages = _standard_bank_pages()
+    metadata = main.parse_metadata(pages[0]["text"])
+    # A fee summary of the shape the FNB inference reads, on a non-FNB statement.
+    metadata["total_service_fees"] = 250.00
+    metadata["opening_balance"] = -992452.57
+
+    generic = main.parse_transactions(pages, metadata, pages[0]["text"], GENERIC_PROFILE)
+    assert_equal(len(generic), 3, "generic parser returns only the printed rows")
+    for transaction in generic:
+        if "#" in transaction.description:
+            raise AssertionError(f"generic parser produced an FNB fee row: {transaction.description}")
+
+
+def test_structured_rows_skip_fnb_reconstruction_for_other_banks() -> None:
+    """Structured rows stay the preferred source for every bank.
+
+    Only the three FNB-specific reconstruction steps are gated by profile.
+    """
+    import main
+
+    metadata = {"statement_period_end": "2025-05-31"}
+    rows = [
+        {"pageNumber": 1, "cells": {"date": "30 Apr 25", "description": "ADT JHB", "debit": "1,204.55", "balance": "-993,657.12"}},
+        {"pageNumber": 1, "cells": {"date": "02 May 25", "description": "SALARY DEPOSIT", "credit": "45,000.00", "balance": "-948,657.12"}},
+    ]
+
+    generic_txns, generic_diag = main.parse_structured_rows(rows, dict(metadata), GENERIC_PROFILE)
+    assert_equal(len(generic_txns), 2, "structured rows parse for a non-FNB bank")
+    assert_equal(generic_diag["fnb_reconstruction_applied"], False, "FNB reconstruction stays off")
+    assert_equal(generic_diag["profile"], GENERIC_PROFILE, "diagnostics name the profile used")
+
+    fnb_txns, fnb_diag = main.parse_structured_rows(rows, dict(metadata), FNB_PROFILE)
+    assert_equal(fnb_diag["fnb_reconstruction_applied"], True, "FNB reconstruction still runs for FNB")
+    assert_equal(len(fnb_txns), 2, "FNB path unchanged on rows that need no reconstruction")
+
+
+def test_unknown_bank_routes_to_generic_not_fnb() -> None:
+    """An unidentified statement is parsed generically, never as FNB."""
+    import main
+    from engine.detection import UNKNOWN_PROFILE_ID
+
+    resolution = main.resolve_bank_profile(
+        worker_profile=UNKNOWN_PROFILE_ID,
+        worker_confidence=0.0,
+        node_profile=None,
+        node_confidence=None,
+    )
+    assert_equal(resolution["bank_profile"], UNKNOWN_PROFILE_ID, "unknown stays unknown")
+    assert_equal(resolution["bank_name"], "Unknown", "unknown is named honestly")
+    assert_equal(resolution["source"], "none", "neither side identified a bank")
+
+    parser_profile = FNB_PROFILE if resolution["bank_profile"] == FNB_PROFILE else GENERIC_PROFILE
+    assert_equal(parser_profile, GENERIC_PROFILE, "unknown selects the generic parser")
+
+
+def test_fnb_still_routes_to_the_fnb_parser() -> None:
+    """The one bank with a real parser must keep reaching it."""
+    import main
+
+    resolution = main.resolve_bank_profile(
+        worker_profile=FNB_PROFILE,
+        worker_confidence=99.0,
+        node_profile=FNB_PROFILE,
+        node_confidence=99.0,
+    )
+    assert_equal(resolution["bank_profile"], FNB_PROFILE, "FNB resolved")
+    parser_profile = FNB_PROFILE if resolution["bank_profile"] == FNB_PROFILE else GENERIC_PROFILE
+    assert_equal(parser_profile, FNB_PROFILE, "FNB selects the FNB parser")
+
+
+def test_bank_resolution_precedence_between_the_two_detections() -> None:
+    """Each side can be the better witness; the rules say which one wins."""
+    import main
+    from engine.detection import UNKNOWN_PROFILE_ID
+
+    only_node = main.resolve_bank_profile(UNKNOWN_PROFILE_ID, 0.0, "standard_bank_business_v1", 99.0)
+    assert_equal(only_node["bank_profile"], "standard_bank_business_v1", "node identifies what the worker could not")
+    assert_equal(only_node["source"], "node", "attributed to the node pipeline")
+
+    only_worker = main.resolve_bank_profile("nedbank_business_v1", 88.0, "unknown", 0.0)
+    assert_equal(only_worker["bank_profile"], "nedbank_business_v1", "worker identifies what node could not")
+    assert_equal(only_worker["source"], "worker", "attributed to the worker")
+
+    node_more_confident = main.resolve_bank_profile("absa_business_v1", 60.0, "capitec_business_v1", 95.0)
+    assert_equal(node_more_confident["bank_profile"], "capitec_business_v1", "conflict goes to the more confident read")
+
+    worker_more_confident = main.resolve_bank_profile("absa_business_v1", 95.0, "capitec_business_v1", 60.0)
+    assert_equal(worker_more_confident["bank_profile"], "absa_business_v1", "and the other way round")
+
+    tie = main.resolve_bank_profile("absa_business_v1", 90.0, "capitec_business_v1", 90.0)
+    assert_equal(tie["bank_profile"], "absa_business_v1", "an exact tie goes to the text about to be parsed")
+
+    # A newer frontend naming a bank this worker does not know is not a bank.
+    unknown_id = main.resolve_bank_profile(UNKNOWN_PROFILE_ID, 0.0, "tymebank_business_v1", 99.0)
+    assert_equal(unknown_id["bank_profile"], UNKNOWN_PROFILE_ID, "unrecognised ids count as no identification")
+
+
+def test_parser_profile_not_implemented_rejection_is_gone() -> None:
+    """Being a bank without a dedicated parser must not be a 422.
+
+    The worker used to raise "parser_profile_not_implemented" for anything that
+    was not FNB. That guard was unreachable in production (everything detected
+    as FNB via the storage path) and is wrong now that a generic parser exists.
+    """
+    source = (ROOT / "workers" / "accounting_worker" / "main.py").read_text()
+    if "parser_profile_not_implemented" in source:
+        raise AssertionError("the not-implemented rejection must be gone; unsupported banks parse generically")
+    if "only fnb_business_v1 is implemented" in source:
+        raise AssertionError("the not-implemented message must be gone")
+
+
+# ── Generic parser ────────────────────────────────────────────────────────────
+
+STANDARD_BANK_TEXT_STATEMENT = """STANDARD BANK 6 month statement
+www.standardbank.co.za
+Page 1 of 37
+Date Description Payments Deposits Balance
+STATEMENT OPENING BALANCE -992,452.57
+30 Apr 25 ADT JHB SECURITY SERVICES
+MONTHLY CONTRACT 1,204.55 -993,657.12
+30 Apr 25 SBSARETAIL 340.00 -993,997.12
+02 May 25 SALARY DEPOSIT 45,000.00 -948,997.12
+02 May 25 DEBIT ORDER INSURANCE 890.00 -949,887.12
+FUNERAL COVER 220.00 -950,107.12
+09 May 25 CLIENT EFT PAYMENT
+INVOICE 20551 12,500.00 -937,607.12
+Page 2 of 37
+Date Description Payments Deposits Balance
+TOTAL PAYMENTS 2,654.55
+"""
+
+
+def _generic_text_pages(text: str) -> list[dict]:
+    return [{"page": 1, "text": text, "tables": []}]
+
+
+def test_generic_parser_reads_a_text_only_statement_end_to_end() -> None:
+    """No tables at all — the realistic shape of a provider extraction."""
+    import main
+
+    pages = _generic_text_pages(STANDARD_BANK_TEXT_STATEMENT)
+    metadata = main.parse_metadata(STANDARD_BANK_TEXT_STATEMENT)
+    transactions = main.parse_transactions(pages, metadata, STANDARD_BANK_TEXT_STATEMENT, GENERIC_PROFILE)
+    summary = main.validation_summary(transactions)
+
+    assert_equal(len(transactions), 6, "every printed movement recovered")
+    assert_equal(summary["debit_count"], 4, "four payments")
+    assert_equal(summary["credit_count"], 2, "two deposits")
+    assert_equal(str(summary["total_debits"]), "2654.55", "debit total")
+    assert_equal(str(summary["total_credits"]), "57500.00", "credit total")
+
+    # The whole point of a ledger: opening plus movements must land on the
+    # printed closing balance.
+    opening = main.decimal_amount(metadata["opening_balance"])
+    closing = opening - summary["total_debits"] + summary["total_credits"]
+    assert_equal(str(closing), "-937607.12", "reconciles to the printed closing balance")
+
+
+def test_generic_parser_merges_wrapped_descriptions() -> None:
+    """A description that wraps must not become a row of its own."""
+    import main
+
+    pages = _generic_text_pages(STANDARD_BANK_TEXT_STATEMENT)
+    metadata = main.parse_metadata(STANDARD_BANK_TEXT_STATEMENT)
+    transactions = main.parse_transactions(pages, metadata, STANDARD_BANK_TEXT_STATEMENT, GENERIC_PROFILE)
+
+    descriptions = [t.description for t in transactions]
+    if "ADT JHB SECURITY SERVICES MONTHLY CONTRACT" not in descriptions:
+        raise AssertionError(f"wrapped description not rejoined: {descriptions}")
+    if "CLIENT EFT PAYMENT INVOICE 20551" not in descriptions:
+        raise AssertionError(f"wrapped description not rejoined: {descriptions}")
+    for description in descriptions:
+        if description in {"MONTHLY CONTRACT", "INVOICE 20551"}:
+            raise AssertionError(f"description fragment became its own row: {description}")
+
+
+def test_generic_parser_inherits_the_date_of_a_grouped_movement() -> None:
+    """Banks print the date once per date group; the rows under it are separate."""
+    import main
+
+    pages = _generic_text_pages(STANDARD_BANK_TEXT_STATEMENT)
+    metadata = main.parse_metadata(STANDARD_BANK_TEXT_STATEMENT)
+    transactions = main.parse_transactions(pages, metadata, STANDARD_BANK_TEXT_STATEMENT, GENERIC_PROFILE)
+
+    funeral = next((t for t in transactions if t.description == "FUNERAL COVER"), None)
+    if funeral is None:
+        raise AssertionError("the dateless grouped movement was dropped")
+    assert_equal(funeral.transaction_date, "2025-05-02", "inherited the date of its group")
+    assert_equal(funeral.debit_amount, 220.0, "and kept its own amount")
+
+
+def test_generic_parser_infers_direction_from_balance_continuity() -> None:
+    """Text loses the column a figure was printed in; the arithmetic recovers it.
+
+    "45,000.00" on a Payments/Deposits statement carries no sign and no column
+    once flattened to text. The balance moving UP by exactly that amount is what
+    makes it a deposit.
+    """
+    import main
+
+    pages = _generic_text_pages(STANDARD_BANK_TEXT_STATEMENT)
+    metadata = main.parse_metadata(STANDARD_BANK_TEXT_STATEMENT)
+    transactions = main.parse_transactions(pages, metadata, STANDARD_BANK_TEXT_STATEMENT, GENERIC_PROFILE)
+
+    salary = next(t for t in transactions if t.description == "SALARY DEPOSIT")
+    assert_equal(salary.credit_amount, 45000.0, "balance rose, so it is a credit")
+    assert_equal(main.decimal_amount(salary.debit_amount), main.decimal_amount(0), "and not a debit")
+
+    fee = next(t for t in transactions if t.description == "SBSARETAIL")
+    assert_equal(fee.debit_amount, 340.0, "balance fell, so it is a debit")
+    assert_equal(main.decimal_amount(fee.credit_amount), main.decimal_amount(0), "and not a credit")
+
+
+def test_generic_parser_drops_page_furniture_and_totals() -> None:
+    """Repeated headers, page numbers and summary totals are not transactions."""
+    import main
+
+    pages = _generic_text_pages(STANDARD_BANK_TEXT_STATEMENT)
+    metadata = main.parse_metadata(STANDARD_BANK_TEXT_STATEMENT)
+    transactions = main.parse_transactions(pages, metadata, STANDARD_BANK_TEXT_STATEMENT, GENERIC_PROFILE)
+
+    for transaction in transactions:
+        lowered = (transaction.description or "").lower()
+        for forbidden in ("page 1 of", "page 2 of", "total payments", "date description", "standard bank"):
+            if forbidden in lowered:
+                raise AssertionError(f"furniture parsed as a transaction: {transaction.description!r}")
+    if str(main.decimal_amount(2654.55)) in [str(main.decimal_amount(t.credit_amount)) for t in transactions]:
+        raise AssertionError("the totals line was read as a credit")
+
+
+def test_generic_parser_reads_a_debit_credit_layout() -> None:
+    """The other common column pair, with Dr/Cr suffixes carrying the sign."""
+    import main
+
+    text = """NEDBANK LIMITED
+www.nedbank.co.za
+Date Description Debit Credit Balance
+Opening Balance 5,000.00
+03 Jun 2025 EFT RECEIVED 2,500.00Cr 7,500.00
+04 Jun 2025 SERVICE FEE 125.00Dr 7,375.00
+"""
+    pages = _generic_text_pages(text)
+    metadata = main.parse_metadata(text)
+    transactions = main.parse_transactions(pages, metadata, text, GENERIC_PROFILE)
+
+    assert_equal(len(transactions), 2, "both rows read")
+    received = next(t for t in transactions if "EFT RECEIVED" in t.description)
+    fee = next(t for t in transactions if "SERVICE FEE" in t.description)
+    assert_equal(received.credit_amount, 2500.0, "Cr suffix read as a credit")
+    assert_equal(fee.debit_amount, 125.0, "Dr suffix read as a debit")
+
+
+def test_negative_opening_balance_keeps_its_sign() -> None:
+    """An overdrawn statement's opening balance is negative.
+
+    The separator pattern used to swallow the minus, so -992,452.57 was recorded
+    as +992,452.57 — and on a statement whose amounts carry no sign of their own,
+    that made every row unresolvable.
+    """
+    import main
+
+    assert_equal(
+        main.parse_metadata("STATEMENT OPENING BALANCE -992,452.57")["opening_balance"],
+        -992452.57,
+        "a minus against the figure is a sign",
+    )
+    assert_equal(
+        main.parse_metadata("Opening Balance - 1,000.00")["opening_balance"],
+        1000.0,
+        "a dash with a space after it is a separator",
+    )
+    assert_equal(main.parse_metadata("Opening Balance: -50.25")["opening_balance"], -50.25, "colon then sign")
+    assert_equal(main.parse_metadata("Balance Brought Forward 342.37")["opening_balance"], 342.37, "unsigned is positive")
+
+
+def test_candidate_counting_is_bank_independent() -> None:
+    """The text-source comparison must not be blind on non-FNB statements.
+
+    transaction_candidate_lines only enters a section after FNB's "Transactions
+    in RAND" heading, so it returns 0 for every other bank. Comparing 0 with 0
+    is how a Standard Bank statement's provider extraction lost to this worker's
+    own text.
+    """
+    import main
+    from engine.generic_parser import count_candidate_lines
+
+    assert_equal(len(main.transaction_candidate_lines(STANDARD_BANK_TEXT_STATEMENT)), 0, "the FNB counter is blind here")
+    if count_candidate_lines(STANDARD_BANK_TEXT_STATEMENT) < 6:
+        raise AssertionError("the generic counter must see the Standard Bank rows")
+    # And it must still count an FNB statement, so the comparison stays sane if
+    # a preliminary detection is wrong.
+    if count_candidate_lines(FNB_SAMPLE) < 2:
+        raise AssertionError("the generic counter must also see FNB rows")
+
+
+def test_generic_rows_and_provider_rows_take_the_same_path() -> None:
+    """Text rows and Azure/Mistral rows converge on one transformer.
+
+    Two transformers would mean two sets of Dr/Cr, date-inheritance and
+    informational-row rules, drifting apart.
+    """
+    import main
+    from engine.generic_parser import extract_generic_rows
+
+    rows = extract_generic_rows(_generic_text_pages(STANDARD_BANK_TEXT_STATEMENT))
+    if not rows:
+        raise AssertionError("the generic parser produced no rows")
+    for row in rows:
+        if not isinstance(row.get("cells"), dict):
+            raise AssertionError(f"row is not in StructuredRow shape: {row}")
+        if "raw" not in row or "pageNumber" not in row:
+            raise AssertionError(f"row is missing StructuredRow fields: {row}")
+
+    # The rows go through the same function the providers' rows do.
+    transactions, diagnostics = main.parse_structured_rows(rows, main.parse_metadata(STANDARD_BANK_TEXT_STATEMENT), GENERIC_PROFILE)
+    assert_equal(len(transactions), 6, "the shared transformer reads the generic rows")
+    assert_equal(diagnostics["fnb_reconstruction_applied"], False, "and applies no FNB reconstruction")
+
+
+# ── Outcome semantics ─────────────────────────────────────────────────────────
+
+
+def _txn(main, date, description, debit=None, credit=None, balance=None):
+    return main.ParsedTransaction(
+        transaction_date=date,
+        description=description,
+        debit_amount=debit,
+        credit_amount=credit,
+        running_balance=balance,
+    )
+
+
+def test_a_statement_that_ties_out_completes() -> None:
+    """Evidence that everything was recovered means the run is finished."""
+    import main
+
+    metadata = {"opening_balance": 1000.00, "closing_balance": 700.00}
+    transactions = [
+        _txn(main, "2025-06-01", "PAYMENT A", debit=100.00, balance=900.00),
+        _txn(main, "2025-06-02", "PAYMENT B", debit=200.00, balance=700.00),
+    ]
+    check = main.validate_extraction(metadata, transactions)
+    assert_equal(check["status"], "ok", "a reconciling statement is complete")
+    assert_equal(check["failures"], [], "no failures")
+
+
+def test_a_broken_balance_chain_is_partial_not_complete() -> None:
+    """Rows missing from the middle break continuity even when nothing declares totals.
+
+    This is the only completeness evidence an unsupported bank is guaranteed to
+    give us, and without it a generic parse that dropped half a statement was
+    reported as a clean success.
+    """
+    import main
+
+    metadata = {"opening_balance": 1000.00}
+    transactions = [
+        _txn(main, "2025-06-01", "PAYMENT A", debit=100.00, balance=900.00),
+        # 900 - 200 is 700, but the statement prints 400: a row is missing.
+        _txn(main, "2025-06-02", "PAYMENT B", debit=200.00, balance=400.00),
+    ]
+    check = main.validate_extraction(metadata, transactions)
+    assert_equal(check["status"], "review_required", "a broken chain is not a completed run")
+    if "balance_continuity" not in check["failures"]:
+        raise AssertionError(f"continuity must be the failing check, got {check['failures']}")
+    assert_equal(check["balance_gap_count"], 1, "the gap is counted")
+
+
+def test_continuity_does_not_second_guess_a_statement_whose_money_ties_out() -> None:
+    """Continuity substitutes for declared evidence; it does not add to it.
+
+    FNB prints an overdrawn balance as a magnitude with a Dr marker, so the row
+    chain shows gaps of twice the balance on statements whose declared totals
+    reconcile to the cent. The stronger signal wins.
+    """
+    import main
+
+    metadata = {"opening_balance": 1000.00, "closing_balance": 700.00}
+    transactions = [
+        _txn(main, "2025-06-01", "PAYMENT A", debit=100.00, balance=500.00),
+        _txn(main, "2025-06-02", "PAYMENT B", debit=200.00, balance=700.00),
+    ]
+    check = main.validate_extraction(metadata, transactions)
+    ran = [item["name"] for item in check["checks"]]
+    if "balance_continuity" in ran:
+        raise AssertionError("continuity must not run when the money already ties out")
+    assert_equal(check["status"], "ok", "the reconciling statement completes")
+    assert_equal(check["balance_gap_count"], 2, "the gaps are still reported as diagnostics")
+
+
+def test_no_evidence_at_all_goes_to_review_never_to_completed() -> None:
+    """"Nothing failed" is not "it is right".
+
+    A statement that declares no totals, prints no closing balance and gives no
+    opening balance to chain from leaves every check unrun. Reporting that as a
+    clean success would be an unverified claim.
+    """
+    import main
+
+    metadata: dict = {}
+    transactions = [_txn(main, "2025-06-01", "PAYMENT A", debit=100.00)]
+    check = main.validate_extraction(metadata, transactions)
+
+    assert_equal(check["evidence_checks_run"], 0, "nothing could be checked")
+    assert_equal(check["status"], "review_required", "so it cannot be called complete")
+    if "no_completeness_evidence" not in check["failures"]:
+        raise AssertionError(f"the reason must be named, got {check['failures']}")
+
+
+def test_recovery_options_separates_unreadable_from_unparsed() -> None:
+    """"We could not read it" and "there is nothing to read" are different runs."""
+    import main
+
+    empty_selection: dict = {}
+
+    nothing = main.recovery_options(full_text="", pages=[], structured_rows=None, structured_selection=empty_selection)
+    assert_equal(nothing["recoverable"], False, "a document with no text, tables or rows is exhausted")
+    if "no usable text" not in nothing["summary"]:
+        raise AssertionError(f"the summary must say what is missing: {nothing['summary']}")
+
+    text_remains = main.recovery_options(
+        full_text=STANDARD_BANK_TEXT_STATEMENT,
+        pages=_generic_text_pages(STANDARD_BANK_TEXT_STATEMENT),
+        structured_rows=None,
+        structured_selection=empty_selection,
+    )
+    assert_equal(text_remains["recoverable"], True, "legible dated money rows are recoverable material")
+    if text_remains["generic_candidate_lines"] < 6:
+        raise AssertionError("the remaining rows must be counted")
+
+    rows_remain = main.recovery_options(
+        full_text="",
+        pages=[],
+        structured_rows=[{"pageNumber": 1, "cells": {"date": "01 Jun", "description": "X", "amount": "1.00"}}],
+        structured_selection={"structured_rows_usable": False, "structured_rejection_reason": "too_many_duplicates:9"},
+    )
+    assert_equal(rows_remain["recoverable"], True, "rows that arrived are material even when rejected")
+    assert_equal(rows_remain["structured_rejection_reason"], "too_many_duplicates:9", "why they were rejected is kept")
+
+
+def test_failure_messages_name_the_parser_that_ran() -> None:
+    """A Standard Bank statement reported as an FNB failure describes the routing."""
+    source = (ROOT / "workers" / "accounting_worker" / "main.py").read_text()
+    if '"message": "FNB parser validation failed."' in source:
+        raise AssertionError("validation failure must not be attributed to FNB on every bank")
+    if "no_transactions_recoverable" not in source:
+        raise AssertionError("an exhausted run must be reported apart from an unparsed one")
+
+
+# ── AI recovery ───────────────────────────────────────────────────────────────
+#
+# The instruction "do not invent transactions" is not a control. These cases
+# check the control: nothing survives that cannot be traced back to a line we
+# actually sent.
+
+AI_SOURCE_LINES = [
+    "30 Apr 25 ADT JHB SECURITY 1,204.55 -993,657.12",
+    "02 May 25 SALARY DEPOSIT 45,000.00 -948,657.12",
+    "05 May 25 MONTHLY SERVICE FEE 150.00 -948,807.12",
+]
+
+
+def _ai_row(**over):
+    row = {
+        "source_line": AI_SOURCE_LINES[0],
+        "date": "30 Apr 25",
+        "description": "ADT JHB SECURITY",
+        "amount": "1,204.55",
+        "balance": "-993,657.12",
+        "direction": "debit",
+        "confidence": 0.9,
+    }
+    row.update(over)
+    return row
+
+
+def test_ai_rows_must_come_from_a_line_we_sent() -> None:
+    """A row whose source line is not in the document is discarded outright."""
+    from engine.ai_recovery import ground_rows
+
+    invented = _ai_row(
+        source_line="07 May 25 CONSULTING FEE 9,500.00 -958,307.12",
+        description="CONSULTING FEE",
+        amount="9,500.00",
+        balance="-958,307.12",
+    )
+    report = ground_rows([_ai_row(), invented], AI_SOURCE_LINES)
+    assert_equal(len(report.accepted), 1, "only the row that exists survives")
+    assert_equal(report.rejected.get("source_line_not_in_document"), 1, "the invented row is counted, not silently dropped")
+
+
+def test_ai_amounts_must_appear_in_their_source_line() -> None:
+    """A real line with an altered figure is still a fabrication."""
+    from engine.ai_recovery import ground_rows
+
+    report = ground_rows([_ai_row(amount="1,240.55")], AI_SOURCE_LINES)
+    assert_equal(len(report.accepted), 0, "a figure not printed on the line is rejected")
+    assert_equal(report.rejected.get("amount_not_in_source_line"), 1, "and the reason is recorded")
+
+
+def test_ai_balances_that_are_not_printed_are_dropped_but_the_row_is_kept() -> None:
+    """A computed balance is discarded; the row it belongs to is not."""
+    from engine.ai_recovery import ground_rows
+
+    report = ground_rows([_ai_row(balance="-993,000.00")], AI_SOURCE_LINES)
+    assert_equal(len(report.accepted), 1, "the row survives")
+    assert_equal(report.accepted[0]["balance"], "", "the unprinted balance does not")
+    assert_equal(report.accepted[0]["balance_dropped"], True, "and that is flagged")
+
+
+def test_ai_descriptions_may_not_introduce_words() -> None:
+    """A narrative the document does not contain is a fabrication too."""
+    from engine.ai_recovery import ground_rows
+
+    report = ground_rows([_ai_row(description="ADT JHB SECURITY monthly alarm monitoring contract")], AI_SOURCE_LINES)
+    assert_equal(len(report.accepted), 0, "invented narrative is rejected")
+    assert_equal(report.rejected.get("description_not_in_source_line"), 1, "and counted")
+
+    kept = ground_rows([_ai_row(description="ADT SECURITY")], AI_SOURCE_LINES)
+    assert_equal(len(kept.accepted), 1, "a description drawn from the line is fine")
+
+
+def test_ai_never_receives_or_returns_a_guessed_direction() -> None:
+    """An unreadable direction stays unknown; it is not filled in."""
+    from engine.ai_recovery import ground_rows
+
+    report = ground_rows([_ai_row(direction="probably debit")], AI_SOURCE_LINES)
+    assert_equal(report.accepted[0]["direction"], "unknown", "an unrecognised direction becomes unknown, not debit")
+
+
+def test_ai_candidate_lines_only_carry_figures() -> None:
+    """Prose and page chrome cannot be ledger rows and are not worth the context."""
+    from engine.ai_recovery import candidate_lines
+
+    text = (
+        "STANDARD BANK 6 month statement\n"
+        "Please retain this statement for your records\n"
+        "30 Apr 25 ADT JHB SECURITY 1,204.55 -993,657.12\n"
+        "Customer Care 0860 123 000\n"
+        "02 May 25 SALARY DEPOSIT 45,000.00 -948,657.12\n"
+    )
+    lines = candidate_lines(text)
+    assert_equal(len(lines), 2, "only the two lines carrying figures are sent")
+    for line in lines:
+        if "Please retain" in line or "Customer Care" in line:
+            raise AssertionError(f"non-ledger line sent to the model: {line}")
+
+
+def test_ai_line_cap_is_reported_never_silent() -> None:
+    """A capped read must not look like a complete one."""
+    from engine.ai_recovery import LINES_PER_BATCH, MAX_BATCHES, batches, dropped_line_count
+
+    lines = [f"0{index % 9 + 1} May 25 ROW {index} 1{index}.00 -1,000.00" for index in range(LINES_PER_BATCH * MAX_BATCHES + 37)]
+    assert_equal(len(batches(lines)), MAX_BATCHES, "batches are capped")
+    assert_equal(dropped_line_count(lines), 37, "and the remainder is counted so it can be logged")
+    assert_equal(dropped_line_count(lines[:10]), 0, "nothing dropped when everything fits")
+
+
+def test_ai_recovery_is_skipped_without_a_key_and_never_invents_a_ledger() -> None:
+    """No provider configured is a clean no-op, not a failure and not a guess."""
+    import os
+
+    import main
+
+    previous = os.environ.pop("OPENAI_API_KEY", None)
+    try:
+        transactions, diagnostics = main.attempt_ai_recovery(
+            full_text=STANDARD_BANK_TEXT_STATEMENT,
+            structured_rows=None,
+            metadata={},
+            bank_name="Standard Bank",
+            run_id="run-1",
+        )
+        assert_equal(transactions, [], "no key means no transactions")
+        assert_equal(diagnostics["enabled"], False, "and it says so")
+        assert_equal(diagnostics["reason"], "no_api_key", "with the reason named")
+    finally:
+        if previous is not None:
+            os.environ["OPENAI_API_KEY"] = previous
+
+
+def test_ai_recovered_rows_are_all_flagged_for_review() -> None:
+    """Located is not understood. A person has to see every AI-derived row."""
+    import os
+
+    import main
+    from engine import ai_recovery as ai_module
+
+    rows = [
+        {"source_line": AI_SOURCE_LINES[0], "date": "30 Apr 25", "description": "ADT JHB SECURITY",
+         "amount": "1,204.55", "balance": "-993,657.12", "direction": "debit", "confidence": 0.95},
+        {"source_line": AI_SOURCE_LINES[1], "date": "02 May 25", "description": "SALARY DEPOSIT",
+         "amount": "45,000.00", "balance": "-948,657.12", "direction": "credit", "confidence": 0.9},
+        # An invented row, returned alongside the real ones.
+        {"source_line": "11 May 25 CONSULTING 9,500.00 -939,157.12", "date": "11 May 25",
+         "description": "CONSULTING", "amount": "9,500.00", "balance": "-939,157.12", "direction": "debit", "confidence": 0.99},
+    ]
+
+    text = "\n".join(AI_SOURCE_LINES)
+    previous_key = os.environ.get("OPENAI_API_KEY")
+    original_transport = main.openai_chat_completion
+    os.environ["OPENAI_API_KEY"] = "test-key"
+    main.openai_chat_completion = lambda body, api_key, timeout=60: {
+        "choices": [{"message": {"content": json.dumps({"rows": rows})}}]
+    }
+    try:
+        transactions, diagnostics = main.attempt_ai_recovery(
+            full_text=text,
+            structured_rows=None,
+            metadata={"opening_balance": -992452.57, "statement_period_end": "2025-05-31"},
+            bank_name="Standard Bank",
+            run_id="run-1",
+        )
+    finally:
+        main.openai_chat_completion = original_transport
+        if previous_key is None:
+            os.environ.pop("OPENAI_API_KEY", None)
+        else:
+            os.environ["OPENAI_API_KEY"] = previous_key
+
+    assert_equal(len(transactions), 2, "the two grounded rows are recovered")
+    assert_equal(diagnostics["returned_rows"], 3, "the model returned three")
+    assert_equal(diagnostics["rejected_rows"].get("source_line_not_in_document"), 1, "the third was invented and rejected")
+
+    for transaction in transactions:
+        assert_equal(transaction.review_status, "needs_review", f"{transaction.description} must be flagged")
+        if "recovered_by: ai" not in transaction.notes:
+            raise AssertionError(f"{transaction.description} must record where it came from: {transaction.notes!r}")
+        if transaction.confidence > 60:
+            raise AssertionError(f"AI rows must not carry parser-grade confidence, got {transaction.confidence}")
+
+    credit = next(t for t in transactions if "SALARY" in t.description)
+    assert_equal(credit.credit_amount, 45000.0, "amounts are the printed ones")
+
+
+def test_an_ai_recovered_run_can_never_report_completed() -> None:
+    """AI succeeding is a review outcome, by construction, not by luck."""
+    source = (ROOT / "workers" / "accounting_worker" / "main.py").read_text()
+    if "or ai_recovered" not in source:
+        raise AssertionError("the run status must force review when AI produced the ledger")
+    if 'append_note(transaction, "recovered_by: ai")' not in source:
+        raise AssertionError("every AI row must be traceable in the ledger itself")
+
+
+# ── Ledger section boundaries ─────────────────────────────────────────────────
+#
+# Modelled on the real 37-page Standard Bank statement (SBSA_Statement_2025-10-27,
+# run 27142721-ab81-4981-ad66-89fb8f299ed1), which cannot be committed: it is a
+# client bank statement. The structure is reproduced exactly — a letterhead
+# repeated on every page carrying both a date and an available-balance figure,
+# the column header, transactions whose narrative wraps onto the next line, and
+# a footer whose summary prints figures in transaction shape.
+#
+# On the real document this shape produced 4 rows that appear nowhere on the
+# statement and 15 running-balance gaps.
+
+def _sbsa_shaped_page(page_number: int, body: list[str], footer: bool = False) -> dict:
+    letterhead = [
+        "Customer Care: 0860 123 000",
+        "Website: www.standardbank.co.za",
+        "STANDARD BANK 6 month statement",
+        "From: 30 Apr 25",
+        "To: 27 Oct 25",
+        # A bare date line. It opens a row unless the section is closed.
+        "27 Oct 2025",
+        "Account number: 30 198 148 5 Address:",
+        "Account holder: TEST HOLDER PTY LTD 3 UITKYK ST",
+        "Product name: CURRENT ACC FLAMINGO PARK",
+        # Carries a figure, and completes the row the bare date opened.
+        "Transaction details Available Balance: R96,313.45",
+        "Date Description Payments Deposits Balance",
+    ]
+    tail = [
+        "Please verify all transactions reflected on this statement and notify any discrepancies to the bank.",
+        "Statement Summary",
+        "Payments -R2,000.00",
+        "Deposits R5,000.00",
+        "Today's debits have not yet been paid",
+        "The Standard Bank of South Africa Limited (Reg. No. 1962/000738/06).",
+    ] if footer else []
+    return {"page": page_number, "text": "\n".join(letterhead + body + tail), "tables": []}
+
+
+SBSA_SHAPED_PAGES = [
+    _sbsa_shaped_page(1, [
+        "STATEMENT OPENING BALANCE -1,000.00",
+        "30 Apr 25 ADT JHB 2117556751ADT5087498 -380.00 -1,380.00",
+        "ACCOUNT PAYMENT",
+        "30 Apr 25 SBSARETAIL895F 00040202771 -620.00 -2,000.00",
+        "LOAN REPAYMENT",
+    ]),
+    _sbsa_shaped_page(2, [
+        "02 May 25 CLIENT SETTLEMENT 20250502 5,000.00 3,000.00",
+        "ELECTRONIC TRANSFER CREDIT",
+        "05 May 25 CARTRACK CART25D5S58NYRV -1,000.00 2,000.00",
+        "ACCOUNT PAYMENT",
+    ], footer=True),
+]
+
+
+def test_the_repeated_letterhead_is_not_read_as_a_transaction() -> None:
+    """The defect the real Standard Bank statement exposed.
+
+    The letterhead carries a bare statement date and an available-balance
+    figure. Read as ledger lines, the date opened a row, the address block wrapped
+    into it, and the available balance completed it — one invented transaction
+    per page, each breaking the running-balance chain twice.
+    """
+    import main
+
+    full_text = "\n".join(page["text"] for page in SBSA_SHAPED_PAGES)
+    metadata = main.parse_metadata(full_text)
+    transactions = main.parse_transactions(SBSA_SHAPED_PAGES, metadata, full_text, GENERIC_PROFILE)
+
+    for transaction in transactions:
+        for forbidden in ("Account number", "Available Balance", "Account holder", "Product name"):
+            if forbidden in transaction.description:
+                raise AssertionError(f"letterhead read as a transaction: {transaction.description!r}")
+    if any(main.decimal_amount(t.running_balance) == main.decimal_amount(96313.45) for t in transactions if t.running_balance is not None):
+        raise AssertionError("the available-balance figure became a running balance")
+
+
+def test_the_footer_summary_is_not_read_as_transactions() -> None:
+    """"Payments -R2,000.00" is a summary of the statement, not a movement."""
+    import main
+
+    full_text = "\n".join(page["text"] for page in SBSA_SHAPED_PAGES)
+    metadata = main.parse_metadata(full_text)
+    transactions = main.parse_transactions(SBSA_SHAPED_PAGES, metadata, full_text, GENERIC_PROFILE)
+
+    descriptions = [t.description for t in transactions]
+    for forbidden in ("Payments", "Deposits", "Today's debits"):
+        if any(description.strip().startswith(forbidden) for description in descriptions):
+            raise AssertionError(f"footer summary read as a transaction: {forbidden}")
+    # The closing disclaimer must not be absorbed into the last transaction either.
+    for description in descriptions:
+        if "Please verify all transactions" in description:
+            raise AssertionError(f"footer prose absorbed as a wrapped description: {description!r}")
+
+
+def test_the_section_bounded_ledger_reconciles_exactly() -> None:
+    """With both boundaries in place the chain is continuous and ties out.
+
+    This is the shape that, on the real 37-page statement, produced 615
+    transactions whose debit and credit totals match the bank's own declared
+    Payments and Deposits to the cent, with zero running-balance gaps.
+    """
+    import main
+
+    full_text = "\n".join(page["text"] for page in SBSA_SHAPED_PAGES)
+    metadata = main.parse_metadata(full_text)
+    transactions = main.parse_transactions(SBSA_SHAPED_PAGES, metadata, full_text, GENERIC_PROFILE)
+    summary = main.validation_summary(transactions)
+
+    assert_equal(len(transactions), 4, "the four printed movements, and nothing else")
+    assert_equal(str(summary["total_debits"]), "2000.00", "debits match the statement's declared Payments")
+    assert_equal(str(summary["total_credits"]), "5000.00", "credits match the statement's declared Deposits")
+    assert_equal(len(main.balance_gap_diagnostics(metadata, transactions)), 0, "the running balance is continuous")
+
+    check = main.validate_extraction(metadata, transactions)
+    assert_equal(check["status"], "ok", "a continuous, complete ledger")
+
+
+def test_a_statement_with_no_column_header_is_still_read() -> None:
+    """A layout we cannot recognise is better parsed than skipped."""
+    import main
+
+    text = "\n".join([
+        "SOME BANK LIMITED",
+        "01 Jun 2025 EFT RECEIVED 2,500.00Cr 7,500.00",
+        "02 Jun 2025 SERVICE FEE 125.00Dr 7,375.00",
+    ])
+    pages = [{"page": 1, "text": text, "tables": []}]
+    transactions = main.parse_transactions(pages, main.parse_metadata(text), text, GENERIC_PROFILE)
+    assert_equal(len(transactions), 2, "no header means read the whole page, not none of it")
+
+
 def run() -> None:
+    test_the_repeated_letterhead_is_not_read_as_a_transaction()
+    test_the_footer_summary_is_not_read_as_transactions()
+    test_the_section_bounded_ledger_reconciles_exactly()
+    test_a_statement_with_no_column_header_is_still_read()
+    test_ai_rows_must_come_from_a_line_we_sent()
+    test_ai_amounts_must_appear_in_their_source_line()
+    test_ai_balances_that_are_not_printed_are_dropped_but_the_row_is_kept()
+    test_ai_descriptions_may_not_introduce_words()
+    test_ai_never_receives_or_returns_a_guessed_direction()
+    test_ai_candidate_lines_only_carry_figures()
+    test_ai_line_cap_is_reported_never_silent()
+    test_ai_recovery_is_skipped_without_a_key_and_never_invents_a_ledger()
+    test_ai_recovered_rows_are_all_flagged_for_review()
+    test_an_ai_recovered_run_can_never_report_completed()
+    test_a_statement_that_ties_out_completes()
+    test_a_broken_balance_chain_is_partial_not_complete()
+    test_continuity_does_not_second_guess_a_statement_whose_money_ties_out()
+    test_no_evidence_at_all_goes_to_review_never_to_completed()
+    test_recovery_options_separates_unreadable_from_unparsed()
+    test_failure_messages_name_the_parser_that_ran()
+    test_generic_parser_reads_a_text_only_statement_end_to_end()
+    test_generic_parser_merges_wrapped_descriptions()
+    test_generic_parser_inherits_the_date_of_a_grouped_movement()
+    test_generic_parser_infers_direction_from_balance_continuity()
+    test_generic_parser_drops_page_furniture_and_totals()
+    test_generic_parser_reads_a_debit_credit_layout()
+    test_negative_opening_balance_keeps_its_sign()
+    test_candidate_counting_is_bank_independent()
+    test_generic_rows_and_provider_rows_take_the_same_path()
+    test_standard_bank_is_not_routed_to_the_fnb_parser()
+    test_standard_bank_layout_parses_payments_and_deposits()
+    test_generic_parser_never_invents_fnb_fee_rows()
+    test_structured_rows_skip_fnb_reconstruction_for_other_banks()
+    test_unknown_bank_routes_to_generic_not_fnb()
+    test_fnb_still_routes_to_the_fnb_parser()
+    test_bank_resolution_precedence_between_the_two_detections()
+    test_parser_profile_not_implemented_rejection_is_gone()
+    test_bank_detection_identifies_standard_bank_from_text()
+    test_bank_detection_covers_every_supported_bank()
+    test_bank_detection_keeps_fnb_unchanged()
+    test_bank_detection_never_defaults_to_a_bank()
+    test_bank_detection_ignores_a_counterparty_named_in_a_transaction()
+    test_bank_detection_reads_no_file_path()
+    test_bank_detection_is_ambiguous_rather_than_wrong()
+    test_bank_detection_survives_broken_letterhead_whitespace()
     test_worker_auth_fails_closed()
     test_worker_auth_matches_pdf_plumber_contract()
     test_worker_token_check_raises_on_unconfigured_secret()
@@ -1571,7 +2614,7 @@ def test_structured_rows_are_selected_when_equal_or_better() -> None:
         },
     ]
 
-    selected, diagnostics = main.select_transactions_from_sources([], metadata, full_text, structured_rows)
+    selected, diagnostics = main.select_transactions_from_sources([], metadata, full_text, structured_rows, FNB_PROFILE)
     assert diagnostics["selected_path"] == "structured", diagnostics
     summary = main.validation_summary(selected)
     assert_equal(summary["transaction_count"], 2, "structured-selected financial count")
@@ -1585,6 +2628,7 @@ def test_structured_rows_are_selected_when_equal_or_better() -> None:
         metadata,
         "Statement header only",
         structured_rows,
+        FNB_PROFILE,
     )
     assert diagnostics_better["selected_path"] == "structured", diagnostics_better
     assert_equal(main.financial_transaction_count(selected_better), 2, "structured better-than-text selection")
@@ -1601,13 +2645,13 @@ def test_structured_rows_fallback_to_text_when_weaker_or_unusable() -> None:
             "cells": {"date": "01 Mar", "description": "Card Purchase Example", "debit": "100.00", "balance": "3,290.09 Cr"},
         }
     ]
-    selected_weak, weak_diag = main.select_transactions_from_sources([], metadata, text, weak_rows)
+    selected_weak, weak_diag = main.select_transactions_from_sources([], metadata, text, weak_rows, FNB_PROFILE)
     assert weak_diag["selected_path"] == "text", weak_diag
     assert str(weak_diag.get("fallback_reason") or "").startswith("structured_weaker_than_text"), weak_diag
     assert_equal(len(selected_weak), FNB_EXPECTED["transaction_count"], "weak structured falls back to full text parse")
 
     unusable_rows = [{"pageNumber": 1, "cells": {"date": "", "description": "", "amount": ""}}]
-    selected_unusable, unusable_diag = main.select_transactions_from_sources([], metadata, text, unusable_rows)
+    selected_unusable, unusable_diag = main.select_transactions_from_sources([], metadata, text, unusable_rows, FNB_PROFILE)
     assert unusable_diag["selected_path"] == "text", unusable_diag
     assert str(unusable_diag.get("fallback_reason") or "").startswith("structured_unusable"), unusable_diag
     assert_equal(len(selected_unusable), FNB_EXPECTED["transaction_count"], "unusable structured falls back to text")
@@ -1665,7 +2709,7 @@ def test_structured_rows_preserve_empty_date_fee_info_and_overdrawn_balance() ->
         },
     ]
 
-    txns, parse_diag = main.parse_structured_rows(rows, metadata)
+    txns, parse_diag = main.parse_structured_rows(rows, metadata, FNB_PROFILE)
     assert_equal(len(txns), 4, "structured rows parsed")
     assert parse_diag["date_inferred_rows"] >= 2, parse_diag
 
@@ -1689,8 +2733,8 @@ def test_no_structured_rows_keeps_text_path_unchanged() -> None:
     import main
 
     text, metadata = _build_acapolite_style_statement()
-    expected = main.parse_transactions([], metadata, text)
-    selected, diagnostics = main.select_transactions_from_sources([], metadata, text, None)
+    expected = main.parse_fnb_transactions([], metadata, text)
+    selected, diagnostics = main.select_transactions_from_sources([], metadata, text, None, FNB_PROFILE)
 
     assert diagnostics["selected_path"] == "text", diagnostics
     assert diagnostics["fallback_reason"] == "structured_rows_absent", diagnostics
@@ -1726,7 +2770,7 @@ def test_structured_unsigned_amount_debit_proven_by_balance_continuity() -> None
             },
         },
     ]
-    txns, diag = main.parse_structured_rows(rows, metadata)
+    txns, diag = main.parse_structured_rows(rows, metadata, FNB_PROFILE)
     assert_equal(diag["rejected_reasons"].get("ambiguous_unsigned_amount_direction", 0), 0, "no ambiguity rejection")
     assert_equal(len(txns), 2, "both rows parsed")
     assert_equal(txns[1].debit_amount, 200.0, "unsigned amount resolved to debit")
@@ -1757,7 +2801,7 @@ def test_structured_unsigned_amount_credit_proven_by_balance_continuity() -> Non
             },
         },
     ]
-    txns, diag = main.parse_structured_rows(rows, metadata)
+    txns, diag = main.parse_structured_rows(rows, metadata, FNB_PROFILE)
     assert_equal(diag["rejected_reasons"].get("ambiguous_unsigned_amount_direction", 0), 0, "no ambiguity rejection")
     assert_equal(len(txns), 2, "both rows parsed")
     assert_equal(txns[1].credit_amount, 200.0, "unsigned amount resolved to credit")
@@ -1785,7 +2829,7 @@ def test_structured_unsigned_amount_unresolved_falls_back_to_text() -> None:
             },
         }
     ]
-    selected, diagnostics = main.select_transactions_from_sources([], metadata, text, rows)
+    selected, diagnostics = main.select_transactions_from_sources([], metadata, text, rows, FNB_PROFILE)
     assert diagnostics["selected_path"] == "text", diagnostics
     assert str(diagnostics.get("fallback_reason") or "").startswith("structured_unusable"), diagnostics
     assert "ambiguous_unsigned_amount_direction" in str(diagnostics.get("structured_parse_diagnostics", {}).get("rejected_reasons", {}))
@@ -1806,7 +2850,7 @@ def test_structured_unsigned_amount_unresolved_never_persisted_as_debit() -> Non
             },
         }
     ]
-    txns, diag = main.parse_structured_rows(rows, metadata)
+    txns, diag = main.parse_structured_rows(rows, metadata, FNB_PROFILE)
     assert_equal(len(txns), 0, "ambiguous unsigned row is rejected")
     assert_equal(diag["rejected_reasons"].get("ambiguous_unsigned_amount_direction"), 1, "ambiguity reason counted")
     debits = [txn for txn in txns if txn.debit_amount == 200.0]
@@ -1901,7 +2945,7 @@ def test_extraction_confidence_large_fully_reconciled_statement_near_100() -> No
     import main
 
     text, metadata = _build_acapolite_style_statement()
-    txns = main.parse_transactions([], metadata, text)
+    txns = main.parse_fnb_transactions([], metadata, text)
     score = _confidence_score(main, metadata, txns, pages=[{"page": 1, "text": text, "tables": []}])
     assert score is not None
     if score < 95:
@@ -1912,7 +2956,7 @@ def test_extraction_confidence_drops_when_one_transaction_is_missing() -> None:
     import main
 
     text, metadata = _build_acapolite_style_statement()
-    txns = main.parse_transactions([], metadata, text)
+    txns = main.parse_fnb_transactions([], metadata, text)
     baseline = _confidence_score(main, metadata, txns, pages=[{"page": 1, "text": text, "tables": []}])
     reduced = txns[:-1]
     lower = _confidence_score(main, metadata, reduced, pages=[{"page": 1, "text": text, "tables": []}])
@@ -2018,7 +3062,7 @@ def test_extraction_confidence_equivalent_for_structured_and_text_financially_id
             "01 Mar Card Purchase Fuel 300.00 700.00 Cr",
         ]
     )
-    text_txns = main.parse_transactions([], metadata, text)
+    text_txns = main.parse_fnb_transactions([], metadata, text)
     for txn in text_txns:
         if txn.source_page is None:
             txn.source_page = 1
@@ -2042,7 +3086,7 @@ def test_extraction_confidence_equivalent_for_structured_and_text_financially_id
             },
         },
     ]
-    structured_txns, diag = main.parse_structured_rows(structured_rows, metadata)
+    structured_txns, diag = main.parse_structured_rows(structured_rows, metadata, FNB_PROFILE)
     assert_equal(diag["rejected_reasons"].get("ambiguous_unsigned_amount_direction", 0), 0, "structured rows parsed cleanly")
 
     # Use extraction checks generated from each source's own rows; if the financial
