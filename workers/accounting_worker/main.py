@@ -25,6 +25,7 @@ from supabase import Client, create_client
 from auth import OK as AUTH_OK, STATUS_FOR_VERDICT, auth_compare_diagnostics, check_bearer
 from engine.bootstrap import register_default_parsers
 from engine.detection import UNKNOWN_PROFILE_ID, bank_name_for, detect_bank, is_supported_bank
+from engine.classification import bank_charge_evidence, owner_drawings_evidence
 from engine.ai_recovery import SYSTEM_PROMPT as AI_RECOVERY_SYSTEM_PROMPT
 from engine.ai_recovery import batches as ai_batches
 from engine.ai_recovery import build_prompt as build_ai_recovery_prompt
@@ -761,6 +762,25 @@ def normalize_transaction_date(raw_date: str, metadata: dict[str, Any]) -> str |
 
 def classify_transaction(description: str, debit: float | None, credit: float | None) -> tuple[str, str, bool, float]:
     text = description.lower()
+    # HARD rule, ahead of everything else: a charge the bank names as its own.
+    #
+    # This is the most mechanically certain classification on a statement, and it
+    # has to be settled first, because later rules match on incidental words.
+    # "301981485 10H00 FEE - INSTANT MONEY" is a bank fee, but "instant money" is
+    # a payment-channel keyword further down, and that rule was booking it to
+    # Related Party / Drawings at out-of-scope VAT — losing both the expense and
+    # the input VAT on a legitimate bank charge.
+    if bank_charge_evidence(description):
+        return "Bank Charges", "standard", True, 97
+    # HARD rule: the statement explicitly says this is an owner withdrawal.
+    #
+    # Positive evidence, checked wherever it appears rather than only when a
+    # payment-channel keyword happens to be present too — "OWNER WITHDRAWAL"
+    # with no channel marker used to fall through to the debit fallback. This
+    # supersedes the narrower ("drawings", "director loan", ...) keyword rule
+    # that used to sit further down the list.
+    if owner_drawings_evidence(description):
+        return "Director Loan / Drawings", "out_of_scope", False, 88
     if debit and debit > 0 and looks_like_business_supplier_payment(text):
         return "Supplier Payments", "review", False, 88
     # Ordered deterministic rules — most specific first. VAT is kept conservative
@@ -790,9 +810,6 @@ def classify_transaction(description: str, debit: float | None, credit: float | 
         # Home loans / credit card funding — balance sheet, not P&L.
         (("scheduled payment to home loan", "home loan payment", "transfer to home loan", "transfer to credit card", "fnb app transfer to credit card"),
          "Loan / Liability", "out_of_scope", False, 90),
-        # Explicit director / drawings keywords (generic).
-        (("drawings", "director loan", "director's loan", "owner draw"),
-         "Director Loan / Drawings", "out_of_scope", False, 82),
         # SARS / tax — suspense/liability, NEVER revenue. Excluded from P&L.
         (("tax deposit", "sars", "efiling", "paye", "vat201", "vat 201", "provisional tax"),
          "SARS / Tax Suspense", "review", False, 82),
@@ -887,7 +904,18 @@ def classify_transaction(description: str, debit: float | None, credit: float | 
                 return "Operating Expenses", "review", False, 78
         if re.search(r"\d{5,}", tail) and not re.search(r"[a-z]{3,}", tail):
             return "Suspense / Review Required", "review", False, 60
-        return "Related Party / Drawings", "out_of_scope", False, 68
+        # A payment through a person-to-person channel is NOT evidence of owner
+        # drawings. This used to return Related Party / Drawings for anything
+        # that reached here — the definition of a fallback — so an unrecognised
+        # payee, a company the supplier list did not know, and a bank fee that
+        # happened to mention "instant money" were all booked to the owner's
+        # loan account at out-of-scope VAT.
+        #
+        # Drawings misstates both the expense and the owner's position, and it
+        # is the harder error to spot afterwards, so it now requires the
+        # statement to actually say so. Everything else is unresolved, which is
+        # a review outcome rather than a wrong answer.
+        return "Suspense / Review Required", "review", False, 58
 
     # Direction-based fallbacks — conservative: never assume an unknown debit is a
     # normal operating expense. Unknown outflows are suspense/review.

@@ -2501,7 +2501,158 @@ def test_a_parsed_row_keeps_normal_learned_rule_behaviour() -> None:
     assert_equal(main.is_ai_recovered(transaction), False, "it was never AI-recovered")
 
 
+# ── Deterministic fee and drawings classification ─────────────────────────────
+#
+# Terminology taken from the banks themselves: a real 37-page Standard Bank
+# statement and the FNB fixtures in this suite. Not from a general fee
+# vocabulary — a "consulting fee" is not a bank charge.
+
+
+def test_bank_fee_terminology_classifies_as_bank_charges() -> None:
+    """The wording the banks actually print for their own charges."""
+    import main
+
+    observed = [
+        # Standard Bank, from the real statement
+        "301981485 OVERDRAFT SERVICE FEE",
+        "ACC 301981485 SERVICE FEE",
+        "ACC 301981485 MONTHLY MANAGEMENT FEE",
+        "ACC 301981485 0051 NOTIFICATION FEE: MYUPDATES FOR BUSINESS",
+        "301981485 3004 HONOURING FEE",
+        "301981485 - 0526-0624 - 13DAYS FEE: UNUSED FACILITY",
+        "PRELLER TRUST FEE: PAYMENT CONFIRM - EMAIL",
+        "301981485 0000H00 FEE IMMEDIATE PAYMENT",
+        # FNB, from this suite's fixtures
+        "#Service Fees",
+        "#Monthly Account Fee",
+        "#Excess Item Fee 2 Items On 26/04/01",
+        # Plain terms that were falling through to the debit fallback entirely
+        "BANK CHARGE",
+        "BANK FEE",
+        "TRANSACTION FEE",
+        "ACCOUNT FEE",
+        "CASH DEPOSIT FEE",
+        "CARD FEE",
+    ]
+    for description in observed:
+        category, vat, bank_charge, confidence = main.classify_transaction(description, 100.0, None)
+        assert_equal(category, "Bank Charges", f"{description!r} is a bank charge")
+        assert_equal(vat, "standard", f"{description!r} carries claimable input VAT")
+        assert_equal(bank_charge, True, f"{description!r} is flagged as a bank charge")
+        if confidence < 90:
+            raise AssertionError(f"{description!r} is high-certainty, got {confidence}")
+
+
+def test_an_explicit_bank_fee_is_never_owner_drawings() -> None:
+    """The reported production defect, exactly as it appeared.
+
+    "301981485 10H00 FEE - INSTANT MONEY" matched no fee keyword, fell through
+    every rule, and was then caught by the "instant money" payment-channel
+    marker, which returned Related Party / Drawings at out-of-scope VAT. A bank
+    charge became an owner withdrawal and its input VAT was discarded.
+    """
+    import main
+
+    category, vat, bank_charge, _ = main.classify_transaction("301981485 10H00 FEE - INSTANT MONEY", 27.50, None)
+    assert_equal(category, "Bank Charges", "a bank fee is a bank charge")
+    if "Drawings" in category:
+        raise AssertionError("a bank fee must never be booked to drawings")
+    assert_equal(vat, "standard", "and its input VAT is not discarded as out of scope")
+    assert_equal(bank_charge, True, "and it counts as a bank charge")
+
+
+def test_non_bank_fees_are_not_swept_into_bank_charges() -> None:
+    """A fee someone else charges is not a bank charge.
+
+    The point of reading the banks' own terminology rather than matching the
+    word "fee": this must not become a keyword net that captures every invoice.
+    """
+    import main
+
+    for description in ("CONSULTING FEE", "SCHOOL FEES TERM 2", "ARCHITECT FEE INV0093"):
+        category, _, bank_charge, _ = main.classify_transaction(description, 5000.0, None)
+        if category == "Bank Charges" or bank_charge:
+            raise AssertionError(f"{description!r} was wrongly classified as a bank charge")
+
+
+def test_an_unknown_payee_does_not_default_to_owner_drawings() -> None:
+    """Drawings by exhaustion was the defect. Unresolved is the honest answer."""
+    import main
+
+    for description in (
+        "Payshap Payment To Joe Bloggs",
+        "Fnb App Transfer To John",
+        "Send Money To Wallet 0821234567",
+        "Fnb App Rtc Pmt To Sunfield",
+    ):
+        category, vat, _, confidence = main.classify_transaction(description, 1500.0, None)
+        if "Drawings" in category:
+            raise AssertionError(f"{description!r} became drawings without evidence")
+        assert_equal(category, "Suspense / Review Required", f"{description!r} is unresolved, not drawings")
+        assert_equal(vat, "review", "and its VAT stays open rather than out of scope")
+        if confidence >= 70:
+            raise AssertionError(f"an unresolved row must not read as confident, got {confidence}")
+
+
+def test_owner_drawings_requires_positive_evidence() -> None:
+    """It remains reachable — but only when the statement says so."""
+    import main
+    from engine.classification import owner_drawings_evidence
+
+    for description in (
+        "Fnb App Payment To Drawings",
+        "DIRECTOR LOAN REPAYMENT",
+        "OWNER WITHDRAWAL",
+        "MEMBERS DRAWINGS",
+    ):
+        if not owner_drawings_evidence(description):
+            raise AssertionError(f"{description!r} is explicit drawings evidence and must be recognised")
+        category, _, _, _ = main.classify_transaction(description, 5000.0, None)
+        if "Drawings" not in category and "Loan" not in category:
+            raise AssertionError(f"{description!r} should reach a drawings/loan account, got {category}")
+
+    for description in ("PAYMENT TO ABC TRADING", "POS PURCHASE WOOLWORTHS MENLYN 004829"):
+        if owner_drawings_evidence(description):
+            raise AssertionError(f"{description!r} is not drawings evidence")
+
+
+def test_a_debit_alone_is_not_evidence_of_anything() -> None:
+    """Direction carries no accounting meaning on its own."""
+    import main
+
+    debit_category, _, _, _ = main.classify_transaction("ZZZ UNRECOGNISED 12345", 900.0, None)
+    credit_category, _, _, _ = main.classify_transaction("ZZZ UNRECOGNISED 12345", None, 900.0)
+    for category in (debit_category, credit_category):
+        if "Drawings" in category:
+            raise AssertionError(f"direction alone produced drawings: {category}")
+    assert_equal(debit_category, "Suspense / Review Required", "an unknown debit is unresolved")
+
+
+def test_classification_changes_do_not_touch_the_ledger() -> None:
+    """Classification must not be able to alter extracted evidence."""
+    import main
+
+    transactions = main.parse_transactions(
+        SBSA_SHAPED_PAGES,
+        main.parse_metadata("\n".join(p["text"] for p in SBSA_SHAPED_PAGES)),
+        "\n".join(p["text"] for p in SBSA_SHAPED_PAGES),
+        GENERIC_PROFILE,
+    )
+    before = [(t.transaction_date, t.description, t.debit_amount, t.credit_amount, t.running_balance) for t in transactions]
+    for transaction in transactions:
+        main.classify_transaction(transaction.description, transaction.debit_amount, transaction.credit_amount)
+    after = [(t.transaction_date, t.description, t.debit_amount, t.credit_amount, t.running_balance) for t in transactions]
+    assert_equal(after, before, "classification left every extracted field untouched")
+
+
 def run() -> None:
+    test_bank_fee_terminology_classifies_as_bank_charges()
+    test_an_explicit_bank_fee_is_never_owner_drawings()
+    test_non_bank_fees_are_not_swept_into_bank_charges()
+    test_an_unknown_payee_does_not_default_to_owner_drawings()
+    test_owner_drawings_requires_positive_evidence()
+    test_a_debit_alone_is_not_evidence_of_anything()
+    test_classification_changes_do_not_touch_the_ledger()
     test_a_learned_rule_cannot_promote_an_ai_recovered_row()
     test_the_learned_rule_still_classifies_the_ai_recovered_row()
     test_the_ai_marker_survives_classification()
