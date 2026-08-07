@@ -1952,7 +1952,143 @@ def test_generic_rows_and_provider_rows_take_the_same_path() -> None:
     assert_equal(diagnostics["fnb_reconstruction_applied"], False, "and applies no FNB reconstruction")
 
 
+# ── Outcome semantics ─────────────────────────────────────────────────────────
+
+
+def _txn(main, date, description, debit=None, credit=None, balance=None):
+    return main.ParsedTransaction(
+        transaction_date=date,
+        description=description,
+        debit_amount=debit,
+        credit_amount=credit,
+        running_balance=balance,
+    )
+
+
+def test_a_statement_that_ties_out_completes() -> None:
+    """Evidence that everything was recovered means the run is finished."""
+    import main
+
+    metadata = {"opening_balance": 1000.00, "closing_balance": 700.00}
+    transactions = [
+        _txn(main, "2025-06-01", "PAYMENT A", debit=100.00, balance=900.00),
+        _txn(main, "2025-06-02", "PAYMENT B", debit=200.00, balance=700.00),
+    ]
+    check = main.validate_extraction(metadata, transactions)
+    assert_equal(check["status"], "ok", "a reconciling statement is complete")
+    assert_equal(check["failures"], [], "no failures")
+
+
+def test_a_broken_balance_chain_is_partial_not_complete() -> None:
+    """Rows missing from the middle break continuity even when nothing declares totals.
+
+    This is the only completeness evidence an unsupported bank is guaranteed to
+    give us, and without it a generic parse that dropped half a statement was
+    reported as a clean success.
+    """
+    import main
+
+    metadata = {"opening_balance": 1000.00}
+    transactions = [
+        _txn(main, "2025-06-01", "PAYMENT A", debit=100.00, balance=900.00),
+        # 900 - 200 is 700, but the statement prints 400: a row is missing.
+        _txn(main, "2025-06-02", "PAYMENT B", debit=200.00, balance=400.00),
+    ]
+    check = main.validate_extraction(metadata, transactions)
+    assert_equal(check["status"], "review_required", "a broken chain is not a completed run")
+    if "balance_continuity" not in check["failures"]:
+        raise AssertionError(f"continuity must be the failing check, got {check['failures']}")
+    assert_equal(check["balance_gap_count"], 1, "the gap is counted")
+
+
+def test_continuity_does_not_second_guess_a_statement_whose_money_ties_out() -> None:
+    """Continuity substitutes for declared evidence; it does not add to it.
+
+    FNB prints an overdrawn balance as a magnitude with a Dr marker, so the row
+    chain shows gaps of twice the balance on statements whose declared totals
+    reconcile to the cent. The stronger signal wins.
+    """
+    import main
+
+    metadata = {"opening_balance": 1000.00, "closing_balance": 700.00}
+    transactions = [
+        _txn(main, "2025-06-01", "PAYMENT A", debit=100.00, balance=500.00),
+        _txn(main, "2025-06-02", "PAYMENT B", debit=200.00, balance=700.00),
+    ]
+    check = main.validate_extraction(metadata, transactions)
+    ran = [item["name"] for item in check["checks"]]
+    if "balance_continuity" in ran:
+        raise AssertionError("continuity must not run when the money already ties out")
+    assert_equal(check["status"], "ok", "the reconciling statement completes")
+    assert_equal(check["balance_gap_count"], 2, "the gaps are still reported as diagnostics")
+
+
+def test_no_evidence_at_all_goes_to_review_never_to_completed() -> None:
+    """"Nothing failed" is not "it is right".
+
+    A statement that declares no totals, prints no closing balance and gives no
+    opening balance to chain from leaves every check unrun. Reporting that as a
+    clean success would be an unverified claim.
+    """
+    import main
+
+    metadata: dict = {}
+    transactions = [_txn(main, "2025-06-01", "PAYMENT A", debit=100.00)]
+    check = main.validate_extraction(metadata, transactions)
+
+    assert_equal(check["evidence_checks_run"], 0, "nothing could be checked")
+    assert_equal(check["status"], "review_required", "so it cannot be called complete")
+    if "no_completeness_evidence" not in check["failures"]:
+        raise AssertionError(f"the reason must be named, got {check['failures']}")
+
+
+def test_recovery_options_separates_unreadable_from_unparsed() -> None:
+    """"We could not read it" and "there is nothing to read" are different runs."""
+    import main
+
+    empty_selection: dict = {}
+
+    nothing = main.recovery_options(full_text="", pages=[], structured_rows=None, structured_selection=empty_selection)
+    assert_equal(nothing["recoverable"], False, "a document with no text, tables or rows is exhausted")
+    if "no usable text" not in nothing["summary"]:
+        raise AssertionError(f"the summary must say what is missing: {nothing['summary']}")
+
+    text_remains = main.recovery_options(
+        full_text=STANDARD_BANK_TEXT_STATEMENT,
+        pages=_generic_text_pages(STANDARD_BANK_TEXT_STATEMENT),
+        structured_rows=None,
+        structured_selection=empty_selection,
+    )
+    assert_equal(text_remains["recoverable"], True, "legible dated money rows are recoverable material")
+    if text_remains["generic_candidate_lines"] < 6:
+        raise AssertionError("the remaining rows must be counted")
+
+    rows_remain = main.recovery_options(
+        full_text="",
+        pages=[],
+        structured_rows=[{"pageNumber": 1, "cells": {"date": "01 Jun", "description": "X", "amount": "1.00"}}],
+        structured_selection={"structured_rows_usable": False, "structured_rejection_reason": "too_many_duplicates:9"},
+    )
+    assert_equal(rows_remain["recoverable"], True, "rows that arrived are material even when rejected")
+    assert_equal(rows_remain["structured_rejection_reason"], "too_many_duplicates:9", "why they were rejected is kept")
+
+
+def test_failure_messages_name_the_parser_that_ran() -> None:
+    """A Standard Bank statement reported as an FNB failure describes the routing."""
+    source = (ROOT / "workers" / "accounting_worker" / "main.py").read_text()
+    if '"message": "FNB parser validation failed."' in source:
+        raise AssertionError("validation failure must not be attributed to FNB on every bank")
+    if "no_transactions_recoverable" not in source:
+        raise AssertionError("an exhausted run must be reported apart from an unparsed one")
+
+
 def run() -> None:
+    test_a_statement_that_ties_out_completes()
+    test_a_broken_balance_chain_is_partial_not_complete()
+    test_continuity_does_not_second_guess_a_statement_whose_money_ties_out()
+    test_no_evidence_at_all_goes_to_review_never_to_completed()
+    test_recovery_options_separates_unreadable_from_unparsed()
+    test_failure_messages_name_the_parser_that_ran()
     test_generic_parser_reads_a_text_only_statement_end_to_end()
     test_generic_parser_merges_wrapped_descriptions()
     test_generic_parser_inherits_the_date_of_a_grouped_movement()

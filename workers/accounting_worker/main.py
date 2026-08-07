@@ -97,6 +97,54 @@ def with_worker_version(payload: dict[str, Any]) -> dict[str, Any]:
     return {**payload, "worker": worker_version()}
 
 
+def recovery_options(
+    full_text: str,
+    pages: list[dict[str, Any]],
+    structured_rows: list[dict[str, Any]] | None,
+    structured_selection: dict[str, Any],
+) -> dict[str, Any]:
+    """What material is left to work from when no transaction was parsed.
+
+    A run is only genuinely unprocessable once nothing recoverable remains.
+    Deterministic parsing returning nothing is not the same thing: a statement
+    can carry perfectly good structured rows or perfectly readable text that
+    this parser simply could not lay out.
+
+    Reporting the two apart is the point. "We could not read it" and "there is
+    nothing to read" call for different responses, and collapsing them into one
+    failure is what made a legible 37-page statement look like a broken file.
+    """
+    text = (full_text or "").strip()
+    rows = structured_rows or []
+    table_count = sum(len(page.get("tables") or []) for page in pages)
+    generic_candidates = generic_candidate_lines(text) if text else 0
+
+    reasons: list[str] = []
+    if not text:
+        reasons.append("no usable text")
+    if not rows:
+        reasons.append("no structured rows")
+    if not table_count:
+        reasons.append("no extracted tables")
+    if not generic_candidates:
+        reasons.append("no dated money rows in the text")
+
+    # Structured rows that arrived but were rejected still count as material:
+    # they were readable enough to send, so something can be done with them.
+    recoverable = bool(rows) or bool(table_count) or generic_candidates > 0
+    return {
+        "recoverable": recoverable,
+        "summary": ", ".join(reasons) if reasons else "material remains",
+        "text_length": len(text),
+        "structured_rows_received": len(rows),
+        "structured_rows_usable": bool(structured_selection.get("structured_rows_usable")),
+        "structured_rejection_reason": structured_selection.get("structured_rejection_reason"),
+        "extracted_table_count": table_count,
+        "generic_candidate_lines": generic_candidates,
+        "page_count": len(pages),
+    }
+
+
 def resolve_bank_profile(
     worker_profile: str,
     worker_confidence: float,
@@ -2503,11 +2551,55 @@ def validate_extraction(metadata: dict[str, Any], transactions: list[ParsedTrans
         diff = (summary["total_debits"] - declared).quantize(CENT)
         check("debit_total", abs(diff) <= tolerance, f"variance {diff}", str(summary["total_debits"]), str(declared))
 
+    # Running-balance continuity — a SUBSTITUTE for declared evidence, not an
+    # extra hurdle on top of it.
+    #
+    # Every check above compares against a figure the statement itself prints: a
+    # transaction count, a turnover total, a closing balance. A statement that
+    # prints none of them passed validation no matter how much of it was
+    # actually recovered. FNB prints all of them; an unsupported bank is under
+    # no obligation to, so for those the row chain is the only evidence there is.
+    #
+    # It is not applied when the money already ties out, because it is the weaker
+    # signal of the two: FNB prints an overdrawn balance as a magnitude with a Dr
+    # marker, so the chain shows a gap of twice the balance where nothing is
+    # actually missing, on statements whose declared totals reconcile to the cent.
+    gaps = balance_gap_diagnostics(metadata, transactions)
+    money_evidence = any(item["name"] in {"reconciliation", "credit_total", "debit_total"} for item in checks)
+    if transactions and not money_evidence and metadata.get("opening_balance") is not None:
+        check(
+            "balance_continuity",
+            not gaps,
+            f"{len(gaps)} running-balance gap(s)" if gaps else "running balances are continuous",
+            len(gaps),
+            0,
+        )
+
     bank_charges = bank_charges_from_statement(metadata, transactions)
+    # A run may only be called complete on POSITIVE evidence. When a statement
+    # declares no totals, prints no closing balance and carries no usable
+    # running balances, nothing above ran — and "no check failed" is not the
+    # same as "the extraction is right". Those runs go to review rather than
+    # being reported as a clean success.
+    evidence_checks = len(checks)
+    if not failures and evidence_checks == 0:
+        failures = ["no_completeness_evidence"]
+        checks.append(
+            {
+                "name": "no_completeness_evidence",
+                "ok": False,
+                "detail": "the statement declares no totals, closing balance or running balances to verify against",
+                "extracted": len(transactions),
+                "expected": None,
+            }
+        )
+
     return {
         "status": "ok" if not failures else "review_required",
         "failures": failures,
         "checks": checks,
+        "evidence_checks_run": evidence_checks,
+        "balance_gap_count": len(gaps),
         "reconciliation_difference": str(recon_diff) if recon_diff is not None else None,
         "extracted_transaction_count": len(transactions),
         "expected_transaction_count": expected_count,
@@ -2859,7 +2951,12 @@ def validate_statement(metadata: dict[str, Any], transactions: list[ParsedTransa
         raise HTTPException(
             status_code=422,
             detail=with_worker_version({
-                "message": "FNB parser validation failed.",
+                # Name the parser that actually validated. A Standard Bank
+                # statement reported as an FNB parser failure describes the
+                # routing, not the document.
+                "message": f"{metadata.get('bank_name') or 'Statement'} validation failed.",
+                "bank_profile": metadata.get("bank_profile"),
+                "parser_profile": metadata.get("parser_profile"),
                 "errors": errors,
                 "failed_rules": [check["name"] for check in failed_checks],
                 "checks": extraction["checks"],
@@ -5012,6 +5109,31 @@ def process_fnb_statement(payload: ProcessRequest, authorization: str | None = H
                 "bank_name": bank_name,
                 "parser_profile": parser_profile,
             }
+            # Nothing parsed. Whether that is a failure depends on whether
+            # anything recoverable is left — a document is only unprocessable
+            # once every path over it has been exhausted.
+            recovery = recovery_options(
+                full_text=full_text,
+                pages=pages,
+                structured_rows=payload.pre_extracted_rows if isinstance(payload.pre_extracted_rows, list) else None,
+                structured_selection=structured_selection,
+            )
+            parser_debug["recovery"] = recovery
+            log_warning(
+                "worker.no_transactions_parsed",
+                run_id=payload.run_id,
+                diagnostics=diagnostics,
+                parser_debug=parser_debug,
+                recovery=recovery,
+                bank_profile=bank_profile,
+                parser_profile=parser_profile,
+            )
+
+            # AI-assisted recovery belongs here: `recovery["recoverable"]` is
+            # exactly the condition under which there is still material to work
+            # from. Until that exists, exhausted and recoverable both end the run
+            # — but they are reported apart, so the two are never conflated.
+            #
             # Name the parser that actually ran. "No FNB transactions" on a
             # Standard Bank statement described the misroute, not the document,
             # and sent every investigation looking at the wrong parser.
@@ -5020,12 +5142,17 @@ def process_fnb_statement(payload: ProcessRequest, authorization: str | None = H
                 if parser_profile == FNB_PROFILE_ID
                 else f"No transactions could be parsed from this {bank_name} statement."
             )
+            if not recovery["recoverable"]:
+                default_reason = (
+                    f"{default_reason} Nothing further could be recovered: {recovery['summary']}."
+                )
             reason = parser_debug["reason_no_transactions"] or default_reason
-            log_warning("worker.no_transactions_parsed", run_id=payload.run_id, diagnostics=diagnostics, parser_debug=parser_debug)
             raise HTTPException(
                 status_code=422,
                 detail={
                     "message": reason,
+                    "status": "no_transactions_recoverable" if not recovery["recoverable"] else "no_transactions_parsed",
+                    "recovery": recovery,
                     "diagnostics": diagnostics,
                     "parser_debug": parser_debug,
                     "worker": worker_version(),
@@ -5243,7 +5370,16 @@ def process_fnb_statement(payload: ProcessRequest, authorization: str | None = H
             "validation": {key: str(value) for key, value in validation.items()} if validation else None,
             "review_issue": review_issue,
             "ai_diagnostics": ai_stats,
+            "bank_profile": bank_profile,
+            "bank_name": bank_name,
             "parser_profile": parser_profile,
+            # Why this run is trusted, or is not. A run reaching "completed" on
+            # zero checks would be an unverified claim of success.
+            "completeness_evidence": {
+                "checks_run": extraction_check.get("evidence_checks_run"),
+                "failures": extraction_check.get("failures"),
+                "balance_gap_count": extraction_check.get("balance_gap_count"),
+            },
             "processing_duration_ms": processing_duration_ms,
             "worker": worker_version(),
         }
