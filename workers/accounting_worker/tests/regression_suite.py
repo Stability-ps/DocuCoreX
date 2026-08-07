@@ -3327,7 +3327,116 @@ def test_every_canonical_category_maps_onto_the_workbook_chart() -> None:
     assert_equal(main.professional_account(legacy)[0], "Insurance", "historical values still map")
 
 
+# ── Boundary-aware keyword matching ───────────────────────────────────────────
+#
+# The rule tables were plain substring tests, so a needle matched inside an
+# unrelated word — wrong in the quiet way: a plausible category on a real
+# transaction, at a confidence that reads as settled.
+
+
+def test_a_needle_no_longer_matches_inside_another_word() -> None:
+    """The two proven collisions."""
+    import main
+
+    for description in ("PAYEE TRANSFER", "PAYEES SETTLEMENT", "PAYMENT TO PAYEE 4471"):
+        category = main.classify_transaction(description, 1500.0, None)[0]
+        if category == "SARS / Tax Suspense":
+            raise AssertionError(f"{description!r} matched the 'paye' needle inside 'payee'")
+
+    for description in ("LOANED EQUIPMENT HIRE", "LOANING SERVICES CC"):
+        category = main.classify_transaction(description, 1500.0, None)[0]
+        if category == "Loan / Liability":
+            raise AssertionError(f"{description!r} matched the 'loan' needle inside another word")
+
+
+def test_the_words_those_needles_are_for_still_match() -> None:
+    """Fixing a false positive must not create a false negative."""
+    import main
+
+    for description in ("PAYE PAYMENT", "SARS PAYE", "PAYE/UIF/SDL 2025"):
+        assert_equal(main.classify_transaction(description, 1500.0, None)[0], "SARS / Tax Suspense", description)
+
+    for description in ("LOAN REPAYMENT", "BUSINESS LOAN", "WESBANK LOAN INSTALMENT"):
+        assert_equal(main.classify_transaction(description, 1500.0, None)[0], "Loan / Liability", description)
+
+
+def test_phrase_rules_still_match_inside_a_longer_description() -> None:
+    """Boundaries are at the ends of the phrase, not between its words."""
+    import main
+
+    for description in (
+        "SERVICE FEE",
+        "ACC 301981485 SERVICE FEE",
+        "301981485 OVERDRAFT SERVICE FEE",
+        "ACC 301981485 MONTHLY MANAGEMENT FEE",
+        "ACC 1 CASH DEPOSIT FEE",
+        "#Monthly Account Fee",
+    ):
+        category, _, bank_charge, _ = main.classify_transaction(description, 100.0, None)
+        assert_equal(category, "Bank Charges", f"{description!r} is a bank charge")
+        assert_equal(bank_charge, True, f"{description!r} is flagged")
+
+
+def test_needles_that_are_not_words_keep_their_meaning() -> None:
+    """An invoice reference is INV109034 — the letters alone are not enough.
+
+    As a bare prefix "inv" also matched "INVENTORY", so the pattern requires the
+    digits or dash that make it a reference.
+    """
+    import main
+
+    for description in (
+        "FNB App Payment To Msi Industries Inv109034",
+        "PAYMENT INV-2231",
+        "INVOICE 4471 SETTLEMENT",
+    ):
+        assert_equal(main.classify_transaction(description, 5000.0, None)[0], "Supplier Payments", description)
+
+    inventory = main.classify_transaction("INVENTORY PURCHASE", 5000.0, None)[0]
+    if inventory == "Supplier Payments":
+        raise AssertionError("'INVENTORY' matched the invoice-reference needle")
+
+
+def test_no_collision_remains_in_the_high_risk_needles() -> None:
+    """Each of these contains a rule needle inside an unrelated word."""
+    import main
+
+    unresolved = {"Suspense / Review Required", "Uncategorised", "Other Income / Review"}
+    for description, needle in (
+        ("RENTOKIL PEST CONTROL", "rent"),
+        ("CURRENT ACCOUNT ADJUSTMENT", "rent"),
+        ("FUELLED CATERING CC", "fuel"),
+        ("TOLLGATE HOLDINGS PTY", "toll"),
+        ("PRIVATE VATICAN TOURS", "vat"),
+        ("TAXIDERMY SUPPLIES", "tax"),
+        ("TAXI FARE REIMBURSEMENT", "tax"),
+        ("CASHMERE CLOTHING CO", "cash"),
+        ("CARDIOLOGY PRACTICE", "card"),
+        ("COFFEE SHOP PURCHASE", "fee"),
+        ("SALARYCO PAYMENTS", "salary"),
+    ):
+        category = main.classify_transaction(description, 900.0, None)[0]
+        if category not in unresolved:
+            raise AssertionError(f"{description!r} still collides with the {needle!r} needle: {category}")
+
+
+def test_matching_stays_case_insensitive() -> None:
+    import main
+    from engine.classification import keyword_matches
+
+    for spelling in ("loan repayment", "LOAN REPAYMENT", "Loan Repayment"):
+        assert_equal(main.classify_transaction(spelling, 100.0, None)[0], "Loan / Liability", spelling)
+    assert_equal(keyword_matches("business loan account", "loan"), True, "whole word matches")
+    assert_equal(keyword_matches("loaned equipment", "loan"), False, "inside a word does not")
+
+
 def run() -> None:
+    test_a_needle_no_longer_matches_inside_another_word()
+    test_the_words_those_needles_are_for_still_match()
+    test_phrase_rules_still_match_inside_a_longer_description()
+    test_needles_that_are_not_words_keep_their_meaning()
+    test_no_collision_remains_in_the_high_risk_needles()
+    test_matching_stays_case_insensitive()
     test_ai_classification_reaches_the_stored_transaction()
     test_ai_classification_cannot_touch_the_ledger()
     test_ai_classification_never_raises_an_ai_recovered_extraction_confidence()
