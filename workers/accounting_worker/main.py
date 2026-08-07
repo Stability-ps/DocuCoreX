@@ -33,6 +33,7 @@ from engine.classification import (
     REVISABLE_STRENGTHS,
     SOURCE_LEARNED_RULE,
     Classification,
+    canonicalise_category,
     is_valid_ai_account,
     is_valid_vat_claim_status,
     bank_charge_evidence,
@@ -342,7 +343,8 @@ def apply_learned_classification_rules(transactions: list[ParsedTransaction], ru
         matched_rule = next((rule for rule in sorted_rules if str(rule.get("merchant_key") or "") and str(rule.get("merchant_key")) in key), None)
         if not matched_rule:
             continue
-        transaction.account_category = str(matched_rule.get("account_category") or transaction.account_category)
+        rule_category = str(matched_rule.get("account_category") or transaction.account_category)
+        transaction.account_category = canonicalise_category(rule_category) or rule_category
         transaction.vat_treatment = str(matched_rule.get("vat_treatment") or transaction.vat_treatment)
         if is_ai_recovered(transaction):
             # Classification certainty is not extraction certainty.
@@ -811,6 +813,28 @@ def classify_transaction(description: str, debit: float | None, credit: float | 
 
 
 def classify_transaction_detailed(description: str, debit: float | None, credit: float | None) -> Classification:
+    """Classify, and emit the category in canonical form.
+
+    Normalising here rather than at the storage boundary means every consumer —
+    the workbook, the AI prompt's rule context, learned-rule matching, the review
+    UI — sees one spelling. The rule table below still uses whatever wording
+    reads best at the point of the rule; the vocabulary decides what is stored.
+    """
+    result = _classify_transaction_rules(description, debit, credit)
+    canonical = canonicalise_category(result.category)
+    if canonical is None or canonical == result.category:
+        return result
+    return Classification(
+        canonical,
+        result.vat_treatment,
+        result.bank_charge,
+        result.confidence,
+        result.strength,
+        result.reason,
+    )
+
+
+def _classify_transaction_rules(description: str, debit: float | None, credit: float | None) -> Classification:
     text = description.lower()
     # HARD rule, ahead of everything else: a charge the bank names as its own.
     #
@@ -3944,6 +3968,10 @@ def validate_ai_item(item: Any, valid_ids: set[str]) -> dict[str, Any] | None:
         return None
     if not is_valid_vat_claim_status(vat_claim_status):
         return None
+    # An alias is a real category, but it is not what we write. Canonicalise here
+    # so a historical spelling the model echoed back from context cannot become a
+    # new stored value and reopen the divergence this vocabulary exists to close.
+    account = canonicalise_category(account) or account
     confidence_value = item.get("confidence")
     if not isinstance(confidence_value, (int, float)) or isinstance(confidence_value, bool):
         return None

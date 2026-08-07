@@ -227,7 +227,7 @@ def run():
         ("# Monthly Account Fee", "Bank Charges"),
         ("# Service Fees", "Bank Charges"),
         ("FNB App Prepaid Airtime", "Telephone / Internet / Communication"),
-        ("Internal Debit Order Fnbfuneral Fi11941792", "Insurance Expense"),
+        ("Internal Debit Order Fnbfuneral Fi11941792", "Insurance"),
         ("FNB App Transfer To Savings", "Inter-account Transfer"),
     ]:
         account, _vat, _bc, _conf = classify_transaction(desc, 100.0, None)

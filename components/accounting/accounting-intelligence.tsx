@@ -68,7 +68,7 @@ import { parserMethodLabel } from "@/lib/pdf/workerHandoff";
 import { pollRunUntilTerminal } from "@/lib/accounting/poll-run";
 import { deriveEffectiveRunStatus, isActiveRunStatus } from "@/lib/accounting/run-status";
 import { accountingRunQuality, accountingTransactionTotals } from "@/lib/accounting/run-quality";
-import { ACCOUNTING_CATEGORY_OPTIONS, VAT_TREATMENT_OPTIONS, isUnresolvedAccountingCategory } from "@/lib/accounting/review-options";
+import { CATEGORY_OPTIONS, VAT_TREATMENT_OPTIONS, isUnresolvedAccountingCategory } from "@/lib/accounting/review-options";
 import { ProcessingSteps } from "@/components/accounting/processing-steps";
 import { FailedRunPanel } from "@/components/accounting/failed-run-panel";
 import type { AiCommentaryResult, AiCommentaryType } from "@/lib/accounting/ai-service";
@@ -87,7 +87,7 @@ type UploadQueueItem = {
   file?: File;
 };
 
-const categories = ACCOUNTING_CATEGORY_OPTIONS;
+const categories = CATEGORY_OPTIONS;
 const vatTreatments = VAT_TREATMENT_OPTIONS;
 
 const tabs: Array<{ id: AccountingTab; label: string }> = [
@@ -2637,8 +2637,8 @@ function TransactionTable({
                   className="min-h-11 rounded-lg border border-slate-200 bg-white px-2 text-xs font-medium text-navy-950 outline-none"
                 >
                   {categories.map((category) => (
-                    <option key={category} value={category}>
-                      {category}
+                    <option key={category.value} value={category.value}>
+                      {category.label}
                     </option>
                   ))}
                 </select>
@@ -2730,8 +2730,8 @@ function TransactionTable({
                   className="w-44 rounded-lg border border-slate-200 bg-white px-2 py-1.5 text-xs font-semibold text-navy-950 outline-none focus:border-royal-300"
                 >
                   {categories.map((category) => (
-                    <option key={category} value={category}>
-                      {category}
+                    <option key={category.value} value={category.value}>
+                      {category.label}
                     </option>
                   ))}
                 </select>

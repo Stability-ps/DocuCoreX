@@ -32,6 +32,8 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 
+from .categories import canonical_categories, canonicalise_category, is_known_category
+
 # How much weight a classification carries, and therefore what may revise it.
 #
 # The distinction was previously implicit in a confidence number, which two
@@ -72,51 +74,6 @@ _SOURCE_FOR_STRENGTH = {
 }
 
 
-# The accounts the workbook chart actually uses, and therefore the only values
-# a model may return.
-#
-# validate_ai_item previously took whatever string arrived, truncated it to 80
-# characters and wrote it to the account. A model returning "Bank Fees",
-# "Miscellaneous" or a hallucinated account name produced a category nothing
-# downstream recognises: professional_account cannot map it, the review UI
-# cannot offer it, and a learned rule built from a correction to it would spread
-# it. Rejecting is the only safe response — a repaired guess is still a guess.
-PROFESSIONAL_ACCOUNTS = frozenset({
-    "Accounting / Professional Fees",
-    "Bank Charges",
-    "Cash Deposits / Revenue",
-    "Courier / Freight",
-    "Director Loan / Drawings",
-    "Finance Costs",
-    "Insurance",
-    "Inter-account Transfer",
-    "Inter-account Transfer In",
-    "Inter-account Transfer Out / Loan",
-    "Levies",
-    "Loan / Liability",
-    "Meals / Groceries - Non Deductible Review",
-    "Medical Expenses",
-    "Motor Vehicle Expenses",
-    "Operating Expenses",
-    "Other Income / Review",
-    "Rent",
-    "Related Party / Drawings",
-    "Review Required",
-    "Review Required Suspense",
-    "Revenue Review",
-    "Road Tolls",
-    "SARS / Tax Suspense",
-    "Salaries / Drawings / Personal",
-    "Sales / Revenue",
-    "Software / IT",
-    "Supplier Payments",
-    "Suspense / Review Required",
-    "Telephone / Internet / Communication",
-    "Unclassified Expense",
-    "Utilities",
-    "VAT Control",
-})
-
 # VAT is where a wrong answer costs money, so the claim status is a closed set.
 # Recognising a merchant proves nothing about whether input VAT is claimable,
 # whether a valid tax invoice exists, or whether the purpose was business.
@@ -124,7 +81,18 @@ VAT_CLAIM_STATUSES = frozenset({"Output", "Output/Review", "Input/Review", "Inpu
 
 
 def is_valid_ai_account(account: str) -> bool:
-    return account in PROFESSIONAL_ACCOUNTS
+    """True for any category in the shared vocabulary, canonical or historical.
+
+    This was a hand-maintained frozenset of the professional chart, which was one
+    of four vocabularies that had drifted apart. It now defers to the one
+    canonical list, so a category the reviewer can select is a category the model
+    may return, and vice versa.
+
+    Historical spellings are accepted because the model is shown existing
+    classifications as context and may echo one back; the caller canonicalises
+    before storing, so an alias never becomes a new stored value.
+    """
+    return is_known_category(account)
 
 
 def is_valid_vat_claim_status(status: str) -> bool:

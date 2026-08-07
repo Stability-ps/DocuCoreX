@@ -2,6 +2,8 @@ import { randomUUID } from "node:crypto";
 import { recordAuditLog } from "@/lib/audit";
 import { PENDING_BANK_NAME, PENDING_PARSER_PROFILE } from "@/lib/accounting/engine/bank-detection";
 import { BASE_MERCHANT_KNOWLEDGE } from "@/lib/accounting/engine/merchant-kb";
+import { canonicaliseCategory } from "@/lib/accounting/categories";
+import { isUnresolvedAccountingCategory } from "@/lib/accounting/review-options";
 import { getWorkspaceContext } from "@/lib/server-documents";
 import { createDocumentVersionRecord } from "@/lib/supabase-server-adapter";
 import type {
@@ -699,14 +701,25 @@ export async function updateAccountingTransaction(transactionId: string, patch: 
   const merchantKey = normalizeMerchantKey(transaction.description);
   const learningMerchantKeys = deriveLearningMerchantKeys(transaction.description);
 
-  if (shouldLearn && learningMerchantKeys.length && transaction.accountCategory !== "Review Required" && transaction.accountCategory !== "Uncategorised Expense") {
+  // A learned rule is applied to every future matching transaction in this
+  // workspace, so it may only carry a category from the shared vocabulary.
+  // Storing an unrecognised or historical spelling here would spread it: the
+  // worker would apply it, the dropdown could not offer it back, and the two
+  // sides would drift apart again — which is the divergence the canonical
+  // vocabulary exists to close.
+  //
+  // An unresolved category is also not a lesson. "Suspense / Review Required"
+  // means nobody decided yet, and teaching it would suppress future review.
+  const learnableCategory = canonicaliseCategory(transaction.accountCategory);
+  const categoryIsTeachable = learnableCategory !== null && !isUnresolvedAccountingCategory(learnableCategory);
+  if (shouldLearn && learningMerchantKeys.length && categoryIsTeachable) {
     const { error: learningError } = await context.supabase
       .from("accounting_classification_rules")
       .upsert(
         learningMerchantKeys.map((key) => ({
           workspace_id: context.workspaceId,
           merchant_key: key,
-          account_category: transaction.accountCategory,
+          account_category: learnableCategory,
           vat_treatment: transaction.vatTreatment,
           review_status: transaction.reviewStatus,
           confidence: transaction.reviewStatus === "approved" ? 98 : 92,
