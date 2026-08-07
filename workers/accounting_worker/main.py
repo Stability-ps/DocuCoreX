@@ -48,6 +48,12 @@ WORKER_PARSER_VERSION = "fnb_business_v1"
 # is what made "not FNB" mean "cannot be processed".
 FNB_PROFILE_ID = "fnb_business_v1"
 GENERIC_PARSER_PROFILE_ID = "generic_bank_statement_v1"
+# How a row records that a model located it rather than a parser reading it, and
+# the ceiling that fact puts on its confidence. Both are referenced by the
+# recovery path that sets them and by the classification path that must not
+# undo them, so the marker cannot drift between the two.
+AI_RECOVERY_NOTE = "recovered_by: ai"
+AI_RECOVERED_MAX_CONFIDENCE = 60.0
 WORKER_BUILD_FALLBACK = "local-dev"
 DEFAULT_AI_MODEL = "gpt-4o-mini"
 AI_CLASSIFICATION_CACHE: dict[str, dict[str, Any]] = {}
@@ -283,6 +289,11 @@ def fetch_classification_rules(supabase: Client, workspace_id: str) -> list[dict
         return []
 
 
+def is_ai_recovered(transaction: ParsedTransaction) -> bool:
+    """True for a row a model located rather than a parser reading it."""
+    return AI_RECOVERY_NOTE in (transaction.notes or "")
+
+
 def apply_learned_classification_rules(transactions: list[ParsedTransaction], rules: list[dict[str, Any]]) -> int:
     if not rules:
         return 0
@@ -301,8 +312,21 @@ def apply_learned_classification_rules(transactions: list[ParsedTransaction], ru
             continue
         transaction.account_category = str(matched_rule.get("account_category") or transaction.account_category)
         transaction.vat_treatment = str(matched_rule.get("vat_treatment") or transaction.vat_treatment)
-        transaction.review_status = str(matched_rule.get("review_status") or transaction.review_status)
-        transaction.confidence = max(float(transaction.confidence or 0), float(matched_rule.get("confidence") or 94))
+        if is_ai_recovered(transaction):
+            # Classification certainty is not extraction certainty.
+            #
+            # A learned rule knows what a merchant IS — it says nothing about
+            # whether this row was read off the document reliably. An
+            # AI-recovered row was located by a model, not parsed, and a rule
+            # matching its merchant was promoting it to 94-96 confidence and
+            # "ready", so a row nobody had checked read as a confident
+            # extraction. The rule's category and VAT still apply; its
+            # certainty does not.
+            transaction.confidence = min(float(transaction.confidence or 0), AI_RECOVERED_MAX_CONFIDENCE)
+            transaction.review_status = "needs_review"
+        else:
+            transaction.review_status = str(matched_rule.get("review_status") or transaction.review_status)
+            transaction.confidence = max(float(transaction.confidence or 0), float(matched_rule.get("confidence") or 94))
         applied += 1
     return applied
 
@@ -2355,7 +2379,7 @@ def attempt_ai_recovery(
             None,
             row["source_line"],
             # AI-located rows never carry parser-grade confidence.
-            min(60.0, round(row["confidence"] * 60.0, 2)),
+            min(AI_RECOVERED_MAX_CONFIDENCE, round(row["confidence"] * AI_RECOVERED_MAX_CONFIDENCE, 2)),
         )
         if transaction is None:
             rejected["transaction_build_failed"] = rejected.get("transaction_build_failed", 0) + 1
@@ -2364,9 +2388,9 @@ def attempt_ai_recovery(
         # classification, which raises confidence on a recognised merchant. A
         # confidently classified row that was located by a model rather than
         # parsed from the document must not read as a confident extraction.
-        transaction.confidence = min(transaction.confidence, round(row["confidence"] * 60.0, 2))
+        transaction.confidence = min(transaction.confidence, round(row["confidence"] * AI_RECOVERED_MAX_CONFIDENCE, 2))
         transaction.review_status = "needs_review"
-        append_note(transaction, "recovered_by: ai")
+        append_note(transaction, AI_RECOVERY_NOTE)
         append_note(transaction, f"ai_confidence: {round(row['confidence'], 2)}")
         if debit is None and credit is None:
             append_note(transaction, "direction_unresolved: true")

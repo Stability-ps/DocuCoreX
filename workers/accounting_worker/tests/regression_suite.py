@@ -2273,8 +2273,10 @@ def test_an_ai_recovered_run_can_never_report_completed() -> None:
     source = (ROOT / "workers" / "accounting_worker" / "main.py").read_text()
     if "or ai_recovered" not in source:
         raise AssertionError("the run status must force review when AI produced the ledger")
-    if 'append_note(transaction, "recovered_by: ai")' not in source:
+    if "append_note(transaction, AI_RECOVERY_NOTE)" not in source:
         raise AssertionError("every AI row must be traceable in the ledger itself")
+    if 'AI_RECOVERY_NOTE = "recovered_by: ai"' not in source:
+        raise AssertionError("the marker the ledger and the classification guard share must not drift")
 
 
 # ── Ledger section boundaries ─────────────────────────────────────────────────
@@ -2410,7 +2412,100 @@ def test_a_statement_with_no_column_header_is_still_read() -> None:
     assert_equal(len(transactions), 2, "no header means read the whole page, not none of it")
 
 
+# ── AI recovery confidence cap ────────────────────────────────────────────────
+
+
+def _ai_recovered_row(main, description="CARTRACK CART25D5S58NYRV ACCOUNT PAYMENT"):
+    """A row exactly as attempt_ai_recovery leaves it."""
+    return main.ParsedTransaction(
+        transaction_date="2025-05-02",
+        description=description,
+        debit_amount=1710.15,
+        running_balance=-1001484.52,
+        confidence=54.0,
+        review_status="needs_review",
+        notes=main.AI_RECOVERY_NOTE,
+    )
+
+
+def _learned_rule(main, description, confidence=96):
+    return {
+        "merchant_key": main.normalize_merchant_key(description),
+        "account_category": "Motor Vehicle Expenses",
+        "vat_treatment": "standard",
+        "review_status": "ready",
+        "confidence": confidence,
+    }
+
+
+def test_a_learned_rule_cannot_promote_an_ai_recovered_row() -> None:
+    """Classification certainty is not extraction certainty.
+
+    A learned rule knows what a merchant is. It says nothing about whether the
+    row was read off the document reliably, and an AI-recovered row was located
+    by a model rather than parsed. A 96% rule was lifting such a row to 96 and
+    "ready", so a row nobody had checked read as a confident extraction.
+    """
+    import main
+
+    transaction = _ai_recovered_row(main)
+    applied = main.apply_learned_classification_rules([transaction], [_learned_rule(main, transaction.description)])
+
+    assert_equal(applied, 1, "the rule still matches and is applied")
+    if transaction.confidence > main.AI_RECOVERED_MAX_CONFIDENCE:
+        raise AssertionError(f"AI-recovered row promoted to {transaction.confidence}")
+    assert_equal(transaction.confidence, 54.0, "its own confidence is untouched, not raised")
+    assert_equal(transaction.review_status, "needs_review", "and it stays flagged for review")
+
+
+def test_the_learned_rule_still_classifies_the_ai_recovered_row() -> None:
+    """Only the certainty is withheld; the classification is still useful."""
+    import main
+
+    transaction = _ai_recovered_row(main)
+    main.apply_learned_classification_rules([transaction], [_learned_rule(main, transaction.description)])
+
+    assert_equal(transaction.account_category, "Motor Vehicle Expenses", "category comes from the rule")
+    assert_equal(transaction.vat_treatment, "standard", "VAT treatment comes from the rule")
+
+
+def test_the_ai_marker_survives_classification() -> None:
+    """A promoted row that lost its marker would be untraceable."""
+    import main
+
+    transaction = _ai_recovered_row(main)
+    main.apply_learned_classification_rules([transaction], [_learned_rule(main, transaction.description)])
+
+    if main.AI_RECOVERY_NOTE not in transaction.notes:
+        raise AssertionError(f"the AI marker was lost: {transaction.notes!r}")
+    assert_equal(main.is_ai_recovered(transaction), True, "and the row still reports as AI-recovered")
+
+
+def test_a_parsed_row_keeps_normal_learned_rule_behaviour() -> None:
+    """Nothing changes for rows a parser actually read."""
+    import main
+
+    transaction = main.ParsedTransaction(
+        transaction_date="2025-05-02",
+        description="CARTRACK CART25D5S58NYRV ACCOUNT PAYMENT",
+        debit_amount=1710.15,
+        running_balance=-1001484.52,
+        confidence=70.0,
+        review_status="needs_review",
+        notes="",
+    )
+    main.apply_learned_classification_rules([transaction], [_learned_rule(main, transaction.description)])
+
+    assert_equal(transaction.confidence, 96.0, "a parsed row is still promoted by the rule")
+    assert_equal(transaction.review_status, "ready", "and still takes the rule's review status")
+    assert_equal(main.is_ai_recovered(transaction), False, "it was never AI-recovered")
+
+
 def run() -> None:
+    test_a_learned_rule_cannot_promote_an_ai_recovered_row()
+    test_the_learned_rule_still_classifies_the_ai_recovered_row()
+    test_the_ai_marker_survives_classification()
+    test_a_parsed_row_keeps_normal_learned_rule_behaviour()
     test_the_repeated_letterhead_is_not_read_as_a_transaction()
     test_the_footer_summary_is_not_read_as_transactions()
     test_the_section_bounded_ledger_reconciles_exactly()
