@@ -34,6 +34,7 @@ from engine.classification import (
     SOURCE_AI,
     SOURCE_LEARNED_RULE,
     Classification,
+    any_keyword_matches,
     canonicalise_category,
     is_valid_ai_account,
     is_valid_vat_claim_status,
@@ -953,7 +954,7 @@ def _classify_transaction_rules(description: str, debit: float | None, credit: f
          "Sales / Revenue", "standard", False, 90),
     ]
     for needles, category, vat, bank_charge, confidence in rules:
-        if any(needle in text for needle in needles):
+        if any_keyword_matches(text, needles):
             return Classification(category, vat, bank_charge, confidence, STRENGTH_SOFT, "matched a merchant/keyword rule")
 
     # Generic person-to-person / instant payments (any name, never hardcoded).
@@ -963,7 +964,7 @@ def _classify_transaction_rules(description: str, debit: float | None, credit: f
         "app payment to", "app rtc pmt to", "rtc pmt to", "payshap", "send money to",
         "e wallet", "ewallet", "instant money", "cardless", "app transfer to ",
     )
-    if any(marker in text for marker in person_markers):
+    if any_keyword_matches(text, person_markers):
         tail = text.rsplit(" to ", 1)[-1] if " to " in text else text
         business_hints = (
             "diesel", "volvo", "toll", "sanral", "salary", "medical", "aid", "insurance",
@@ -972,7 +973,7 @@ def _classify_transaction_rules(description: str, debit: float | None, credit: f
         )
         if looks_like_business_supplier_payment(tail):
             return Classification("Supplier Payments", "review", False, 88, STRENGTH_SOFT, "payee resembles a business supplier")
-        if any(hint in tail for hint in business_hints):
+        if any_keyword_matches(tail, business_hints):
             if credit and credit > 0:
                 return Classification("Sales / Revenue", "standard", False, 82, STRENGTH_SOFT, "inbound payment with a business hint")
             if debit and debit > 0:
@@ -1003,7 +1004,7 @@ def _classify_transaction_rules(description: str, debit: float | None, credit: f
 
 def looks_like_business_supplier_payment(text: str) -> bool:
     lowered = text.lower()
-    return any(token in lowered for token in (
+    return any_keyword_matches(lowered, (
         "msi industries",
         "industries",
         "trading",
@@ -1028,7 +1029,7 @@ def looks_like_business_supplier_payment(text: str) -> bool:
 
 def is_staff_welfare_merchant(text: str) -> bool:
     lowered = text.lower()
-    return any(token in lowered for token in (
+    return any_keyword_matches(lowered, (
         "uber eats",
         "mr d food",
         "mr d",

@@ -31,6 +31,8 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
+from functools import lru_cache
+from typing import Iterable
 
 from .categories import canonical_categories, canonicalise_category, is_known_category
 
@@ -97,6 +99,62 @@ def is_valid_ai_account(account: str) -> bool:
 
 def is_valid_vat_claim_status(status: str) -> bool:
     return status in VAT_CLAIM_STATUSES
+
+
+# Keyword matching that respects word boundaries.
+#
+# The rule tables were plain `needle in text` substring tests, so a needle
+# matched inside an unrelated word:
+#
+#   "PAYEE TRANSFER"        -> SARS / Tax Suspense   via "paye"
+#   "LOANED EQUIPMENT HIRE" -> Loan / Liability      via "loan"
+#
+# Both are wrong, and wrong in the quiet way: a plausible category on a real
+# transaction, at a confidence that reads as settled.
+#
+# A needle is boundary-matched by default, which is right for single words and
+# for phrases alike ("service fee" still matches "MONTHLY SERVICE FEE"). Guards
+# are only applied at an alphanumeric edge, so needles that begin or end with
+# punctuation — "#service fees", "gp hea-", "paygate*dhl" — keep working.
+#
+# A few needles are not whole words at all, and are given their pattern outright
+# rather than inferred. The invoice needles want the "INV" that begins a
+# reference like "INV109034" — but as a bare prefix "inv" also matches
+# "INVENTORY", so the pattern requires the digits or dash that make it a
+# reference. Listing these explicitly is the point: guessing which needles meant
+# something other than a word is what this change removes.
+KEYWORD_PATTERN_OVERRIDES = {
+    "inv": r"(?<![0-9a-z])inv[0-9-]",
+    "inv0": r"(?<![0-9a-z])inv[0-9-]",
+    "inv1": r"(?<![0-9a-z])inv[0-9-]",
+    "inv-": r"(?<![0-9a-z])inv[0-9-]",
+}
+
+
+@lru_cache(maxsize=2048)
+def _keyword_pattern(needle: str) -> re.Pattern[str]:
+    core = needle.strip()
+    override = KEYWORD_PATTERN_OVERRIDES.get(core)
+    if override:
+        return re.compile(override)
+    left = r"(?<![0-9a-z])" if core[:1].isalnum() else ""
+    right = r"(?![0-9a-z])" if core[-1:].isalnum() else ""
+    return re.compile(left + re.escape(core) + right)
+
+
+def keyword_matches(text: str, needle: str) -> bool:
+    """True when `needle` occurs in `text` as a whole word or phrase.
+
+    `text` is expected lowercased, as every call site already does.
+    """
+    core = needle.strip()
+    if not core:
+        return False
+    return _keyword_pattern(core).search(text) is not None
+
+
+def any_keyword_matches(text: str, needles: Iterable[str]) -> bool:
+    return any(keyword_matches(text, needle) for needle in needles)
 
 
 def source_for_strength(strength: str) -> str:
