@@ -1,34 +1,22 @@
 import type { VatTreatment } from "@/lib/accounting/types";
+import { CANONICAL_CATEGORIES } from "@/lib/accounting/categories";
 
-export const ACCOUNTING_CATEGORY_OPTIONS = [
-  "Income",
-  "Sales / Revenue",
-  "Supplier Payments",
-  "Other Operating Expenses",
-  "Accounting / Professional Fees",
-  "Bank Charges",
-  "Staff Welfare / Meals / Entertainment",
-  "Software Subscriptions",
-  "Software / IT",
-  "Courier / Delivery",
-  "Insurance",
-  "Levies",
-  "Salaries & Wages",
-  "Inter-account Transfer",
-  "Motor Vehicle Expenses",
-  "Rent",
-  "Utilities",
-  "Repairs & Maintenance",
-  "Finance Costs",
-  "Loan / Liability",
-  "Related Party / Drawings",
-  "Tax / SARS Suspense",
-  "VAT Control",
-  "Suspense / Review Required",
-  "Review Required",
-  "Uncategorised Expense",
-  "Uncategorised",
-];
+export {
+  CANONICAL_CATEGORIES,
+  CATEGORY_OPTIONS,
+  canonicaliseCategory,
+  categoryLabel,
+  categoryOptionsFor,
+  isKnownCategory,
+} from "@/lib/accounting/categories";
+
+/**
+ * DEPRECATED as a hand-maintained list. Re-exported from the canonical
+ * vocabulary so the dropdown, the worker, AI validation and learned rules can
+ * no longer disagree about what a category is. Prefer CATEGORY_OPTIONS, which
+ * carries the human label alongside the stored value.
+ */
+export const ACCOUNTING_CATEGORY_OPTIONS = CANONICAL_CATEGORIES;
 
 export const VAT_TREATMENT_OPTIONS: Array<{ value: VatTreatment; label: string }> = [
   { value: "standard", label: "Standard VAT" },

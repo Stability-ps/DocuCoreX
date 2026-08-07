@@ -23,7 +23,7 @@ import type {
   VatTreatment,
 } from "@/lib/accounting/types";
 import { buildAccountingModel } from "@/lib/accounting/model";
-import { ACCOUNTING_CATEGORY_OPTIONS, VAT_TREATMENT_OPTIONS, isUnresolvedAccountingCategory } from "@/lib/accounting/review-options";
+import { VAT_TREATMENT_OPTIONS, categoryOptionsFor, isUnresolvedAccountingCategory } from "@/lib/accounting/review-options";
 import { cleanStatementLabel, statementDisplayName } from "@/lib/accounting/statement-name";
 import { parserMethodLabel } from "@/lib/pdf/workerHandoff";
 import { pollRunUntilTerminal } from "@/lib/accounting/poll-run";
@@ -688,9 +688,9 @@ function ReviewTab({ reviewItems, patchTransaction }: { reviewItems: AccountingT
               className="h-9 rounded-lg border border-slate-200 bg-white px-2 text-xs font-semibold text-navy-950 outline-none focus:border-royal-300"
               aria-label="Accounting category"
             >
-              {ACCOUNTING_CATEGORY_OPTIONS.map((category) => (
-                <option key={category} value={category}>
-                  {category}
+              {categoryOptionsFor(t.accountCategory).map((category) => (
+                <option key={category.value} value={category.value}>
+                  {category.label}
                 </option>
               ))}
             </select>

@@ -888,12 +888,15 @@ def run_learned_supplier_rules_case() -> None:
     ]
     applied = apply_learned_classification_rules(transactions, rules)
     assert_equal(applied, 5, f"{case_id} applied count")
-    assert_equal(transactions[0].account_category, "Staff Welfare / Meals / Entertainment", f"{case_id} uber")
-    assert_equal(transactions[1].account_category, "Software Subscriptions", f"{case_id} specific google rule")
+    # The stored rules below use pre-unification spellings on purpose: a
+    # workspace's existing rules are not rewritten, and they must still apply
+    # — resolving to the canonical category on the way in.
+    assert_equal(transactions[0].account_category, "Meals / Groceries - Non Deductible Review", f"{case_id} uber")
+    assert_equal(transactions[1].account_category, "Software / IT", f"{case_id} specific google rule")
     assert_equal(transactions[2].account_category, "Bank Charges", f"{case_id} bank fee")
     assert_equal(transactions[2].review_status, "approved", f"{case_id} bank fee review status")
     assert_equal(transactions[2].confidence, 98.0, f"{case_id} bank fee confidence")
-    assert_equal(transactions[3].account_category, "Software Subscriptions", f"{case_id} sage")
+    assert_equal(transactions[3].account_category, "Software / IT", f"{case_id} sage")
     assert_equal(transactions[4].account_category, "Loan / Liability", f"{case_id} home loan")
     assert_equal(transactions[4].review_status, "approved", f"{case_id} home loan review status")
 
@@ -2892,14 +2895,19 @@ def test_ai_may_only_return_accounts_the_chart_contains() -> None:
         raise AssertionError("a valid account must be accepted")
     assert_equal(valid["account"], "Bank Charges", "and passed through unchanged")
 
-    for invented in ("Bank Fees", "Miscellaneous", "Sundry Expenses", "", "bank charges", "Bank Charges (est.)"):
+    for invented in ("Bank Fees", "Miscellaneous", "Sundry Expenses", "", "Bank Charges (est.)"):
         if main.validate_ai_item(_ai_item(account=invented), {"1"}) is not None:
-            raise AssertionError(f"account {invented!r} is not in the chart and must be rejected")
+            raise AssertionError(f"account {invented!r} is not in the vocabulary and must be rejected")
 
-    # Trimming surrounding whitespace is normalising the same value, not
-    # repairing a different one, so it stays accepted.
-    padded = main.validate_ai_item(_ai_item(account="  Bank Charges  "), {"1"})
-    assert_equal(padded["account"] if padded else None, "Bank Charges", "whitespace is normalised, not rejected")
+    # Case and whitespace differences are typos of the same account, not
+    # different accounts, so they normalise rather than being rejected.
+    for spelling in ("  Bank Charges  ", "bank charges", "BANK CHARGES"):
+        normalised = main.validate_ai_item(_ai_item(account=spelling), {"1"})
+        assert_equal(normalised["account"] if normalised else None, "Bank Charges", f"{spelling!r} normalises")
+
+    # A historical spelling is a real account, but it is never stored as one.
+    aliased = main.validate_ai_item(_ai_item(account="Insurance Expense"), {"1"})
+    assert_equal(aliased["account"] if aliased else None, "Insurance", "an alias canonicalises on the way in")
 
 
 def test_ai_may_only_return_a_known_vat_claim_status() -> None:
@@ -2994,7 +3002,129 @@ def test_ai_classification_failure_never_fails_the_run() -> None:
         assert_equal([row[field] for row in rows], [row[field] for row in before], f"{field} survived every failure")
 
 
+# ── Category vocabulary ───────────────────────────────────────────────────────
+#
+# Four vocabularies had drifted apart — 46 distinct strings across the worker's
+# stored categories, the professional chart, the review dropdown and AI
+# validation. Eleven categories the worker wrote could not be selected by a
+# reviewer, and the same account appeared under several spellings.
+
+
+def test_every_category_the_worker_can_store_is_in_the_vocabulary() -> None:
+    """A category nobody can select is a category nobody can correct."""
+    import ast
+
+    import main
+    from engine.categories import is_known_category
+
+    source = (ROOT / "workers" / "accounting_worker" / "main.py").read_text()
+    tree = ast.parse(source)
+    classify = next(
+        node for node in ast.walk(tree)
+        if isinstance(node, ast.FunctionDef) and node.name == "_classify_transaction_rules"
+    )
+
+    produced: set[str] = set()
+    for node in ast.walk(classify):
+        if isinstance(node, ast.Call) and getattr(node.func, "id", "") == "Classification" and node.args:
+            argument = node.args[0]
+            if isinstance(argument, ast.Constant):
+                produced.add(argument.value)
+            elif isinstance(argument, ast.IfExp):
+                for branch in (argument.body, argument.orelse):
+                    if isinstance(branch, ast.Constant):
+                        produced.add(branch.value)
+        if isinstance(node, ast.Tuple) and len(node.elts) == 5 and isinstance(node.elts[0], ast.Tuple):
+            label = node.elts[1]
+            if isinstance(label, ast.Constant):
+                produced.add(label.value)
+            elif isinstance(label, ast.IfExp):
+                for branch in (label.body, label.orelse):
+                    if isinstance(branch, ast.Constant):
+                        produced.add(branch.value)
+
+    if len(produced) < 20:
+        raise AssertionError(f"the scan found only {len(produced)} categories; it is not reading the rules")
+    unknown = sorted(category for category in produced if not is_known_category(category))
+    if unknown:
+        raise AssertionError(f"the worker can store categories the vocabulary does not contain: {unknown}")
+
+
+def test_historical_spellings_still_resolve() -> None:
+    """Stored rows are not rewritten, so every old spelling must still render."""
+    from engine.categories import canonicalise_category, is_canonical_category
+
+    # Every alias that existed in one of the four vocabularies before unification.
+    historical = {
+        "Insurance Expense": "Insurance",
+        "Tax / SARS Suspense": "SARS / Tax Suspense",
+        "Courier / Delivery": "Courier / Freight",
+        "Software Subscriptions": "Software / IT",
+        "Salaries & Wages": "Salaries / Drawings / Personal",
+        "Related Party / Drawings": "Director Loan / Drawings",
+        "Staff Welfare / Meals / Entertainment": "Meals / Groceries - Non Deductible Review",
+        "Other Operating Expenses": "Operating Expenses",
+        "Uncategorised Expense": "Uncategorised",
+        "Unclassified Expense": "Uncategorised",
+        "Review Required": "Suspense / Review Required",
+        "Review Required Suspense": "Suspense / Review Required",
+        "Revenue Review": "Other Income / Review",
+        "Income": "Other Income / Review",
+    }
+    for old, canonical in historical.items():
+        assert_equal(canonicalise_category(old), canonical, f"{old!r} still resolves")
+        if is_canonical_category(old) and old != canonical:
+            raise AssertionError(f"{old!r} is a historical spelling and must not be canonical")
+
+
+def test_an_unrecognised_category_is_reported_not_guessed() -> None:
+    from engine.categories import canonicalise_category, is_known_category
+
+    for unknown in ("Bank Fees", "Sundry", "", None):
+        assert_equal(canonicalise_category(unknown), None, f"{unknown!r} is not a known category")
+        assert_equal(is_known_category(unknown), False, f"{unknown!r} is not known")
+
+
+def test_no_two_canonical_categories_mean_the_same_thing() -> None:
+    """Aliases collapse duplicates; two canonical ids must not.
+
+    Every merge here was proved by professional_account already mapping both
+    spellings to one account, or by the two being the same words reordered.
+    """
+    from engine.categories import canonical_categories
+
+    ids = list(canonical_categories())
+    assert_equal(len(ids), len(set(ids)), "no duplicate ids")
+
+    def shape(value: str) -> str:
+        return "".join(sorted(value.lower().replace("/", " ").replace("-", " ").split()))
+
+    shapes: dict[str, str] = {}
+    for identifier in ids:
+        key = shape(identifier)
+        if key in shapes:
+            raise AssertionError(f"{identifier!r} and {shapes[key]!r} are the same words in a different order")
+        shapes[key] = identifier
+
+
+def test_an_alias_is_never_written_back() -> None:
+    """Reading an old spelling is fine; writing a new one would reopen the split."""
+    import main
+
+    aliased = main.validate_ai_item(_ai_item(account="Staff Welfare / Meals / Entertainment"), {"1"})
+    assert_equal(
+        aliased["account"] if aliased else None,
+        "Meals / Groceries - Non Deductible Review",
+        "an alias from the model is stored canonically",
+    )
+
+
 def run() -> None:
+    test_every_category_the_worker_can_store_is_in_the_vocabulary()
+    test_historical_spellings_still_resolve()
+    test_an_unrecognised_category_is_reported_not_guessed()
+    test_no_two_canonical_categories_mean_the_same_thing()
+    test_an_alias_is_never_written_back()
     test_ai_may_only_return_accounts_the_chart_contains()
     test_ai_may_only_return_a_known_vat_claim_status()
     test_ai_confidence_must_be_a_number_in_range()
