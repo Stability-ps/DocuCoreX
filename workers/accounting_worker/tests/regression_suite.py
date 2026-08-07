@@ -2860,7 +2860,147 @@ def test_the_migration_adds_every_column_the_worker_writes() -> None:
             raise AssertionError(f"migration 021 must add {column}")
 
 
+# ── AI classification safety ──────────────────────────────────────────────────
+
+
+def _ai_item(**over):
+    item = {
+        "transaction_id": "1",
+        "account": "Bank Charges",
+        "group": "Bank Charges",
+        "vat_treatment": "Input VAT if valid bank tax invoice",
+        "vat_claim_status": "Input/Review",
+        "review_required": False,
+        "confidence": 0.94,
+    }
+    item.update(over)
+    return item
+
+
+def test_ai_may_only_return_accounts_the_chart_contains() -> None:
+    """An invented account is rejected, not repaired.
+
+    validate_ai_item used to take whatever string arrived and truncate it to 80
+    characters. An account nothing recognises cannot be mapped by
+    professional_account, cannot be offered by the review UI, and a learned rule
+    built from a correction to it would spread it.
+    """
+    import main
+
+    valid = main.validate_ai_item(_ai_item(), {"1"})
+    if valid is None:
+        raise AssertionError("a valid account must be accepted")
+    assert_equal(valid["account"], "Bank Charges", "and passed through unchanged")
+
+    for invented in ("Bank Fees", "Miscellaneous", "Sundry Expenses", "", "bank charges", "Bank Charges (est.)"):
+        if main.validate_ai_item(_ai_item(account=invented), {"1"}) is not None:
+            raise AssertionError(f"account {invented!r} is not in the chart and must be rejected")
+
+    # Trimming surrounding whitespace is normalising the same value, not
+    # repairing a different one, so it stays accepted.
+    padded = main.validate_ai_item(_ai_item(account="  Bank Charges  "), {"1"})
+    assert_equal(padded["account"] if padded else None, "Bank Charges", "whitespace is normalised, not rejected")
+
+
+def test_ai_may_only_return_a_known_vat_claim_status() -> None:
+    """VAT is where a wrong answer costs money, so its values are a closed set."""
+    import main
+
+    for status in ("Input/Review", "Output", "Review", "No"):
+        if main.validate_ai_item(_ai_item(vat_claim_status=status), {"1"}) is None:
+            raise AssertionError(f"{status!r} is a real claim status and must be accepted")
+    for status in ("Claimable", "Yes", "15%", "Input VAT definitely claimable"):
+        if main.validate_ai_item(_ai_item(vat_claim_status=status), {"1"}) is not None:
+            raise AssertionError(f"{status!r} is not a claim status and must be rejected")
+
+
+def test_ai_confidence_must_be_a_number_in_range() -> None:
+    """A malformed confidence used to silently become 0.6."""
+    import main
+
+    assert_equal(main.validate_ai_item(_ai_item(confidence=94), {"1"})["confidence"], 0.94, "percentages are scaled")
+    for bad in ("high", None, True, -1, float("nan")):
+        result = main.validate_ai_item(_ai_item(confidence=bad), {"1"})
+        if result is not None:
+            raise AssertionError(f"confidence {bad!r} must be rejected, got {result['confidence']}")
+
+
+def test_ai_results_cannot_be_tied_to_a_row_that_was_not_sent() -> None:
+    import main
+
+    if main.validate_ai_item(_ai_item(transaction_id="999"), {"1"}) is not None:
+        raise AssertionError("a result for an unsent row must be rejected")
+
+
+def test_the_ai_cache_is_scoped_to_one_workspace() -> None:
+    """A classification is shaped by a workspace's own corrections and chart.
+
+    This process is long-lived and serves every tenant. The cache was keyed by
+    description alone, so one workspace's answer for a common description was
+    served to another's identically-worded row.
+    """
+    import main
+
+    main.AI_CLASSIFICATION_CACHE.clear()
+    key = main.normalize_ai_cache_key("PAYMENT TO ABC TRADING")
+    main.AI_CLASSIFICATION_CACHE[("workspace-a", key)] = _ai_item(account="Supplier Payments")
+
+    if ("workspace-b", key) in main.AI_CLASSIFICATION_CACHE:
+        raise AssertionError("another workspace must not see this classification")
+    if ("workspace-a", key) not in main.AI_CLASSIFICATION_CACHE:
+        raise AssertionError("the owning workspace must see its own")
+    main.AI_CLASSIFICATION_CACHE.clear()
+
+
+def test_ai_classification_failure_never_fails_the_run() -> None:
+    """The ledger is already correct. Losing it over a hint would be absurd."""
+    import os
+
+    import main
+
+    rows = [main.professional_transaction_row(
+        main.ParsedTransaction(transaction_date="2025-05-02", description="ZZZ UNKNOWN", debit_amount=100.0),
+        "src",
+    )]
+    before = [dict(row) for row in rows]
+
+    previous_key = os.environ.get("OPENAI_API_KEY")
+    original = main.openai_chat_completion
+    os.environ["OPENAI_API_KEY"] = "test-key"
+    try:
+        for failure in (
+            TimeoutError("openai timed out"),
+            ValueError("not json"),
+            RuntimeError("service unavailable"),
+        ):
+            def explode(body, api_key, timeout=60, _failure=failure):
+                raise _failure
+
+            main.openai_chat_completion = explode
+            diagnostics = main.apply_ai_classifications(rows, "workspace-a")
+            if not isinstance(diagnostics, dict):
+                raise AssertionError(f"{failure} must return diagnostics, not raise")
+        # Malformed but successful responses are equally survivable.
+        main.openai_chat_completion = lambda body, api_key, timeout=60: {"choices": [{"message": {"content": "<not json>"}}]}
+        main.apply_ai_classifications(rows, "workspace-a")
+    finally:
+        main.openai_chat_completion = original
+        if previous_key is None:
+            os.environ.pop("OPENAI_API_KEY", None)
+        else:
+            os.environ["OPENAI_API_KEY"] = previous_key
+
+    for field in ("date", "description", "money_in", "money_out"):
+        assert_equal([row[field] for row in rows], [row[field] for row in before], f"{field} survived every failure")
+
+
 def run() -> None:
+    test_ai_may_only_return_accounts_the_chart_contains()
+    test_ai_may_only_return_a_known_vat_claim_status()
+    test_ai_confidence_must_be_a_number_in_range()
+    test_ai_results_cannot_be_tied_to_a_row_that_was_not_sent()
+    test_the_ai_cache_is_scoped_to_one_workspace()
+    test_ai_classification_failure_never_fails_the_run()
     test_unresolved_is_recorded_as_unresolved_not_as_a_decision()
     test_a_transaction_records_who_classified_it()
     test_a_learned_rule_records_itself_as_the_source()

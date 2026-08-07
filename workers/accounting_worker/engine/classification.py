@@ -72,6 +72,65 @@ _SOURCE_FOR_STRENGTH = {
 }
 
 
+# The accounts the workbook chart actually uses, and therefore the only values
+# a model may return.
+#
+# validate_ai_item previously took whatever string arrived, truncated it to 80
+# characters and wrote it to the account. A model returning "Bank Fees",
+# "Miscellaneous" or a hallucinated account name produced a category nothing
+# downstream recognises: professional_account cannot map it, the review UI
+# cannot offer it, and a learned rule built from a correction to it would spread
+# it. Rejecting is the only safe response — a repaired guess is still a guess.
+PROFESSIONAL_ACCOUNTS = frozenset({
+    "Accounting / Professional Fees",
+    "Bank Charges",
+    "Cash Deposits / Revenue",
+    "Courier / Freight",
+    "Director Loan / Drawings",
+    "Finance Costs",
+    "Insurance",
+    "Inter-account Transfer",
+    "Inter-account Transfer In",
+    "Inter-account Transfer Out / Loan",
+    "Levies",
+    "Loan / Liability",
+    "Meals / Groceries - Non Deductible Review",
+    "Medical Expenses",
+    "Motor Vehicle Expenses",
+    "Operating Expenses",
+    "Other Income / Review",
+    "Rent",
+    "Related Party / Drawings",
+    "Review Required",
+    "Review Required Suspense",
+    "Revenue Review",
+    "Road Tolls",
+    "SARS / Tax Suspense",
+    "Salaries / Drawings / Personal",
+    "Sales / Revenue",
+    "Software / IT",
+    "Supplier Payments",
+    "Suspense / Review Required",
+    "Telephone / Internet / Communication",
+    "Unclassified Expense",
+    "Utilities",
+    "VAT Control",
+})
+
+# VAT is where a wrong answer costs money, so the claim status is a closed set.
+# Recognising a merchant proves nothing about whether input VAT is claimable,
+# whether a valid tax invoice exists, or whether the purpose was business.
+VAT_CLAIM_STATUSES = frozenset({"Output", "Output/Review", "Input/Review", "Input", "Review", "No"})
+
+
+def is_valid_ai_account(account: str) -> bool:
+    return account in PROFESSIONAL_ACCOUNTS
+
+
+def is_valid_vat_claim_status(status: str) -> bool:
+    return status in VAT_CLAIM_STATUSES
+
+
 def source_for_strength(strength: str) -> str:
     """The source implied by a rule's standing.
 
