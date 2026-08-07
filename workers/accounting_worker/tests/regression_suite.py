@@ -3549,7 +3549,174 @@ def test_sanity_direction_alone_implies_nothing() -> None:
         raise AssertionError(f"an unknown credit was booked as income: {credit_category}")
 
 
+# ── Classification quality, end to end ────────────────────────────────────────
+#
+# Shaped like the real 37-page Standard Bank statement, which cannot be
+# committed. Every classification path is exercised in one document so the
+# DISTRIBUTION is pinned, not just individual rules: a change that quietly moves
+# forty rows from a category to Suspense passes every unit test and fails here.
+
+CLASSIFICATION_FIXTURE_PAGES = [
+    {
+        "page": 1,
+        "tables": [],
+        "text": "\n".join([
+            "STANDARD BANK 6 month statement",
+            "www.standardbank.co.za",
+            "Date Description Payments Deposits Balance",
+            "STATEMENT OPENING BALANCE -1,000.00",
+            # Hard: the bank naming its own charges.
+            "01 May 25 ACC 301981485 SERVICE FEE 574.30 -1,574.30",
+            "01 May 25 301981485 3004 HONOURING FEE 155.00 -1,729.30",
+            "01 May 25 301981485 10H00 FEE - INSTANT MONEY 27.50 -1,756.80",
+            # Hard: the statement saying drawings outright.
+            "02 May 25 OWNER WITHDRAWAL 2,000.00 -3,756.80",
+            # Merchant knowledge, including the case boundary matching gave up.
+            "03 May 25 C*FUELZONE 4278*5999 CHEQUE CARD PURCHASE 450.00 -4,206.80",
+            "03 May 25 ENGEN WELKOM 20250503 380.00 -4,586.80",
+            "04 May 25 POS PURCHASE WOOLWORTHS MENLYN 004829 620.00 -5,206.80",
+            # Soft keyword rules.
+            "05 May 25 WESBANK LOAN INSTALMENT 3,100.00 -8,306.80",
+            "05 May 25 DISCOVERY INSURE PREMIUM 890.00 -9,196.80",
+            # Collisions that must NOT classify.
+            "06 May 25 FUELLED CATERING CC 1,200.00 -10,396.80",
+            "06 May 25 PAYEE TRANSFER 4471 800.00 -11,196.80",
+            "06 May 25 LOANED EQUIPMENT HIRE 640.00 -11,836.80",
+            # Genuinely unresolved.
+            "07 May 25 QQQ ZZZ 88213 300.00 -12,136.80",
+            "07 May 25 PAYSHAP PAYMENT TO NOMSA 1,500.00 -13,636.80",
+            # A credit that must not become revenue on direction alone.
+            "08 May 25 UNKNOWN INBOUND 4471 5,000.00 -8,636.80",
+            "Please verify all transactions reflected on this statement.",
+            "Statement Summary",
+        ]),
+    }
+]
+
+
+def _classified_fixture(main):
+    text = CLASSIFICATION_FIXTURE_PAGES[0]["text"]
+    metadata = main.parse_metadata(text)
+    return main.parse_transactions(CLASSIFICATION_FIXTURE_PAGES, metadata, text, GENERIC_PROFILE), metadata
+
+
+def test_classification_distribution_on_a_real_shaped_statement() -> None:
+    """The whole classifier, on one document, by category."""
+    import main
+    from collections import Counter
+
+    transactions, _ = _classified_fixture(main)
+    assert_equal(len(transactions), 15, "every printed movement parsed")
+
+    categories = Counter(t.account_category for t in transactions)
+    assert_equal(categories["Bank Charges"], 3, "the three bank-named fees")
+    assert_equal(categories["Director Loan / Drawings"], 1, "the one explicit withdrawal, and only it")
+    assert_equal(categories["Motor Vehicle Expenses"], 2, "FUELZONE and ENGEN, by name")
+    assert_equal(categories["Meals / Groceries - Non Deductible Review"], 1, "Woolworths")
+    assert_equal(categories["Loan / Liability"], 1, "the loan instalment")
+    assert_equal(categories["Insurance"], 1, "the insurance premium")
+
+    # The three collision rows and the two unknowns stay unresolved, and the
+    # unknown credit is not booked as revenue.
+    assert_equal(categories["Suspense / Review Required"], 5, "collisions and unknowns stay unresolved")
+    assert_equal(categories["Other Income / Review"], 1, "an unknown credit is reviewed, not booked as sales")
+    if "Sales / Revenue" in categories:
+        raise AssertionError("an unidentified credit was booked as revenue")
+
+
+def test_classification_distribution_by_provenance() -> None:
+    """Who decided each row, on the same document."""
+    import main
+    from collections import Counter
+    from engine.classification import SOURCE_DETERMINISTIC, SOURCE_UNRESOLVED, STRENGTH_HARD, STRENGTH_NONE
+
+    transactions, _ = _classified_fixture(main)
+    sources = Counter(t.classification_source for t in transactions)
+    strengths = Counter(t.classification_strength for t in transactions)
+
+    assert_equal(sources[SOURCE_DETERMINISTIC], 9, "nine rows settled by rules or merchant knowledge")
+    assert_equal(sources[SOURCE_UNRESOLVED], 6, "six rows nobody could settle")
+    assert_equal(strengths[STRENGTH_HARD], 4, "three bank fees and one explicit drawings")
+    assert_equal(strengths[STRENGTH_NONE], 6, "unresolved rows carry no standing")
+
+    for transaction in transactions:
+        if not transaction.classification_reason:
+            raise AssertionError(f"{transaction.description!r} has no recorded reason")
+
+
+def test_only_unsettled_rows_would_be_sent_to_ai() -> None:
+    """Cost follows from standing, not from a confidence threshold."""
+    import main
+
+    transactions, _ = _classified_fixture(main)
+    rows = [main.professional_transaction_row(t, "fixture") for t in transactions]
+    sent = [row for row, transaction in zip(rows, transactions) if main.row_needs_ai(row)]
+
+    settled = [t for t in transactions if t.classification_strength == "hard"]
+    assert_equal(len(sent), len(transactions) - len(settled), "every settled row is kept out of the model")
+    for row in sent:
+        if row.get("rule_strength") == "hard":
+            raise AssertionError("a settled row was queued for the model")
+
+
+def test_classification_never_moves_the_ledger() -> None:
+    """Whatever the classifier decides, the money is unchanged."""
+    import main
+
+    transactions, metadata = _classified_fixture(main)
+    summary = main.validation_summary(transactions)
+    assert_equal(str(summary["total_debits"]), "12636.80", "debits")
+    assert_equal(str(summary["total_credits"]), "5000.00", "credits")
+    assert_equal(len(main.balance_gap_diagnostics(metadata, transactions)), 0, "no balance gaps")
+
+    opening = main.decimal_amount(metadata["opening_balance"])
+    closing = opening + summary["total_credits"] - summary["total_debits"]
+    assert_equal(str(closing), "-8636.80", "reconciles to the last printed balance")
+
+
+def test_ai_replaces_a_weak_deterministic_classification() -> None:
+    """A keyword guess is revisable; that is what SOFT means."""
+    import main
+    from engine.classification import SOURCE_AI, STRENGTH_SOFT
+
+    transaction = main.build_transaction("02 May 2025", "ENGEN WELKOM 20250503", 900.0, None, -1000.0, {}, 1, "raw", 90)
+    assert_equal(transaction.classification_strength, STRENGTH_SOFT, "a merchant match is revisable")
+
+    _with_ai(
+        _ai_classification_transport(account="Supplier Payments", confidence=0.95),
+        lambda: main.classify_transactions_with_ai([transaction], "workspace-a", "src"),
+    )
+    assert_equal(transaction.account_category, "Supplier Payments", "the model's answer replaced the guess")
+    assert_equal(transaction.classification_source, SOURCE_AI, "and is attributed to it")
+
+
+def test_an_ai_classification_does_not_mark_a_row_ready_by_itself() -> None:
+    """Current policy, stated rather than incidental.
+
+    An AI-classified row keeps its VAT open — recognising a merchant proves
+    nothing about claimability — and the existing readiness rule requires a
+    settled VAT treatment. So a model's answer, however confident, is a
+    suggestion for a person rather than an approval.
+    """
+    import main
+
+    for confidence in (0.55, 0.97):
+        transaction = main.build_transaction("02 May 2025", "QQQ ZZZ 4471", 900.0, None, -1000.0, {}, 1, "raw", 90)
+        _with_ai(
+            _ai_classification_transport(confidence=confidence),
+            lambda: main.classify_transactions_with_ai([transaction], "workspace-a", "src"),
+        )
+        assert_equal(transaction.review_status, "needs_review", f"AI at {confidence} still needs a person")
+        assert_equal(transaction.classification_confidence, round(confidence * 100, 2), "confidence is recorded faithfully")
+
+
 def run() -> None:
+    test_classification_distribution_on_a_real_shaped_statement()
+    test_classification_distribution_by_provenance()
+    test_only_unsettled_rows_would_be_sent_to_ai()
+    test_classification_never_moves_the_ledger()
+    test_ai_replaces_a_weak_deterministic_classification()
+    test_an_ai_classification_does_not_mark_a_row_ready_by_itself()
     test_a_known_merchant_is_identified_from_a_noisy_description()
     test_merchant_identification_is_not_substring_matching()
     test_the_bank_description_is_never_overwritten()
