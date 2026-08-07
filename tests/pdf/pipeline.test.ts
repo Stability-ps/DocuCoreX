@@ -827,9 +827,14 @@ test("document viewer cancels the previous render before starting a new one", ()
   assert.match(viewer, /isRenderingCancelled/, "ignores RenderingCancelledException");
   assert.match(viewer, /if \(seq !== renderSeqRef\.current\) return/, "only the latest render mutates canvas/state");
   assert.match(viewer, /disabled=\{rendering\}/, "Retry disabled while a render is running");
-  // Unmount cleanup cancels the task and destroys the document.
+  // Unmount cleanup cancels the render task and destroys the pdf.js session.
+  //
+  // This used to assert `void pdfRef.current?.destroy()` — which pinned a real
+  // defect in place. PDFDocumentProxy has no destroy() in pdfjs-dist 6.x, so
+  // that call threw on every unmount. Teardown belongs to the loading task; see
+  // tests/pdf/viewer-lifecycle.test.ts.
   assert.match(viewer, /renderTaskRef\.current\?\.cancel\(\)/);
-  assert.match(viewer, /void pdfRef\.current\?\.destroy\(\)/);
+  assert.match(viewer, /destroyPdfSession\(loadingTaskRef\.current\)/);
 });
 
 test("mergeExtractionResults prefers pdfplumber transactions and flags disagreement", () => {

@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import { destroyPdfSession } from "@/lib/pdf/pdfSession";
 import { ChevronLeft, ChevronRight, Download, FileWarning, Loader2, Maximize2, RotateCw, Search, X, ZoomIn, ZoomOut } from "lucide-react";
 
 // The single, platform-wide document viewer. Renders PDFs on a <canvas> via
@@ -20,7 +21,11 @@ type PdfPage = {
   getTextContent: () => Promise<{ items: Array<{ str?: string }> }>;
   render: (options: { canvas: HTMLCanvasElement; canvasContext: CanvasRenderingContext2D; viewport: PdfViewport; transform?: number[] }) => PdfRenderTask;
 };
-type PdfDoc = { numPages: number; getPage: (n: number) => Promise<PdfPage>; destroy: () => Promise<void> };
+// NOTE: no destroy() here. In pdfjs-dist 6.x, PDFDocumentProxy has cleanup()
+// but NOT destroy() — teardown belongs to the loading task. Asserting destroy()
+// on this type is what let the wrong call compile and reach production.
+type PdfDoc = { numPages: number; getPage: (n: number) => Promise<PdfPage> };
+type PdfLoadingTask = { promise: Promise<unknown>; destroy: () => Promise<void> };
 
 // Load pdf.js on the client only and point it at the correct Next.js worker URL.
 type PdfjsModule = typeof import("pdfjs-dist");
@@ -124,6 +129,8 @@ function PdfCanvasViewer({
   const containerRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const pdfRef = useRef<PdfDoc | null>(null);
+  // The loading task owns teardown, not the document proxy it resolves to.
+  const loadingTaskRef = useRef<PdfLoadingTask | null>(null);
   const renderTaskRef = useRef<PdfRenderTask | null>(null);
   // Monotonic render id — only the LATEST render may mutate the canvas/state, so
   // overlapping triggers (zoom, fit-width resize, page change, retry, React
@@ -156,9 +163,11 @@ function PdfCanvasViewer({
     (async () => {
       try {
         const pdfjs = await loadPdfjs();
-        const doc = (await pdfjs.getDocument({ url: sourceUrl }).promise) as unknown as PdfDoc;
+        const task = pdfjs.getDocument({ url: sourceUrl }) as unknown as PdfLoadingTask;
+        loadingTaskRef.current = task;
+        const doc = (await task.promise) as unknown as PdfDoc;
         if (cancelled) {
-          void doc.destroy();
+          // Cleanup already ran and destroyed this task; drop the document.
           return;
         }
         pdfRef.current = doc;
@@ -179,7 +188,8 @@ function PdfCanvasViewer({
       renderSeqRef.current += 1;
       renderTaskRef.current?.cancel();
       renderTaskRef.current = null;
-      void pdfRef.current?.destroy();
+      destroyPdfSession(loadingTaskRef.current);
+      loadingTaskRef.current = null;
       pdfRef.current = null;
     };
   }, [sourceUrl, kind, reloadKey]);

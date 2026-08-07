@@ -251,7 +251,13 @@ export function StatementWorkspace({ statementId }: { statementId: string }) {
 
   const reviewItems = useMemo(() => transactions.filter(isReviewItem), [transactions]);
 
-  if (loading) {
+  // Only the FIRST load replaces the workspace. A refresh must not, because
+  // loadDetail() sets loading on every poll tick — so a reprocess unmounted the
+  // whole tree, and with it the PDF viewer, several times a minute. That is what
+  // made the statement appear and then vanish, and what drove the viewer's
+  // teardown into the error boundary. Keeping the tree mounted during a refresh
+  // is also simply correct: the data is already on screen.
+  if (loading && !detail) {
     return (
       <div className="flex min-h-[60vh] items-center justify-center px-4">
         <div className="flex items-center gap-3 text-slate-500">
