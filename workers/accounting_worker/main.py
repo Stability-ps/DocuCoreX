@@ -25,6 +25,12 @@ from supabase import Client, create_client
 from auth import OK as AUTH_OK, STATUS_FOR_VERDICT, auth_compare_diagnostics, check_bearer
 from engine.bootstrap import register_default_parsers
 from engine.detection import UNKNOWN_PROFILE_ID, bank_name_for, detect_bank, is_supported_bank
+from engine.ai_recovery import SYSTEM_PROMPT as AI_RECOVERY_SYSTEM_PROMPT
+from engine.ai_recovery import batches as ai_batches
+from engine.ai_recovery import build_prompt as build_ai_recovery_prompt
+from engine.ai_recovery import candidate_lines as ai_candidate_lines
+from engine.ai_recovery import dropped_line_count as ai_dropped_line_count
+from engine.ai_recovery import ground_rows as ground_ai_rows
 from engine.generic_parser import count_candidate_lines as generic_candidate_lines
 from engine.generic_parser import extract_generic_rows
 from engine.lexicon import LOOSE_DATE, LOOSE_MONEY, MONEY_TOKEN
@@ -2226,6 +2232,154 @@ def parse_structured_rows(
     return deduped, diagnostics
 
 
+def attempt_ai_recovery(
+    full_text: str,
+    structured_rows: list[dict[str, Any]] | None,
+    metadata: dict[str, Any],
+    bank_name: str,
+    run_id: str,
+) -> tuple[list[ParsedTransaction], dict[str, Any]]:
+    """Last recovery step: ask a model to LOCATE rows, then verify every one.
+
+    Returns the transactions that survived grounding, and a diagnostics record.
+    Every returned transaction is marked for review — a located row is not an
+    understood one, and a person has to see what came from here.
+    """
+    diagnostics: dict[str, Any] = {
+        "enabled": False,
+        "attempted": False,
+        "batches": 0,
+        "lines_sent": 0,
+        "lines_unsent": 0,
+        "returned_rows": 0,
+        "accepted_rows": 0,
+        "rejected_rows": {},
+        "failures": 0,
+    }
+
+    # Recovery sends statement LINES to the model, where classification sends
+    # only a description and an amount. That is a wider disclosure than the
+    # feature it reuses, so it gets its own kill switch — no redeploy or key
+    # rotation needed to stop it.
+    if os.getenv("ACCOUNTING_AI_RECOVERY", "true").strip().lower() in {"false", "0", "off", "no"}:
+        diagnostics["reason"] = "disabled_by_ACCOUNTING_AI_RECOVERY"
+        return [], diagnostics
+
+    api_key = os.getenv("OPENAI_API_KEY")
+    if not api_key:
+        diagnostics["reason"] = "no_api_key"
+        return [], diagnostics
+    diagnostics["enabled"] = True
+
+    lines = ai_candidate_lines(full_text, structured_rows)
+    if not lines:
+        diagnostics["reason"] = "no_candidate_lines"
+        return [], diagnostics
+
+    line_batches = ai_batches(lines)
+    unsent = ai_dropped_line_count(lines)
+    diagnostics.update({"attempted": True, "lines_sent": sum(len(batch) for batch in line_batches), "lines_unsent": unsent})
+    if unsent:
+        # Never let a cap look like a complete reading.
+        log_warning("worker.ai_recovery_lines_capped", run_id=run_id, unsent=unsent, total=len(lines))
+
+    accepted: list[dict[str, Any]] = []
+    rejected: dict[str, int] = {}
+    returned = 0
+
+    for index, batch in enumerate(line_batches, start=1):
+        body = {
+            "model": accounting_ai_model(),
+            "temperature": 0,
+            "max_tokens": 6000,
+            "response_format": {"type": "json_object"},
+            "messages": [
+                {"role": "system", "content": AI_RECOVERY_SYSTEM_PROMPT},
+                {"role": "user", "content": json.dumps(build_ai_recovery_prompt(batch, metadata, bank_name), default=str)},
+            ],
+        }
+        try:
+            payload = openai_chat_completion(body, api_key)
+        except Exception as exc:  # noqa: BLE001 - transport failures must not end the run here
+            diagnostics["failures"] += 1
+            log_warning("worker.ai_recovery_request_failed", run_id=run_id, batch=index, error=str(exc))
+            continue
+
+        content = payload.get("choices", [{}])[0].get("message", {}).get("content", "{}")
+        parsed = parse_ai_json_content(content)
+        rows = parsed.get("rows") if isinstance(parsed, dict) else parsed
+        if isinstance(rows, list):
+            returned += len(rows)
+        report = ground_ai_rows(rows, batch)
+        accepted.extend(report.accepted)
+        for reason, count in report.rejected.items():
+            rejected[reason] = rejected.get(reason, 0) + count
+        diagnostics["batches"] += 1
+
+    diagnostics.update({"returned_rows": returned, "accepted_rows": len(accepted), "rejected_rows": rejected})
+
+    transactions: list[ParsedTransaction] = []
+    for row in accepted:
+        debit: float | None = None
+        credit: float | None = None
+        amount_value = parse_money_cell(row["amount"])
+        if amount_value is None:
+            continue
+        magnitude = decimal_to_float(amount_value.copy_abs())
+        if row["direction"] == "credit":
+            credit = magnitude
+        elif row["direction"] == "debit":
+            debit = magnitude
+        else:
+            # The model did not read a direction off the line, and it is not
+            # allowed to guess one. Balance continuity decides, exactly as it
+            # does on the deterministic path; where it cannot, the row is kept
+            # with no direction and flagged rather than assigned one.
+            balance_value = parse_money_cell(row["balance"]) if row["balance"] else None
+            previous = decimal_amount(transactions[-1].running_balance) if transactions and transactions[-1].running_balance is not None else (
+                decimal_amount(metadata["opening_balance"]) if metadata.get("opening_balance") is not None else None
+            )
+            direction = resolve_amount_direction_from_continuity(amount_value.copy_abs(), previous, balance_value)
+            if direction == "credit":
+                credit = magnitude
+            elif direction == "debit":
+                debit = magnitude
+
+        transaction = build_transaction(
+            row["date"] or str(metadata.get("statement_period_end") or ""),
+            row["description"],
+            debit,
+            credit,
+            decimal_to_float(parse_money_cell(row["balance"])) if row["balance"] else None,
+            metadata,
+            None,
+            row["source_line"],
+            # AI-located rows never carry parser-grade confidence.
+            min(60.0, round(row["confidence"] * 60.0, 2)),
+        )
+        if transaction is None:
+            rejected["transaction_build_failed"] = rejected.get("transaction_build_failed", 0) + 1
+            continue
+        # Set after building, not just passed in: build_transaction runs
+        # classification, which raises confidence on a recognised merchant. A
+        # confidently classified row that was located by a model rather than
+        # parsed from the document must not read as a confident extraction.
+        transaction.confidence = min(transaction.confidence, round(row["confidence"] * 60.0, 2))
+        transaction.review_status = "needs_review"
+        append_note(transaction, "recovered_by: ai")
+        append_note(transaction, f"ai_confidence: {round(row['confidence'], 2)}")
+        if debit is None and credit is None:
+            append_note(transaction, "direction_unresolved: true")
+        if row["balance_dropped"]:
+            append_note(transaction, "ai_balance_discarded: not present in the source line")
+        transactions.append(transaction)
+
+    deduped = dedupe_transactions(transactions)
+    diagnostics["transactions"] = len(deduped)
+    diagnostics["rejected_rows"] = rejected
+    return deduped, diagnostics
+
+
 def transaction_quality_snapshot(metadata: dict[str, Any], transactions: list[ParsedTransaction]) -> dict[str, Any]:
     summary = validation_summary(transactions)
     extraction = validate_extraction(metadata, transactions)
@@ -3712,6 +3866,22 @@ def parse_ai_json_content(content: str) -> Any:
     return parsed
 
 
+def openai_chat_completion(request_body: dict[str, Any], api_key: str, timeout: int = 60) -> dict[str, Any]:
+    """The one place this worker talks to OpenAI.
+
+    Shared by transaction classification and by AI recovery so there is a single
+    transport to reason about: one timeout, one auth header, one endpoint.
+    """
+    request = urllib.request.Request(
+        "https://api.openai.com/v1/chat/completions",
+        data=json.dumps(request_body).encode("utf-8"),
+        headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+        method="POST",
+    )
+    with urllib.request.urlopen(request, timeout=timeout) as response:
+        return json.loads(response.read().decode("utf-8"))
+
+
 def request_ai_classifications(items: list[dict[str, Any]], diagnostics: dict[str, Any]) -> list[dict[str, Any]]:
     api_key = os.getenv("OPENAI_API_KEY")
     if not api_key or not items:
@@ -3782,14 +3952,7 @@ def request_ai_classifications(items: list[dict[str, Any]], diagnostics: dict[st
     }
 
     def send_openai_request(request_body: dict[str, Any]) -> dict[str, Any]:
-        request = urllib.request.Request(
-            "https://api.openai.com/v1/chat/completions",
-            data=json.dumps(request_body).encode("utf-8"),
-            headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
-            method="POST",
-        )
-        with urllib.request.urlopen(request, timeout=60) as response:
-            return json.loads(response.read().decode("utf-8"))
+        return openai_chat_completion(request_body, api_key)
 
     try:
         try:
@@ -5053,6 +5216,7 @@ def process_fnb_statement(payload: ProcessRequest, authorization: str | None = H
         transactions = selected_transactions or []
         classification_rules = fetch_classification_rules(supabase, payload.workspace_id) or []
         learned_rules_applied = apply_learned_classification_rules(transactions, classification_rules)
+        ai_recovery: dict[str, Any] = {"enabled": False, "attempted": False, "accepted_rows": 0}
         # Accounting-parser diagnostics (null-safe).
         _summary = validation_summary(transactions)
         structured_metrics = structured_selection.get("structured_metrics") or {}
@@ -5129,11 +5293,44 @@ def process_fnb_statement(payload: ProcessRequest, authorization: str | None = H
                 parser_profile=parser_profile,
             )
 
-            # AI-assisted recovery belongs here: `recovery["recoverable"]` is
-            # exactly the condition under which there is still material to work
-            # from. Until that exists, exhausted and recoverable both end the run
-            # — but they are reported apart, so the two are never conflated.
-            #
+            # Last recovery step. Only attempted when material is genuinely
+            # left; there is nothing for a model to locate in a document with no
+            # readable text.
+            if recovery["recoverable"]:
+                heartbeat_step(
+                    supabase,
+                    run_id=payload.run_id,
+                    workspace_id=payload.workspace_id,
+                    processing_job_id=payload.processing_job_id,
+                    step_label="Recovering with AI",
+                    progress=75,
+                )
+                ai_transactions, ai_recovery = attempt_ai_recovery(
+                    full_text=full_text,
+                    structured_rows=payload.pre_extracted_rows if isinstance(payload.pre_extracted_rows, list) else None,
+                    metadata=metadata,
+                    bank_name=bank_name,
+                    run_id=payload.run_id,
+                )
+                log_event(
+                    "worker.ai_recovery",
+                    run_id=payload.run_id,
+                    bank_profile=bank_profile,
+                    parser_profile=parser_profile,
+                    **{key: value for key, value in ai_recovery.items() if key != "rejected_rows"},
+                    rejected_rows=ai_recovery.get("rejected_rows"),
+                )
+                if ai_transactions:
+                    transactions = ai_transactions
+                    learned_rules_applied = apply_learned_classification_rules(transactions, classification_rules)
+                    log_warning(
+                        "worker.ai_recovery_used",
+                        run_id=payload.run_id,
+                        transactions=len(transactions),
+                        note="every row is AI-located and flagged for review; the run cannot complete unreviewed",
+                    )
+
+        if not transactions:
             # Name the parser that actually ran. "No FNB transactions" on a
             # Standard Bank statement described the misroute, not the document,
             # and sent every investigation looking at the wrong parser.
@@ -5259,12 +5456,23 @@ def process_fnb_statement(payload: ProcessRequest, authorization: str | None = H
 
         bank_charges_total = float(bank_charges_from_statement(metadata, transactions))
         avg_confidence = sum(transaction.confidence for transaction in transactions) / len(transactions)
+        # A ledger recovered by AI can never report as completed. Every row is
+        # already flagged, so this is belt and braces — but the guarantee is
+        # worth stating outright rather than depending on a per-row flag that a
+        # later classification pass could clear.
+        ai_recovered = bool(ai_recovery.get("accepted_rows"))
         status = "review" if (
             review_issue
             or extraction_incomplete
+            or ai_recovered
             or any(transaction.review_status == "needs_review" for transaction in transactions)
         ) else "completed"
-        if review_issue:
+        if ai_recovered and not review_issue and not extraction_incomplete:
+            run_error = (
+                f"Recovered by AI — {len(transactions)} row(s) located in the statement text and "
+                "verified against it, but not parsed deterministically. Every row needs review."
+            )
+        elif review_issue:
             run_error = review_error_message(review_issue)
         elif extraction_incomplete:
             expected_count = extraction_check.get("expected_transaction_count")
@@ -5380,6 +5588,7 @@ def process_fnb_statement(payload: ProcessRequest, authorization: str | None = H
                 "failures": extraction_check.get("failures"),
                 "balance_gap_count": extraction_check.get("balance_gap_count"),
             },
+            "ai_recovery": ai_recovery,
             "processing_duration_ms": processing_duration_ms,
             "worker": worker_version(),
         }

@@ -2082,7 +2082,212 @@ def test_failure_messages_name_the_parser_that_ran() -> None:
         raise AssertionError("an exhausted run must be reported apart from an unparsed one")
 
 
+# ── AI recovery ───────────────────────────────────────────────────────────────
+#
+# The instruction "do not invent transactions" is not a control. These cases
+# check the control: nothing survives that cannot be traced back to a line we
+# actually sent.
+
+AI_SOURCE_LINES = [
+    "30 Apr 25 ADT JHB SECURITY 1,204.55 -993,657.12",
+    "02 May 25 SALARY DEPOSIT 45,000.00 -948,657.12",
+    "05 May 25 MONTHLY SERVICE FEE 150.00 -948,807.12",
+]
+
+
+def _ai_row(**over):
+    row = {
+        "source_line": AI_SOURCE_LINES[0],
+        "date": "30 Apr 25",
+        "description": "ADT JHB SECURITY",
+        "amount": "1,204.55",
+        "balance": "-993,657.12",
+        "direction": "debit",
+        "confidence": 0.9,
+    }
+    row.update(over)
+    return row
+
+
+def test_ai_rows_must_come_from_a_line_we_sent() -> None:
+    """A row whose source line is not in the document is discarded outright."""
+    from engine.ai_recovery import ground_rows
+
+    invented = _ai_row(
+        source_line="07 May 25 CONSULTING FEE 9,500.00 -958,307.12",
+        description="CONSULTING FEE",
+        amount="9,500.00",
+        balance="-958,307.12",
+    )
+    report = ground_rows([_ai_row(), invented], AI_SOURCE_LINES)
+    assert_equal(len(report.accepted), 1, "only the row that exists survives")
+    assert_equal(report.rejected.get("source_line_not_in_document"), 1, "the invented row is counted, not silently dropped")
+
+
+def test_ai_amounts_must_appear_in_their_source_line() -> None:
+    """A real line with an altered figure is still a fabrication."""
+    from engine.ai_recovery import ground_rows
+
+    report = ground_rows([_ai_row(amount="1,240.55")], AI_SOURCE_LINES)
+    assert_equal(len(report.accepted), 0, "a figure not printed on the line is rejected")
+    assert_equal(report.rejected.get("amount_not_in_source_line"), 1, "and the reason is recorded")
+
+
+def test_ai_balances_that_are_not_printed_are_dropped_but_the_row_is_kept() -> None:
+    """A computed balance is discarded; the row it belongs to is not."""
+    from engine.ai_recovery import ground_rows
+
+    report = ground_rows([_ai_row(balance="-993,000.00")], AI_SOURCE_LINES)
+    assert_equal(len(report.accepted), 1, "the row survives")
+    assert_equal(report.accepted[0]["balance"], "", "the unprinted balance does not")
+    assert_equal(report.accepted[0]["balance_dropped"], True, "and that is flagged")
+
+
+def test_ai_descriptions_may_not_introduce_words() -> None:
+    """A narrative the document does not contain is a fabrication too."""
+    from engine.ai_recovery import ground_rows
+
+    report = ground_rows([_ai_row(description="ADT JHB SECURITY monthly alarm monitoring contract")], AI_SOURCE_LINES)
+    assert_equal(len(report.accepted), 0, "invented narrative is rejected")
+    assert_equal(report.rejected.get("description_not_in_source_line"), 1, "and counted")
+
+    kept = ground_rows([_ai_row(description="ADT SECURITY")], AI_SOURCE_LINES)
+    assert_equal(len(kept.accepted), 1, "a description drawn from the line is fine")
+
+
+def test_ai_never_receives_or_returns_a_guessed_direction() -> None:
+    """An unreadable direction stays unknown; it is not filled in."""
+    from engine.ai_recovery import ground_rows
+
+    report = ground_rows([_ai_row(direction="probably debit")], AI_SOURCE_LINES)
+    assert_equal(report.accepted[0]["direction"], "unknown", "an unrecognised direction becomes unknown, not debit")
+
+
+def test_ai_candidate_lines_only_carry_figures() -> None:
+    """Prose and page chrome cannot be ledger rows and are not worth the context."""
+    from engine.ai_recovery import candidate_lines
+
+    text = (
+        "STANDARD BANK 6 month statement\n"
+        "Please retain this statement for your records\n"
+        "30 Apr 25 ADT JHB SECURITY 1,204.55 -993,657.12\n"
+        "Customer Care 0860 123 000\n"
+        "02 May 25 SALARY DEPOSIT 45,000.00 -948,657.12\n"
+    )
+    lines = candidate_lines(text)
+    assert_equal(len(lines), 2, "only the two lines carrying figures are sent")
+    for line in lines:
+        if "Please retain" in line or "Customer Care" in line:
+            raise AssertionError(f"non-ledger line sent to the model: {line}")
+
+
+def test_ai_line_cap_is_reported_never_silent() -> None:
+    """A capped read must not look like a complete one."""
+    from engine.ai_recovery import LINES_PER_BATCH, MAX_BATCHES, batches, dropped_line_count
+
+    lines = [f"0{index % 9 + 1} May 25 ROW {index} 1{index}.00 -1,000.00" for index in range(LINES_PER_BATCH * MAX_BATCHES + 37)]
+    assert_equal(len(batches(lines)), MAX_BATCHES, "batches are capped")
+    assert_equal(dropped_line_count(lines), 37, "and the remainder is counted so it can be logged")
+    assert_equal(dropped_line_count(lines[:10]), 0, "nothing dropped when everything fits")
+
+
+def test_ai_recovery_is_skipped_without_a_key_and_never_invents_a_ledger() -> None:
+    """No provider configured is a clean no-op, not a failure and not a guess."""
+    import os
+
+    import main
+
+    previous = os.environ.pop("OPENAI_API_KEY", None)
+    try:
+        transactions, diagnostics = main.attempt_ai_recovery(
+            full_text=STANDARD_BANK_TEXT_STATEMENT,
+            structured_rows=None,
+            metadata={},
+            bank_name="Standard Bank",
+            run_id="run-1",
+        )
+        assert_equal(transactions, [], "no key means no transactions")
+        assert_equal(diagnostics["enabled"], False, "and it says so")
+        assert_equal(diagnostics["reason"], "no_api_key", "with the reason named")
+    finally:
+        if previous is not None:
+            os.environ["OPENAI_API_KEY"] = previous
+
+
+def test_ai_recovered_rows_are_all_flagged_for_review() -> None:
+    """Located is not understood. A person has to see every AI-derived row."""
+    import os
+
+    import main
+    from engine import ai_recovery as ai_module
+
+    rows = [
+        {"source_line": AI_SOURCE_LINES[0], "date": "30 Apr 25", "description": "ADT JHB SECURITY",
+         "amount": "1,204.55", "balance": "-993,657.12", "direction": "debit", "confidence": 0.95},
+        {"source_line": AI_SOURCE_LINES[1], "date": "02 May 25", "description": "SALARY DEPOSIT",
+         "amount": "45,000.00", "balance": "-948,657.12", "direction": "credit", "confidence": 0.9},
+        # An invented row, returned alongside the real ones.
+        {"source_line": "11 May 25 CONSULTING 9,500.00 -939,157.12", "date": "11 May 25",
+         "description": "CONSULTING", "amount": "9,500.00", "balance": "-939,157.12", "direction": "debit", "confidence": 0.99},
+    ]
+
+    text = "\n".join(AI_SOURCE_LINES)
+    previous_key = os.environ.get("OPENAI_API_KEY")
+    original_transport = main.openai_chat_completion
+    os.environ["OPENAI_API_KEY"] = "test-key"
+    main.openai_chat_completion = lambda body, api_key, timeout=60: {
+        "choices": [{"message": {"content": json.dumps({"rows": rows})}}]
+    }
+    try:
+        transactions, diagnostics = main.attempt_ai_recovery(
+            full_text=text,
+            structured_rows=None,
+            metadata={"opening_balance": -992452.57, "statement_period_end": "2025-05-31"},
+            bank_name="Standard Bank",
+            run_id="run-1",
+        )
+    finally:
+        main.openai_chat_completion = original_transport
+        if previous_key is None:
+            os.environ.pop("OPENAI_API_KEY", None)
+        else:
+            os.environ["OPENAI_API_KEY"] = previous_key
+
+    assert_equal(len(transactions), 2, "the two grounded rows are recovered")
+    assert_equal(diagnostics["returned_rows"], 3, "the model returned three")
+    assert_equal(diagnostics["rejected_rows"].get("source_line_not_in_document"), 1, "the third was invented and rejected")
+
+    for transaction in transactions:
+        assert_equal(transaction.review_status, "needs_review", f"{transaction.description} must be flagged")
+        if "recovered_by: ai" not in transaction.notes:
+            raise AssertionError(f"{transaction.description} must record where it came from: {transaction.notes!r}")
+        if transaction.confidence > 60:
+            raise AssertionError(f"AI rows must not carry parser-grade confidence, got {transaction.confidence}")
+
+    credit = next(t for t in transactions if "SALARY" in t.description)
+    assert_equal(credit.credit_amount, 45000.0, "amounts are the printed ones")
+
+
+def test_an_ai_recovered_run_can_never_report_completed() -> None:
+    """AI succeeding is a review outcome, by construction, not by luck."""
+    source = (ROOT / "workers" / "accounting_worker" / "main.py").read_text()
+    if "or ai_recovered" not in source:
+        raise AssertionError("the run status must force review when AI produced the ledger")
+    if 'append_note(transaction, "recovered_by: ai")' not in source:
+        raise AssertionError("every AI row must be traceable in the ledger itself")
+
+
 def run() -> None:
+    test_ai_rows_must_come_from_a_line_we_sent()
+    test_ai_amounts_must_appear_in_their_source_line()
+    test_ai_balances_that_are_not_printed_are_dropped_but_the_row_is_kept()
+    test_ai_descriptions_may_not_introduce_words()
+    test_ai_never_receives_or_returns_a_guessed_direction()
+    test_ai_candidate_lines_only_carry_figures()
+    test_ai_line_cap_is_reported_never_silent()
+    test_ai_recovery_is_skipped_without_a_key_and_never_invents_a_ledger()
+    test_ai_recovered_rows_are_all_flagged_for_review()
+    test_an_ai_recovered_run_can_never_report_completed()
     test_a_statement_that_ties_out_completes()
     test_a_broken_balance_chain_is_partial_not_complete()
     test_continuity_does_not_second_guess_a_statement_whose_money_ties_out()

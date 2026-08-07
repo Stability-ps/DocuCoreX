@@ -81,4 +81,5 @@ Migrations are in `supabase/migrations/` (numbered 001–011). Schema covers: do
 | `CONVERSION_WORKER_MODE` | Set `true` on the Render worker to enable worker-mode auth checks |
 | `ACCOUNTING_WORKER_URL` / `ACCOUNTING_WORKER_TOKEN` | Accounting FastAPI worker |
 | `PDF_PLUMBER_URL` | Standalone pdfplumber service (`services/pdf-plumber`, e.g. `http://localhost:8001`) used by the multi-parser extraction pipeline (`lib/pdf/`) |
-| `OPENAI_API_KEY` | Required on the accounting worker Render service for AI classification |
+| `OPENAI_API_KEY` | Required on the accounting worker Render service for AI classification and AI recovery |
+| `ACCOUNTING_AI_RECOVERY` | `false` disables AI-assisted ledger recovery. On by default when `OPENAI_API_KEY` is set. Recovery sends statement lines to the model, a wider disclosure than classification, so it has its own switch |
