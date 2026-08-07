@@ -31,6 +31,7 @@ from engine.classification import (
     STRENGTH_NONE,
     STRENGTH_SOFT,
     REVISABLE_STRENGTHS,
+    SOURCE_AI,
     SOURCE_LEARNED_RULE,
     Classification,
     canonicalise_category,
@@ -3705,37 +3706,57 @@ def transaction_month(transaction: ParsedTransaction) -> str:
 
 def professional_account(transaction: ParsedTransaction) -> tuple[str, str, str, str]:
     learned_or_rule_category = (transaction.account_category or "").strip()
+    # Keyed by CANONICAL category, and complete over the vocabulary.
+    #
+    # This was keyed by the pre-unification spellings, so once categories became
+    # canonical twelve of them stopped matching and fell through to the
+    # description heuristics below — landing in Unclassified Expense on the
+    # workbook however confidently they had been classified. The ids are the
+    # professional chart's own strings, so most entries are now identities; the
+    # map's remaining job is the group and VAT treatment.
     learned_map = {
+        # Income
         "Sales / Revenue": ("Sales / Revenue", "Income", "Standard-rated taxable receipts", "Output"),
-        "Income": ("Other Income / Review", "Income", "Output VAT if taxable supply", "Output/Review"),
         "Cash Deposits / Revenue": ("Cash Deposits / Revenue", "Income", "Standard-rated taxable receipts unless proven otherwise", "Output"),
+        "Other Income / Review": ("Other Income / Review", "Income", "Output VAT if taxable supply", "Output/Review"),
+        "Interest Income": ("Interest Income", "Income", "Exempt/No VAT", "No"),
+        # Finance
         "Bank Charges": ("Bank Charges", "Bank Charges", "Input VAT if valid bank tax invoice", "Input/Review"),
-        "Staff Welfare / Meals / Entertainment": ("Meals / Groceries - Non Deductible Review", "Meals/Groceries", "Restricted/Review", "Review"),
-        "Software Subscriptions": ("Software / IT", "Software/IT", "Input VAT if valid invoice", "Input/Review"),
+        "Finance Costs": ("Finance Costs", "Finance Costs", "Exempt/No VAT", "No"),
+        # Operating
+        "Supplier Payments": ("Supplier Payments", "Operating Expenses", "Input VAT if valid invoice", "Input/Review"),
+        "Operating Expenses": ("Operating Expenses", "Operating Expenses", "Input VAT if valid invoice", "Input/Review"),
+        "Accounting / Professional Fees": ("Accounting / Professional Fees", "Operating Expenses", "Input VAT if valid invoice", "Input/Review"),
         "Software / IT": ("Software / IT", "Software/IT", "Input VAT if valid invoice", "Input/Review"),
         "Telephone / Internet / Communication": ("Telephone / Internet / Communication", "Operating Expenses", "Input VAT if valid invoice", "Input/Review"),
-        "Insurance": ("Insurance", "Insurance", "Exempt/No VAT", "No"),
-        "Insurance Expense": ("Insurance", "Insurance", "Exempt/No VAT", "No"),
-        "Levies": ("Levies", "Property/Levies", "Review", "Review"),
-        "Salaries & Wages": ("Salaries / Drawings / Personal", "Payroll/Personal", "No VAT", "No"),
-        "Inter-account Transfer": ("Inter-account Transfer", "Transfers", "No VAT", "No"),
-        "Related Party / Drawings": ("Director Loan / Drawings", "Transfers", "No VAT", "No"),
-        "Loan / Liability": ("Loan / Liability", "Loans", "No VAT", "No"),
-        "SARS / Tax Suspense": ("SARS / Tax Suspense", "Taxes", "No VAT", "No"),
-        "Courier / Delivery": ("Courier / Freight", "Freight", "Input VAT if valid invoice", "Input/Review"),
+        "Courier / Freight": ("Courier / Freight", "Freight", "Input VAT if valid invoice", "Input/Review"),
         "Motor Vehicle Expenses": ("Motor Vehicle Expenses", "Motor Vehicle", "Input VAT if valid invoice", "Input/Review"),
         "Road Tolls": ("Road Tolls", "Motor Vehicle", "Input VAT if valid invoice", "Input/Review"),
-        "Operating Expenses": ("Operating Expenses", "Operating Expenses", "Input VAT if valid invoice", "Input/Review"),
-        "Supplier Payments": ("Supplier Payments", "Operating Expenses", "Input VAT if valid invoice", "Input/Review"),
-        "Accounting / Professional Fees": ("Accounting / Professional Fees", "Operating Expenses", "Input VAT if valid invoice", "Input/Review"),
+        "Insurance": ("Insurance", "Insurance", "Exempt/No VAT", "No"),
         "Medical Expenses": ("Medical Expenses", "Operating Expenses", "Input VAT if valid invoice", "Input/Review"),
-        "Utilities": ("Utilities", "Operating Expenses", "Input VAT if valid invoice", "Input/Review"),
-        "VAT Control": ("VAT Control", "VAT", "VAT control", "No"),
-        "Finance Costs": ("Finance Costs", "Finance Costs", "Exempt/No VAT", "No"),
+        "Meals / Groceries - Non Deductible Review": ("Meals / Groceries - Non Deductible Review", "Meals/Groceries", "Restricted/Review", "Review"),
+        "Levies": ("Levies", "Property/Levies", "Review", "Review"),
         "Rent": ("Rent", "Premises", "Input VAT if valid invoice", "Input/Review"),
+        "Repairs & Maintenance": ("Repairs & Maintenance", "Operating Expenses", "Input VAT if valid invoice", "Input/Review"),
+        "Utilities": ("Utilities", "Operating Expenses", "Input VAT if valid invoice", "Input/Review"),
+        # Balance sheet
+        "Salaries / Drawings / Personal": ("Salaries / Drawings / Personal", "Payroll/Personal", "No VAT", "No"),
+        "Director Loan / Drawings": ("Director Loan / Drawings", "Transfers", "No VAT", "No"),
+        "Loan / Liability": ("Loan / Liability", "Loans", "No VAT", "No"),
+        "Inter-account Transfer": ("Inter-account Transfer", "Transfers", "No VAT", "No"),
+        "Inter-account Transfer In": ("Inter-account Transfer In", "Transfers", "No VAT", "No"),
+        "Inter-account Transfer Out / Loan": ("Inter-account Transfer Out / Loan", "Transfers", "No VAT", "No"),
+        # Tax
+        "SARS / Tax Suspense": ("SARS / Tax Suspense", "Taxes", "No VAT", "No"),
+        "VAT Control": ("VAT Control", "VAT", "VAT control", "No"),
+        # Unresolved — these carry no accounting claim and must not acquire one.
+        "Refund / Suspense": ("Refund / Suspense", "Review", "Review", "Review"),
+        "Suspense / Review Required": ("Suspense / Review Required", "Review", "Review", "Review"),
+        "Uncategorised": ("Uncategorised", "Review", "Review", "Review"),
     }
-    if learned_or_rule_category in learned_map and learned_or_rule_category != "Review Required":
-        return learned_map[learned_or_rule_category]
+    canonical_category = canonicalise_category(learned_or_rule_category) or learned_or_rule_category
+    if canonical_category in learned_map:
+        return learned_map[canonical_category]
 
     text = transaction.description.lower()
     if transaction.bank_charge or "service fee" in text or "monthly account fee" in text or "byc debit" in text:
@@ -4639,6 +4660,65 @@ PROVENANCE_COLUMNS = (
 def strip_provenance_columns(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """The same rows as they would have been written before migration 021."""
     return [{key: value for key, value in row.items() if key not in PROVENANCE_COLUMNS} for row in rows]
+
+
+def classify_transactions_with_ai(
+    transactions: list[ParsedTransaction],
+    workspace_id: str,
+    source_file: str,
+) -> dict[str, Any]:
+    """Ask a model about the rows the deterministic rules could not settle.
+
+    This runs BEFORE the transactions are written. It used to run only inside
+    build_workbook, after the insert, so its answers reached the exported
+    spreadsheet and never the stored row — which is what the reviewer looks at.
+    A person opening the review screen saw the deterministic guess while the
+    workbook held a better answer, and no correction they made could reconcile
+    the two.
+
+    What it may change: the category, and the provenance recording that a model
+    chose it. What it may never change: the date, the description, either
+    amount, the direction, the running balance, or `confidence` — which for an
+    AI-recovered row is capped as an EXTRACTION signal and has nothing to do
+    with how well the category is known.
+
+    VAT is deliberately left as the deterministic rules set it. Recognising a
+    merchant proves nothing about whether input VAT is claimable, whether a
+    valid tax invoice exists, or whether the purpose was business, and this is
+    the one place where being wrong costs money rather than time.
+    """
+    if not transactions:
+        return ai_diagnostics(enabled=False)
+
+    rows = [professional_transaction_row(transaction, source_file) for transaction in transactions]
+    diagnostics = apply_ai_classifications(rows, workspace_id)
+
+    applied = 0
+    rejected: dict[str, int] = {}
+    for transaction, row in zip(transactions, rows):
+        if not row.get("ai_used"):
+            continue
+        category = canonicalise_category(str(row.get("account") or ""))
+        if category is None:
+            # Already validated on the way in, so this means the guardrails in
+            # apply_ai_result_to_row produced something outside the vocabulary.
+            rejected["account_outside_vocabulary"] = rejected.get("account_outside_vocabulary", 0) + 1
+            continue
+
+        transaction.account_category = category
+        transaction.classification_source = SOURCE_AI
+        # A model's answer is revisable — by a person, and by a learned rule
+        # built from what that person decides.
+        transaction.classification_strength = STRENGTH_SOFT
+        transaction.classification_confidence = round(float(row.get("ai_confidence") or 0) * 100, 2)
+        transaction.classification_reason = str(row.get("classification_reason") or "")[:400]
+        if row.get("review_required"):
+            transaction.review_status = "needs_review"
+        applied += 1
+
+    diagnostics["ai_transactions_applied_to_ledger"] = applied
+    diagnostics["ai_rejected_after_guardrails"] = rejected
+    return diagnostics
 
 
 def insert_transactions(supabase: Client, rows: list[dict[str, Any]], run_id: str) -> bool:
@@ -5632,6 +5712,29 @@ def process_fnb_statement(payload: ProcessRequest, authorization: str | None = H
                 "processing_duration_ms": round((time.perf_counter() - process_started) * 1000, 2),
                 "worker": worker_version(),
             }
+
+        # Classification enrichment, BEFORE the write, so the reviewer sees the
+        # same answer the workbook does. Fails open: the deterministic
+        # classification stands if the model is unavailable.
+        heartbeat_step(
+            supabase,
+            run_id=payload.run_id,
+            workspace_id=payload.workspace_id,
+            processing_job_id=payload.processing_job_id,
+            step_label="Classifying transactions",
+            progress=88,
+        )
+        ai_classification_stats = classify_transactions_with_ai(
+            transactions,
+            payload.workspace_id,
+            str(metadata.get("source_file") or ""),
+        )
+        log_event(
+            "worker.ai_classification_applied",
+            run_id=payload.run_id,
+            **{key: value for key, value in ai_classification_stats.items() if key != "ai_rejected_after_guardrails"},
+            rejected=ai_classification_stats.get("ai_rejected_after_guardrails"),
+        )
 
         supabase.table("accounting_transactions").delete().eq("run_id", payload.run_id).execute()
         rows = [transaction_insert_row(transaction, payload.run_id, payload.workspace_id) for transaction in transactions]

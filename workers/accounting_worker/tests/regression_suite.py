@@ -3119,7 +3119,223 @@ def test_an_alias_is_never_written_back() -> None:
     )
 
 
+# ── AI classification reaching the ledger ─────────────────────────────────────
+
+
+def _ai_classification_transport(account="Motor Vehicle Expenses", confidence=0.94, review=False):
+    """A model that classifies every row it is asked about."""
+    def transport(body, api_key, timeout=60):
+        request = json.loads(body["messages"][1]["content"])
+        items = request.get("transactions", [])
+        return {"choices": [{"message": {"content": json.dumps({"items": [
+            {
+                "transaction_id": item["transaction_id"],
+                "account": account,
+                "group": "Motor Vehicle",
+                "vat_treatment": "Input VAT if valid invoice",
+                "vat_claim_status": "Input/Review",
+                "review_required": review,
+                "review_reason": "",
+                "invoice_required": True,
+                "confidence": confidence,
+                "reason": "Merchant identified from the description.",
+                "explanation": "",
+            }
+            for item in items
+        ]})}}]}
+    return transport
+
+
+def _with_ai(transport, fn):
+    import os
+
+    import main
+
+    previous = os.environ.get("OPENAI_API_KEY")
+    original = main.openai_chat_completion
+    os.environ["OPENAI_API_KEY"] = "test-key"
+    main.AI_CLASSIFICATION_CACHE.clear()
+    main.openai_chat_completion = transport
+    try:
+        return fn()
+    finally:
+        main.openai_chat_completion = original
+        main.AI_CLASSIFICATION_CACHE.clear()
+        if previous is None:
+            os.environ.pop("OPENAI_API_KEY", None)
+        else:
+            os.environ["OPENAI_API_KEY"] = previous
+
+
+# "PAYEE" would match the SARS rule's "paye" needle — the keyword rules are
+# substring matches without word boundaries. This fixture avoids that on
+# purpose; the substring issue itself is a separate defect, reported not fixed.
+def _unresolved_transaction(main, description="QQQ ZZZ 4471"):
+    return main.build_transaction("02 May 2025", description, 1710.15, None, -1000.0, {}, 1, "raw", 90)
+
+
+def test_ai_classification_reaches_the_stored_transaction() -> None:
+    """The core defect: AI answers never left the exported spreadsheet.
+
+    apply_ai_classifications ran inside build_workbook, after the insert, so a
+    reviewer saw the deterministic guess while the workbook held a better
+    answer, and no correction could reconcile the two.
+    """
+    import main
+    from engine.classification import SOURCE_AI, SOURCE_UNRESOLVED
+
+    transaction = _unresolved_transaction(main)
+    assert_equal(transaction.classification_source, SOURCE_UNRESOLVED, "deterministic rules could not settle it")
+
+    stats = _with_ai(
+        _ai_classification_transport(),
+        lambda: main.classify_transactions_with_ai([transaction], "workspace-a", "src"),
+    )
+    assert_equal(stats["ai_transactions_applied_to_ledger"], 1, "the answer reached the row")
+    assert_equal(transaction.account_category, "Motor Vehicle Expenses", "the category is on the transaction")
+    assert_equal(transaction.classification_source, SOURCE_AI, "and is attributed to the model")
+    assert_equal(transaction.classification_confidence, 94.0, "with its own classification confidence")
+
+
+def test_ai_classification_cannot_touch_the_ledger() -> None:
+    """Category and provenance only. Everything else is extracted evidence."""
+    import main
+
+    transaction = _unresolved_transaction(main)
+    before = (
+        transaction.transaction_date,
+        transaction.description,
+        transaction.debit_amount,
+        transaction.credit_amount,
+        transaction.running_balance,
+        transaction.confidence,
+    )
+    _with_ai(
+        _ai_classification_transport(),
+        lambda: main.classify_transactions_with_ai([transaction], "workspace-a", "src"),
+    )
+    after = (
+        transaction.transaction_date,
+        transaction.description,
+        transaction.debit_amount,
+        transaction.credit_amount,
+        transaction.running_balance,
+        transaction.confidence,
+    )
+    assert_equal(after, before, "date, description, amounts, direction, balance and extraction confidence untouched")
+
+
+def test_ai_classification_never_raises_an_ai_recovered_extraction_confidence() -> None:
+    """PR #36 again, now with a second thing writing to the row."""
+    import main
+
+    transaction = main.ParsedTransaction(
+        transaction_date="2025-05-02", description="CARTRACK CART25D5S58NYRV ACCOUNT PAYMENT",
+        debit_amount=1710.15, confidence=54.0, review_status="needs_review", notes=main.AI_RECOVERY_NOTE,
+    )
+    _with_ai(
+        _ai_classification_transport(confidence=0.97),
+        lambda: main.classify_transactions_with_ai([transaction], "workspace-a", "src"),
+    )
+    assert_equal(transaction.classification_confidence, 97.0, "the category is confidently known")
+    assert_equal(transaction.confidence, 54.0, "the extraction cap is untouched")
+
+
+def test_ai_classification_does_not_revise_a_settled_row() -> None:
+    """A bank fee the bank named is not a question for a model."""
+    import main
+    from engine.classification import SOURCE_DETERMINISTIC
+
+    fee = main.build_transaction("02 May 2025", "ACC 301981485 SERVICE FEE", 574.30, None, -1000.0, {}, 1, "raw", 90)
+    assert_equal(fee.classification_source, SOURCE_DETERMINISTIC, "settled deterministically")
+
+    stats = _with_ai(
+        _ai_classification_transport(account="Meals / Groceries - Non Deductible Review"),
+        lambda: main.classify_transactions_with_ai([fee], "workspace-a", "src"),
+    )
+    assert_equal(stats["ai_transactions_applied_to_ledger"], 0, "the model was not asked")
+    assert_equal(fee.account_category, "Bank Charges", "and the settled category stands")
+
+
+def test_ai_classification_leaves_vat_to_the_deterministic_rules() -> None:
+    """Recognising a merchant proves nothing about whether VAT is claimable."""
+    import main
+
+    transaction = _unresolved_transaction(main)
+    before = transaction.vat_treatment
+    _with_ai(
+        _ai_classification_transport(),
+        lambda: main.classify_transactions_with_ai([transaction], "workspace-a", "src"),
+    )
+    assert_equal(transaction.vat_treatment, before, "VAT treatment is not moved by a merchant guess")
+
+
+def test_ai_classification_failure_leaves_the_deterministic_answer() -> None:
+    """Enrichment that fails is enrichment that did not happen."""
+    import main
+    from engine.classification import SOURCE_UNRESOLVED
+
+    def explode(body, api_key, timeout=60):
+        raise TimeoutError("openai timed out")
+
+    transaction = _unresolved_transaction(main)
+    stats = _with_ai(explode, lambda: main.classify_transactions_with_ai([transaction], "workspace-a", "src"))
+    assert_equal(transaction.account_category, "Suspense / Review Required", "the deterministic answer stands")
+    assert_equal(transaction.classification_source, SOURCE_UNRESOLVED, "and is still attributed honestly")
+    if not isinstance(stats, dict):
+        raise AssertionError("a failure must still report diagnostics")
+
+
+def test_an_out_of_vocabulary_ai_answer_is_counted_not_applied() -> None:
+    import main
+
+    transaction = _unresolved_transaction(main)
+    stats = _with_ai(
+        _ai_classification_transport(account="Imaginary Ledger"),
+        lambda: main.classify_transactions_with_ai([transaction], "workspace-a", "src"),
+    )
+    assert_equal(stats["ai_transactions_applied_to_ledger"], 0, "nothing outside the vocabulary is applied")
+    assert_equal(transaction.account_category, "Suspense / Review Required", "the row is unchanged")
+
+
+def test_every_canonical_category_maps_onto_the_workbook_chart() -> None:
+    """A category the chart cannot map lands in Unclassified Expense.
+
+    The chart was keyed by the pre-unification spellings, so once categories
+    became canonical twelve of them stopped matching — including every category
+    the AI is now allowed to write onto a stored row.
+    """
+    import main
+    from engine.categories import canonical_categories
+
+    for category in canonical_categories():
+        transaction = main.ParsedTransaction(
+            transaction_date="2025-01-01", description="NEUTRAL DESCRIPTION",
+            debit_amount=100.0, account_category=category,
+        )
+        account, group, _, claim = main.professional_account(transaction)
+        if account == "Unclassified Expense" and category != "Uncategorised":
+            raise AssertionError(f"{category!r} falls through the workbook chart")
+        if not group or not claim:
+            raise AssertionError(f"{category!r} has no group or VAT claim status")
+
+    # A historical spelling must still map, since stored rows are not rewritten.
+    legacy = main.ParsedTransaction(
+        transaction_date="2025-01-01", description="NEUTRAL", debit_amount=100.0,
+        account_category="Insurance Expense",
+    )
+    assert_equal(main.professional_account(legacy)[0], "Insurance", "historical values still map")
+
+
 def run() -> None:
+    test_ai_classification_reaches_the_stored_transaction()
+    test_ai_classification_cannot_touch_the_ledger()
+    test_ai_classification_never_raises_an_ai_recovered_extraction_confidence()
+    test_ai_classification_does_not_revise_a_settled_row()
+    test_ai_classification_leaves_vat_to_the_deterministic_rules()
+    test_ai_classification_failure_leaves_the_deterministic_answer()
+    test_an_out_of_vocabulary_ai_answer_is_counted_not_applied()
+    test_every_canonical_category_maps_onto_the_workbook_chart()
     test_every_category_the_worker_can_store_is_in_the_vocabulary()
     test_historical_spellings_still_resolve()
     test_an_unrecognised_category_is_reported_not_guessed()
