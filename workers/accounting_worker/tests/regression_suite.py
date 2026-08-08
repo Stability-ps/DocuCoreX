@@ -4134,6 +4134,11 @@ def run() -> None:
     test_standing_does_not_reopen_the_ai_recovery_cap()
     test_provenance_is_written_but_never_at_the_ledgers_cost()
     test_bank_fee_terminology_classifies_as_bank_charges()
+    test_a_fuel_merchant_never_authorises_a_vat_claim()
+    test_fuel_vat_is_review_not_merely_not_standard()
+    test_the_expense_category_survives_the_vat_downgrade()
+    test_known_and_unknown_fuel_retailers_now_agree()
+    test_bank_charges_keep_their_claim()
     test_the_global_prompt_names_no_customer_counterparty()
     test_the_global_prompt_is_identical_for_every_workspace()
     test_the_global_prompt_is_built_only_from_vetted_knowledge()
@@ -4969,6 +4974,111 @@ def test_the_prompt_keeps_the_patterns_the_names_stood_for() -> None:
     # Public brands are still allowed, and still there.
     for brand in ("discovery", "dhl", "sage", "wesbank", "sars", "engen"):
         assert_equal(brand in text, True, f"public brand {brand} is still available to the model")
+
+
+
+# ── A merchant name cannot authorise a VAT claim ─────────────────────────────
+#
+# Found in the production baseline audit: five Shell forecourt charges carried
+# vat_treatment "standard", i.e. claimable, decided by nothing but the brand in
+# the description.
+#
+# Two things were wrong. The tax answer: petrol and diesel are zero-rated in
+# South Africa, so claiming 15% input VAT on a fuel purchase is an assessment
+# risk — and the same till also sells standard-rated shop goods, which one
+# statement line cannot distinguish. And the principle: a merchant name does not
+# establish what was bought, whether the purpose was business, whether a valid
+# tax invoice exists, or whether the supplier is registered.
+#
+# The inconsistency proved the point. Engen, Sasol, Caltex and Fuelzone are in
+# the merchant knowledge base, whose path deliberately downgrades a merchant's
+# "standard" default to "review" — so they were held to review. Bare "shell" is
+# deliberately NOT a KB alias, being too generic, so SHELL FLAMINGO fell through
+# to the keyword table and was claimed. Identical purchases, opposite VAT
+# answers, decided by whether we happened to know the brand.
+
+FUEL_DESCRIPTIONS = (
+    "SHELL FLAMINGO4278*5999 CHEQUE CARD PURCHASE",
+    "SHELL CIRCLE 4278*5999 CHEQUE CARD PURCHASE",
+    "ENGEN GARAGE",
+    "SASOL FUEL",
+    "CALTEX N1 STOP",
+    "C*FUELZONE 4278*5999 CHEQUE CARD PURCHASE",
+    "DIESEL PURCHASE",
+    "PETROL",
+    "UNKNOWN FORECOURT 4278*5999 GARAGE",
+)
+
+
+def test_a_fuel_merchant_never_authorises_a_vat_claim() -> None:
+    """No fuel description may come back claimable, whoever the retailer is."""
+    claimed = []
+    for description in FUEL_DESCRIPTIONS:
+        detail = main.classify_transaction_detailed(description, 1000.0, None)
+        if detail.vat_treatment == "standard":
+            claimed.append((description, detail.vat_treatment))
+    assert_equal(claimed, [], "no fuel description produces a claimable VAT treatment")
+
+
+def test_fuel_vat_is_review_not_merely_not_standard() -> None:
+    """Review, specifically — not zero-rated, not exempt, not out of scope.
+
+    Guessing "zero_rated" would be the same mistake in the other direction: the
+    forecourt shop is standard-rated and we cannot see which was bought. Review
+    is the only treatment the evidence supports.
+    """
+    for description in FUEL_DESCRIPTIONS:
+        detail = main.classify_transaction_detailed(description, 1000.0, None)
+        assert_equal(detail.vat_treatment, "review", f"{description} VAT is review_required")
+
+
+def test_the_expense_category_survives_the_vat_downgrade() -> None:
+    """Only the VAT answer changes. The account is still assigned.
+
+    Withdrawing the claim must not cost the classification — a forecourt charge
+    is a vehicle cost whatever was bought, and dropping it into Suspense to be
+    safe about VAT would trade one error for another.
+    """
+    from engine.classification import STRENGTH_SOFT
+
+    for description in FUEL_DESCRIPTIONS:
+        detail = main.classify_transaction_detailed(description, 1000.0, None)
+        assert_equal(detail.category, "Motor Vehicle Expenses", f"{description} is still a vehicle expense")
+        assert_equal(detail.strength, STRENGTH_SOFT, f"{description} keeps its rule standing")
+
+
+def test_known_and_unknown_fuel_retailers_now_agree() -> None:
+    """The KB and the keyword table must give the same VAT answer.
+
+    This is the actual defect: two layers disagreeing, with the less careful one
+    winning for any brand the knowledge base had not been taught.
+    """
+    in_kb = main.classify_transaction_detailed("ENGEN GARAGE", 1000.0, None)
+    not_in_kb = main.classify_transaction_detailed("SHELL FLAMINGO4278*5999 CHEQUE CARD PURCHASE", 1000.0, None)
+    assert_equal(in_kb.vat_treatment, not_in_kb.vat_treatment, "knowing the brand does not change the VAT answer")
+
+
+def test_bank_charges_keep_their_claim() -> None:
+    """The fix must not sweep up VAT that IS supportable.
+
+    A bank fee is different in kind: the bank named the charge on its own
+    statement, the supplier is known and registered, and the statement itself is
+    the supporting document. That evidence is present; for fuel it is not.
+
+    Note the descriptions here all take the HARD bank-fee path. A bare "SERVICE
+    FEES" does not — it reaches Bank Charges through a soft keyword rule with
+    review VAT — which is a separate pre-existing inconsistency, reported but
+    deliberately not touched by a VAT-safety fix.
+    """
+    from engine.classification import STRENGTH_HARD
+
+    for description in ("MONTHLY ACCOUNT FEE", "ACC 301981485 SERVICE FEE", "HONOURING FEE",
+                        "NOTIFICATION FEE", "OVERDRAFT SERVICE FEE", "CASH HANDLING FEE"):
+        detail = main.classify_transaction_detailed(description, 100.0, None)
+        assert_equal(detail.category, "Bank Charges", f"{description} is a bank charge")
+        assert_equal(detail.vat_treatment, "standard", f"{description} keeps its claimable treatment")
+        assert_equal(detail.bank_charge, True, f"{description} is flagged as a bank charge")
+        assert_equal(detail.strength, STRENGTH_HARD, f"{description} is settled by bank-named evidence")
 
 
 if __name__ == "__main__":

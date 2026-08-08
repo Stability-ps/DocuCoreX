@@ -1007,9 +1007,31 @@ def _classify_transaction_rules(description: str, debit: float | None, credit: f
         (("samsung electronics", "global-e", "global e"), "Software / IT", "review", False, 82),
         (("sunnydale pharm", "khumbu hair", "raquel hair", "hair stuff", "hair health"),
          "Staff Welfare / Meals / Entertainment", "review", False, 72),
-        # Fuel / motor
+        # Fuel / motor.
+        #
+        # The CATEGORY is safe to assert — a forecourt charge is a vehicle cost
+        # whatever was bought. The VAT TREATMENT is not, and the two questions
+        # are separate: "what is this for" is answered by the merchant, "may
+        # input VAT be claimed" is not.
+        #
+        # A fuel retailer's name cannot establish what was actually bought.
+        # Petrol and diesel are zero-rated in South Africa; the shop behind the
+        # same till is standard-rated; a car wash is standard-rated. One
+        # statement line cannot tell them apart, and claiming 15% on a
+        # zero-rated supply is an assessment risk, not a rounding difference.
+        # Nor does the name establish that a valid tax invoice exists, that the
+        # supplier is registered, or that the purpose was business.
+        #
+        # This used to say "standard", which made the deterministic table
+        # contradict the merchant path directly above it: that path downgrades a
+        # merchant's own "standard" default to "review" for exactly these
+        # reasons. Merchants in the knowledge base (Engen, Sasol, Caltex,
+        # Fuelzone) were therefore held to review while SHELL FLAMINGO — bare
+        # "shell" is deliberately not a KB alias, being too generic — fell
+        # through to here and was claimed. Same purchase, different answer,
+        # decided by whether we happened to know the brand.
         (("fuel", "petrol", "diesel", "garage", "engen", "shell", "bp ", "sasol", "total ", "caltex", "volvo"),
-         "Motor Vehicle Expenses", "standard", False, 84),
+         "Motor Vehicle Expenses", "review", False, 84),
         # Freight / logistics suppliers and customer references seen on FNB freight
         # statements (kept direction-safe: receipts stay income, payments stay opex).
         (("afrigreen", "freight aces", "millenium trans", "pablo logistics", "kavi comm", "orca freight", "arca freight"),
