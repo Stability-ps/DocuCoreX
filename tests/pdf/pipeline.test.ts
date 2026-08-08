@@ -519,7 +519,10 @@ test("process route returns immediately and runs extraction in the background", 
   assert.match(route, /async function processStatementInBackground/);
   assert.match(route, /export const maxDuration = 300/, "allows background work to finish");
   // Timeout protection / parser time budgets (Req 2).
-  assert.match(route, /ACCOUNTING_WORKER_TIMEOUT_MS = 120_000/, "accounting worker 120s timeout");
+  // 280s, not 120s: the worker call may use most of the 300s maxDuration above.
+  // The timeout-vs-maxDuration relationship is guarded in
+  // tests/accounting/worker-timeout.test.ts.
+  assert.match(route, /ACCOUNTING_WORKER_TIMEOUT_MS = 280_000/, "accounting worker 280s timeout");
   assert.match(read("lib/pdf/extractWithPdfplumber.ts"), /PDFPLUMBER_TIMEOUT_MS = 15_000/, "pdfplumber 15s timeout");
   assert.match(read("lib/pdf/extractWithOcr.ts"), /OCR_FETCH_TIMEOUT_MS = readTimeoutMs\([^)]*, 120_000\)/, "OCR 120s timeout (< maxDuration)");
   // Failures mark the run failed with the real error.
@@ -634,7 +637,7 @@ test("pipeline enforces per-parser time budgets (Req 2)", () => {
   assert.match(pipeline, /withTimeout\(extractWithPdfjs\(pdfjsBuf\)/, "PDF.js is time-boxed");
   assert.match(read("lib/pdf/extractWithPdfplumber.ts"), /PDFPLUMBER_TIMEOUT_MS = 15_000/, "pdfplumber 15s");
   assert.match(read("lib/pdf/extractWithOcr.ts"), /OCR_FETCH_TIMEOUT_MS = readTimeoutMs\([^)]*, 120_000\)/, "OCR 120s");
-  assert.match(read("app/api/accounting/fnb/process/route.ts"), /ACCOUNTING_WORKER_TIMEOUT_MS = 120_000/, "accounting worker 120s");
+  assert.match(read("app/api/accounting/fnb/process/route.ts"), /ACCOUNTING_WORKER_TIMEOUT_MS = 280_000/, "accounting worker 280s");
 });
 
 test("extraction cache reuses by document_id + file_hash; Force reprocess bypasses it", () => {
