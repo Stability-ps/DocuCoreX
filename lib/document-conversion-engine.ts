@@ -9,11 +9,14 @@ import { createDocxFile, createPdfFile, createTextFile, createXlsxFile, createZi
 export type ConversionTargetFormat = "pdf" | "word" | "excel" | "text" | "csv" | "html" | "image" | "images" | "zip";
 
 export class ConversionError extends Error {
-  constructor(
-    message: string,
-    public readonly code: string,
-  ) {
+  // Plain field rather than a constructor parameter property: parameter
+  // properties are unsupported by node's strip-only TypeScript loader, and this
+  // module is imported by the unit tests in tests/conversion/.
+  readonly code: string;
+
+  constructor(message: string, code: string) {
     super(message);
+    this.code = code;
     this.name = "ConversionError";
   }
 }
@@ -916,23 +919,38 @@ function findExecutable(envName: string, candidates: string[]) {
   return resolveExecutable(envName, candidates)?.path ?? null;
 }
 
+// An explicitly configured path is AUTHORITATIVE. When the variable is set it is
+// the only candidate considered, and a missing target means the tool is
+// UNAVAILABLE — not "fall back to whatever is on PATH".
+//
+// It used to be prepended to the defaults instead, which meant the variable
+// could express "prefer this location" but never "this tool is absent": a
+// missing explicit path was skipped and resolution continued to `which`. That
+// silently defeated every caller trying to configure an engine off, including
+// the conversion suite's own OCR-unavailable case, which therefore only passed
+// on machines that happened to lack the binary. Nothing in render.yaml or the
+// worker Dockerfile sets these variables, so the deployed runtimes resolve
+// through the unchanged unset path below.
 function resolveExecutable(envName: string, candidates: string[]) {
   const explicit = process.env[envName]?.trim();
-  const allCandidates = explicit ? [explicit, ...candidates] : candidates;
+  if (explicit) {
+    const found = resolveCandidate(explicit);
+    return found ? { path: found, source: envName } : null;
+  }
 
-  for (const candidate of allCandidates) {
+  for (const candidate of candidates) {
     if (!candidate) continue;
-    if (candidate.includes("/")) {
-      if (existsSync(candidate)) return { path: candidate, source: explicit === candidate ? envName : "candidate" };
-      continue;
-    }
-
-    const result = spawnSync("which", [candidate], { encoding: "utf8", env: conversionProcessEnv() });
-    const found = result.status === 0 ? result.stdout.trim().split(/\r?\n/)[0] : "";
-    if (found) return { path: found, source: "PATH" };
+    const found = resolveCandidate(candidate);
+    if (found) return { path: found, source: candidate.includes("/") ? "candidate" : "PATH" };
   }
 
   return null;
+}
+
+function resolveCandidate(candidate: string) {
+  if (candidate.includes("/")) return existsSync(candidate) ? candidate : null;
+  const result = spawnSync("which", [candidate], { encoding: "utf8", env: conversionProcessEnv() });
+  return (result.status === 0 ? result.stdout.trim().split(/\r?\n/)[0] : "") || null;
 }
 
 function hasOcrEngine() {

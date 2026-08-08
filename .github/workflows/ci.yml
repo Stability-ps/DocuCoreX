@@ -38,6 +38,10 @@ jobs:
 
       # Each suite runs even if an earlier one fails, so a single run reports
       # every broken suite instead of only the first.
+      - name: tests/conversion
+        if: '!cancelled()'
+        run: pnpm test:conversion
+
       - name: tests/ocr
         if: '!cancelled()'
         run: pnpm test:ocr
@@ -115,9 +119,11 @@ jobs:
             tesseract-ocr \
             tesseract-ocr-eng
 
-      # Both Playwright projects (Desktop Chrome, iPhone 13) are Chromium.
-      - name: Install Chromium
-        run: pnpm exec playwright install --with-deps chromium
+      # Desktop Chrome is Chromium; iPhone 13 is WebKit
+      # (devices["iPhone 13"].defaultBrowserType === "webkit"). Installing only
+      # chromium failed every mobile-project test at browser launch.
+      - name: Install browsers
+        run: pnpm exec playwright install --with-deps chromium webkit
 
       # playwright.config.ts starts `next dev -p 3100` itself via webServer.
       - name: Playwright
