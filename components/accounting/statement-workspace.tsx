@@ -107,7 +107,6 @@ export function StatementWorkspace({ statementId }: { statementId: string }) {
   const [banner, setBanner] = useState<string | null>(null);
   const [exportOpen, setExportOpen] = useState(false);
   const [moreOpen, setMoreOpen] = useState(false);
-  const autoReprocessedStaleRef = useRef<Set<string>>(new Set());
 
   const sourceUrl = `/api/accounting/fnb/runs/${statementId}/source`;
 
@@ -226,16 +225,13 @@ export function StatementWorkspace({ statementId }: { statementId: string }) {
   const model = useMemo(() => (detail ? buildAccountingModel(detail) : null), [detail]);
   const runQuality = useMemo(() => accountingRunQuality(detail), [detail]);
 
-  useEffect(() => {
-    if (!detail) return;
-    if (detail.run.status === "queued" || detail.run.status === "processing") return;
-    if (!runQuality.needsFreshExtraction) return;
-    if (autoReprocessedStaleRef.current.has(detail.run.id)) return;
-    autoReprocessedStaleRef.current.add(detail.run.id);
-    setBanner(`Refreshing this statement because the saved extraction looks stale. ${runQuality.reason}`);
-    void reprocess();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [detail?.run.id, detail?.run.status, detail?.transactions.length, runQuality.needsFreshExtraction]);
+  // Opening a statement is READ-ONLY.
+  //
+  // This used to reprocess it on mount whenever the saved totals looked stale —
+  // the same defect as in accounting-intelligence.tsx, duplicated. The useRef
+  // guard was per mounted component, so it reset on every open, refresh and
+  // navigation. The notice below reports the finding; the existing Re-process
+  // Statement button is how a user acts on it.
 
   const totals = useMemo(() => {
     const transactionTotals = accountingTransactionTotals(transactions);
@@ -285,7 +281,7 @@ export function StatementWorkspace({ statementId }: { statementId: string }) {
     );
   }
 
-  const dataQuality = runQuality.needsFreshExtraction ? "Refreshing" : totals.reconciled ? "Complete" : totals.opening === 0 && totals.closing === 0 ? "Unable to Verify" : "Review Required";
+  const dataQuality = runQuality.needsFreshExtraction ? "May Need Reprocessing" : totals.reconciled ? "Complete" : totals.opening === 0 && totals.closing === 0 ? "Unable to Verify" : "Review Required";
   const fullPackBlocked = run.status === "queued" || run.status === "processing" || transactions.length === 0;
 
   return (
@@ -315,7 +311,9 @@ export function StatementWorkspace({ statementId }: { statementId: string }) {
               ) : null}
             </div>
             {runQuality.needsFreshExtraction ? (
-              <p className="mt-1 text-xs font-bold text-amber-700">Refreshing stale extraction — totals will update shortly.</p>
+              <p className="mt-1 text-xs font-bold text-amber-700">
+                May need reprocessing — {runQuality.reason} Use Re-process Statement when you are ready.
+              </p>
             ) : run.requiresReview || run.validationStatus === "review_required" ? (
               <p className="mt-1 text-xs font-bold text-amber-700">Review required before final export. Draft export is available.</p>
             ) : null}

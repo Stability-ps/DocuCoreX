@@ -373,8 +373,6 @@ type LiveRefreshState = "idle" | "processing" | "refreshing";
 
 export function AccountingIntelligence() {
   const inputRef = useRef<HTMLInputElement>(null);
-  const autoProcessedRef = useRef<Set<string>>(new Set());
-  const autoReprocessedStaleRef = useRef<Set<string>>(new Set());
   const selectedRunIdRef = useRef("");
   const [runs, setRuns] = useState<AccountingStatementRun[]>([]);
   const [uploadQueue, setUploadQueue] = useState<UploadQueueItem[]>([]);
@@ -615,17 +613,18 @@ export function AccountingIntelligence() {
     };
   }, [hasActiveRuns, selectedRunId]);
 
-  useEffect(() => {
-    if (!detail) return;
-    if (isActiveRunStatus(detail.run.status)) return;
-    const quality = accountingRunQuality(detail);
-    if (!quality.needsFreshExtraction) return;
-    if (autoReprocessedStaleRef.current.has(detail.run.id)) return;
-    autoReprocessedStaleRef.current.add(detail.run.id);
-    setMessage(`Refreshing ${runDisplayTitle(detail.run)} because saved totals look stale. ${quality.reason}`);
-    void processRun(detail.run.id, { reprocess: true, manageBusy: false, refreshAfter: true }).catch(() => undefined);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [detail?.run.id, detail?.run.status, detail?.transactions.length]);
+  // Detecting that a statement looks stale is READ-ONLY.
+  //
+  // This used to reprocess it. The guard was a useRef, which is per mounted
+  // component — so it stopped a loop inside one session and stopped nothing
+  // across logins, navigations, refreshes or remounts. Every page load re-armed
+  // it. While the closing balance was NULL the staleness test was permanently
+  // true (the difference computed as the entire opening balance, R992,452.57,
+  // far past the R1,000 threshold), so merely opening the page started an
+  // eleven-minute reprocess — which, before #57, deleted the ledger first.
+  //
+  // Detection now informs; correction is a decision the user makes. The notice
+  // and its Re-process button are rendered from runQuality below.
 
   useEffect(() => {
     if (!runs.length) return;
@@ -663,20 +662,13 @@ export function AccountingIntelligence() {
         setUploadQueue((queue) =>
           queue.map((queuedItem) => (queuedItem.id === item.id ? { ...queuedItem, status: "Uploaded", runId: run.id, file: undefined } : queuedItem)),
         );
-        // Processing starts automatically after upload — no manual Process click.
-        void autoProcess(run.id, item.id);
+        // Uploading is not asking for processing. The file is stored and the run
+        // is created; the user chooses when work begins, with Process, Process
+        // Selected or Process All. Extraction costs money and time and is the
+        // one operation that can replace a ledger, so it does not start on a
+        // side effect of dropping a file.
       }
     }
-  }
-
-  // Kick off extraction automatically once a statement is uploaded. Guarded so a
-  // run is only auto-processed once (no duplicate jobs), and only while it is
-  // still queued (the server also rejects a second in-flight job).
-  async function autoProcess(runId: string, queueItemId: string) {
-    if (autoProcessedRef.current.has(runId)) return;
-    autoProcessedRef.current.add(runId);
-    setUploadQueue((queue) => queue.map((item) => (item.id === queueItemId ? { ...item, status: "Processing", error: undefined } : item)));
-    await processRun(runId, { manageBusy: false, refreshAfter: true }).catch(() => undefined);
   }
 
   async function uploadFile(file: File, queueItemId?: string) {
@@ -1462,9 +1454,18 @@ export function AccountingIntelligence() {
           ) : null}
         </div>
       ) : null}
-      {runQuality.needsFreshExtraction ? (
-        <div className="rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm font-bold text-amber-900">
-          Refreshing this statement because the saved extraction looks stale. {runQuality.reason}
+      {runQuality.needsFreshExtraction && detail ? (
+        <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
+          <span className="font-bold">
+            This statement may need reprocessing. {runQuality.reason}
+          </span>
+          <button
+            onClick={() => void processRun(detail.run.id, { reprocess: true })}
+            disabled={busy.startsWith("process:")}
+            className="shrink-0 rounded-lg border border-amber-300 bg-white px-3 py-1.5 text-sm font-bold text-amber-900 hover:bg-amber-100 disabled:opacity-60"
+          >
+            Re-process Statement
+          </button>
         </div>
       ) : null}
 

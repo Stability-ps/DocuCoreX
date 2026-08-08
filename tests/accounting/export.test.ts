@@ -68,15 +68,22 @@ test("validation failures surface the specific rule + extracted vs declared, not
   assert.match(ui, /suspected_missing_rows/, "client reads suspected missing rows");
 });
 
-test("statement processing starts automatically after upload with duplicate protection", () => {
+// This test used to require the opposite, and pinned a defect in place: it
+// asserted that uploading a file must auto-start an eleven-minute extraction,
+// guarded only by a useRef. A ref lives on a mounted component, so it stopped a
+// duplicate inside one session and stopped nothing across refreshes or
+// remounts. Uploading is not the same act as asking for processing — the user
+// stores a file, then decides when work begins.
+//
+// The full read-only-render invariant lives in tests/accounting/explicit-processing.test.ts.
+test("processing never starts without an explicit action, and duplicates are still refused", () => {
   const ui = read("components/accounting/accounting-intelligence.tsx");
-  // Upload auto-triggers processing (no manual click needed).
-  assert.match(ui, /void autoProcess\(run\.id, item\.id\)/, "upload must auto-start processing");
-  assert.match(ui, /async function autoProcess/, "autoProcess must exist");
-  // Duplicate-job guard on the client (a run is only auto-processed once).
-  assert.match(ui, /autoProcessedRef\.current\.has\(runId\)/, "client must guard against duplicate auto-processing");
-  // Manual Process/Re-process kept for reruns.
-  assert.match(ui, /async function processSelectedRuns/, "manual Process Selected kept for reruns");
+  assert.doesNotMatch(ui, /autoProcess/, "uploading must not auto-start processing");
+  assert.doesNotMatch(ui, /autoProcessedRef/, "the per-mount duplicate guard is gone with what it guarded");
+  assert.doesNotMatch(ui, /autoReprocessedStaleRef/, "stale detection no longer reprocesses");
+  // The explicit paths remain.
+  assert.match(ui, /async function processSelectedRuns/, "manual Process Selected kept");
+  assert.match(ui, /async function processAllRuns/, "manual Process All kept");
 
   // Server-side duplicate protection: never start a second in-flight job.
   const route = read("app/api/accounting/fnb/process/route.ts");
