@@ -722,20 +722,35 @@ export async function POST(request: Request) {
     // effort on the new columns — the update must not fail if migration 014 is
     // not yet applied, so retry without them on error.
     const nowIso = new Date().toISOString();
-    if (body.reprocess) {
-      await context.supabase
-        .from("accounting_transactions")
-        .delete()
-        .eq("workspace_id", context.workspaceId)
-        .eq("run_id", runId);
-    }
+    // The previous ledger is NOT deleted here, and that is the whole point.
+    //
+    // This used to delete every transaction on the run before starting, then
+    // hand off to a worker that takes about eleven minutes on a 37-page
+    // statement. For those eleven minutes the run had no ledger at all, and any
+    // failure in them — worker timeout, model outage, Render cold start, a
+    // deploy landing mid-flight, an extraction fault — left it that way
+    // permanently. failRun marks the run failed; it does not put 615
+    // transactions back.
+    //
+    // The delete was also unnecessary. The worker already clears the run's
+    // transactions immediately before inserting the replacement, AFTER every
+    // extraction, classification and validation stage has succeeded. That makes
+    // reprocessing idempotent on its own, and it narrows the window in which no
+    // ledger exists from eleven minutes to the few milliseconds between a
+    // delete and an insert against the same table.
+    //
+    // So the old generation stays readable until a new one is ready to take its
+    // place. transaction_count and workbook_storage_path are kept for the same
+    // reason: a run that still has 615 transactions must not advertise zero,
+    // and a reviewer refreshing mid-reprocess should see the statement they had
+    // rather than an empty one.
     const { error: markError } = await context.supabase
       .from("accounting_statement_runs")
       .update({
         status: "processing",
         error: null,
-        transaction_count: body.reprocess ? 0 : detail.run.transactionCount,
-        workbook_storage_path: body.reprocess ? null : detail.run.workbookStoragePath,
+        transaction_count: detail.run.transactionCount,
+        workbook_storage_path: detail.run.workbookStoragePath,
         parser_method: null,
         extraction_confidence: null,
         detected_pdf_type: null,
@@ -761,10 +776,13 @@ export async function POST(request: Request) {
       await context.supabase
         .from("accounting_statement_runs")
         .update({
+          // Same reasoning as the primary update above: the previous
+          // generation stays intact and correctly described until a
+          // replacement is ready to take its place.
           status: "processing",
           error: null,
-          transaction_count: body.reprocess ? 0 : detail.run.transactionCount,
-          workbook_storage_path: body.reprocess ? null : detail.run.workbookStoragePath,
+          transaction_count: detail.run.transactionCount,
+          workbook_storage_path: detail.run.workbookStoragePath,
           updated_at: nowIso,
         })
         .eq("workspace_id", context.workspaceId)
