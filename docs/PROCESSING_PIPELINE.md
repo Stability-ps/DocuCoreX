@@ -76,13 +76,24 @@ only route that forwards the job itself rather than just the OCR sub-request.
 
 ### Provider selection — exact names read by `detectProviderConfig()` (`lib/workflow-adapters.ts`)
 
-| Purpose | Exact variable name(s) |
-|---|---|
-| OpenAI | `OPENAI_API_KEY` |
-| Google Vision | `GOOGLE_VISION_API_KEY` **or** `GOOGLE_APPLICATION_CREDENTIALS` |
-| AWS Textract | `AWS_ACCESS_KEY_ID` **and** `AWS_SECRET_ACCESS_KEY` |
-| Azure Form Recognizer | `AZURE_FORM_RECOGNIZER_ENDPOINT` **and** `AZURE_FORM_RECOGNIZER_KEY` |
-| Mistral OCR (secondary engine) | `MISTRAL_API_KEY` |
+| Purpose | Exact variable name(s) | Implemented? |
+|---|---|---|
+| OpenAI | `OPENAI_API_KEY` | ✅ vision OCR + structured extraction |
+| Tesseract | `CONVERSION_WORKER_URL` (via the worker's `/api/ocr-text`) | ✅ OCR fallback |
+| Google Vision | `GOOGLE_VISION_API_KEY` **or** `GOOGLE_APPLICATION_CREDENTIALS` | ❌ no client in this codebase |
+| AWS Textract | `AWS_ACCESS_KEY_ID` **and** `AWS_SECRET_ACCESS_KEY` | ❌ no client in this codebase |
+| Azure Form Recognizer | `AZURE_FORM_RECOGNIZER_ENDPOINT` **and** `AZURE_FORM_RECOGNIZER_KEY` | ❌ no client in this codebase |
+| Mistral OCR (secondary engine) | `MISTRAL_API_KEY` | ✅ escalation only — see §5 |
+
+> ⚠️ The three engines marked ❌ have **no effect**. `createWorkflowAdapters()`
+> withholds their credentials from the selector (`selectionFlags()` in
+> `lib/providers/reporting.ts`), so setting those keys never changes which engine
+> runs. They are reported back in `providers.unimplemented` on
+> `POST /api/jobs/process` precisely so the dead configuration is visible.
+>
+> Not to be confused with **`AZURE_DOCUMENT_INTELLIGENCE_ENDPOINT` / `_KEY`**,
+> which are live and unrelated: those drive `lib/pdf/extractWithAzureDocumentIntelligence.ts`
+> inside the multi-parser PDF pipeline (§5), not provider selection.
 
 > `MISTRAL_API_KEY` is **not** part of provider selection. Mistral is an
 > escalation engine inside the extraction pipeline, never a selectable primary
@@ -189,19 +200,20 @@ Pick **one** of the two routes.
 1. Set the chosen provider key on **Vercel → Project → Settings → Environment Variables**
    for **Production** and **Preview**:
    - OpenAI: `OPENAI_API_KEY`
-2. **Remove/leave unset** the higher-priority providers in that runtime if you want
-   OpenAI to be selected: `GOOGLE_VISION_API_KEY`, `GOOGLE_APPLICATION_CREDENTIALS`,
-   `AWS_ACCESS_KEY_ID`/`AWS_SECRET_ACCESS_KEY`, `AZURE_FORM_RECOGNIZER_*` — otherwise
-   OCR/extraction select those first.
+2. Nothing else needs unsetting. `GOOGLE_VISION_API_KEY`, `GOOGLE_APPLICATION_CREDENTIALS`,
+   `AWS_ACCESS_KEY_ID`/`AWS_SECRET_ACCESS_KEY` and `AZURE_FORM_RECOGNIZER_*` are never
+   selected (see §3), so leaving them set does not displace OpenAI. Removing them is
+   still worthwhile as cleanup — they are dead configuration.
 3. Redeploy so the new env is picked up.
-4. Verify: `POST /api/jobs/process` for a real document returns `providers.configured.openai: true`
-   and OCR text reflects the real document (not the sample placeholder).
+4. Verify: `POST /api/jobs/process` for a real document returns `providers.ocr: "openai"`
+   and `providers.extraction: "openai"` — the engine that actually ran — and OCR text
+   reflects the real document (not the sample placeholder).
 
-> Note: the current in-process adapters only implement **mock** OCR/extraction. Routing
-> to a real OpenAI vision + structured-extraction provider requires the code changes in
-> the investigation plan (a real `OpenAIOCRProvider`/`OpenAIExtractionProvider`). Setting
-> the key alone makes `configured.openai: true` but does not yet perform real OCR until
-> those providers exist.
+> `providers.configured.openai: true` only means the key is present. Use
+> `providers.ocr` / `providers.extraction` to confirm what actually ran, and
+> `providers.unimplemented` to spot keys that are set but ignored. If selection
+> resolves to nothing runnable, both report `"unavailable"` and the request errors
+> rather than returning fabricated output.
 
 ### Option B — Route OCR through the existing conversion worker
 
