@@ -425,7 +425,17 @@ function normalizeWorkerFailure(input: {
   return `${detail || `Accounting worker returned HTTP ${input.status}.`} (endpoint: ${input.workerEndpoint}).${workerMetaSuffix}`;
 }
 
-const ACCOUNTING_WORKER_TIMEOUT_MS = 120_000;
+// 280s of the 300s maxDuration below, leaving ~20s for response handling and
+// cleanup. It was 120s, which aborted the worker less than half way into the
+// window the function is allowed — production showed /api/accounting/fnb/process
+// giving up at 120s on a statement that had not failed, only taken longer than
+// an arbitrary limit. All three Render services are Starter and always-on, so
+// this is not a cold-start workaround.
+//
+// ⚠️ This is the budget for ONE call, and the function can make two: callWorker
+// runs again for the Enhanced-OCR retry, and pre-extraction runs before either.
+// See the note above maxDuration.
+const ACCOUNTING_WORKER_TIMEOUT_MS = 280_000;
 // Every document is analysed before extraction, so the pipeline now runs by
 // default. The strategy keeps this affordable: a genuine digital statement takes
 // the "native" path and never calls OCR. Set ACCOUNTING_PRE_EXTRACT=false to
@@ -437,6 +447,20 @@ const ACCOUNTING_OCR_FALLBACK_ENABLED = process.env.ACCOUNTING_OCR_FALLBACK !== 
 
 // Allow the background work (after the response is sent) to run beyond the default
 // so extraction + worker + reconciliation can finish off the request path.
+//
+// ⚠️ 300s is the budget for EVERYTHING in this request, not just the worker call:
+//   1. runExtractionPipeline pre-extraction (on by default; OCR, Mistral and
+//      Azure each carry their own 120s ceiling)
+//   2. callWorker — ACCOUNTING_WORKER_TIMEOUT_MS
+//   3. on the Enhanced-OCR fallback, a second pipeline run AND a second
+//      callWorker
+// With the worker timeout at 280s, a single slow call can consume nearly the
+// whole window, so anything that ran before it pushes the function past 300s and
+// Vercel terminates it before the AbortController fires. The failure then
+// surfaces as an opaque platform timeout rather than the clean
+// "Accounting worker timed out after 280s." message, and the retry never runs.
+// Raising this ceiling, or budgeting the stages against a shared deadline, is
+// the real fix if statements start needing the full window.
 export const maxDuration = 300;
 
 function toParserDebug(pipelineDebug: PipelineDebug | null) {
