@@ -316,10 +316,29 @@ export function StatementWorkspace({ statementId }: { statementId: string }) {
               >
                 {dataQuality}
               </span>
+              {/* The review state belongs beside the title: it is the first
+                  thing that decides whether this statement can be exported.
+                  Same condition the advisory line below already uses. */}
+              {run.requiresReview || run.validationStatus === "review_required" ? (
+                <span className="rounded-full bg-amber-100 px-2.5 py-1 text-[11px] font-black text-amber-800">Review Required</span>
+              ) : null}
               {run.parserMethod ? (
                 <span className="rounded-full bg-slate-100 px-2.5 py-1 text-[11px] font-black text-slate-600">{parserMethodLabel(run.parserMethod)}</span>
               ) : null}
             </div>
+
+            {/* Scale of the work, directly under the title. Both figures are
+                already derived — run.transactionCount from the run, and
+                reviewItems from getReviewItems — so this counts nothing new. */}
+            <p className="mt-1 text-xs font-bold text-slate-600">
+              {(run.transactionCount || 0).toLocaleString("en-ZA")} transactions
+              {reviewItems.length ? (
+                <>
+                  <span className="mx-1.5 text-slate-300">·</span>
+                  <span className="text-amber-700">{reviewItems.length.toLocaleString("en-ZA")} review items</span>
+                </>
+              ) : null}
+            </p>
             {runQuality.needsFreshExtraction ? (
               <p className="mt-1 text-xs font-bold text-amber-700">
                 May need reprocessing — {runQuality.reason} Use Re-process Statement when you are ready.
