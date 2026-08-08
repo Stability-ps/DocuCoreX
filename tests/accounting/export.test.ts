@@ -379,7 +379,10 @@ test("balanced count-only FNB reviews do not store suspected missing transaction
   const worker = read("workers/accounting_worker/main.py");
   assert.match(worker, /def missing_transaction_count_for_storage/);
   assert.match(worker, /if extraction_money_checks_passed\(extraction_check\):\s*return 0/);
-  assert.match(worker, /"missing_transaction_count": missing_transaction_count_for_storage\(extraction_check, len\(transactions\)\)/);
+  // The call was hoisted into a local; what matters is that the stored count is
+  // the helper's result for this run, not the raw expected-vs-actual difference.
+  assert.match(worker, /missing_rows = missing_transaction_count_for_storage\(extraction_check, len\(transactions\)\)/);
+  assert.match(worker, /"missing_transaction_count": missing_rows,/);
 });
 
 test("AI accounting classification is batched and allowed enough response tokens", () => {
