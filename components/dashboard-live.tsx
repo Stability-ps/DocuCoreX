@@ -161,14 +161,14 @@ export function DashboardLive() {
     }
 
     if (jobs.some((job) => job.type === "conversion" && ["queued", "running"].includes(job.status))) {
-      items.push({ id: "conversion", title: "Continue Conversion", href: "/upload", icon: RefreshCcw });
+      items.push({ id: "conversion", title: "Continue Conversion", href: "/documents", icon: RefreshCcw });
     }
 
     if (recentDocuments[0]) {
       items.push({ id: "recent", title: "Open Recent Document", href: `/documents/${recentDocuments[0].id}`, icon: FolderOpen });
     }
 
-    items.push({ id: "upload", title: "Resume Upload", href: "/upload", icon: Upload });
+    items.push({ id: "upload", title: "Resume Upload", href: "/documents", icon: Upload });
 
     return items.slice(0, 4);
   }, [jobs, processingCount, recentDocuments, reviewCount]);
@@ -198,7 +198,7 @@ export function DashboardLive() {
         )}
         <p className="mt-2 text-sm font-semibold text-slate-500">{summaryMessage({ processing: processingCount, review: reviewCount, ready: readyCount })}</p>
         <Link
-          href="/upload"
+          href="/documents"
           className="mt-4 inline-flex min-h-12 w-full items-center justify-center gap-2 rounded-2xl bg-royal-600 px-4 text-sm font-black text-white shadow-sm"
         >
           <Upload className="h-5 w-5" />
@@ -208,7 +208,7 @@ export function DashboardLive() {
 
       <section className="grid grid-cols-3 gap-2">
         {[
-          { title: "Upload", href: "/upload", icon: Upload },
+          { title: "Upload", href: "/documents", icon: Upload },
           { title: "Documents", href: "/documents", icon: FolderOpen },
           { title: "Accounting", href: "/accounting", icon: Landmark },
         ].map((item) => (

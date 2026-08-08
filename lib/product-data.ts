@@ -262,12 +262,12 @@ export const profileChecklist = [
 ];
 
 export const intakeTypes = [
-  { title: "Bank & Credit Card Statements", workflow: "bank_statement", detail: "PDF statements, scanned statements and CSV transaction files", icon: FileSpreadsheet, target: "/upload?workflow=bank_statement" },
-  { title: "Invoices & Receipts", workflow: "invoice_receipt", detail: "Supplier invoices, till slips, expense receipts and purchase orders", icon: ReceiptText, target: "/upload?workflow=invoice_receipt" },
-  { title: "Tax Forms", workflow: "tax_document", detail: "VAT reports, certificates, tax schedules and compliance packs", icon: Archive, target: "/upload?workflow=tax_document" },
-  { title: "Contracts", workflow: "contract", detail: "Agreements, leases, service contracts and signed PDFs", icon: FileCog, target: "/upload?workflow=contract" },
-  { title: "Payslips", workflow: "payslip", detail: "Payroll records, deductions, benefits and net-pay summaries", icon: UsersRound, target: "/upload?workflow=payslip" },
-  { title: "Other Documents", workflow: "unknown", detail: "Route unknown formats through custom OCR and AI extraction", icon: FileSearch, target: "/upload?workflow=unknown" },
+  { title: "Bank & Credit Card Statements", workflow: "bank_statement", detail: "PDF statements, scanned statements and CSV transaction files", icon: FileSpreadsheet, target: "/documents?workflow=bank_statement" },
+  { title: "Invoices & Receipts", workflow: "invoice_receipt", detail: "Supplier invoices, till slips, expense receipts and purchase orders", icon: ReceiptText, target: "/documents?workflow=invoice_receipt" },
+  { title: "Tax Forms", workflow: "tax_document", detail: "VAT reports, certificates, tax schedules and compliance packs", icon: Archive, target: "/documents?workflow=tax_document" },
+  { title: "Contracts", workflow: "contract", detail: "Agreements, leases, service contracts and signed PDFs", icon: FileCog, target: "/documents?workflow=contract" },
+  { title: "Payslips", workflow: "payslip", detail: "Payroll records, deductions, benefits and net-pay summaries", icon: UsersRound, target: "/documents?workflow=payslip" },
+  { title: "Other Documents", workflow: "unknown", detail: "Route unknown formats through custom OCR and AI extraction", icon: FileSearch, target: "/documents?workflow=unknown" },
 ];
 
 export const integrationConnectors = [

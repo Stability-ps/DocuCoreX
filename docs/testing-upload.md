@@ -9,7 +9,7 @@ Use this checklist against a real Supabase project with `NEXT_PUBLIC_REQUIRE_AUT
    - Profile found: `true`
    - Workspace id is populated
    - Storage bucket reachable: `true`
-4. Open `/upload`.
+4. Open `/documents` (the document workspace — `/upload` still redirects here, but the workspace is the canonical route).
 5. Upload a real PDF.
 6. In Supabase Storage, confirm a file exists in the private `documents` bucket under:
    - `{workspace_id}/documents/...`
