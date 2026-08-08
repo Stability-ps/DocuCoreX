@@ -173,7 +173,7 @@ function convertPdfToImages(source: SourceDocument): GeneratedFile {
   inspectPdf(source.content, source.name);
   const pdftoppm = findExecutable("PDFTOPPM_PATH", [
     "pdftoppm",
-    "/Users/patric/.cache/codex-runtimes/codex-primary-runtime/dependencies/bin/pdftoppm",
+    ...conversionToolPath("bin", "pdftoppm"),
   ]);
 
   if (!pdftoppm) {
@@ -295,8 +295,8 @@ function convertOfficeDocumentToPdf(source: SourceDocument): GeneratedFile {
     "soffice",
     "libreoffice",
     "/Applications/LibreOffice.app/Contents/MacOS/soffice",
-    "/Users/patric/.cache/codex-runtimes/codex-primary-runtime/dependencies/bin/soffice",
-    "/Users/patric/.cache/codex-runtimes/codex-primary-runtime/dependencies/native/libreoffice-headless/libreoffice/LibreOfficeDev.app/Contents/MacOS/soffice",
+    ...conversionToolPath("bin", "soffice"),
+    ...conversionToolPath("native", "libreoffice-headless", "libreoffice", "LibreOfficeDev.app", "Contents", "MacOS", "soffice"),
   ]);
 
   if (!soffice) {
@@ -363,16 +363,42 @@ function imageExtensionForMime(mimeType: string) {
   return ".jpg";
 }
 
+// An optional local toolchain, for developers whose ocrmypdf/poppler/LibreOffice
+// live outside PATH. Set CONVERSION_TOOLS_ROOT to the directory holding bin/,
+// native/ and python/.
+//
+// These paths used to be one specific machine's home directory, hardcoded here
+// and shipped: /Users/<someone>/.cache/codex-runtimes/... The deployed runtimes
+// were unaffected because the directory does not exist there, but it meant
+// production code carried personal state, and — more practically — binary
+// resolution on that machine silently differed from CI and from the worker
+// image, which is exactly the kind of divergence that makes a green local run
+// mean nothing.
+//
+// Unset (CI, production, everyone else) contributes no candidates, so
+// resolution falls through to PATH unchanged.
+function conversionToolsRoot() {
+  return process.env.CONVERSION_TOOLS_ROOT?.trim() || null;
+}
+
+/** A candidate list entry for a tool inside the optional root, or nothing. */
+function conversionToolPath(...segments: string[]): string[] {
+  const root = conversionToolsRoot();
+  return root ? [join(root, ...segments)] : [];
+}
+
 function conversionProcessEnv() {
-  const popplerLib = "/Users/patric/.cache/codex-runtimes/codex-primary-runtime/dependencies/native/poppler/poppler/lib";
+  const root = conversionToolsRoot();
+  const extraBin = root ? [join(root, "bin")] : [];
+  const popplerLib = root ? [join(root, "native", "poppler", "poppler", "lib")] : [];
   return {
     ...process.env,
     PATH: [
-      "/Users/patric/.cache/codex-runtimes/codex-primary-runtime/dependencies/bin",
+      ...extraBin,
       process.env.PATH ?? "",
     ].filter(Boolean).join(":"),
     DYLD_FALLBACK_LIBRARY_PATH: [
-      popplerLib,
+      ...popplerLib,
       process.env.DYLD_FALLBACK_LIBRARY_PATH ?? "",
     ].filter(Boolean).join(":"),
   };
@@ -522,7 +548,7 @@ function inspectPdf(bytes: Uint8Array, fileName: string) {
     writeFileSync(pdfPath, bytes);
     const pdfinfo = findExecutable("PDFINFO_PATH", [
       "pdfinfo",
-      "/Users/patric/.cache/codex-runtimes/codex-primary-runtime/dependencies/bin/pdfinfo",
+      ...conversionToolPath("bin", "pdfinfo"),
     ]);
 
     let pageCount = 0;
@@ -680,7 +706,7 @@ function extractPdfText(bytes: Uint8Array, fileName: string) {
     if (popplerExtraction) return popplerExtraction;
 
     const python = findExecutable("PYTHON_PATH", [
-      "/Users/patric/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3",
+      ...conversionToolPath("python", "bin", "python3"),
       "python3",
       "python",
     ]);
@@ -732,7 +758,7 @@ print(json.dumps({"pages": pages}))
 function extractPdfTextWithPdftotext(pdfPath: string) {
   const pdftotext = findExecutable("PDFTOTEXT_PATH", [
     "pdftotext",
-    "/Users/patric/.cache/codex-runtimes/codex-primary-runtime/dependencies/bin/pdftotext",
+    ...conversionToolPath("bin", "pdftotext"),
   ]);
 
   if (!pdftotext) return null;
