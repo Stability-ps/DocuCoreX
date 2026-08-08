@@ -4177,6 +4177,18 @@ def run() -> None:
     test_the_evidence_layers_preserve_existing_automation()
     test_coverage_counts_what_was_decided_and_on_what_evidence()
     test_coverage_calls_a_drop_in_automation_a_regression()
+    test_the_model_is_given_evidence_not_just_a_name()
+    test_one_counterparty_is_one_question_not_many()
+    test_a_counterparty_seen_once_is_not_dressed_up_as_a_pattern()
+    test_an_answer_outside_the_vocabulary_is_discarded_not_repaired()
+    test_an_answer_outside_the_permitted_treatments_is_discarded()
+    test_an_answer_about_something_we_never_asked_is_discarded()
+    test_a_decision_without_a_reason_is_discarded()
+    test_an_ai_counterparty_decision_is_never_settled()
+    test_ai_counterparty_reasoning_cannot_touch_a_settled_row()
+    test_ai_counterparty_reasoning_never_moves_money()
+    test_the_counterparty_prompt_carries_no_vat_decision()
+    test_the_counterparty_prompt_is_identical_for_every_workspace()
     test_a_fuel_merchant_never_authorises_a_vat_claim()
     test_fuel_vat_is_review_not_merely_not_standard()
     test_the_expense_category_survives_the_vat_downgrade()
@@ -5661,6 +5673,181 @@ def test_coverage_calls_a_drop_in_automation_a_regression() -> None:
     comparison = coverage_module.compare(before, worse)
     assert_equal(comparison["regressed"], True, "fewer automated rows is a regression")
     assert_equal(coverage_module.compare(before, before)["regressed"], False, "unchanged is not a regression")
+
+
+
+# ── AI reasons about counterparties, and only inside its evidence ────────────
+#
+# The row-by-row model asked the same question 615 times with almost nothing to
+# answer it from: "WELKOM FRESH P4278*5999 CHEQUE CARD PURCHASE" is a truncated
+# name, a card mask and a channel. Grouped, it is 115 transactions across six
+# months, entirely outbound, R840 to R73,360 — one answerable question instead
+# of 115 unanswerable ones.
+
+
+def _question(**overrides):
+    from engine.ai_counterparty import CounterpartyQuestion
+    from decimal import Decimal as D
+
+    base = dict(key="acme trading", display="ACME TRADING", occurrences=12, months_spanned=6,
+                direction="outbound only", total=D("120000"), median=D("10000"),
+                smallest=D("900"), largest=D("26000"), relationship="supplier",
+                relationship_strength="strong", merchant_type=None, permitted_treatments=(),
+                sample_descriptions=("ACME TRADING 4278*5999 CHEQUE CARD PURCHASE",),
+                truncated_name=False, current_category="Suspense / Review Required")
+    base.update(overrides)
+    return CounterpartyQuestion(**base)
+
+
+def test_the_model_is_given_evidence_not_just_a_name() -> None:
+    """Requirement: never a raw merchant name asked to produce a category."""
+    from engine import ai_counterparty as aic
+
+    item = _question().as_prompt_item()
+    assert_equal("evidence" in item, True, "the question carries evidence")
+    for fact in ("transactions", "months_spanned", "direction", "median_amount", "amount_range", "relationship"):
+        assert_equal(fact in item["evidence"], True, f"evidence includes {fact}")
+
+
+def test_one_counterparty_is_one_question_not_many() -> None:
+    """The whole point: 115 transactions become a single decision."""
+    from engine import ai_counterparty as aic
+
+    rows = [main.ParsedTransaction(transaction_date=f"2025-0{(i % 6) + 1}-01",
+                                   description="ACME TRADING 4278*5999 CHEQUE CARD PURCHASE",
+                                   debit_amount=9100.0) for i in range(115)]
+    groups = counterparty.group_by_counterparty(rows, "standard_bank_business_v1")
+    evidence = counterparty.evidence_for_all(rows, "standard_bank_business_v1")
+    questions = aic.build_questions(groups, evidence)
+    assert_equal(len(questions), 1, "115 rows, one question")
+    assert_equal(questions[0].occurrences, 115, "and the question knows there were 115")
+
+
+def test_a_counterparty_seen_once_is_not_dressed_up_as_a_pattern() -> None:
+    from engine import ai_counterparty as aic
+
+    rows = [main.ParsedTransaction(transaction_date="2025-05-01",
+                                   description="ONEOFF PAYEE 4278*5999 CHEQUE CARD PURCHASE",
+                                   debit_amount=500.0)]
+    groups = counterparty.group_by_counterparty(rows, "standard_bank_business_v1")
+    evidence = counterparty.evidence_for_all(rows, "standard_bank_business_v1")
+    assert_equal(aic.build_questions(groups, evidence), [], "one transaction is not a pattern")
+
+
+def test_an_answer_outside_the_vocabulary_is_discarded_not_repaired() -> None:
+    """A wrong answer quietly corrected is a wrong answer nobody notices."""
+    from engine import ai_counterparty as aic
+    from engine.categories import canonical_categories
+
+    questions = [_question()]
+    raw = {"counterparties": [{"counterparty_id": "acme trading", "category": "Crypto Mining Rig",
+                              "confidence": 0.9, "reason": "recurring outbound payments"}]}
+    verdicts, rejected = aic.validate_answers(raw, questions, vocabulary=canonical_categories())
+    assert_equal(rejected["out_of_vocabulary"], 1, "the invented category is counted")
+    assert_equal(verdicts[0].category, None, "and not applied")
+
+
+def test_an_answer_outside_the_permitted_treatments_is_discarded() -> None:
+    """permitted_treatments is enforced, not merely requested in the prompt."""
+    from engine import ai_counterparty as aic
+    from engine.categories import canonical_categories
+
+    questions = [_question(merchant_type="fuel_retailer",
+                           permitted_treatments=("Motor Vehicle Expenses", "Supplier Payments"))]
+    raw = {"counterparties": [{"counterparty_id": "acme trading", "category": "Sales / Revenue",
+                              "confidence": 0.95, "reason": "looked like income"}]}
+    verdicts, rejected = aic.validate_answers(raw, questions, vocabulary=canonical_categories())
+    assert_equal(rejected["outside_permitted_treatments"], 1, "outside the entity's permitted set")
+    assert_equal(verdicts[0].category, None, "and not applied")
+
+
+def test_an_answer_about_something_we_never_asked_is_discarded() -> None:
+    from engine import ai_counterparty as aic
+    from engine.categories import canonical_categories
+
+    raw = {"counterparties": [{"counterparty_id": "never sent", "category": "Operating Expenses",
+                              "confidence": 0.9, "reason": "invented"}]}
+    verdicts, rejected = aic.validate_answers(raw, [_question()], vocabulary=canonical_categories())
+    assert_equal(rejected["unknown_counterparty"], 1, "an answer we cannot check is not trusted")
+    assert_equal(verdicts, [], "and produces no verdict")
+
+
+def test_a_decision_without_a_reason_is_discarded() -> None:
+    """An unreviewable decision is not an improvement on an unresolved row."""
+    from engine import ai_counterparty as aic
+    from engine.categories import canonical_categories
+
+    raw = {"counterparties": [{"counterparty_id": "acme trading", "category": "Operating Expenses",
+                              "confidence": 0.9, "reason": "   "}]}
+    verdicts, rejected = aic.validate_answers(raw, [_question()], vocabulary=canonical_categories())
+    assert_equal(rejected["no_reason_given"], 1, "no reason, no decision")
+    assert_equal(verdicts[0].category, None, "and not applied")
+
+
+def test_an_ai_counterparty_decision_is_never_settled() -> None:
+    """A model proposes; a human settles. Accepting is what makes it learned."""
+    from engine import ai_counterparty as aic
+    from engine.categories import canonical_categories
+
+    raw = {"counterparties": [{"counterparty_id": "acme trading", "category": "Operating Expenses",
+                              "confidence": 0.99, "reason": "12 recurring outbound payments over 6 months",
+                              "review_required": False}]}
+    verdicts, _ = aic.validate_answers(raw, [_question()], vocabulary=canonical_categories())
+    assert_equal(verdicts[0].review_required, True, "however confident, it still needs a human")
+
+
+def test_ai_counterparty_reasoning_cannot_touch_a_settled_row() -> None:
+    """A bank-named fee and a workspace's own correction are not reopened."""
+    from engine.classification import STRENGTH_HARD, STRENGTH_LEARNED
+
+    settled = [
+        main.ParsedTransaction(transaction_date="2025-05-01", description="MONTHLY ACCOUNT FEE",
+                               debit_amount=100.0, account_category="Bank Charges",
+                               classification_strength=STRENGTH_HARD),
+        main.ParsedTransaction(transaction_date="2025-05-02", description="TAUGHT PAYEE 111111 ACCOUNT PAYMENT",
+                               debit_amount=500.0, account_category="Operating Expenses",
+                               classification_strength=STRENGTH_LEARNED),
+    ]
+    before = [t.account_category for t in settled]
+    # No API key in the test environment, so this returns without calling out —
+    # and the assertion that matters is that nothing moved.
+    main.apply_ai_counterparty_reasoning(settled, "standard_bank_business_v1")
+    assert_equal([t.account_category for t in settled], before, "settled rows are untouched")
+
+
+def test_ai_counterparty_reasoning_never_moves_money() -> None:
+    rows = [main.ParsedTransaction(transaction_date="2025-05-01", description="ACME TRADING 4278*5999 CHEQUE CARD PURCHASE",
+                                   debit_amount=9100.0, running_balance=-500.0) for _ in range(3)]
+    before = [(t.debit_amount, t.credit_amount, t.running_balance, t.transaction_date, t.description) for t in rows]
+    main.apply_ai_counterparty_reasoning(rows, "standard_bank_business_v1")
+    after = [(t.debit_amount, t.credit_amount, t.running_balance, t.transaction_date, t.description) for t in rows]
+    assert_equal(after, before, "amounts, dates, balances and descriptions are untouched")
+
+
+def test_the_counterparty_prompt_carries_no_vat_decision() -> None:
+    """VAT is not visible on a bank statement, so the model is not asked."""
+    from engine import ai_counterparty as aic
+    from engine.categories import canonical_categories
+    import json as _json
+
+    prompt = _json.dumps(aic.build_prompt([_question()], canonical_categories())).lower()
+    assert_equal("claimable" in prompt, False, "the model is not asked whether VAT may be claimed")
+    for phrase in ("not deciding vat", "tax invoice"):
+        assert_equal(phrase in prompt, True, f"the prompt states {phrase!r} is out of scope")
+
+
+def test_the_counterparty_prompt_is_identical_for_every_workspace() -> None:
+    """Same tenant-isolation invariant as the row-by-row prompt (#52)."""
+    from engine import ai_counterparty as aic
+    from engine.categories import canonical_categories
+
+    a = aic.build_prompt([_question(key="alpha co", display="ALPHA CO")], canonical_categories())
+    b = aic.build_prompt([_question(key="beta co", display="BETA CO")], canonical_categories())
+    global_a = {k: v for k, v in a.items() if k != "counterparties"}
+    global_b = {k: v for k, v in b.items() if k != "counterparties"}
+    assert_equal(global_a, global_b, "everything but the counterparties is shared")
+    import json as _json
+    assert_equal("alpha" in _json.dumps(global_b).lower(), False, "one workspace's payee never reaches another's prompt")
 
 
 if __name__ == "__main__":

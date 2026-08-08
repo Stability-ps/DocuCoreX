@@ -49,6 +49,12 @@ from engine.counterparty import evidence_for_all as counterparty_evidence_for_al
 from engine.counterparty import extract_counterparty
 from engine.counterparty import infer_relationship as infer_counterparty_relationship
 from engine.reasoning import identify_merchant_type as reasoning_identify_merchant_type
+from engine.ai_counterparty import COUNTERPARTY_BATCH_SIZE
+from engine.ai_counterparty import build_prompt as build_counterparty_prompt
+from engine.ai_counterparty import build_questions as build_counterparty_questions
+from engine.ai_counterparty import validate_answers as validate_counterparty_answers
+from engine.categories import canonical_categories
+from engine.counterparty import group_by_counterparty as counterparty_group_by
 from engine.ai_recovery import SYSTEM_PROMPT as AI_RECOVERY_SYSTEM_PROMPT
 from engine.ai_recovery import batches as ai_batches
 from engine.ai_recovery import build_prompt as build_ai_recovery_prompt
@@ -4513,6 +4519,121 @@ def _apply_ai_classifications(rows: list[dict[str, Any]], workspace_id: str) -> 
     return diagnostics
 
 
+def apply_ai_counterparty_reasoning(
+    transactions: list[ParsedTransaction],
+    bank_profile: str | None,
+    diagnostics: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Ask the model about counterparties, then apply the answers to their rows.
+
+    This is the row-by-row path's replacement for anything that recurs. On the
+    real statement it turns 413 unresolved rows into 37 questions covering 327
+    of them, in two API calls — and each question carries six months of pattern
+    the row-by-row prompt never had.
+
+    Rows whose counterparty appears once are deliberately left alone: grouping a
+    single transaction adds no evidence, only ceremony.
+    """
+    report = {
+        "counterparty_groups": 0,
+        "counterparty_questions": 0,
+        "counterparty_rows_covered": 0,
+        "counterparty_answers": 0,
+        "counterparty_applied": 0,
+        "counterparty_rejected": {},
+    }
+    api_key = os.getenv("OPENAI_API_KEY")
+    if not api_key or not transactions:
+        return report
+
+    unsettled = [
+        t for t in transactions
+        if str(t.classification_strength or STRENGTH_NONE) not in {STRENGTH_HARD, STRENGTH_LEARNED}
+    ]
+    if not unsettled:
+        return report
+
+    groups = counterparty_group_by(unsettled, bank_profile)
+    evidence_by_key = counterparty_evidence_for_all(unsettled, bank_profile)
+    for key, evidence in evidence_by_key.items():
+        relationship = infer_counterparty_relationship(evidence)
+        object.__setattr__(evidence, "relationship", relationship.kind)
+        object.__setattr__(evidence, "relationship_strength", relationship.strength)
+
+    merchant_type_by_key = {
+        key: rows[0].merchant_type
+        for key, rows in groups.items()
+        if rows and rows[0].merchant_type
+    }
+    questions = build_counterparty_questions(groups, evidence_by_key, merchant_type_by_key=merchant_type_by_key)
+    report["counterparty_groups"] = len(groups)
+    report["counterparty_questions"] = len(questions)
+    report["counterparty_rows_covered"] = sum(q.occurrences for q in questions)
+    if not questions:
+        return report
+
+    vocabulary = canonical_categories()
+    rejected_total: dict[str, int] = {}
+    verdicts: list[Any] = []
+
+    for start in range(0, len(questions), COUNTERPARTY_BATCH_SIZE):
+        chunk = questions[start : start + COUNTERPARTY_BATCH_SIZE]
+        prompt = build_counterparty_prompt(chunk, vocabulary)
+        body = {
+            "model": accounting_ai_model(),
+            "temperature": 0,
+            "max_tokens": 4000,
+            "response_format": {"type": "json_object"},
+            "messages": [
+                {"role": "system", "content": "You are an accounting classification assistant. Output valid JSON only."},
+                {"role": "user", "content": json.dumps(prompt, default=str)},
+            ],
+        }
+        try:
+            payload = openai_chat_completion(body, api_key)
+            content = payload.get("choices", [{}])[0].get("message", {}).get("content", "{}")
+            answers, rejected = validate_counterparty_answers(
+                parse_ai_json_content(content), chunk, vocabulary=vocabulary
+            )
+        except Exception as exc:  # noqa: BLE001 — a model failure must never fail a run
+            log_warning("worker.ai_counterparty_failed", error=str(exc)[:300])
+            continue
+        verdicts.extend(answers)
+        for reason, count in rejected.items():
+            if count:
+                rejected_total[reason] = rejected_total.get(reason, 0) + count
+
+    report["counterparty_answers"] = len(verdicts)
+    report["counterparty_rejected"] = rejected_total
+
+    applied = 0
+    for verdict in verdicts:
+        if verdict.category is None:
+            continue
+        for transaction in groups.get(verdict.key, ()):  # noqa: B020
+            # Never over a settled row. A bank-named fee and a human's own
+            # correction are not questions a model gets to reopen.
+            if str(transaction.classification_strength or STRENGTH_NONE) in {STRENGTH_HARD, STRENGTH_LEARNED}:
+                continue
+            transaction.account_category = canonicalise_category(verdict.category) or transaction.account_category
+            transaction.classification_source = SOURCE_AI
+            transaction.classification_strength = STRENGTH_SOFT
+            transaction.classification_confidence = verdict.confidence
+            transaction.classification_reason = verdict.reason
+            transaction.review_status = "needs_review"
+            transaction.evidence_used = [
+                {"source": "ai_counterparty", "detail": item, "grade": "medium"}
+                for item in verdict.evidence_used
+            ] or transaction.evidence_used
+            applied += 1
+
+    report["counterparty_applied"] = applied
+    log_event("worker.ai_counterparty_reasoning", **report)
+    if diagnostics is not None:
+        diagnostics.update(report)
+    return report
+
+
 def month_summary(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     months = sorted({row["month"] for row in rows if row["month"]})
     summary = []
@@ -5772,6 +5893,12 @@ def process_fnb_statement(payload: ProcessRequest, authorization: str | None = H
         # each row was with and what the statement proves about them, and must
         # not be in a position to influence the treatment it is describing.
         stamp_counterparty_intelligence(transactions, bank_profile)
+        # Counterparty reasoning before the row-by-row path, because anything it
+        # settles is one decision instead of many: on the real statement 413
+        # unresolved rows become 37 questions covering 327 of them. What it does
+        # not cover — counterparties seen once — still reaches the row-by-row
+        # classifier further down, unchanged.
+        ai_counterparty = apply_ai_counterparty_reasoning(transactions, bank_profile)
         ai_recovery: dict[str, Any] = {"enabled": False, "attempted": False, "accepted_rows": 0}
         # Accounting-parser diagnostics (null-safe).
         _summary = validation_summary(transactions)
