@@ -1,0 +1,242 @@
+{
+  "version": 1,
+  "note": "What a kind of entity COULD mean in the books, and what would have to be true to choose between the options. Never a single answer where the entity supplies more than one thing \u2014 that single answer was the old model, and it is how a fuel brand came to authorise a VAT claim.",
+  "how_reasoning_uses_this": "possible_treatments is the menu; discriminators are what let engine/reasoning.py pick from it. A type whose menu has one item is MONOLINE \u2014 the entity can only supply one thing that matters to the books, so identity settles it and no discriminator is needed. A type with several needs evidence, and if the evidence does not discriminate the row keeps the default and stays in review with the alternatives recorded.",
+  "vat_rule": "possible_vat is never 'standard'. Recognising an entity does not establish that a valid tax invoice exists, that the supplier is registered, or that the purpose was business. The strongest a type may assert is evidence_required, and Layer 5 turns that into a calculated amount with a withheld claim.",
+  "types": {
+    "fuel_retailer": {
+      "label": "Fuel Retailer",
+      "monoline": false,
+      "possible_treatments": [
+        "Motor Vehicle Expenses",
+        "Supplier Payments",
+        "Suspense / Review Required"
+      ],
+      "default_treatment": "Motor Vehicle Expenses",
+      "possible_vat": "evidence_required",
+      "vat_evidence_required": "tax invoice; fuel is zero-rated while forecourt goods and car washes are standard-rated, and one statement line cannot tell them apart",
+      "discriminators": [
+        {
+          "kind": "amount_band",
+          "low": 100,
+          "high": 5000,
+          "supports": "Motor Vehicle Expenses",
+          "reason": "consistent with refuelling a vehicle rather than buying bulk stock"
+        },
+        {
+          "kind": "amount_band",
+          "low": 20000,
+          "high": null,
+          "supports": "Supplier Payments",
+          "reason": "too large for a single tank; consistent with fuel bought as stock"
+        },
+        {
+          "kind": "corroborating_type",
+          "types": [
+            "vehicle_telematics",
+            "toll_operator"
+          ],
+          "supports": "Motor Vehicle Expenses",
+          "reason": "the business shows other vehicle activity"
+        }
+      ]
+    },
+    "grocery_retailer": {
+      "label": "Grocery / Supermarket",
+      "monoline": false,
+      "possible_treatments": [
+        "Meals / Groceries - Non Deductible Review",
+        "Supplier Payments",
+        "Suspense / Review Required"
+      ],
+      "default_treatment": "Meals / Groceries - Non Deductible Review",
+      "possible_vat": "evidence_required",
+      "vat_evidence_required": "tax invoice and business purpose; supermarkets sell zero-rated food alongside standard-rated goods",
+      "discriminators": []
+    },
+    "pharmacy_retailer": {
+      "label": "Pharmacy",
+      "monoline": false,
+      "possible_treatments": [
+        "Medical Expenses",
+        "Meals / Groceries - Non Deductible Review",
+        "Suspense / Review Required"
+      ],
+      "default_treatment": "Medical Expenses",
+      "possible_vat": "evidence_required",
+      "vat_evidence_required": "tax invoice; pharmacies sell exempt medical supplies alongside standard-rated retail goods",
+      "discriminators": []
+    },
+    "food_delivery": {
+      "label": "Food Delivery",
+      "monoline": false,
+      "possible_treatments": [
+        "Meals / Groceries - Non Deductible Review",
+        "Suspense / Review Required"
+      ],
+      "default_treatment": "Meals / Groceries - Non Deductible Review",
+      "possible_vat": "evidence_required",
+      "vat_evidence_required": "business purpose; meals and entertainment are frequently non-deductible",
+      "discriminators": []
+    },
+    "software_vendor": {
+      "label": "Software / Cloud Vendor",
+      "monoline": false,
+      "possible_treatments": [
+        "Software / IT",
+        "Operating Expenses",
+        "Suspense / Review Required"
+      ],
+      "default_treatment": "Software / IT",
+      "possible_vat": "evidence_required",
+      "vat_evidence_required": "tax invoice AND the supplier's South African VAT registration; several of these vendors bill from foreign entities, where there is often no South African input VAT to claim at all",
+      "discriminators": [
+        {
+          "kind": "description_contains",
+          "terms": [
+            "ads",
+            "adwords",
+            "advertising"
+          ],
+          "supports": "Operating Expenses",
+          "reason": "an advertising product, not an IT subscription"
+        }
+      ]
+    },
+    "courier_operator": {
+      "label": "Courier / Freight Operator",
+      "monoline": false,
+      "possible_treatments": [
+        "Courier / Freight",
+        "Supplier Payments",
+        "Suspense / Review Required"
+      ],
+      "default_treatment": "Courier / Freight",
+      "possible_vat": "evidence_required",
+      "vat_evidence_required": "tax invoice; freight inwards on stock is a cost of sales rather than an administrative expense",
+      "discriminators": []
+    },
+    "payment_aggregator": {
+      "label": "Payment Aggregator",
+      "monoline": false,
+      "possible_treatments": [
+        "Operating Expenses",
+        "Suspense / Review Required"
+      ],
+      "default_treatment": "Operating Expenses",
+      "possible_vat": "evidence_required",
+      "vat_evidence_required": "the underlying supplier and its tax invoice; a collection service hides who was actually paid",
+      "discriminators": []
+    },
+    "general_retailer": {
+      "label": "General Retailer",
+      "monoline": false,
+      "possible_treatments": [
+        "Suspense / Review Required",
+        "Operating Expenses",
+        "Supplier Payments",
+        "Meals / Groceries - Non Deductible Review"
+      ],
+      "default_treatment": "Suspense / Review Required",
+      "possible_vat": "review",
+      "vat_evidence_required": "tax invoice and a description of what was bought; a general retailer sells everything",
+      "discriminators": []
+    },
+    "vehicle_telematics": {
+      "label": "Vehicle Tracking / Telematics",
+      "monoline": true,
+      "possible_treatments": [
+        "Motor Vehicle Expenses"
+      ],
+      "default_treatment": "Motor Vehicle Expenses",
+      "possible_vat": "evidence_required",
+      "vat_evidence_required": "tax invoice",
+      "discriminators": [],
+      "monoline_reason": "a telematics provider supplies vehicle tracking and nothing else"
+    },
+    "electricity_utility": {
+      "label": "Electricity Utility",
+      "monoline": true,
+      "possible_treatments": [
+        "Utilities"
+      ],
+      "default_treatment": "Utilities",
+      "possible_vat": "evidence_required",
+      "vat_evidence_required": "tax invoice",
+      "discriminators": [],
+      "monoline_reason": "an electricity utility supplies electricity and nothing else"
+    },
+    "insurer": {
+      "label": "Insurer",
+      "monoline": true,
+      "possible_treatments": [
+        "Insurance"
+      ],
+      "default_treatment": "Insurance",
+      "possible_vat": "not_claimable",
+      "vat_evidence_required": null,
+      "discriminators": [],
+      "monoline_reason": "an insurer supplies insurance; premiums are exempt supplies, so there is no input VAT to claim and none to gather evidence for"
+    },
+    "revenue_authority": {
+      "label": "Revenue Authority",
+      "monoline": true,
+      "possible_treatments": [
+        "SARS / Tax Suspense"
+      ],
+      "default_treatment": "SARS / Tax Suspense",
+      "possible_vat": "not_claimable",
+      "vat_evidence_required": null,
+      "discriminators": [],
+      "monoline_reason": "SARS collects tax; a payment to it is a statutory settlement, outside the VAT system"
+    },
+    "professional_services": {
+      "label": "Accounting / Professional Services",
+      "monoline": true,
+      "possible_treatments": [
+        "Accounting / Professional Fees"
+      ],
+      "default_treatment": "Accounting / Professional Fees",
+      "possible_vat": "evidence_required",
+      "vat_evidence_required": "tax invoice",
+      "discriminators": [],
+      "monoline_reason": "the service supplied is professional work; the account does not depend on what was discussed"
+    },
+    "telecoms_operator": {
+      "label": "Telecommunications Operator",
+      "monoline": true,
+      "possible_treatments": [
+        "Telephone / Internet / Communication"
+      ],
+      "default_treatment": "Telephone / Internet / Communication",
+      "possible_vat": "evidence_required",
+      "vat_evidence_required": "tax invoice",
+      "discriminators": [],
+      "monoline_reason": "a network operator supplies communications services"
+    },
+    "toll_operator": {
+      "label": "Toll Operator",
+      "monoline": true,
+      "possible_treatments": [
+        "Road Tolls"
+      ],
+      "default_treatment": "Road Tolls",
+      "possible_vat": "evidence_required",
+      "vat_evidence_required": "tax invoice or toll statement",
+      "discriminators": [],
+      "monoline_reason": "a toll concession supplies road use and nothing else"
+    },
+    "security_services": {
+      "label": "Security Services",
+      "monoline": true,
+      "possible_treatments": [
+        "Operating Expenses"
+      ],
+      "default_treatment": "Operating Expenses",
+      "possible_vat": "evidence_required",
+      "vat_evidence_required": "tax invoice",
+      "discriminators": [],
+      "monoline_reason": "an alarm and monitoring company supplies security services"
+    }
+  }
+}

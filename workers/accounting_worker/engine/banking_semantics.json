@@ -1,0 +1,67 @@
+{
+  "version": 1,
+  "note": "How money moved, where that movement is itself the accounting fact. An inter-account transfer is a balance-sheet movement whichever bank prints it and whoever holds the other account — so unlike a merchant name, the mechanism here IS the answer. 54 rows on the real Standard Bank statement are classified this way and were correct; they were living in the merchant keyword table, which is the wrong home for them.",
+
+  "why_this_is_not_merchant_knowledge": "The VAT audit established that a channel describes HOW money moved and must not decide WHAT it was. That holds for 'CHEQUE CARD PURCHASE', which says nothing about the purchase. It does not hold for 'IB TRANSFER', where moving money between the holder's own accounts is the entire economic substance. The distinction is whether the mechanism leaves anything unexplained.",
+
+  "boundary": "A mechanism may only decide a category when it identifies a BALANCE-SHEET movement — transfers, loan servicing, own-account funding. It may never decide a profit-and-loss category, because a payment channel cannot know what was bought. Anything that would land in P&L belongs to reasoning with real evidence.",
+
+  "mechanisms": [
+    {
+      "term": "ib transfer",
+      "meaning": "internet-banking transfer, direction and counterparty unstated",
+      "category": null,
+      "vat_treatment": null,
+      "grade": "none",
+      "confidence": 0,
+      "reason": "an internet-banking transfer is only an inter-account movement when something shows the other side is the holder's own account; the words alone do not",
+      "learned_the_hard_way": "This term was briefly made decisive during PR 2b and it moved 33 rows worth R2,997,900 out of review, including a single R2,000,000 '. 06H28 IB TRANSFER TO' that names no payee at all. An outbound internet transfer with no counterparty is not provably internal — it could be a payment to anyone whose name the bank did not capture. The pre-existing keyword rule was right to match only 'transfer from' and leave outbound anonymous transfers in review, and that behaviour is preserved by leaving this non-decisive."
+    },
+    {
+      "term": "ib payment to",
+      "meaning": "internet-banking payment to a third party",
+      "category": null,
+      "vat_treatment": null,
+      "grade": "none",
+      "confidence": 0,
+      "reason": "names a channel and a third party but not what was bought; the counterparty decides, not the mechanism"
+    },
+    {
+      "term": "inter-account transfer",
+      "meaning": "transfer between the holder's own accounts",
+      "category": "Inter-account Transfer",
+      "vat_treatment": "out_of_scope",
+      "grade": "high",
+      "confidence": 95,
+      "reason": "a movement between the holder's own accounts; outside VAT and outside profit or loss"
+    },
+    {
+      "term": "eft transfer",
+      "meaning": "electronic funds transfer between accounts",
+      "category": "Inter-account Transfer",
+      "vat_treatment": "out_of_scope",
+      "grade": "high",
+      "confidence": 90,
+      "reason": "an electronic transfer between accounts"
+    },
+    {
+      "term": "outstanding card authorisation",
+      "meaning": "a card hold not yet settled",
+      "category": "Suspense / Review Required",
+      "vat_treatment": "out_of_scope",
+      "grade": "high",
+      "confidence": 84,
+      "reason": "an unsettled card authorisation; the underlying purchase is not final and must not be booked as an expense yet",
+      "always_review": true
+    }
+  ],
+
+  "not_decisive": {
+    "eft": "On its own, 'EFT' is only a rail. It becomes decisive only as 'EFT TRANSFER', where the transfer is the substance.",
+    "rtc": "Real-time clearing is a speed, not a nature.",
+    "payshap": "An instant-payment rail. Says nothing about the counterparty.",
+    "debit order": "A collection method. The supplier behind it decides the category.",
+    "card purchase": "The clearest case of all: 291 of 615 rows on the real statement carry it, and it explains none of them.",
+    "credit transfer": "An inbound rail. Whether it is revenue, a loan or a refund depends on the payer, not on the wording."
+  }
+}

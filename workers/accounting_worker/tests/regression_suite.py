@@ -92,6 +92,9 @@ if importlib.util.find_spec("openpyxl") is None:
 from openpyxl import load_workbook
 
 from engine import ai_prompt
+from engine import counterparty
+from engine import reasoning
+import pathlib
 import main
 from main import (
     ParsedTransaction,
@@ -3641,7 +3644,13 @@ def test_classification_distribution_by_provenance() -> None:
 
     assert_equal(sources[SOURCE_DETERMINISTIC], 9, "nine rows settled by rules or merchant knowledge")
     assert_equal(sources[SOURCE_UNRESOLVED], 6, "six rows nobody could settle")
-    assert_equal(strengths[STRENGTH_HARD], 4, "three bank fees and one explicit drawings")
+    # Five, not four. "WESBANK LOAN INSTALMENT" joined the three bank fees and
+    # the explicit drawings when transaction semantics became a graded evidence
+    # layer: a transaction that names itself a loan instalment is settled by its
+    # own words, the same standing a fee the bank named carries. The consequence
+    # is deliberate — a HARD row is not sent to the model and is not revised by
+    # a learned rule, because there is nothing left to decide.
+    assert_equal(strengths[STRENGTH_HARD], 5, "three bank fees, one explicit drawings, one self-describing loan instalment")
     assert_equal(strengths[STRENGTH_NONE], 6, "unresolved rows carry no standing")
 
     for transaction in transactions:
@@ -4134,6 +4143,45 @@ def run() -> None:
     test_standing_does_not_reopen_the_ai_recovery_cap()
     test_provenance_is_written_but_never_at_the_ledgers_cost()
     test_bank_fee_terminology_classifies_as_bank_charges()
+    test_channel_wording_never_becomes_the_counterparty()
+    test_a_row_naming_nobody_returns_nobody()
+    test_a_reference_number_is_not_part_of_the_name()
+    test_a_truncated_name_is_known_to_be_truncated()
+    test_the_name_uses_only_words_the_description_contains()
+    test_evidence_is_measured_not_assumed()
+    test_one_transaction_proves_no_relationship()
+    test_money_flowing_both_ways_proves_no_relationship()
+    test_a_consistent_direction_over_months_is_a_strong_relationship()
+    test_a_relationship_is_not_an_accounting_treatment()
+    test_grouping_ignores_rows_that_name_nobody()
+    test_one_merchant_resolves_to_one_identity_on_every_bank()
+    test_the_issuing_bank_is_never_the_counterparty()
+    test_another_bank_is_a_real_counterparty()
+    test_what_is_left_must_still_identify_somebody()
+    test_channel_removal_is_boundary_aware()
+    test_every_removed_phrase_is_recorded()
+    test_an_undetected_bank_still_reads_the_counterparty()
+    test_the_standard_bank_statement_is_unchanged_by_bank_awareness()
+    test_every_detected_bank_has_a_lexicon_entry()
+    test_merchant_identity_cannot_create_a_vat_claim()
+    test_a_merchant_type_carries_no_category_or_vat()
+    test_a_relationship_cannot_create_a_category()
+    test_recurring_payments_do_not_become_expenses()
+    test_a_credit_does_not_become_revenue()
+    test_a_multi_line_merchant_never_resolves_to_one_treatment()
+    test_a_monoline_merchant_may_settle_its_account()
+    test_every_decision_says_why()
+    test_evidence_grades_rank_as_specified()
+    test_a_mechanism_may_not_name_a_profit_and_loss_account()
+    test_an_anonymous_outbound_transfer_stays_in_review()
+    test_the_evidence_layers_preserve_existing_automation()
+    test_coverage_counts_what_was_decided_and_on_what_evidence()
+    test_coverage_calls_a_drop_in_automation_a_regression()
+    test_a_fuel_merchant_never_authorises_a_vat_claim()
+    test_fuel_vat_is_review_not_merely_not_standard()
+    test_the_expense_category_survives_the_vat_downgrade()
+    test_known_and_unknown_fuel_retailers_now_agree()
+    test_bank_charges_keep_their_claim()
     test_the_global_prompt_names_no_customer_counterparty()
     test_the_global_prompt_is_identical_for_every_workspace()
     test_the_global_prompt_is_built_only_from_vetted_knowledge()
@@ -4969,6 +5017,650 @@ def test_the_prompt_keeps_the_patterns_the_names_stood_for() -> None:
     # Public brands are still allowed, and still there.
     for brand in ("discovery", "dhl", "sage", "wesbank", "sars", "engen"):
         assert_equal(brand in text, True, f"public brand {brand} is still available to the model")
+
+
+
+# ── Counterparty identity and what a statement proves about it ───────────────
+#
+# The production baseline left 426 of 615 rows unresolved. The instinct is to
+# grow the merchant list; that instinct is what put one customer's suppliers
+# into every workspace's AI prompt, and a list can only know what it was taught.
+#
+# The statement knows more. 87% of those rows name a counterparty that appears
+# again in the same statement, and every counterparty with two or more rows
+# moves money in one consistent direction.
+
+
+def test_channel_wording_never_becomes_the_counterparty() -> None:
+    """HOW money moved must not be mistaken for WHO was paid.
+
+    "CHEQUE CARD PURCHASE" appears on 291 of 615 rows on the real statement. If
+    it reached the key, 291 unrelated purchases would collapse into one
+    imaginary merchant — the same confusion that let a fuel brand authorise a
+    VAT claim, one layer earlier.
+    """
+    for description, expected in (
+        ("OK MM WELKOM 4278*5999 CHEQUE CARD PURCHASE", "OK MM WELKOM"),
+        ("ABSA BANK 8090806375 ACCOUNT PAYMENT", "ABSA BANK"),
+        ("MQ FIN DO * ELECTRONIC BANKING COLLECT TO", "MQ FIN DO"),
+        ("A HARMONY698002 CREDIT TRANSFER", "A HARMONY"),
+    ):
+        party = counterparty.extract_counterparty(description)
+        assert_equal(party.display if party else None, expected, f"counterparty of {description!r}")
+        for phrase in counterparty.channel_phrases("standard_bank_business_v1"):
+            assert_equal(phrase in (party.display if party else ""), False, f"{phrase} is not a counterparty")
+
+
+def test_a_row_naming_nobody_returns_nobody() -> None:
+    """None is a real answer, not a failure to try.
+
+    ". 08H29 IB TRANSFER TO" is an own-account transfer where the bank recorded
+    only a time. Guessing here would manufacture a merchant out of a timestamp.
+    """
+    for description in (". 08H29 IB TRANSFER TO", "", "   ", "IB TRANSFER FROM", "4278*5999"):
+        assert_equal(counterparty.extract_counterparty(description), None, f"{description!r} names nobody")
+
+
+def test_a_reference_number_is_not_part_of_the_name() -> None:
+    """Fused references must be cut, or recurrence becomes invisible.
+
+    The 67 payments from A HARMONY each carry a different reference printed
+    against the name. Left fused, every one keys differently and the pattern
+    they prove together disappears.
+    """
+    keys = {
+        counterparty.extract_counterparty(d).key
+        for d in ("A HARMONY698002 CREDIT TRANSFER",
+                  "A HARMONY707498-707535 CREDIT TRANSFER",
+                  "A HARMONY714798 CREDIT TRANSFER")
+    }
+    assert_equal(sorted(keys), ["a harmony"], "one counterparty, not three")
+
+    # But a short number that is part of the name survives.
+    for description, expected in (("N1 VAAL 4278*5999 CHEQUE CARD PURCHASE", "N1 VAAL"),
+                                  ("CHECKERS SIXTY60 4278*5999 CHEQUE CARD PURCHASE", "CHECKERS SIXTY60")):
+        assert_equal(counterparty.extract_counterparty(description).display, expected, f"{description!r} keeps its digits")
+
+
+def test_a_truncated_name_is_known_to_be_truncated() -> None:
+    """The bank cuts the field at 14 characters, and we must not forget it.
+
+    "GOLDWAGEN HILT4278*5999" is Goldwagen Hilton cut short. Treating a prefix
+    as a complete name is how a learned rule comes to claim rows it never meant
+    to — the same class of error as the one-character key "d".
+    """
+    cut = counterparty.extract_counterparty("GOLDWAGEN HILT4278*5999 CHEQUE CARD PURCHASE")
+    assert_equal(cut.truncated, True, "name running into the mask was truncated")
+    whole = counterparty.extract_counterparty("N1 VAAL 4278*5999 CHEQUE CARD PURCHASE")
+    assert_equal(whole.truncated, False, "name separated from the mask was not truncated")
+
+
+def test_the_name_uses_only_words_the_description_contains() -> None:
+    """Extraction, never invention — the same rule AI recovery is held to."""
+    for description in ("OK MM WELKOM 4278*5999 CHEQUE CARD PURCHASE",
+                        "STEERS THEUNIS4278*5999 CHEQUE CARD PURCHASE",
+                        "ADT JHB 2117556751ADT5087498 ACCOUNT PAYMENT"):
+        party = counterparty.extract_counterparty(description)
+        upper = description.upper()
+        for word in party.display.split():
+            assert_equal(word in upper, True, f"{word!r} appears in the description")
+
+
+def _party_rows(description, amounts, dates, credit=False):
+    return [{"description": description,
+             "debit_amount": None if credit else amount,
+             "credit_amount": amount if credit else None,
+             "transaction_date": date}
+            for amount, date in zip(amounts, dates)]
+
+
+def test_evidence_is_measured_not_assumed() -> None:
+    rows = _party_rows("ADT JHB 111111 ACCOUNT PAYMENT", [380.0] * 5,
+                       ["2025-05-01", "2025-06-01", "2025-07-01", "2025-08-01", "2025-09-01"])
+    evidence = counterparty.counterparty_evidence("adt jhb", "ADT JHB", rows)
+    assert_equal(evidence.occurrences, 5, "occurrences counted")
+    assert_equal(evidence.months_spanned, 5, "months counted")
+    assert_equal(evidence.single_direction, True, "one direction")
+    assert_equal(evidence.recurring, True, "three or more months is recurring")
+    assert_equal(evidence.fixed_amount, True, "identical amounts")
+    assert_equal(evidence.credit_count, 0, "no credits")
+
+
+def test_one_transaction_proves_no_relationship() -> None:
+    """A payment out is a payment out. It is not yet a supplier."""
+    rows = _party_rows("SOMEONE 4278*5999 CHEQUE CARD PURCHASE", [500.0], ["2025-05-01"])
+    evidence = counterparty.counterparty_evidence("someone", "SOMEONE", rows)
+    relationship = counterparty.infer_relationship(evidence)
+    assert_equal(relationship.kind, counterparty.RELATIONSHIP_UNKNOWN, "one movement proves nothing")
+    assert_equal(relationship.strength, counterparty.RELATIONSHIP_STRENGTH_NONE, "no strength")
+
+
+def test_money_flowing_both_ways_proves_no_relationship() -> None:
+    """Paid and received is ambiguous — a refund, a loan, a correction."""
+    rows = _party_rows("BOTHWAYS 111111 ACCOUNT PAYMENT", [500.0, 300.0], ["2025-05-01", "2025-06-01"])
+    rows += _party_rows("BOTHWAYS 111111 ACCOUNT PAYMENT", [200.0], ["2025-07-01"], credit=True)
+    evidence = counterparty.counterparty_evidence("bothways", "BOTHWAYS", rows)
+    assert_equal(evidence.single_direction, False, "both directions seen")
+    assert_equal(counterparty.infer_relationship(evidence).kind, counterparty.RELATIONSHIP_UNKNOWN,
+                 "two-way flow proves no relationship")
+
+
+def test_a_consistent_direction_over_months_is_a_strong_relationship() -> None:
+    supplier = counterparty.counterparty_evidence(
+        "welkom fresh p", "WELKOM FRESH P",
+        _party_rows("WELKOM FRESH P4278*5999 CHEQUE CARD PURCHASE", [9100.0, 8200.0, 7400.0],
+                    ["2025-05-02", "2025-06-02", "2025-07-02"]))
+    customer = counterparty.counterparty_evidence(
+        "a harmony", "A HARMONY",
+        _party_rows("A HARMONY698002 CREDIT TRANSFER", [27835.30, 31000.0, 25000.0],
+                    ["2025-05-03", "2025-06-03", "2025-07-03"], credit=True))
+    assert_equal(counterparty.infer_relationship(supplier).kind, counterparty.RELATIONSHIP_SUPPLIER, "paid out = supplier")
+    assert_equal(counterparty.infer_relationship(supplier).strength, counterparty.RELATIONSHIP_STRENGTH_STRONG, "recurring")
+    assert_equal(counterparty.infer_relationship(customer).kind, counterparty.RELATIONSHIP_CUSTOMER, "received = customer")
+
+
+def test_a_relationship_is_not_an_accounting_treatment() -> None:
+    """The safety invariant this whole module rests on.
+
+    Knowing someone is a supplier does NOT say the payment is an operating
+    expense — it could be stock, an asset, or a loan repayment. Knowing someone
+    is a customer does NOT say the receipt is revenue — it could be a refund or
+    a returned deposit. If this ever starts emitting a category or a VAT
+    treatment, the fuel-VAT defect has been rebuilt one layer up.
+    """
+    evidence = counterparty.counterparty_evidence(
+        "welkom fresh p", "WELKOM FRESH P",
+        _party_rows("WELKOM FRESH P4278*5999 CHEQUE CARD PURCHASE", [9100.0, 8200.0, 7400.0],
+                    ["2025-05-02", "2025-06-02", "2025-07-02"]))
+    relationship = counterparty.infer_relationship(evidence)
+    fields = set(relationship.__dict__)
+    assert_equal(sorted(fields), ["kind", "reason", "strength"], "a relationship carries no treatment")
+    for forbidden in ("category", "account", "vat", "vat_treatment", "claimable"):
+        assert_equal(forbidden in fields, False, f"relationship must not carry {forbidden}")
+
+
+def test_grouping_ignores_rows_that_name_nobody() -> None:
+    rows = _party_rows("A HARMONY698002 CREDIT TRANSFER", [100.0, 200.0], ["2025-05-01", "2025-06-01"], credit=True)
+    rows += _party_rows(". 08H29 IB TRANSFER TO", [5000.0], ["2025-05-04"])
+    groups = counterparty.group_by_counterparty(rows)
+    assert_equal(sorted(groups), ["a harmony"], "the anonymous transfer forms no group")
+    assert_equal(len(groups["a harmony"]), 2, "both payments grouped")
+
+
+
+# ── The counterparty must not depend on which bank issued the statement ──────
+#
+# The first cut of this module was Standard-Bank-shaped. Detection covers FNB,
+# Standard Bank, ABSA, Nedbank, Capitec, Investec and unknown; the counterparty
+# layer covered one of them, so:
+#
+#   FNB App Payment To Mr D Food           -> 'FNB APP PAYMENT TO MR D FOOD'
+#   Absa Debit Order Discovery Life 12345  -> 'ABSA DISCOVERY LIFE'
+#
+# Every workspace on those banks would have grown a counterparty named after its
+# own bank, with unrelated payments grouped under it.
+
+SAME_MERCHANT_ACROSS_BANKS = (
+    ("standard_bank_business_v1", "MR D FOOD 4278*5999 CHEQUE CARD PURCHASE"),
+    ("fnb_business_v1", "FNB App Payment To Mr D Food"),
+    ("absa_business_v1", "ABSA Debit Order Mr D Food 12345"),
+    ("nedbank_business_v1", "Nedbank Internet Pmt To Mr D Food"),
+    ("capitec_business_v1", "Capitec Pay Mr D Food"),
+    ("investec_business_v1", "Investec Payment To Mr D Food"),
+)
+
+
+def test_one_merchant_resolves_to_one_identity_on_every_bank() -> None:
+    """The acceptance criterion: same purchase, six banks, one counterparty.
+
+    Without this the same merchant keys six different ways, no recurrence is
+    ever visible across a client's banks, and a workspace that switches bank
+    silently loses every relationship it had established.
+    """
+    identities = {}
+    for profile, description in SAME_MERCHANT_ACROSS_BANKS:
+        party = counterparty.extract_counterparty(description, profile)
+        identities[profile] = party.key if party else None
+    assert_equal(sorted(set(identities.values())), ["mr d food"], f"one identity across banks, got {identities}")
+
+
+def test_the_issuing_bank_is_never_the_counterparty() -> None:
+    """A bank does not pay itself on its own statement."""
+    for profile, description, expected in (
+        ("fnb_business_v1", "FNB App Payment To Mr D Food", "MR D FOOD"),
+        ("absa_business_v1", "ABSA Debit Order Discovery Life 12345", "DISCOVERY LIFE"),
+        ("nedbank_business_v1", "Nedbank Internet Pmt To Vodacom", "VODACOM"),
+        ("capitec_business_v1", "Capitec Pay Netflix", "NETFLIX"),
+        ("investec_business_v1", "Investec Payment To Sasol", "SASOL"),
+        ("standard_bank_business_v1", "STANDARD BANK IB TRANSFER TO SASOL", "SASOL"),
+    ):
+        party = counterparty.extract_counterparty(description, profile)
+        assert_equal(party.display if party else None, expected, f"{profile}: {description!r}")
+
+
+def test_another_bank_is_a_real_counterparty() -> None:
+    """Only the ISSUING bank is self-reference. Everyone else is a payee.
+
+    This is why the bank name is resolved from the run's detected profile rather
+    than from a list of bank names. On the real Standard Bank statement six
+    monthly payments of R19,086.55 go TO ABSA BANK — a genuine counterparty that
+    a name-list approach would have deleted.
+    """
+    on_standard_bank = counterparty.extract_counterparty(
+        "ABSA BANK 8090806375 ACCOUNT PAYMENT", "standard_bank_business_v1")
+    assert_equal(on_standard_bank.display, "ABSA BANK", "ABSA is a payee on a Standard Bank statement")
+
+    on_absa = counterparty.extract_counterparty(
+        "ABSA BANK 8090806375 ACCOUNT PAYMENT", "absa_business_v1")
+    assert_equal(on_absa, None, "the same string on an ABSA statement names nobody")
+
+
+def test_what_is_left_must_still_identify_somebody() -> None:
+    """Removing the bank can leave nothing worth keeping.
+
+    "ABSA BANK ... ACCOUNT PAYMENT" on an ABSA statement reduces to "BANK". A
+    counterparty called Bank is worse than none: it groups unrelated rows under
+    a word that identifies nobody — the same failure as the learned key "d".
+    """
+    for profile, description in (
+        ("absa_business_v1", "ABSA BANK ACCOUNT PAYMENT"),
+        ("fnb_business_v1", "FNB Transfer To Account"),
+        ("standard_bank_business_v1", ". 08H29 IB TRANSFER TO"),
+    ):
+        assert_equal(counterparty.extract_counterparty(description, profile), None,
+                     f"{description!r} identifies nobody")
+
+
+def test_channel_removal_is_boundary_aware() -> None:
+    """A phrase is removed as whole words, never as a fragment.
+
+    A raw replace would cut "PAY" from "PAYGATE" and "ABSA" from "ABSALOM" —
+    the same defect that made the learned key "d" claim 425 rows, one layer up.
+    """
+    party = counterparty.extract_counterparty("PAYGATE*DHL 4278*5999 CHEQUE CARD PURCHASE",
+                                              "standard_bank_business_v1")
+    assert_equal(party.display, "PAYGATE*DHL", "PAYGATE survives the PAYSHAP/PAY vocabulary")
+    absalom = counterparty.extract_counterparty("ABSALOM TRADING 12345 ACCOUNT PAYMENT", "absa_business_v1")
+    assert_equal(absalom.display, "ABSALOM TRADING", "ABSALOM is not ABSA")
+
+
+def test_every_removed_phrase_is_recorded() -> None:
+    """The reasoning has to be checkable, not merely correct.
+
+    Recording each removal is what lets a reviewer see WHY a counterparty reads
+    the way it does, and it is what a later layer will cite as evidence.
+    """
+    party = counterparty.extract_counterparty("ABSA Debit Order Mr D Food 12345", "absa_business_v1")
+    assert_equal("DEBIT ORDER" in party.channel_terms_removed, True, "the channel phrase is recorded")
+    assert_equal(party.bank_profile, "absa_business_v1", "the vocabulary used is recorded")
+
+
+def test_an_undetected_bank_still_reads_the_counterparty() -> None:
+    """Unknown banks degrade safely rather than failing shut.
+
+    With no profile every bank's vocabulary applies: an unknown bank is more
+    likely to share phrasing with one of the six than with none. Self-reference
+    stripping is skipped, because there is no bank to strip.
+    """
+    for description, expected in (("MR D FOOD 4278*5999 CHEQUE CARD PURCHASE", "MR D FOOD"),
+                                  ("Card Purchase Woolworths Sandton", "WOOLWORTHS SANDTON"),
+                                  ("A HARMONY698002 CREDIT TRANSFER", "A HARMONY")):
+        party = counterparty.extract_counterparty(description, None)
+        assert_equal(party.display if party else None, expected, f"undetected bank reads {description!r}")
+
+
+def test_the_standard_bank_statement_is_unchanged_by_bank_awareness() -> None:
+    """PR 2a is a correctness fix for other banks, not a change to this one."""
+    for description in ("WELKOM FRESH P4278*5999 CHEQUE CARD PURCHASE",
+                        "A HARMONY698002 CREDIT TRANSFER",
+                        "ADT JHB 2117556751ADT5087498 ACCOUNT PAYMENT",
+                        "N1 VAAL 4278*5999 CHEQUE CARD PURCHASE"):
+        with_bank = counterparty.extract_counterparty(description, "standard_bank_business_v1")
+        without = counterparty.extract_counterparty(description, None)
+        assert_equal(with_bank.key, without.key, f"{description!r} reads the same either way")
+
+
+def test_every_detected_bank_has_a_lexicon_entry() -> None:
+    """Detection and counterparty extraction must cover the same banks.
+
+    The original defect was exactly this gap: detection knew six banks, this
+    layer knew one. If a profile is added to detection without wording here, it
+    silently falls back to generic — so the omission is made to fail loudly.
+    """
+    from engine.detection import BANK_FINGERPRINTS
+
+    lexicon_profiles = set(counterparty._lexicon()["profiles"])
+    for fingerprint in BANK_FINGERPRINTS:
+        assert_equal(fingerprint.profile_id in lexicon_profiles, True,
+                     f"{fingerprint.profile_id} has a channel-lexicon entry")
+        assert_equal(fingerprint.profile_id in counterparty._lexicon()["self_reference"], True,
+                     f"{fingerprint.profile_id} has self-reference terms")
+
+
+
+# ── Layer separation: identity, relationship and treatment stay apart ────────
+#
+# The old model was merchant -> category -> VAT in one record. It could not
+# answer "why", because the answer was always "the string matched" — and that
+# answer was wrong twice over: a fuel brand authorised a VAT claim, and a
+# one-character learned key claimed 425 rows.
+
+
+def test_merchant_identity_cannot_create_a_vat_claim() -> None:
+    """No path from a name alone reaches a claimable VAT treatment."""
+    for description in ("SHELL FLAMINGO4278*5999 CHEQUE CARD PURCHASE", "ENGEN GARAGE",
+                        "WOOLWORTHS SANDTON", "GOOGLE CLOUD", "DIS-CHEM PHARMACY",
+                        "UBER EATS", "DHL EXPRESS", "TAKEALOT"):
+        treatment = reasoning.decide(description, 1200.0, None)
+        if treatment is None:
+            continue
+        assert_equal(treatment.vat_treatment == "standard", False,
+                     f"{description} must not produce a claimable VAT treatment")
+
+    # And the type records themselves may never assert it.
+    for type_key, spec in reasoning.type_treatments().items():
+        assert_equal(spec["possible_vat"] == "standard", False,
+                     f"merchant type {type_key} must not assert a claimable VAT stance")
+
+
+def test_a_merchant_type_carries_no_category_or_vat() -> None:
+    """Identity answers who and what kind. It stops there."""
+    import json as _json
+
+    types_file = _json.loads(
+        (pathlib.Path(main.__file__).parent / "engine" / "merchant_types.json").read_text())
+    for merchant in types_file["merchants"]:
+        for forbidden in ("category", "vat_treatment", "default_category", "default_vat_treatment"):
+            assert_equal(forbidden in merchant, False,
+                         f"{merchant['canonical']} must not carry {forbidden}")
+
+
+def test_a_relationship_cannot_create_a_category() -> None:
+    """Recurrence proves a trading relationship, never an account.
+
+    A supplier relationship does not say the payment was an operating expense —
+    it could be stock, an asset, or a loan repayment.
+    """
+    rows = [{"description": "ZZQQ UNKNOWN PAYEE 4278*5999 CHEQUE CARD PURCHASE",
+             "debit_amount": 5000.0, "credit_amount": None, "transaction_date": f"2025-0{m}-01"}
+            for m in range(1, 7)]
+    evidence = counterparty.counterparty_evidence("zzqq unknown payee", "ZZQQ UNKNOWN PAYEE", rows)
+    relationship = counterparty.infer_relationship(evidence)
+    assert_equal(relationship.kind, counterparty.RELATIONSHIP_SUPPLIER, "six months of payments is a supplier")
+    assert_equal(relationship.strength, counterparty.RELATIONSHIP_STRENGTH_STRONG, "and a strong one")
+
+    # Yet the reasoning layer still has nothing to say about the account.
+    treatment = reasoning.decide(rows[0]["description"], 5000.0, None, counterparty_evidence=evidence)
+    assert_equal(treatment, None, "a strong relationship alone yields no category")
+
+
+def test_recurring_payments_do_not_become_expenses() -> None:
+    """Six months of identical debits is a pattern, not an account."""
+    rows = [{"description": "QQZZ REGULAR 111111 ACCOUNT PAYMENT", "debit_amount": 19086.55,
+             "credit_amount": None, "transaction_date": f"2025-0{m}-01"} for m in range(1, 7)]
+    evidence = counterparty.counterparty_evidence("qqzz regular", "QQZZ REGULAR", rows)
+    assert_equal(evidence.fixed_amount, True, "identical amounts")
+    assert_equal(evidence.recurring, True, "recurring")
+    assert_equal(reasoning.decide(rows[0]["description"], 19086.55, None, counterparty_evidence=evidence),
+                 None, "recurrence alone classifies nothing")
+
+
+def test_a_credit_does_not_become_revenue() -> None:
+    """Direction is a constraint. It never picks the account."""
+    for description in ("QQZZ UNKNOWN INBOUND 111111 ACCOUNT PAYMENT", "ZZQQ PAYER 4278*5999 CREDIT TRANSFER"):
+        treatment = reasoning.decide(description, None, 50000.0)
+        if treatment is None:
+            continue
+        assert_equal("Revenue" in treatment.category or "Sales" in treatment.category, False,
+                     f"{description} must not be booked as revenue on direction alone")
+
+
+def test_a_multi_line_merchant_never_resolves_to_one_treatment() -> None:
+    """Where an entity supplies several things, the menu keeps several items."""
+    for type_key, spec in reasoning.type_treatments().items():
+        if spec.get("monoline"):
+            continue
+        assert_equal(len(spec["possible_treatments"]) >= 2, True,
+                     f"{type_key} is multi-line and must offer more than one treatment")
+
+
+def test_a_monoline_merchant_may_settle_its_account() -> None:
+    """Automation is preserved where the entity can only supply one thing.
+
+    An insurer supplies insurance; a revenue authority collects tax. This is the
+    only case where recognising a name is enough, and it is enough because the
+    menu has one item — not because the name is trusted.
+    """
+    for description, expected in (("DISCOVERY INSURE PREMIUM", "Insurance"),
+                                  ("SARS EFILING PAYMENT", "SARS / Tax Suspense"),
+                                  ("ESKOM PREPAID", "Utilities"),
+                                  ("CARTRACK ACCOUNT PAYMENT", "Motor Vehicle Expenses")):
+        treatment = reasoning.decide(description, 1000.0, None)
+        assert_equal(treatment.category if treatment else None, expected, f"{description}")
+        assert_equal(treatment.review_required, False, f"{description} is settled, not queued")
+
+
+def test_every_decision_says_why() -> None:
+    """The answer to "why was this classified?" must be evidence, not the name.
+
+    A classification a reviewer cannot interrogate is one they have to redo.
+    """
+    for description in ("DISCOVERY INSURE PREMIUM", "SASOL POWERROAD 4278*5999 CHEQUE CARD PURCHASE",
+                        "WESBANK LOAN INSTALMENT", "SARS EFILING PAYMENT"):
+        treatment = reasoning.decide(description, 1200.0, None)
+        assert_equal(bool(treatment and treatment.evidence_used), True, f"{description} carries evidence")
+        assert_equal(bool(treatment and treatment.reason), True, f"{description} carries a reason")
+        explanation = treatment.explain()
+        assert_equal(explanation.lower() != description.lower(), True,
+                     f"{description} explanation must be more than the name")
+
+
+def test_evidence_grades_rank_as_specified() -> None:
+    """HARD beats HIGH beats MEDIUM beats LOW, and LOW settles nothing alone."""
+    order = reasoning.GRADE_ORDER
+    assert_equal(order[reasoning.GRADE_HARD] > order[reasoning.GRADE_HIGH], True, "hard outranks high")
+    assert_equal(order[reasoning.GRADE_HIGH] > order[reasoning.GRADE_MEDIUM], True, "high outranks medium")
+    assert_equal(order[reasoning.GRADE_MEDIUM] > order[reasoning.GRADE_LOW], True, "medium outranks low")
+
+    # A multi-line merchant with nothing but its name is LOW, and stays in review.
+    treatment = reasoning.decide("TAKEALOT ONLINE 4278*5999 CHEQUE CARD PURCHASE", 900.0, None)
+    assert_equal(treatment.review_required, True, "name recognition alone does not settle a row")
+
+    # A brand too generic to identify anyone is not an alias at all. Bare
+    # "shell" matches SHELL FLAMINGO but also SHELLEY and NUTSHELL, so the
+    # knowledge base lists "shell garage" and "shell ultra" instead and the row
+    # falls through to the legacy table rather than being claimed on a fragment.
+    assert_equal(reasoning.identify_merchant_type("SHELL FLAMINGO4278*5999 CHEQUE CARD PURCHASE"), None,
+                 "a brand name too generic to identify anyone is not an alias")
+
+
+def test_a_mechanism_may_not_name_a_profit_and_loss_account() -> None:
+    """Banking semantics decide balance-sheet movements only.
+
+    Making "ib transfer" decisive during development moved 33 rows worth
+    R2,997,900 out of review, including a R2,000,000 transfer naming no payee.
+    A channel cannot know what was bought.
+    """
+    import json as _json
+
+    semantics = _json.loads(
+        (pathlib.Path(main.__file__).parent / "engine" / "banking_semantics.json").read_text())
+    balance_sheet = {"Inter-account Transfer", "Inter-account Transfer In",
+                     "Inter-account Transfer Out / Loan", "Loan / Liability",
+                     "Director Loan / Drawings", "Suspense / Review Required"}
+    for mechanism in semantics["mechanisms"]:
+        if not mechanism.get("category"):
+            continue
+        assert_equal(mechanism["category"] in balance_sheet, True,
+                     f"{mechanism['term']} names {mechanism['category']}, which is not a balance-sheet movement")
+
+
+def test_an_anonymous_outbound_transfer_stays_in_review() -> None:
+    """The specific R2m row that caught the mechanism defect."""
+    treatment = reasoning.decide(". 06H28 IB TRANSFER TO", 2000000.0, None)
+    assert_equal(treatment, None, "an outbound transfer naming nobody is not an inter-account movement")
+
+
+def test_the_evidence_layers_preserve_existing_automation() -> None:
+    """Every classification the old model got right, the new layers keep.
+
+    Measured on the real 615-row Standard Bank statement during development:
+    189 automated rows before, 202 after, ledger identical, and the only
+    category movements were three improvements. This asserts the same
+    behaviours on the fixture that ships with the repository.
+    """
+    transactions, _ = _classified_fixture(main)
+    categories = {t.description: t.account_category for t in transactions}
+    for description, expected in categories.items():
+        if "LOAN INSTALMENT" in description.upper():
+            assert_equal(expected, "Loan / Liability", "the self-describing loan instalment is preserved")
+        if "INSURE PREMIUM" in description.upper():
+            assert_equal(expected, "Insurance", "the insurer is preserved")
+# ── A merchant name cannot authorise a VAT claim ─────────────────────────────
+#
+# Found in the production baseline audit: five Shell forecourt charges carried
+# vat_treatment "standard", i.e. claimable, decided by nothing but the brand in
+# the description.
+#
+# Two things were wrong. The tax answer: petrol and diesel are zero-rated in
+# South Africa, so claiming 15% input VAT on a fuel purchase is an assessment
+# risk — and the same till also sells standard-rated shop goods, which one
+# statement line cannot distinguish. And the principle: a merchant name does not
+# establish what was bought, whether the purpose was business, whether a valid
+# tax invoice exists, or whether the supplier is registered.
+#
+# The inconsistency proved the point. Engen, Sasol, Caltex and Fuelzone are in
+# the merchant knowledge base, whose path deliberately downgrades a merchant's
+# "standard" default to "review" — so they were held to review. Bare "shell" is
+# deliberately NOT a KB alias, being too generic, so SHELL FLAMINGO fell through
+# to the keyword table and was claimed. Identical purchases, opposite VAT
+# answers, decided by whether we happened to know the brand.
+
+FUEL_DESCRIPTIONS = (
+    "SHELL FLAMINGO4278*5999 CHEQUE CARD PURCHASE",
+    "SHELL CIRCLE 4278*5999 CHEQUE CARD PURCHASE",
+    "ENGEN GARAGE",
+    "SASOL FUEL",
+    "CALTEX N1 STOP",
+    "C*FUELZONE 4278*5999 CHEQUE CARD PURCHASE",
+    "DIESEL PURCHASE",
+    "PETROL",
+    "UNKNOWN FORECOURT 4278*5999 GARAGE",
+)
+
+
+def test_a_fuel_merchant_never_authorises_a_vat_claim() -> None:
+    """No fuel description may come back claimable, whoever the retailer is."""
+    claimed = []
+    for description in FUEL_DESCRIPTIONS:
+        detail = main.classify_transaction_detailed(description, 1000.0, None)
+        if detail.vat_treatment == "standard":
+            claimed.append((description, detail.vat_treatment))
+    assert_equal(claimed, [], "no fuel description produces a claimable VAT treatment")
+
+
+def test_fuel_vat_is_review_not_merely_not_standard() -> None:
+    """Review, specifically — not zero-rated, not exempt, not out of scope.
+
+    Guessing "zero_rated" would be the same mistake in the other direction: the
+    forecourt shop is standard-rated and we cannot see which was bought. Review
+    is the only treatment the evidence supports.
+    """
+    for description in FUEL_DESCRIPTIONS:
+        detail = main.classify_transaction_detailed(description, 1000.0, None)
+        assert_equal(detail.vat_treatment, "review", f"{description} VAT is review_required")
+
+
+def test_the_expense_category_survives_the_vat_downgrade() -> None:
+    """Only the VAT answer changes. The account is still assigned.
+
+    Withdrawing the claim must not cost the classification — a forecourt charge
+    is a vehicle cost whatever was bought, and dropping it into Suspense to be
+    safe about VAT would trade one error for another.
+    """
+    from engine.classification import STRENGTH_SOFT
+
+    for description in FUEL_DESCRIPTIONS:
+        detail = main.classify_transaction_detailed(description, 1000.0, None)
+        assert_equal(detail.category, "Motor Vehicle Expenses", f"{description} is still a vehicle expense")
+        assert_equal(detail.strength, STRENGTH_SOFT, f"{description} keeps its rule standing")
+
+
+def test_known_and_unknown_fuel_retailers_now_agree() -> None:
+    """The KB and the keyword table must give the same VAT answer.
+
+    This is the actual defect: two layers disagreeing, with the less careful one
+    winning for any brand the knowledge base had not been taught.
+    """
+    in_kb = main.classify_transaction_detailed("ENGEN GARAGE", 1000.0, None)
+    not_in_kb = main.classify_transaction_detailed("SHELL FLAMINGO4278*5999 CHEQUE CARD PURCHASE", 1000.0, None)
+    assert_equal(in_kb.vat_treatment, not_in_kb.vat_treatment, "knowing the brand does not change the VAT answer")
+
+
+def test_bank_charges_keep_their_claim() -> None:
+    """The fix must not sweep up VAT that IS supportable.
+
+    A bank fee is different in kind: the bank named the charge on its own
+    statement, the supplier is known and registered, and the statement itself is
+    the supporting document. That evidence is present; for fuel it is not.
+
+    Note the descriptions here all take the HARD bank-fee path. A bare "SERVICE
+    FEES" does not — it reaches Bank Charges through a soft keyword rule with
+    review VAT — which is a separate pre-existing inconsistency, reported but
+    deliberately not touched by a VAT-safety fix.
+    """
+    from engine.classification import STRENGTH_HARD
+
+    for description in ("MONTHLY ACCOUNT FEE", "ACC 301981485 SERVICE FEE", "HONOURING FEE",
+                        "NOTIFICATION FEE", "OVERDRAFT SERVICE FEE", "CASH HANDLING FEE"):
+        detail = main.classify_transaction_detailed(description, 100.0, None)
+        assert_equal(detail.category, "Bank Charges", f"{description} is a bank charge")
+        assert_equal(detail.vat_treatment, "standard", f"{description} keeps its claimable treatment")
+        assert_equal(detail.bank_charge, True, f"{description} is flagged as a bank charge")
+        assert_equal(detail.strength, STRENGTH_HARD, f"{description} is settled by bank-named evidence")
+
+
+
+def test_coverage_counts_what_was_decided_and_on_what_evidence() -> None:
+    """The dashboard measures; it never decides.
+
+    Reported as coverage BY GRADE rather than one automation number, because a
+    single number hides the failure mode that matters: a system booking every
+    unknown credit to revenue would score perfectly on coverage and be
+    dangerous, while one sending everything to review scores perfectly on safety
+    and is useless.
+    """
+    from engine import coverage as coverage_module
+
+    transactions, _ = _classified_fixture(main)
+    measured = coverage_module.measure(transactions)
+
+    assert_equal(measured.total, len(transactions), "every row counted")
+    assert_equal(measured.automated + measured.unresolved, measured.total, "every row is one or the other")
+    assert_equal(measured.settled + measured.revisable, measured.automated, "automated rows split by standing")
+    assert_equal(sum(measured.by_source.values()), measured.total, "sources account for every row")
+
+    # Measuring must not have moved anything.
+    again, _ = _classified_fixture(main)
+    assert_equal([t.account_category for t in again], [t.account_category for t in transactions],
+                 "measuring coverage changed no classification")
+
+
+def test_coverage_calls_a_drop_in_automation_a_regression() -> None:
+    """Sending work to a human is not a way of reducing risk.
+
+    Improving a row's reasoning while keeping it automated is progress. Moving
+    it into review is a regression, and the comparison says so plainly rather
+    than reporting a net figure that could hide it.
+    """
+    from engine import coverage as coverage_module
+
+    transactions, _ = _classified_fixture(main)
+    before = coverage_module.measure(transactions)
+    worse = coverage_module.measure(transactions[: len(transactions) // 2])
+    comparison = coverage_module.compare(before, worse)
+    assert_equal(comparison["regressed"], True, "fewer automated rows is a regression")
+    assert_equal(coverage_module.compare(before, before)["regressed"], False, "unchanged is not a regression")
 
 
 if __name__ == "__main__":

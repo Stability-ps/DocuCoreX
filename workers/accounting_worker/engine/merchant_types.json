@@ -1,0 +1,285 @@
+{
+  "version": 1,
+  "note": "Merchant IDENTITY and TYPE. Deliberately carries no category and no VAT treatment: those were the old merchants.json model, where recognising a brand decided the books and the tax. A merchant record answers who this is and what kind of entity it is, and stops there.",
+  "why_no_category": "Recognising Shell establishes a fuel retailer, not what was bought. The forecourt sells fuel (zero-rated), shop goods (standard-rated) and car washes, and the purpose may be business or personal. The treatment is decided by engine/reasoning.py from evidence; the possible treatments for each type are in merchant_type_treatments.json.",
+  "retired_from_merchants_json": {
+    "note": "Records in the old file that were never merchants \u2014 category labels, mechanisms, or groupings named after one customer's counterparties. They are not migrated. Their behaviour, where correct, is preserved by transaction_semantics.json, banking_semantics.json or the category vocabulary.",
+    "records": [
+      "Emporers Ridge Levy",
+      "FNB Bank Charges",
+      "Government Health / Tender Receipts",
+      "IT and Electronics Suppliers",
+      "Inter-account Transfers",
+      "Medical Pharmacy and Hair Suppliers",
+      "Personal / Lifestyle Review Suppliers",
+      "Salaries and Caregivers",
+      "Savings and Home Loan Transfers",
+      "Supplier Payments"
+    ]
+  },
+  "merchants": [
+    {
+      "canonical": "Accounting and Professional Fees",
+      "aliases": [
+        "acapolite accounting",
+        "tax practitioner",
+        "bookkeeping",
+        "accounting",
+        "audit fee"
+      ],
+      "merchant_type": "professional_services",
+      "identification_confidence": 88
+    },
+    {
+      "canonical": "Adobe",
+      "aliases": [
+        "adobe"
+      ],
+      "merchant_type": "software_vendor",
+      "identification_confidence": 86
+    },
+    {
+      "canonical": "Amazon Web Services",
+      "aliases": [
+        "amazon web services",
+        "amazon aws",
+        "aws"
+      ],
+      "merchant_type": "software_vendor",
+      "identification_confidence": 86
+    },
+    {
+      "canonical": "Caltex",
+      "aliases": [
+        "caltex"
+      ],
+      "merchant_type": "fuel_retailer",
+      "identification_confidence": 90
+    },
+    {
+      "canonical": "Cartrack",
+      "aliases": [
+        "cartrack"
+      ],
+      "merchant_type": "vehicle_telematics",
+      "identification_confidence": 88
+    },
+    {
+      "canonical": "Checkers",
+      "aliases": [
+        "checkers sixty60",
+        "checkers"
+      ],
+      "merchant_type": "grocery_retailer",
+      "identification_confidence": 76
+    },
+    {
+      "canonical": "Clicks",
+      "aliases": [
+        "clicks"
+      ],
+      "merchant_type": "pharmacy_retailer",
+      "identification_confidence": 74
+    },
+    {
+      "canonical": "DHL",
+      "aliases": [
+        "the courier guy",
+        "paygate dhl",
+        "courier guy",
+        "paygate*dhl",
+        "postnet",
+        "aramex",
+        "dhl"
+      ],
+      "merchant_type": "courier_operator",
+      "identification_confidence": 88
+    },
+    {
+      "canonical": "Dis-Chem",
+      "aliases": [
+        "dis chem",
+        "dis-chem"
+      ],
+      "merchant_type": "pharmacy_retailer",
+      "identification_confidence": 74
+    },
+    {
+      "canonical": "Discovery",
+      "aliases": [
+        "discovery insurance",
+        "discovery account",
+        "discovery insure",
+        "discovery health"
+      ],
+      "merchant_type": "insurer",
+      "identification_confidence": 94
+    },
+    {
+      "canonical": "Engen",
+      "aliases": [
+        "engen"
+      ],
+      "merchant_type": "fuel_retailer",
+      "identification_confidence": 90
+    },
+    {
+      "canonical": "Eskom",
+      "aliases": [
+        "eskom"
+      ],
+      "merchant_type": "electricity_utility",
+      "identification_confidence": 88
+    },
+    {
+      "canonical": "Fuelzone",
+      "aliases": [
+        "fuelzone",
+        "fuel zone"
+      ],
+      "merchant_type": "fuel_retailer",
+      "identification_confidence": 90
+    },
+    {
+      "canonical": "Google",
+      "aliases": [
+        "google workspace",
+        "google storage",
+        "google cloud",
+        "google play",
+        "google"
+      ],
+      "merchant_type": "software_vendor",
+      "identification_confidence": 84
+    },
+    {
+      "canonical": "Google ChatGPT / OpenAI",
+      "aliases": [
+        "google chatgpt",
+        "google openai",
+        "chatgpt",
+        "openai"
+      ],
+      "merchant_type": "software_vendor",
+      "identification_confidence": 90
+    },
+    {
+      "canonical": "Google Xiaomi Home",
+      "aliases": [
+        "google xiaomi home",
+        "xiaomi home"
+      ],
+      "merchant_type": "software_vendor",
+      "identification_confidence": 84
+    },
+    {
+      "canonical": "Microsoft",
+      "aliases": [
+        "microsoft 365",
+        "microsoft",
+        "office365",
+        "msft"
+      ],
+      "merchant_type": "software_vendor",
+      "identification_confidence": 86
+    },
+    {
+      "canonical": "Mr D Food",
+      "aliases": [
+        "mr d food",
+        "mr d"
+      ],
+      "merchant_type": "food_delivery",
+      "identification_confidence": 86
+    },
+    {
+      "canonical": "Netcash Debit Orders",
+      "aliases": [
+        "magtape debit disc prem",
+        "magtape debit stratum",
+        "stratum netcash",
+        "disc prem",
+        "netcash"
+      ],
+      "merchant_type": "payment_aggregator",
+      "identification_confidence": 76
+    },
+    {
+      "canonical": "SARS",
+      "aliases": [
+        "provisional tax",
+        "tax deposit",
+        "efiling",
+        "vat201",
+        "sars",
+        "paye"
+      ],
+      "merchant_type": "revenue_authority",
+      "identification_confidence": 92
+    },
+    {
+      "canonical": "Sage Accounting",
+      "aliases": [
+        "pos purchase sage",
+        "sage accounting",
+        "sage acc",
+        "sage sa"
+      ],
+      "merchant_type": "software_vendor",
+      "identification_confidence": 90
+    },
+    {
+      "canonical": "Sasol",
+      "aliases": [
+        "sasol"
+      ],
+      "merchant_type": "fuel_retailer",
+      "identification_confidence": 90
+    },
+    {
+      "canonical": "Shell",
+      "aliases": [
+        "shell garage",
+        "shell ultra"
+      ],
+      "merchant_type": "fuel_retailer",
+      "identification_confidence": 88
+    },
+    {
+      "canonical": "South African Revenue Service",
+      "aliases": [
+        "sars efiling",
+        "sars payment",
+        "sars"
+      ],
+      "merchant_type": "revenue_authority",
+      "identification_confidence": 92
+    },
+    {
+      "canonical": "Takealot",
+      "aliases": [
+        "takealot"
+      ],
+      "merchant_type": "general_retailer",
+      "identification_confidence": 70
+    },
+    {
+      "canonical": "Uber Eats",
+      "aliases": [
+        "pos purchase new uber eats",
+        "uber eats 400568",
+        "uber eats"
+      ],
+      "merchant_type": "food_delivery",
+      "identification_confidence": 88
+    },
+    {
+      "canonical": "Woolworths",
+      "aliases": [
+        "woolworths"
+      ],
+      "merchant_type": "grocery_retailer",
+      "identification_confidence": 76
+    }
+  ]
+}
