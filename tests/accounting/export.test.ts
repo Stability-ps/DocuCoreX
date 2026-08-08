@@ -286,11 +286,27 @@ test("bulk process forces fresh extraction for stale completed or review runs", 
   assert.match(ui, /reprocess:\s*status !== "queued"/);
 });
 
-test("force reprocess clears stale transaction rows before polling", () => {
+// This test used to assert the opposite, and in doing so it pinned a defect in
+// place: it required the route to delete every transaction on the run BEFORE
+// handing off to a worker that takes about eleven minutes. For those eleven
+// minutes the run had no ledger, and any failure in them left it that way
+// permanently — failRun marks the run failed, it does not restore 615 rows.
+//
+// The delete was never needed. The worker clears the run's transactions
+// immediately before inserting the replacement, after every extraction,
+// classification and validation stage has succeeded, so reprocessing was
+// already idempotent. "Clearing stale rows" was solving a problem that the
+// worker had already solved, at the cost of the only copy of the data.
+//
+// The full invariant now lives in tests/accounting/reprocess-safety.test.ts.
+test("force reprocess does not clear the ledger it is replacing", () => {
   const route = read("app/api/accounting/fnb/process/route.ts");
-  assert.match(route, /if \(body\.reprocess\) \{/);
-  assert.match(route, /\.from\("accounting_transactions"\)[\s\S]*\.delete\(\)[\s\S]*\.eq\("run_id", runId\)/);
-  assert.match(route, /transaction_count:\s*body\.reprocess \? 0 : detail\.run\.transactionCount/);
+  assert.doesNotMatch(route, /\.from\("accounting_transactions"\)/);
+  assert.doesNotMatch(route, /transaction_count:\s*body\.reprocess \? 0/);
+  // The flag still does its two real jobs: bypass the extraction cache, and
+  // allow a run stuck in 'processing' to be restarted.
+  assert.match(route, /processStatementInBackground\([^)]*Boolean\(body\.reprocess\)\)/);
+  assert.match(route, /status === "processing" && !body\.reprocess/);
 });
 
 test("stale extraction detection is based on current rows, not old stored difference while processing", () => {
