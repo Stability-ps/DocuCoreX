@@ -4,11 +4,15 @@ import importlib.util
 import io
 import json
 import os
+import shutil
 import sys
+import tempfile
 import types
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+# tests/ itself, so the generated sanitised statement fixtures are importable.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 if importlib.util.find_spec("fitz") is None:
     sys.modules["fitz"] = types.ModuleType("fitz")
@@ -1042,7 +1046,33 @@ def run_local_real_statement_files_case() -> None:
     if not hasattr(pdfplumber, "open"):
         raise AssertionError("pdfplumber is present but unusable (no .open)")
 
-    cases = [
+    # PyMuPDF renders the sanitised fixtures. The suite stubs fitz out when it is
+    # missing (see the header), which would silently produce no PDF at all, so
+    # this fails hard for the same reason the pdfplumber check above does.
+    import fitz
+
+    if not hasattr(fitz, "open"):
+        raise AssertionError(
+            "sanitised statement fixtures require PyMuPDF; run via "
+            "workers/accounting_worker/tests/run_regression.sh so the worker venv is used"
+        )
+
+    from fixtures.sanitised_statements import build_sanitised_cases
+
+    # Committed as a generator rather than as PDF binaries: every figure is
+    # invented, the statements are readable in review, and they run everywhere —
+    # including CI, where the real files below do not exist.
+    sanitised_dir = Path(tempfile.mkdtemp(prefix="docucorex-sanitised-"))
+    cases = build_sanitised_cases(sanitised_dir)
+
+    # The real statements stay machine-local. They are golden masters for FNB's
+    # actual layout — column positions, wrapped descriptions, repeated page
+    # headers — and pdfplumber's behaviour on them is what the Money In/Out fix
+    # was validated against, which a rendered fixture cannot reproduce. They run
+    # wherever the files exist. Their absence is no longer a silent skip: the
+    # sanitised cases above always execute, so
+    # test_real_statement_cases_actually_execute still has real work to check.
+    cases += [
         {
             "id": "real-march-2026",
             "path": Path("/Users/patric/Library/Mobile Documents/com~apple~CloudDocs/Desktop Mac Downloads/31 Mar 2026 - (Free)..A1N1WRAFCAUDGU1_EVNXHAEGdVVAU1RUVBgaIEYBVhkGAHlSEVdUVA8cGHIRB1UYUFV0AkAEBldXHxAkSgAETw.XhdUVD1zfHZqdiBmUQIBAAIFDQFtUVRWUgUCVgRUAwAFBwcDUldRXgAJAQw8UwU.pdf"),
@@ -1102,6 +1132,8 @@ def run_local_real_statement_files_case() -> None:
             "debits": summary_counts["debit_count"],
             "extraction_confidence": extraction_confidence,
         }
+
+    shutil.rmtree(sanitised_dir, ignore_errors=True)
 
 
 def test_informational_rows_are_kept_but_not_counted() -> None:
