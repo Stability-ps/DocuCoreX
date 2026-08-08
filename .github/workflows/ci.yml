@@ -97,6 +97,24 @@ jobs:
 
       - run: pnpm install --frozen-lockfile
 
+      # tests/e2e/conversion-engine.spec.ts drives lib/document-conversion-engine.ts,
+      # which shells out to these. On a bare runner they are absent and the PDF
+      # text/OCR/render cases fail for want of tooling rather than for a real
+      # defect. The list mirrors workers/conversion_worker/Dockerfile:19-28 so CI
+      # matches the image those paths actually run in (minus ca-certificates,
+      # git and python3, already present here). libreoffice is the slow one.
+      - name: Install conversion tooling
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            ghostscript \
+            libreoffice \
+            ocrmypdf \
+            poppler-utils \
+            qpdf \
+            tesseract-ocr \
+            tesseract-ocr-eng
+
       # Both Playwright projects (Desktop Chrome, iPhone 13) are Chromium.
       - name: Install Chromium
         run: pnpm exec playwright install --with-deps chromium
