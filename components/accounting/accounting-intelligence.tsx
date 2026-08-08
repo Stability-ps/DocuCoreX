@@ -66,7 +66,7 @@ import type {
 import { cleanStatementLabel, statementDisplayName, statementReferenceDate } from "@/lib/accounting/statement-name";
 import { parserMethodLabel } from "@/lib/pdf/workerHandoff";
 import { pollRunUntilTerminal } from "@/lib/accounting/poll-run";
-import { deriveEffectiveRunStatus, isActiveRunStatus } from "@/lib/accounting/run-status";
+import { deriveEffectiveRunStatus, isActiveRunStatus, isRunAwaitingProcessing, isRunInFlight } from "@/lib/accounting/run-status";
 import { accountingRunQuality, accountingTransactionTotals } from "@/lib/accounting/run-quality";
 import { CATEGORY_OPTIONS, VAT_TREATMENT_OPTIONS, isUnresolvedAccountingCategory } from "@/lib/accounting/review-options";
 import { computeBalanceContinuity } from "@/lib/accounting/balance-continuity";
@@ -399,7 +399,7 @@ export function AccountingIntelligence() {
   const selectedRun = useMemo(() => runs.find((run) => run.id === selectedRunId) ?? null, [runs, selectedRunId]);
   const runById = useMemo(() => new Map(runs.map((run) => [run.id, run])), [runs]);
   const hasActiveRuns = useMemo(
-    () => runs.some((run) => isActiveRunStatus(run.status)) || isActiveRunStatus(detail?.run.status ?? null),
+    () => runs.some((run) => isRunInFlight(run.status)) || isRunInFlight(detail?.run.status ?? null),
     [detail?.run.status, runs],
   );
 
@@ -443,7 +443,7 @@ export function AccountingIntelligence() {
 
     const nextDetail = await fetchRunDetailFromApi(nextRunId);
     setDetail(nextDetail);
-    setLiveRefreshState(isActiveRunStatus(nextDetail.run.status) || nextRuns.some((run) => isActiveRunStatus(run.status)) ? "processing" : "idle");
+    setLiveRefreshState(isRunInFlight(nextDetail.run.status) || nextRuns.some((run) => isRunInFlight(run.status)) ? "processing" : "idle");
   }
 
   function applyRunRefreshState(runId: string) {
@@ -563,7 +563,7 @@ export function AccountingIntelligence() {
   async function loadRunDetail(runId: string) {
     const nextDetail = await fetchRunDetailFromApi(runId);
     setDetail(nextDetail);
-    setLiveRefreshState(isActiveRunStatus(nextDetail.run.status) ? "processing" : "idle");
+    setLiveRefreshState(isRunInFlight(nextDetail.run.status) ? "processing" : "idle");
   }
 
   useEffect(() => {
@@ -1532,7 +1532,32 @@ export function AccountingIntelligence() {
                 />
               ) : null}
 
-              {isActiveRunStatus(detail.run.status) ? (
+              {/* Uploaded, not yet started. Previously this rendered the
+                  "Processing in progress" panel below, so an untouched upload
+                  looked identical to a stuck job. Say what it is waiting for
+                  and offer the same Process action the toolbar uses. */}
+              {isRunAwaitingProcessing(detail.run.status) ? (
+                <section className="rounded-xl border border-slate-200 bg-white p-4">
+                  <div className="flex flex-wrap items-center justify-between gap-3">
+                    <div className="min-w-0">
+                      <p className="text-sm font-bold text-navy-950">Ready to process</p>
+                      <p className="mt-0.5 text-xs font-semibold text-slate-500">
+                        This statement is uploaded and stored. Processing has not started yet — extraction runs when you ask for it.
+                      </p>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => void processRun(detail.run.id)}
+                      disabled={busy === `process:${detail.run.id}`}
+                      className="rounded-lg bg-royal-600 px-4 py-2 text-sm font-bold text-white transition hover:bg-royal-700 disabled:opacity-50"
+                    >
+                      {busy === `process:${detail.run.id}` ? "Starting…" : "Process Statement"}
+                    </button>
+                  </div>
+                </section>
+              ) : null}
+
+              {isRunInFlight(detail.run.status) ? (
                 <section className="rounded-xl border border-blue-200 bg-blue-50/60 p-4">
                   <div className="flex flex-wrap items-center justify-between gap-2">
                     <p className="text-sm font-bold text-blue-800">Processing in progress</p>
