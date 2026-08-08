@@ -4146,6 +4146,15 @@ def run() -> None:
     test_a_consistent_direction_over_months_is_a_strong_relationship()
     test_a_relationship_is_not_an_accounting_treatment()
     test_grouping_ignores_rows_that_name_nobody()
+    test_one_merchant_resolves_to_one_identity_on_every_bank()
+    test_the_issuing_bank_is_never_the_counterparty()
+    test_another_bank_is_a_real_counterparty()
+    test_what_is_left_must_still_identify_somebody()
+    test_channel_removal_is_boundary_aware()
+    test_every_removed_phrase_is_recorded()
+    test_an_undetected_bank_still_reads_the_counterparty()
+    test_the_standard_bank_statement_is_unchanged_by_bank_awareness()
+    test_every_detected_bank_has_a_lexicon_entry()
     test_the_global_prompt_names_no_customer_counterparty()
     test_the_global_prompt_is_identical_for_every_workspace()
     test_the_global_prompt_is_built_only_from_vetted_knowledge()
@@ -5011,7 +5020,7 @@ def test_channel_wording_never_becomes_the_counterparty() -> None:
     ):
         party = counterparty.extract_counterparty(description)
         assert_equal(party.display if party else None, expected, f"counterparty of {description!r}")
-        for phrase in counterparty.CHANNEL_PHRASES:
+        for phrase in counterparty.channel_phrases("standard_bank_business_v1"):
             assert_equal(phrase in (party.display if party else ""), False, f"{phrase} is not a counterparty")
 
 
@@ -5149,6 +5158,156 @@ def test_grouping_ignores_rows_that_name_nobody() -> None:
     groups = counterparty.group_by_counterparty(rows)
     assert_equal(sorted(groups), ["a harmony"], "the anonymous transfer forms no group")
     assert_equal(len(groups["a harmony"]), 2, "both payments grouped")
+
+
+
+# ── The counterparty must not depend on which bank issued the statement ──────
+#
+# The first cut of this module was Standard-Bank-shaped. Detection covers FNB,
+# Standard Bank, ABSA, Nedbank, Capitec, Investec and unknown; the counterparty
+# layer covered one of them, so:
+#
+#   FNB App Payment To Mr D Food           -> 'FNB APP PAYMENT TO MR D FOOD'
+#   Absa Debit Order Discovery Life 12345  -> 'ABSA DISCOVERY LIFE'
+#
+# Every workspace on those banks would have grown a counterparty named after its
+# own bank, with unrelated payments grouped under it.
+
+SAME_MERCHANT_ACROSS_BANKS = (
+    ("standard_bank_business_v1", "MR D FOOD 4278*5999 CHEQUE CARD PURCHASE"),
+    ("fnb_business_v1", "FNB App Payment To Mr D Food"),
+    ("absa_business_v1", "ABSA Debit Order Mr D Food 12345"),
+    ("nedbank_business_v1", "Nedbank Internet Pmt To Mr D Food"),
+    ("capitec_business_v1", "Capitec Pay Mr D Food"),
+    ("investec_business_v1", "Investec Payment To Mr D Food"),
+)
+
+
+def test_one_merchant_resolves_to_one_identity_on_every_bank() -> None:
+    """The acceptance criterion: same purchase, six banks, one counterparty.
+
+    Without this the same merchant keys six different ways, no recurrence is
+    ever visible across a client's banks, and a workspace that switches bank
+    silently loses every relationship it had established.
+    """
+    identities = {}
+    for profile, description in SAME_MERCHANT_ACROSS_BANKS:
+        party = counterparty.extract_counterparty(description, profile)
+        identities[profile] = party.key if party else None
+    assert_equal(sorted(set(identities.values())), ["mr d food"], f"one identity across banks, got {identities}")
+
+
+def test_the_issuing_bank_is_never_the_counterparty() -> None:
+    """A bank does not pay itself on its own statement."""
+    for profile, description, expected in (
+        ("fnb_business_v1", "FNB App Payment To Mr D Food", "MR D FOOD"),
+        ("absa_business_v1", "ABSA Debit Order Discovery Life 12345", "DISCOVERY LIFE"),
+        ("nedbank_business_v1", "Nedbank Internet Pmt To Vodacom", "VODACOM"),
+        ("capitec_business_v1", "Capitec Pay Netflix", "NETFLIX"),
+        ("investec_business_v1", "Investec Payment To Sasol", "SASOL"),
+        ("standard_bank_business_v1", "STANDARD BANK IB TRANSFER TO SASOL", "SASOL"),
+    ):
+        party = counterparty.extract_counterparty(description, profile)
+        assert_equal(party.display if party else None, expected, f"{profile}: {description!r}")
+
+
+def test_another_bank_is_a_real_counterparty() -> None:
+    """Only the ISSUING bank is self-reference. Everyone else is a payee.
+
+    This is why the bank name is resolved from the run's detected profile rather
+    than from a list of bank names. On the real Standard Bank statement six
+    monthly payments of R19,086.55 go TO ABSA BANK — a genuine counterparty that
+    a name-list approach would have deleted.
+    """
+    on_standard_bank = counterparty.extract_counterparty(
+        "ABSA BANK 8090806375 ACCOUNT PAYMENT", "standard_bank_business_v1")
+    assert_equal(on_standard_bank.display, "ABSA BANK", "ABSA is a payee on a Standard Bank statement")
+
+    on_absa = counterparty.extract_counterparty(
+        "ABSA BANK 8090806375 ACCOUNT PAYMENT", "absa_business_v1")
+    assert_equal(on_absa, None, "the same string on an ABSA statement names nobody")
+
+
+def test_what_is_left_must_still_identify_somebody() -> None:
+    """Removing the bank can leave nothing worth keeping.
+
+    "ABSA BANK ... ACCOUNT PAYMENT" on an ABSA statement reduces to "BANK". A
+    counterparty called Bank is worse than none: it groups unrelated rows under
+    a word that identifies nobody — the same failure as the learned key "d".
+    """
+    for profile, description in (
+        ("absa_business_v1", "ABSA BANK ACCOUNT PAYMENT"),
+        ("fnb_business_v1", "FNB Transfer To Account"),
+        ("standard_bank_business_v1", ". 08H29 IB TRANSFER TO"),
+    ):
+        assert_equal(counterparty.extract_counterparty(description, profile), None,
+                     f"{description!r} identifies nobody")
+
+
+def test_channel_removal_is_boundary_aware() -> None:
+    """A phrase is removed as whole words, never as a fragment.
+
+    A raw replace would cut "PAY" from "PAYGATE" and "ABSA" from "ABSALOM" —
+    the same defect that made the learned key "d" claim 425 rows, one layer up.
+    """
+    party = counterparty.extract_counterparty("PAYGATE*DHL 4278*5999 CHEQUE CARD PURCHASE",
+                                              "standard_bank_business_v1")
+    assert_equal(party.display, "PAYGATE*DHL", "PAYGATE survives the PAYSHAP/PAY vocabulary")
+    absalom = counterparty.extract_counterparty("ABSALOM TRADING 12345 ACCOUNT PAYMENT", "absa_business_v1")
+    assert_equal(absalom.display, "ABSALOM TRADING", "ABSALOM is not ABSA")
+
+
+def test_every_removed_phrase_is_recorded() -> None:
+    """The reasoning has to be checkable, not merely correct.
+
+    Recording each removal is what lets a reviewer see WHY a counterparty reads
+    the way it does, and it is what a later layer will cite as evidence.
+    """
+    party = counterparty.extract_counterparty("ABSA Debit Order Mr D Food 12345", "absa_business_v1")
+    assert_equal("DEBIT ORDER" in party.channel_terms_removed, True, "the channel phrase is recorded")
+    assert_equal(party.bank_profile, "absa_business_v1", "the vocabulary used is recorded")
+
+
+def test_an_undetected_bank_still_reads_the_counterparty() -> None:
+    """Unknown banks degrade safely rather than failing shut.
+
+    With no profile every bank's vocabulary applies: an unknown bank is more
+    likely to share phrasing with one of the six than with none. Self-reference
+    stripping is skipped, because there is no bank to strip.
+    """
+    for description, expected in (("MR D FOOD 4278*5999 CHEQUE CARD PURCHASE", "MR D FOOD"),
+                                  ("Card Purchase Woolworths Sandton", "WOOLWORTHS SANDTON"),
+                                  ("A HARMONY698002 CREDIT TRANSFER", "A HARMONY")):
+        party = counterparty.extract_counterparty(description, None)
+        assert_equal(party.display if party else None, expected, f"undetected bank reads {description!r}")
+
+
+def test_the_standard_bank_statement_is_unchanged_by_bank_awareness() -> None:
+    """PR 2a is a correctness fix for other banks, not a change to this one."""
+    for description in ("WELKOM FRESH P4278*5999 CHEQUE CARD PURCHASE",
+                        "A HARMONY698002 CREDIT TRANSFER",
+                        "ADT JHB 2117556751ADT5087498 ACCOUNT PAYMENT",
+                        "N1 VAAL 4278*5999 CHEQUE CARD PURCHASE"):
+        with_bank = counterparty.extract_counterparty(description, "standard_bank_business_v1")
+        without = counterparty.extract_counterparty(description, None)
+        assert_equal(with_bank.key, without.key, f"{description!r} reads the same either way")
+
+
+def test_every_detected_bank_has_a_lexicon_entry() -> None:
+    """Detection and counterparty extraction must cover the same banks.
+
+    The original defect was exactly this gap: detection knew six banks, this
+    layer knew one. If a profile is added to detection without wording here, it
+    silently falls back to generic — so the omission is made to fail loudly.
+    """
+    from engine.detection import BANK_FINGERPRINTS
+
+    lexicon_profiles = set(counterparty._lexicon()["profiles"])
+    for fingerprint in BANK_FINGERPRINTS:
+        assert_equal(fingerprint.profile_id in lexicon_profiles, True,
+                     f"{fingerprint.profile_id} has a channel-lexicon entry")
+        assert_equal(fingerprint.profile_id in counterparty._lexicon()["self_reference"], True,
+                     f"{fingerprint.profile_id} has self-reference terms")
 
 
 if __name__ == "__main__":

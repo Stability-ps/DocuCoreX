@@ -31,44 +31,80 @@ are — decided by evidence about the purchase, not about the payee.
 
 from __future__ import annotations
 
+import json
 import re
 from dataclasses import dataclass, field
 from decimal import Decimal
+from functools import lru_cache
+from pathlib import Path
 from typing import Any, Iterable, Sequence
 
 # Bank channel wording: HOW money moved, never WHO was paid.
 #
 # This is the same distinction §6 of the VAT audit established. "CHEQUE CARD
-# PURCHASE" appears on 291 of 615 rows here; if it were allowed into the
-# counterparty key, 291 unrelated purchases would collapse into one imaginary
-# merchant. Ordered longest-first so "IB TRANSFER FROM" is removed as a phrase
-# rather than leaving a stray "FROM" behind.
-CHANNEL_PHRASES: tuple[str, ...] = (
-    "OUTSTANDING CARD AUTHORISATION",
-    "OTHER BANK ATM CASH WITHD. AT",
-    "OTHER BANK ATM CASH WITHD AT",
-    "ELECTRONIC BANKING COLLECT TO",
-    "INTERNET BANKING PAYMENT TO",
-    "INTERNET BANKING PAYMENT",
-    "CHEQUE CARD PURCHASE",
-    "IMMEDIATE PAYMENT RECEIVED",
-    "MAGTAPE DEBIT",
-    "MAGTAPE CREDIT",
-    "IB PAYMENT FROM",
-    "IB TRANSFER FROM",
-    "IB TRANSFER TO",
-    "IB PAYMENT TO",
-    "ACCOUNT PAYMENT",
-    "IMMEDIATE PAYMENT",
-    "CREDIT TRANSFER",
-    "DEBIT TRANSFER",
-    "CARD PURCHASE",
-    "POS PURCHASE",
-    "DEBIT ORDER",
-    "CASH DEPOSIT",
-    "AUTOBANK",
-    "PAYSHAP",
-)
+# PURCHASE" appears on 291 of 615 rows on the real Standard Bank statement; if
+# it reached the counterparty key, 291 unrelated purchases would collapse into
+# one imaginary merchant.
+#
+# The vocabulary is per bank, because every bank words this differently and the
+# same purchase must resolve to the same counterparty whoever issued the
+# statement:
+#
+#   Standard Bank   MR D FOOD 4278*5999 CHEQUE CARD PURCHASE
+#   FNB             FNB App Payment To Mr D Food
+#   ABSA            ABSA Debit Order Mr D Food 12345
+#
+# All three are Mr D Food. Detection already covers FNB, Standard Bank, ABSA,
+# Nedbank, Capitec, Investec and unknown; this layer has to cover the same
+# ground or an FNB statement grows a counterparty called FNB.
+_LEXICON_FILE = Path(__file__).with_name("channel_lexicon.json")
+
+
+@lru_cache(maxsize=1)
+def _lexicon() -> dict[str, Any]:
+    return json.loads(_LEXICON_FILE.read_text())
+
+
+@lru_cache(maxsize=16)
+def channel_phrases(bank_profile: str | None = None) -> tuple[str, ...]:
+    """Channel wording for one bank, longest first.
+
+    Longest-first so "IB TRANSFER FROM" is removed as a phrase rather than
+    leaving a stray "FROM" behind, and so "FNB APP PAYMENT TO" beats the
+    shorter "APP PAYMENT TO" that would strand "FNB".
+    """
+    lexicon = _lexicon()
+    phrases = set(lexicon["generic"])
+    if bank_profile:
+        phrases.update(lexicon["profiles"].get(bank_profile, []))
+    else:
+        # No detected bank: apply every profile's wording. An unknown bank is
+        # more likely to share phrasing with one of the six than with none, and
+        # a phrase that does not appear costs nothing.
+        for extra in lexicon["profiles"].values():
+            phrases.update(extra)
+    return tuple(sorted((p.upper() for p in phrases), key=len, reverse=True))
+
+
+@lru_cache(maxsize=1)
+def _residual_noise() -> frozenset[str]:
+    return frozenset(_lexicon()["residual_noise"])
+
+
+@lru_cache(maxsize=16)
+def self_reference_terms(bank_profile: str | None) -> tuple[str, ...]:
+    """The issuing bank's own names, which are never the counterparty.
+
+    Resolved from the run's DETECTED bank, never from a list of bank names —
+    and the difference is not academic. On the real Standard Bank statement,
+    six monthly payments of R19,086.55 go TO ABSA BANK. ABSA is a genuine
+    counterparty there and must survive; on an ABSA statement the same string
+    is the bank talking about itself and must go.
+    """
+    if not bank_profile:
+        return ()
+    terms = _lexicon()["self_reference"].get(bank_profile, [])
+    return tuple(sorted((t.upper() for t in terms), key=len, reverse=True))
 
 # A card mask as Standard Bank prints it: 4278*5999. It abuts the merchant name
 # with no separator when the name fills the field, which is also the signal that
@@ -93,13 +129,24 @@ class Counterparty:
     display: str
     """As printed, using only words present in the description."""
     channel: str | None
-    """The bank wording removed to find the name, kept for explanation."""
+    """The first bank phrase removed, kept for explanation."""
+    channel_terms_removed: tuple[str, ...]
+    """Every phrase removed, so the reasoning can be shown and checked."""
     truncated: bool
     """The bank cut the name short, so it is a prefix and not a full name."""
+    bank_profile: str | None
+    """Which bank's vocabulary was applied."""
 
 
-def extract_counterparty(description: str | None) -> Counterparty | None:
+def extract_counterparty(
+    description: str | None,
+    bank_profile: str | None = None,
+) -> Counterparty | None:
     """The counterparty behind the bank's wording, or None.
+
+    `bank_profile` is the run's DETECTED bank. Passing it removes that bank's
+    own name and its own phrasing; omitting it falls back to every bank's
+    vocabulary, which is the safe default for an undetected statement.
 
     None is a real answer and the honest one for ". 08H29 IB TRANSFER TO", which
     names nobody: an own-account transfer where the bank recorded only a time.
@@ -111,14 +158,24 @@ def extract_counterparty(description: str | None) -> Counterparty | None:
     if not text:
         return None
 
-    channel = None
-    for phrase in CHANNEL_PHRASES:
+    # The issuing bank first: "FNB App Payment To Mr D Food" has to lose FNB
+    # before "APP PAYMENT TO" is considered, or the phrase list has to carry
+    # every bank-prefixed variant of every phrase.
+    for term in self_reference_terms(bank_profile):
+        text = _remove_phrase(text, term)
+
+    # EVERY matching phrase, not merely the first. "ABSA Debit Order Mr D Food"
+    # needs both the self-reference and the channel gone; stopping at one leaves
+    # the bank's name fused to the counterparty, which is how ABSA DISCOVERY
+    # LIFE came to look like a single payee.
+    removed: list[str] = []
+    for phrase in channel_phrases(bank_profile):
         if phrase in text:
-            channel = phrase
-            text = text.replace(phrase, " ")
-            break
+            text = _remove_phrase(text, phrase)
+            removed.append(phrase)
 
     truncated = bool(CARD_MASK.search(text)) and _abuts_mask(text)
+    channel = removed[0] if removed else None
     text = CARD_MASK.sub(" ", text)
     text = TIME_STAMP.sub(" ", text)
     text = LONG_REFERENCE.sub(" ", text)
@@ -133,10 +190,36 @@ def extract_counterparty(description: str | None) -> Counterparty | None:
     if not tokens:
         return None
 
+    # What is left may identify nobody. Stripping ABSA from "ABSA BANK ...
+    # ACCOUNT PAYMENT" on an ABSA statement leaves "BANK", and a counterparty
+    # called Bank is worse than none at all: it groups unrelated rows under a
+    # name that means nothing. Same reasoning as the learned-key stoplist —
+    # a key has to be able to identify somebody.
+    if all(token.lower() in _residual_noise() for token in tokens):
+        return None
+
     display = " ".join(tokens)
     if len(display) < 2:
         return None
-    return Counterparty(key=display.lower(), display=display, channel=channel, truncated=truncated)
+    return Counterparty(
+        key=display.lower(),
+        display=display,
+        channel=channel,
+        channel_terms_removed=tuple(removed),
+        truncated=truncated,
+        bank_profile=bank_profile,
+    )
+
+
+def _remove_phrase(text: str, phrase: str) -> str:
+    """Remove a phrase only where it stands as whole words.
+
+    Boundary-aware for the same reason learned-rule matching is: a raw replace
+    would cut "PAY" out of "PAYGATE" and "ABSA" out of "ABSALOM". The lesson
+    that produced boundary matching for keywords applies identically here.
+    """
+    pattern = re.compile(r"(?<![A-Z0-9])" + re.escape(phrase) + r"(?![A-Z0-9])")
+    return pattern.sub(" ", text)
 
 
 FUSED_REFERENCE = re.compile(r"^([A-Z][A-Z&'/*.-]*?)(\d{4,})$")
@@ -278,23 +361,23 @@ def _with_reasons(evidence: CounterpartyEvidence) -> CounterpartyEvidence:
     return CounterpartyEvidence(**{**evidence.__dict__, "reasons": tuple(reasons)})
 
 
-def group_by_counterparty(rows: Iterable[Any]) -> dict[str, list[Any]]:
+def group_by_counterparty(rows: Iterable[Any], bank_profile: str | None = None) -> dict[str, list[Any]]:
     """Bucket rows by extracted counterparty. Rows naming nobody are excluded."""
     groups: dict[str, list[Any]] = {}
     for row in rows:
-        party = extract_counterparty(str(_field(row, "description") or ""))
+        party = extract_counterparty(str(_field(row, "description") or ""), bank_profile)
         if party is None:
             continue
         groups.setdefault(party.key, []).append(row)
     return groups
 
 
-def evidence_for_all(rows: Iterable[Any]) -> dict[str, CounterpartyEvidence]:
+def evidence_for_all(rows: Iterable[Any], bank_profile: str | None = None) -> dict[str, CounterpartyEvidence]:
     materialised = list(rows)
-    groups = group_by_counterparty(materialised)
+    groups = group_by_counterparty(materialised, bank_profile)
     out: dict[str, CounterpartyEvidence] = {}
     for key, group in groups.items():
-        party = extract_counterparty(str(_field(group[0], "description") or ""))
+        party = extract_counterparty(str(_field(group[0], "description") or ""), bank_profile)
         display = party.display if party else key
         out[key] = counterparty_evidence(key, display, group)
     return out
