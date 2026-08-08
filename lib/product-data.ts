@@ -11,7 +11,6 @@ import {
   Columns3,
   CreditCard,
   Download,
-  Edit3,
   Eye,
   FileArchive,
   FileClock,
@@ -35,7 +34,6 @@ import {
   Palette,
   PencilLine,
   ReceiptText,
-  RefreshCcw,
   ScanText,
   Search,
   Settings,
@@ -104,14 +102,6 @@ export const dashboardStats = [
   { label: "Storage Used", value: "2.8 TB", detail: "72% of plan", icon: CloudUpload, tone: "amber" },
   { label: "Exports", value: "9,718", detail: "Excel, CSV, JSON", icon: Download, tone: "purple" },
   { label: "Recent Activity", value: "312", detail: "Last 24 hours", icon: Activity, tone: "rose" },
-];
-
-export const quickActions = [
-  { label: "Upload Document", href: "/documents", icon: CloudUpload, description: "PDF, Office, images and ZIP" },
-  { label: "Convert File", href: "/documents", icon: RefreshCcw, description: "PDF, Word, Excel and images" },
-  { label: "Edit PDF", href: "/documents", icon: Edit3, description: "Open a document workspace" },
-  { label: "OCR Scan", href: "/documents", icon: ScanText, description: "Extract text and layout" },
-  { label: "AI Analysis", href: "/documents", icon: Bot, description: "Ask document questions" },
 ];
 
 export const recentActivity = [
