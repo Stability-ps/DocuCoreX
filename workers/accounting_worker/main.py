@@ -45,6 +45,10 @@ from engine.classification import (
 )
 from engine.ai_prompt import build_classification_prompt
 from engine.reasoning import decide as reasoning_decide
+from engine.counterparty import evidence_for_all as counterparty_evidence_for_all
+from engine.counterparty import extract_counterparty
+from engine.counterparty import infer_relationship as infer_counterparty_relationship
+from engine.reasoning import identify_merchant_type as reasoning_identify_merchant_type
 from engine.ai_recovery import SYSTEM_PROMPT as AI_RECOVERY_SYSTEM_PROMPT
 from engine.ai_recovery import batches as ai_batches
 from engine.ai_recovery import build_prompt as build_ai_recovery_prompt
@@ -303,6 +307,19 @@ class ParsedTransaction(BaseModel):
     classification_source: str = ""
     classification_confidence: float | None = None
     normalized_merchant: str | None = None
+    # migration 023 — who the transaction was with, what kind of entity that is,
+    # and what the decision rested on. Kept apart from account_category and
+    # vat_treatment on purpose: identity establishes who was paid, not what was
+    # bought, and not whether input VAT may be claimed.
+    counterparty_key: str | None = None
+    counterparty_display: str | None = None
+    counterparty_truncated: bool | None = None
+    merchant_type: str | None = None
+    merchant_type_source: str | None = None
+    relationship: str | None = None
+    relationship_strength: str | None = None
+    evidence_used: list[dict[str, str]] | None = None
+    treatment_alternatives: list[str] | None = None
 
 
 def get_supabase() -> Client:
@@ -332,6 +349,82 @@ def fetch_classification_rules(supabase: Client, workspace_id: str) -> list[dict
 def is_ai_recovered(transaction: ParsedTransaction) -> bool:
     """True for a row a model located rather than a parser reading it."""
     return AI_RECOVERY_NOTE in (transaction.notes or "")
+
+
+def stamp_counterparty_intelligence(
+    transactions: list[ParsedTransaction],
+    bank_profile: str | None = None,
+) -> int:
+    """Record who each transaction was with, and what the statement proves.
+
+    Runs over the whole ledger at once because the interesting evidence is not
+    in any single row: one payment to WELKOM FRESH P says nothing, and 115 of
+    them across six months in one direction says a great deal. That evidence is
+    stored, not acted on — the treatment stays exactly where classification put
+    it, and a test asserts the ledger is untouched.
+
+    Returns how many rows a counterparty could be read from.
+    """
+    if not transactions:
+        return 0
+
+    rows = [
+        {
+            "description": transaction.description,
+            "debit_amount": transaction.debit_amount,
+            "credit_amount": transaction.credit_amount,
+            "transaction_date": transaction.transaction_date,
+        }
+        for transaction in transactions
+    ]
+    evidence_by_key = counterparty_evidence_for_all(rows, bank_profile)
+
+    stamped = 0
+    for transaction in transactions:
+        party = extract_counterparty(transaction.description, bank_profile)
+        if party is None:
+            continue
+        stamped += 1
+        transaction.counterparty_key = party.key
+        transaction.counterparty_display = party.display
+        transaction.counterparty_truncated = party.truncated
+
+        evidence = evidence_by_key.get(party.key)
+        if evidence is not None:
+            relationship = infer_counterparty_relationship(evidence)
+            transaction.relationship = relationship.kind
+            transaction.relationship_strength = relationship.strength
+
+        identified = reasoning_identify_merchant_type(transaction.description)
+        if identified is not None:
+            _, merchant_type, _ = identified
+            transaction.merchant_type = merchant_type
+            transaction.merchant_type_source = "kb"
+
+        # The reasoning behind the treatment, recorded so "why was this
+        # classified?" is answerable from the row rather than by re-deriving it.
+        # decide() is pure, so asking it again here costs nothing and keeps the
+        # classification path itself unchanged.
+        reasoned = reasoning_decide(
+            transaction.description,
+            transaction.debit_amount,
+            transaction.credit_amount,
+            counterparty_evidence=evidence,
+        )
+        if reasoned is not None:
+            transaction.evidence_used = [
+                {"source": item.source, "detail": item.detail, "grade": item.grade}
+                for item in reasoned.evidence_used
+            ]
+            transaction.treatment_alternatives = list(reasoned.alternatives) or None
+
+    log_event(
+        "worker.counterparty_intelligence",
+        rows=len(transactions),
+        counterparties=len(evidence_by_key),
+        stamped=stamped,
+    )
+    return stamped
 
 
 def apply_learned_classification_rules(transactions: list[ParsedTransaction], rules: list[dict[str, Any]]) -> int:
@@ -4800,6 +4893,18 @@ OPTIONAL_TRANSACTION_COLUMNS = (
     "classification_confidence",
     "classification_reason",
     "normalized_merchant",
+    # migration 023 — identity, relationship and reasoning stored apart from the
+    # treatment. Listed here so a worker running against a database that has not
+    # had 023 applied drops them and retries, exactly as it did for 021 and 022.
+    "counterparty_key",
+    "counterparty_display",
+    "counterparty_truncated",
+    "merchant_type",
+    "merchant_type_source",
+    "relationship",
+    "relationship_strength",
+    "evidence_used",
+    "treatment_alternatives",
 )
 
 
@@ -5663,6 +5768,10 @@ def process_fnb_statement(payload: ProcessRequest, authorization: str | None = H
         transactions = selected_transactions or []
         classification_rules = fetch_classification_rules(supabase, payload.workspace_id) or []
         learned_rules_applied = apply_learned_classification_rules(transactions, classification_rules)
+        # After classification, never before: the counterparty pass records who
+        # each row was with and what the statement proves about them, and must
+        # not be in a position to influence the treatment it is describing.
+        stamp_counterparty_intelligence(transactions, bank_profile)
         ai_recovery: dict[str, Any] = {"enabled": False, "attempted": False, "accepted_rows": 0}
         # Accounting-parser diagnostics (null-safe).
         _summary = validation_summary(transactions)

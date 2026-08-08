@@ -4175,6 +4175,8 @@ def run() -> None:
     test_a_mechanism_may_not_name_a_profit_and_loss_account()
     test_an_anonymous_outbound_transfer_stays_in_review()
     test_the_evidence_layers_preserve_existing_automation()
+    test_coverage_counts_what_was_decided_and_on_what_evidence()
+    test_coverage_calls_a_drop_in_automation_a_regression()
     test_a_fuel_merchant_never_authorises_a_vat_claim()
     test_fuel_vat_is_review_not_merely_not_standard()
     test_the_expense_category_survives_the_vat_downgrade()
@@ -5616,6 +5618,49 @@ def test_bank_charges_keep_their_claim() -> None:
         assert_equal(detail.vat_treatment, "standard", f"{description} keeps its claimable treatment")
         assert_equal(detail.bank_charge, True, f"{description} is flagged as a bank charge")
         assert_equal(detail.strength, STRENGTH_HARD, f"{description} is settled by bank-named evidence")
+
+
+
+def test_coverage_counts_what_was_decided_and_on_what_evidence() -> None:
+    """The dashboard measures; it never decides.
+
+    Reported as coverage BY GRADE rather than one automation number, because a
+    single number hides the failure mode that matters: a system booking every
+    unknown credit to revenue would score perfectly on coverage and be
+    dangerous, while one sending everything to review scores perfectly on safety
+    and is useless.
+    """
+    from engine import coverage as coverage_module
+
+    transactions, _ = _classified_fixture(main)
+    measured = coverage_module.measure(transactions)
+
+    assert_equal(measured.total, len(transactions), "every row counted")
+    assert_equal(measured.automated + measured.unresolved, measured.total, "every row is one or the other")
+    assert_equal(measured.settled + measured.revisable, measured.automated, "automated rows split by standing")
+    assert_equal(sum(measured.by_source.values()), measured.total, "sources account for every row")
+
+    # Measuring must not have moved anything.
+    again, _ = _classified_fixture(main)
+    assert_equal([t.account_category for t in again], [t.account_category for t in transactions],
+                 "measuring coverage changed no classification")
+
+
+def test_coverage_calls_a_drop_in_automation_a_regression() -> None:
+    """Sending work to a human is not a way of reducing risk.
+
+    Improving a row's reasoning while keeping it automated is progress. Moving
+    it into review is a regression, and the comparison says so plainly rather
+    than reporting a net figure that could hide it.
+    """
+    from engine import coverage as coverage_module
+
+    transactions, _ = _classified_fixture(main)
+    before = coverage_module.measure(transactions)
+    worse = coverage_module.measure(transactions[: len(transactions) // 2])
+    comparison = coverage_module.compare(before, worse)
+    assert_equal(comparison["regressed"], True, "fewer automated rows is a regression")
+    assert_equal(coverage_module.compare(before, before)["regressed"], False, "unchanged is not a regression")
 
 
 if __name__ == "__main__":
