@@ -1,10 +1,83 @@
 # Structured extraction — architecture review & implementation plan
 
-**Status:** proposal. Nothing implemented.
+**Status:** partially implemented — see the status table below.
 **Scope:** make Azure Document Intelligence a first-class *structured parser*, and
 generalise that capability so every provider can expose structure.
 **Explicit constraint:** provider ORDER is unchanged. Azure remains an escalation
 after the acceptance gate rejects native extraction.
+
+---
+
+## Implementation status
+
+Last verified against the tree on 2026-08-06 (`main` @ 24837a7).
+
+| Phase | Status | Evidence |
+|---|---|---|
+| **1. Three confidences** | ✅ **shipped** | `lib/accounting/confidence.ts` (`buildConfidenceTrio`, `reconciliationConfidence`); migration `019_confidence_split.sql`; PRs #25, #26 |
+| **2. Azure structured parsing** | ✅ **shipped** | `lib/pdf/azure/*` (geometry, columnRoles, normalizeTables, layout, rowsFromTables, buildStructured); `structured?` on `ExtractionResult`; `tests/pdf/azure-structured.test.ts`. Three deviations from §3/§4 — see below |
+| **3. Structured scoring + ranking** | ❌ **not started** | `scoreExtraction.ts` unchanged; no structured signals |
+| **4. Worker protocol v2** | ❌ **not started** | `buildWorkerInput` still returns `preExtractedText: string` only (`lib/pdf/workerHandoff.ts:38`); worker has no `transactions_from_rows` |
+| **5. Shadow measurement** | ⚠️ **built, never run** | `lib/pdf/shadowComparison.ts`, migrations `018`, `020`; PRs #25, #26 — but see below |
+| **6. Persist structure** | ⚠️ **partial** | `018`/`020` persist *shadow* comparisons; no `structured_summary` column exists |
+
+### Two things that are not obvious from the table
+
+**Phase 5 has produced no data, and the reason is worse than a missing flag.**
+The sampling gate, the comparison table and the skip accounting are all built and
+tested. `extraction_shadow_comparisons` exists — migrations 018 and 020 are
+applied — and holds **0 rows**, verified against the live database on 2026-08-06.
+
+The cause is not the shadow flag. `ACCOUNTING_SHADOW_AZURE` *is* configured on
+Vercel Production. What is missing is **`AZURE_DOCUMENT_INTELLIGENCE_ENDPOINT`,
+which exists in no Vercel environment at all** — only
+`AZURE_DOCUMENT_INTELLIGENCE_KEY` is set, and `isAzureConfigured()` requires
+both.
+
+The consequence is larger than shadow mode:
+
+> **Azure Document Intelligence has never been callable in production.** The
+> escalation rung added as a "first-class extraction provider" in PR #24 has been
+> inert since it shipped, because half its configuration was never deployed. Every
+> statement that failed the acceptance gate fell through to Mistral without Azure
+> ever being tried.
+
+So **§0's decision gate is still open**, and would have stayed shut even with the
+shadow flag on: shadow mode would have recorded `azure_available: false` for
+every run. `AZURE_FORM_RECOGNIZER_ENDPOINT` *is* set and is a different, legacy
+variable — a plausible source of the original confusion.
+
+**Phase 4 now has a producer, and did not before.** Until phase 2 landed, Azure's
+structure was discarded at the door: `toExtractionTables` flattened `cells[]`
+into `string[][]`, dropping `rowSpan`, `columnSpan`, `polygon`, per-cell
+`confidence` and `kind` — everything §4 depends on. **2 → 3 → 4 is a hard
+ordering, not a preference**; building 4 first would have meant writing a
+consumer against a contract with no implementation to validate it.
+
+### Where the implementation deviates from this plan
+
+The plan is not authoritative where it is wrong. Three corrections, all made in
+phase 2 and all covered by tests:
+
+1. **§4b's continuation rule is wrong for FNB and was not implemented as
+   written.** The plan treats "empty date + populated description" as a wrapped
+   description. FNB prints the date **once per date group**, so every later
+   transaction in a group has no date of its own — that rule folds real debits
+   into the previous row and loses them, which is precisely the ACAPOLITE
+   failure the accounting regression fixture exists to catch. The discriminator
+   is **money, not date**: a row qualifies only with no date, no value in any
+   money column, and some description text.
+2. **`ColumnRole` gains `"amount"`.** FNB prints one signed Amount column with a
+   Cr/Dr suffix rather than separate debit and credit columns; without it the
+   most important column on a real statement resolves to `"unknown"`.
+3. **`StructuredRow.absorbedRows` replaces `continuationOf`.** Joining happens
+   in Node where the polygons are, so continuation rows are merged rather than
+   emitted separately and the worker never redoes geometry in Python. The useful
+   record is therefore the reverse direction — which source rows were folded in.
+
+Also **not** implemented: `keyValues.ts`. It requires the
+`features=keyValuePairs` add-on, which bills per page, and §10 question 4 is
+unanswered — requesting it would start the spend before the decision.
 
 ---
 
@@ -321,19 +394,43 @@ an OCR problem, and it never was.
 
 Phased so each lands independently and is separately revertible.
 
-| Phase | Work | Risk | Value without later phases |
-|---|---|---|---|
-| **1. Three confidences** | Split the metric; API + UI; no extraction change | very low | **High** — ends the misdiagnosis |
-| **2. Azure structured parsing** | `lib/pdf/azure/*`, contract in types, rows from tables, geometry joining | low | Node-side scoring only |
-| **3. Structured scoring + ranking** | Extend `scoreExtraction`, `mergeExtractionResults` | medium | Better provider choice |
-| **4. Worker protocol v2** | `main.py` structured path, `rows_are_usable`, regression suite | **high** | **This is where users see it** |
-| **5. Shadow measurement** | Option C from §0 — run Azure on accepted statements, record only | low | Data to justify §0 option B |
-| **6. Persist structure** | Migration 018, diagnostics UI | low | Auditability |
+| Phase | Work | Risk | Value without later phases | Status |
+|---|---|---|---|---|
+| **1. Three confidences** | Split the metric; API + UI; no extraction change | very low | **High** — ends the misdiagnosis | ✅ shipped |
+| **2. Azure structured parsing** | `lib/pdf/azure/*`, contract in types, rows from tables, geometry joining | low | Node-side scoring only | ✅ shipped |
+| **3. Structured scoring + ranking** | Extend `scoreExtraction`, `mergeExtractionResults` | medium | Better provider choice | ❌ not started |
+| **4. Worker protocol v2** | `main.py` structured path, `rows_are_usable`, regression suite | **high** | **This is where users see it** | ❌ unblocked, not started |
+| **5. Shadow measurement** | Option C from §0 — run Azure on accepted statements, record only | low | Data to justify §0 option B | ⚠️ built, flag never set |
+| **6. Persist structure** | Migration 018, diagnostics UI | low | Auditability | ⚠️ shadow only |
 
 **Phase 1 first.** It is a day of work, it is the actual fix for the reported
 confusion, and it is independent of everything else. **Phase 4 is the one that
 matters** for output quality, and it is the riskiest — the FNB parser is ~4,000
 lines built around text lines.
+
+### Revised sequencing (2026-08-06)
+
+Phases 1 and 2 are done. Phase 4 is unblocked but should still not be next:
+
+1. **Set `AZURE_DOCUMENT_INTELLIGENCE_ENDPOINT`**, then
+   `ACCOUNTING_SHADOW_AZURE=true`. In that order — the flag alone does nothing
+   while the endpoint is absent. Note that supplying the endpoint also revives
+   the Azure rung in the *live* escalation ladder, which has never run in
+   production; that is a real behaviour and cost change, not only an observation.
+   Until this runs, §0's option A/B/C question is being answered by assertion
+   rather than evidence, and phases 3–4 are justified by a benefit nobody has
+   measured. Phase 2 makes the measurement strictly better: the shadow record can
+   now compare *structure* recovered, not only text.
+
+   Staged on **Preview** as of 2026-08-06 (endpoint + flag added there only) so
+   the wiring can be proven before production is touched. Note that Preview
+   currently lacks `ACCOUNTING_WORKER_URL` / `ACCOUNTING_WORKER_TOKEN`, so an
+   accounting run cannot complete there and shadow mode will not fire until those
+   are supplied too.
+2. **Phase 3**, which turns phase 2's descriptive `StructuredQuality` counts into
+   scoring signals. Medium risk, because it changes which candidate wins a merge.
+3. **Phase 4** last, and only with shadow data in hand — it is the phase that
+   touches a ~4,000-line text-oriented FNB parser, and the only one users see.
 
 ### API changes
 
@@ -407,11 +504,21 @@ absent.
 
 ## 10. Open questions for you
 
-1. **§0 option A, B or C?** This determines whether the work pays off. My
-   recommendation: **C now, decide B on the data.**
+1. ~~**§0 option A, B or C?**~~ **Answered: C.** The shadow-mode machinery was
+   built (PRs #25, #26). **But the question it was meant to settle is still
+   open**, because the flag enabling it was never set, so no comparison has ever
+   been recorded. C is implemented, not performed.
 2. Is a per-document-type provider order (statements → Azure first) within
-   bounds, or does "do not change provider order" mean globally fixed?
-3. Should phase 1 ship on its own immediately? It is independent and fixes the
-   reporting problem that prompted the last three investigations.
+   bounds, or does "do not change provider order" mean globally fixed? — **still
+   open**, and cannot be answered without the data from (1).
+3. ~~Should phase 1 ship on its own immediately?~~ **Answered: yes, and it did.**
 4. Do you want key-value pairs? It needs `features=keyValuePairs`, adds cost,
-   and account number / period already parse reliably from text.
+   and account number / period already parse reliably from text. — **still open.**
+
+### New question
+
+5. **Is Azure escalation firing at all in production?** §0 noted that Azure runs
+   only when the acceptance gate rejects native extraction, and that current
+   statements reconcile at R0.00 and therefore pass. If that is still true, the
+   entire structured-extraction investment applies to zero documents today, and
+   the shadow numbers from (1) would show it immediately.
