@@ -1,13 +1,18 @@
 import type { ExtractionResult, ExtractionPage, ExtractionWord } from "@/lib/pdf/types";
 import { parseStatementMetadata, parseTransactionsFromText } from "@/lib/pdf/metadata";
 import { pdfLog } from "@/lib/pdf/log";
+import { destroyPdfSession } from "@/lib/pdf/pdfSession";
 
 // Minimal structural types for the Node pdf.js legacy build (its exported types
 // differ from the browser build).
 type PdfTextItem = { str?: string; transform?: number[]; width?: number; height?: number };
 type PdfPageProxy = { getTextContent: () => Promise<{ items: PdfTextItem[] }> };
-type PdfDocProxy = { numPages: number; getPage: (n: number) => Promise<PdfPageProxy>; destroy: () => Promise<void> };
-type PdfjsNode = { getDocument: (options: Record<string, unknown>) => { promise: Promise<PdfDocProxy> } };
+// NOTE: no destroy() on the proxy. In pdfjs-dist 6.x PDFDocumentProxy has
+// cleanup() but NOT destroy(); teardown belongs to the loading task, which is
+// what getDocument() returns.
+type PdfDocProxy = { numPages: number; getPage: (n: number) => Promise<PdfPageProxy> };
+type PdfLoadingTask = { promise: Promise<PdfDocProxy>; destroy: () => Promise<void> };
+type PdfjsNode = { getDocument: (options: Record<string, unknown>) => PdfLoadingTask };
 
 // pdf.js references DOMMatrix / Path2D / ImageData at module scope and lazily loads
 // @napi-rs/canvas for RASTERISATION. Text extraction needs none of that, but the
@@ -47,6 +52,7 @@ export async function extractWithPdfjs(buffer: Uint8Array): Promise<ExtractionRe
   const started = Date.now();
   const warnings: string[] = [];
   const pages: ExtractionPage[] = [];
+  let loadingTask: PdfLoadingTask | null = null;
   try {
     ensureNodeDomPolyfills();
     // Register the worker's message handler on globalThis BEFORE importing pdf.js:
@@ -72,13 +78,14 @@ export async function extractWithPdfjs(buffer: Uint8Array): Promise<ExtractionRe
     pdfLog("pdfjs_bytes", { pdfjs_bytes: pdfData.byteLength });
     // Text-only options: no worker, no eval, no font-face / system fonts, so no
     // canvas / @napi-rs/canvas rasterisation backend is ever needed.
-    const doc = await pdfjs.getDocument({
+    loadingTask = pdfjs.getDocument({
       data: pdfData,
       disableWorker: true,
       isEvalSupported: false,
       disableFontFace: true,
       useSystemFonts: false,
-    }).promise;
+    });
+    const doc = await loadingTask.promise;
     pdfLog("pdfjs_renderer_skipped", { reason: "text-only extraction — rasterisation not required" });
 
     for (let pageNumber = 1; pageNumber <= doc.numPages; pageNumber += 1) {
@@ -96,13 +103,6 @@ export async function extractWithPdfjs(buffer: Uint8Array): Promise<ExtractionRe
       const text = parts.join(" ").replace(/\s{2,}/g, " ").trim();
       pages.push({ pageNumber, text, words, tables: [], lines: [] });
     }
-    // Best-effort cleanup — never let a cleanup error taint a successful extraction
-    // (the minified proxy may not expose destroy()).
-    try {
-      if (typeof doc.destroy === "function") await doc.destroy();
-    } catch {
-      /* ignore cleanup errors */
-    }
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     warnings.push(`PDF.js extraction failed: ${message}`);
@@ -113,6 +113,15 @@ export async function extractWithPdfjs(buffer: Uint8Array): Promise<ExtractionRe
     } else {
       pdfLog("pdfjs.error", { error: message });
     }
+  } finally {
+    // The loading task owns teardown of both the document and its worker
+    // transport, and it must run on the failure path too — a PDF that threw
+    // half way through page extraction has allocated just as much as one that
+    // finished. destroyPdfSession is idempotent and swallows a rejection from
+    // an already-dead worker, so cleanup can never taint an extraction that
+    // otherwise succeeded.
+    destroyPdfSession(loadingTask);
+    loadingTask = null;
   }
 
   const combinedText = pages.map((p) => p.text).join("\n");
