@@ -69,6 +69,7 @@ import { pollRunUntilTerminal } from "@/lib/accounting/poll-run";
 import { deriveEffectiveRunStatus, isActiveRunStatus } from "@/lib/accounting/run-status";
 import { accountingRunQuality, accountingTransactionTotals } from "@/lib/accounting/run-quality";
 import { CATEGORY_OPTIONS, VAT_TREATMENT_OPTIONS, isUnresolvedAccountingCategory } from "@/lib/accounting/review-options";
+import { computeBalanceContinuity } from "@/lib/accounting/balance-continuity";
 import { ProcessingSteps } from "@/components/accounting/processing-steps";
 import { FailedRunPanel } from "@/components/accounting/failed-run-panel";
 import type { AiCommentaryResult, AiCommentaryType } from "@/lib/accounting/ai-service";
@@ -1026,22 +1027,21 @@ export function AccountingIntelligence() {
   const expectedClosing = (detail?.run.openingBalance ?? 0) + totals.credit - totals.debit;
   const recDifference = expectedClosing - (detail?.run.closingBalance ?? 0);
   const reviewDiagnostics = useMemo(() => parseReviewDiagnostics(detail?.run ?? null, totals), [detail?.run, totals]);
-  const estimatedAffectedRows = Math.max(
-    1,
-    Math.min(
-      transactions.length || 1,
-      Math.max(reviewItems.length, reviewDiagnostics.difference && reviewDiagnostics.difference > 0.01 ? 3 : 0),
-    ),
+  // Rows whose printed balance genuinely does not follow from the previous one.
+  //
+  // This used to be the first N REVIEW ITEMS, with no arithmetic anywhere — so
+  // on the real 615-row Standard Bank statement it labelled 488 rows "Balance
+  // mismatch" on a ledger whose chain has zero gaps. Needing classification
+  // review and breaking the balance chain are unrelated facts, and showing one
+  // as the other buries any real mismatch among hundreds of false ones.
+  const balanceContinuity = useMemo(
+    () => computeBalanceContinuity(transactions, detail?.run.openingBalance ?? null),
+    [transactions, detail?.run.openingBalance],
   );
-  const affectedTransactions = useMemo(() => {
-    const explicitReviewRows = reviewItems.slice(0, estimatedAffectedRows);
-    if (explicitReviewRows.length) return explicitReviewRows;
-    if (!transactions.length) return [];
-    const lowConfidenceRows = transactions
-      .filter((transaction) => transaction.confidence < 85 || transaction.bankCharge)
-      .slice(0, estimatedAffectedRows);
-    return lowConfidenceRows.length ? lowConfidenceRows : transactions.slice(0, estimatedAffectedRows);
-  }, [estimatedAffectedRows, reviewItems, transactions]);
+  const affectedTransactions = useMemo(
+    () => transactions.filter((transaction) => balanceContinuity.mismatchedIds.has(transaction.id)),
+    [transactions, balanceContinuity],
+  );
   const affectedTransactionIds = useMemo(() => new Set(affectedTransactions.map((transaction) => transaction.id)), [affectedTransactions]);
 
   const accountRows = useMemo(() => {
