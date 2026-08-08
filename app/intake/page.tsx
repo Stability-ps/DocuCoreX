@@ -10,7 +10,7 @@ export default function IntakePage() {
         title="Choose what you are processing"
         description="Route bank statements, invoices, receipts, contracts, payslips, tax forms and other documents into the right extraction workflow."
         action={
-          <PrimaryButton href="/upload">
+          <PrimaryButton href="/documents">
             <Upload className="h-5 w-5" />
             Upload Files
           </PrimaryButton>
