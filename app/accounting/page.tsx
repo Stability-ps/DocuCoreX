@@ -1,15 +1,10 @@
 import { AccountingIntelligence } from "@/components/accounting/accounting-intelligence";
-import { PageHeader } from "@/components/ui";
 
+// No PageHeader. This is an application workspace, not a landing page, and the
+// marketing-style block here ("Accounting workspace for finance teams") sat
+// directly above the component's own "Accounting Intelligence › Bank Statements"
+// breadcrumb — two headers, one of them selling the product to someone already
+// inside it. The component owns its header.
 export default function AccountingPage() {
-  return (
-    <>
-      <PageHeader
-        eyebrow="Accounting Intelligence"
-        title="Accounting workspace for finance teams"
-        description="Built for accountants, bookkeepers, auditors, tax practitioners and finance teams."
-      />
-      <AccountingIntelligence />
-    </>
-  );
+  return <AccountingIntelligence />;
 }

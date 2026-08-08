@@ -1091,24 +1091,29 @@ export function AccountingIntelligence() {
         : "";
 
   return (
-    <div className={`space-y-4 p-4 sm:p-6 lg:space-y-5 lg:p-8 ${detail ? "pb-[calc(11rem+env(safe-area-inset-bottom))] md:pb-6 lg:pb-8" : ""}`}>
-      <header className="flex flex-col gap-2 md:gap-4 lg:flex-row lg:items-center lg:justify-between">
-        <div>
-          <p className="hidden text-sm font-bold text-slate-500 md:block">Accounting Intelligence <span className="mx-2 text-slate-300">›</span> Bank Statements</p>
-          <h1 className="text-2xl font-semibold tracking-tight text-navy-950 md:mt-2 sm:text-3xl md:hidden">Accounting</h1>
-          <h1 className="mt-2 hidden text-2xl font-semibold tracking-tight text-navy-950 sm:text-3xl md:block">Bank statement processing</h1>
-          <p className="mt-1 text-sm font-semibold text-slate-500 md:hidden">Upload, process, review, and export statements</p>
-        </div>
-        <label className="relative hidden w-full max-w-xl md:block">
-          <Search className="pointer-events-none absolute left-4 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
-          <input
-            value={query}
-            onChange={(event) => setQuery(event.target.value)}
-            placeholder="Search transactions, tags, accounts..."
-            className="h-12 w-full rounded-lg border border-slate-200 bg-white pl-11 pr-12 text-sm font-semibold text-navy-950 shadow-sm outline-none transition focus:border-royal-300 focus:ring-4 focus:ring-royal-100"
-          />
-          <span className="absolute right-4 top-1/2 -translate-y-1/2 text-xs font-semibold text-slate-400">⌘K</span>
-        </label>
+    /* Application density, not marketing spacing: ~20-28px horizontal padding
+       and 12-18px vertical gaps, so accounting data is visible without
+       scrolling past empty space. The mobile bottom padding is unchanged — it
+       clears the fixed action bar and the safe-area inset. */
+    <div className={`space-y-3 px-5 py-4 sm:px-6 lg:space-y-4 lg:px-7 lg:py-5 ${detail ? "pb-[calc(11rem+env(safe-area-inset-bottom))] md:pb-6 lg:pb-8" : ""}`}>
+      {/*
+        Compact application hierarchy: one breadcrumb, one title, no duplicated
+        headings and no second search.
+
+        The transaction search that used to sit here bound to the SAME `query`
+        state and `setQuery` as the one inside the Transactions toolbar — two
+        controls driving one filter, which is confusing rather than convenient.
+        The Transactions one is kept, since that is where the results appear.
+      */}
+      <header className="flex flex-col gap-1">
+        <p className="hidden text-xs font-bold uppercase tracking-wide text-slate-500 md:block">
+          Accounting Intelligence <span className="mx-1.5 text-slate-300">›</span> Bank Statements
+        </p>
+        <h1 className="text-xl font-semibold tracking-tight text-navy-950 sm:text-2xl">
+          <span className="md:hidden">Accounting</span>
+          <span className="hidden md:inline">Bank Statements</span>
+        </h1>
+        <p className="text-sm font-semibold text-slate-500 md:hidden">Upload, process, review, and export statements</p>
       </header>
 
       {/* Module navigation */}
