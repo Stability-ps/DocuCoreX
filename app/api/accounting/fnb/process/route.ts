@@ -15,6 +15,8 @@ import { buildWorkerInput, extractionProcessingMetadata } from "@/lib/pdf/worker
 import { buildWorkerEndpoint, createWorkerRequestId, getWorkerConfig, logWorkerStartupCheck } from "@/lib/system-worker-config";
 import type { WorkspaceContext } from "@/lib/server-documents";
 import type { AccountingRunDetail } from "@/lib/accounting/types";
+// TEMPORARY (2026-08-06) — remove with the worker-side auth_compare logging.
+import { buildOutboundDiagnostics, diagnosticsEnabled, WorkerTokenMissingError } from "@/lib/accounting/workerAuthDiagnostics";
 
 // Auto-run the multi-parser extraction pipeline before the worker: analyse the
 // PDF, choose the best source, persist the summary, and hand the worker the best
@@ -419,7 +421,13 @@ function normalizeWorkerFailure(input: {
     return `Accounting worker has no ACCOUNTING_WORKER_TOKEN configured, so it is refusing all requests. Set it on the worker service.${workerMetaSuffix}`;
   }
   if (input.status === 401) {
-    return `Accounting worker rejected our credentials. ACCOUNTING_WORKER_TOKEN must be set to the same value here and on the worker service.${workerMetaSuffix}`;
+    // The worker's own detail is APPENDED, not discarded. Its three 401 verdicts
+    // mean different things — "Missing Authorization header." says this runtime
+    // sent nothing, "Invalid credentials." says it sent the wrong value — and
+    // collapsing them into one message made an absent token indistinguishable
+    // from a mismatched one during the 2026-08-06 investigation.
+    const verdict = detail ? ` Worker said: ${detail}` : "";
+    return `Accounting worker rejected our credentials. ACCOUNTING_WORKER_TOKEN must be set to the same value here and on the worker service.${verdict}${workerMetaSuffix}`;
   }
 
   return `${detail || `Accounting worker returned HTTP ${input.status}.`} (endpoint: ${input.workerEndpoint}).${workerMetaSuffix}`;
@@ -535,6 +543,9 @@ async function processStatementInBackground(context: WorkspaceContext, detail: A
   type WorkerOutcome =
     | { kind: "ok" }
     | { kind: "failed"; status: number; error: string }
+    // Refused before the request was made — a server misconfiguration, never a
+    // statement problem, so it must not trigger the Enhanced-OCR retry.
+    | { kind: "config"; error: string }
     | { kind: "unreachable"; error: string };
 
   const callWorker = async (hints: Record<string, unknown>): Promise<WorkerOutcome> => {
@@ -557,6 +568,27 @@ async function processStatementInBackground(context: WorkspaceContext, detail: A
       declaredBank: detail.run.bank,
     });
 
+    // TEMPORARY (2026-08-06) — outbound half of the shared-secret comparison.
+    // Digest/length/presence only; never the token or the header. Remove with
+    // the worker-side counterpart. Disable without a deploy:
+    // WORKER_AUTH_DIAGNOSTICS=false.
+    const rawWorkerToken = process.env.ACCOUNTING_WORKER_TOKEN;
+    if (diagnosticsEnabled()) {
+      console.info(JSON.stringify(buildOutboundDiagnostics({ rawToken: rawWorkerToken, workerEndpoint })));
+    }
+
+    // Fail loudly rather than sending an unauthenticated request. Previously the
+    // header was spread in conditionally, so an unset token produced a request
+    // with NO Authorization at all — which the worker answers 401 "Missing
+    // Authorization header.", and which normalizeWorkerFailure then reports as
+    // "rejected our credentials", i.e. indistinguishable from a wrong value.
+    const workerToken = (rawWorkerToken ?? "").trim();
+    if (!workerToken) {
+      const message = new WorkerTokenMissingError().message;
+      console.error("[accounting/process] refusing to call the worker unauthenticated", { requestId, runId });
+      return { kind: "config", error: message };
+    }
+
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), ACCOUNTING_WORKER_TIMEOUT_MS);
     let response: Response;
@@ -566,7 +598,7 @@ async function processStatementInBackground(context: WorkspaceContext, detail: A
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          ...(process.env.ACCOUNTING_WORKER_TOKEN ? { Authorization: `Bearer ${process.env.ACCOUNTING_WORKER_TOKEN}` } : {}),
+          Authorization: `Bearer ${workerToken}`,
         },
         body: JSON.stringify(workerPayload),
         signal: controller.signal,

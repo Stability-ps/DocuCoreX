@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { getWorkerConfig, getWorkerReachability, logWorkerStartupCheck } from "@/lib/system-worker-config";
+import { getExtractionConfig, getWorkerConfig, getWorkerReachability, logWorkerStartupCheck } from "@/lib/system-worker-config";
 import { getWorkspaceContext } from "@/lib/server-documents";
 
 export async function GET() {
@@ -24,5 +24,9 @@ export async function GET() {
       conversionWorker: reachability.conversionWorker,
       pdfPlumber: reachability.pdfPlumber,
     },
+    // Booleans only — no keys, no endpoints. Answers "is this provider usable
+    // from THIS runtime", which is what was missing when Azure sat inert in
+    // production with only half its configuration deployed.
+    extraction: getExtractionConfig(),
   });
 }
