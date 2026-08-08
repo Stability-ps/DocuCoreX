@@ -6,6 +6,12 @@ export default defineConfig({
   expect: {
     timeout: 5_000,
   },
+  // One retry on CI only, now that this suite gates merges (#64): a genuine
+  // failure still fails twice and blocks, while a one-off timing flake in a
+  // browser test does not stop everyone else from merging. Kept at 0 locally so
+  // a flake is visible while you are working on it rather than silently passing
+  // on the second attempt.
+  retries: process.env.CI ? 1 : 0,
   reporter: [["list"], ["html", { open: "never", outputFolder: "playwright-report" }]],
   use: {
     baseURL: "http://127.0.0.1:3100",
