@@ -117,3 +117,52 @@ test("a refresh does not unmount the statement workspace", () => {
   assert.match(workspace, /if \(loading && !detail\)/, "only the first load replaces the workspace");
   assert.ok(!/\n  if \(loading\) \{/.test(workspace), "a refresh must not unmount the viewer");
 });
+
+// ── Server-side extraction ───────────────────────────────────────────────────
+//
+// extractWithPdfjs had the same confusion as the viewer, but silently: it
+// guarded with `typeof doc.destroy === "function"` before destroying, and on
+// pdfjs-dist 6.x that condition is ALWAYS false. So server-side extraction
+// never tore down its pdf.js session at all. It could not crash, so it leaked
+// quietly on every document processed.
+
+test("server extraction owns teardown through the loading task", () => {
+  const extract = read("lib/pdf/extractWithPdfjs.ts");
+  assert.match(extract, /loadingTask = pdfjs\.getDocument\(/, "the task is captured, not discarded");
+  assert.match(extract, /await loadingTask\.promise/, "the document comes from the captured task");
+  assert.match(extract, /destroyPdfSession\(loadingTask\)/, "and the task is destroyed");
+  assert.ok(!/typeof doc\.destroy === "function"/.test(extract), "the always-false guard is gone");
+  assert.ok(!/type PdfDocProxy = \{[^}]*destroy/.test(extract), "the proxy type must not claim destroy()");
+});
+
+test("server extraction tears down on the failure path too", () => {
+  // A PDF that threw half way through page extraction has allocated as much as
+  // one that finished, so teardown belongs in finally rather than after the
+  // happy path.
+  const extract = read("lib/pdf/extractWithPdfjs.ts");
+  assert.match(extract, /\} finally \{[\s\S]*destroyPdfSession\(loadingTask\)/, "teardown runs in finally");
+});
+
+test("the legacy Node build has the same API shape as the browser build", () => {
+  // extractWithPdfjs imports pdfjs-dist/legacy, so the browser-build assertion
+  // above does not cover it.
+  const bundle = read("node_modules/pdfjs-dist/legacy/build/pdf.mjs");
+  const classBody = (name: string) => {
+    const start = bundle.indexOf(`class ${name}`);
+    assert.ok(start > -1, `${name} should exist in the legacy bundle`);
+    let depth = 0;
+    let index = bundle.indexOf("{", start);
+    const from = index;
+    for (;;) {
+      if (bundle[index] === "{") depth += 1;
+      else if (bundle[index] === "}") {
+        depth -= 1;
+        if (depth === 0) break;
+      }
+      index += 1;
+    }
+    return bundle.slice(from, index);
+  };
+  assert.match(classBody("PDFDocumentLoadingTask"), /\bdestroy\s*\(/, "the legacy loading task owns destroy()");
+  assert.ok(!/\n\s{2}destroy\s*\(/.test(classBody("PDFDocumentProxy")), "the legacy proxy has no destroy()");
+});
