@@ -111,11 +111,17 @@ export function StatementWorkspace({ statementId }: { statementId: string }) {
   // nonce lets the same transaction be selected twice and still return to its
   // page. Transactions whose sourcePage is null simply never set this.
   const [previewJump, setPreviewJump] = useState<{ page: number; nonce: number } | null>(null);
+  // Which pane shows below lg. Defaults to the work surface, matching the
+  // default Transactions tab; selecting a transaction switches to the statement.
+  const [mobilePane, setMobilePane] = useState<"statement" | "transactions">("transactions");
   const jumpNonce = useRef(0);
   const showTransactionInStatement = useCallback((page: number | null) => {
     if (!page || page < 1) return;
     jumpNonce.current += 1;
     setPreviewJump({ page, nonce: jumpNonce.current });
+    // On mobile the statement pane is hidden, so the jump would be invisible
+    // and the tap would read as doing nothing. Bring it into view.
+    setMobilePane("statement");
   }, []);
 
   const sourceUrl = `/api/accounting/fnb/runs/${statementId}/source`;
@@ -498,9 +504,36 @@ export function StatementWorkspace({ statementId }: { statementId: string }) {
           transaction table. Now two panes at roughly 36/64: the document on
           the left, the work surface on the right, starting on the same line.
           The sidebar's remaining detail moves below — see StatementSidebar. */}
+      {/* Below lg the panes cannot sit side by side and stay legible, so one
+          shows at a time. Stacking them instead meant scrolling past a 520px
+          document to reach the first transaction. Both stay MOUNTED — the
+          inactive one is display:none — so switching never re-fetches or
+          re-renders the PDF, and the viewer keeps its page and zoom. */}
+      <div className="mt-3 flex rounded-lg border border-slate-200 bg-white p-1 lg:hidden" role="tablist" aria-label="Statement or transactions">
+        {([
+          { id: "statement", label: "Statement" },
+          { id: "transactions", label: "Transactions" },
+        ] as const).map((pane) => (
+          <button
+            key={pane.id}
+            type="button"
+            role="tab"
+            aria-selected={mobilePane === pane.id}
+            onClick={() => setMobilePane(pane.id)}
+            className={`flex-1 rounded-md px-3 py-2 text-sm font-bold transition ${
+              mobilePane === pane.id ? "bg-royal-600 text-white" : "text-slate-600 hover:bg-slate-50"
+            }`}
+          >
+            {pane.label}
+          </button>
+        ))}
+      </div>
+
       <div className="mt-3 grid gap-4 lg:grid-cols-[minmax(0,36fr)_minmax(0,64fr)]">
-        <DocumentViewer sourceUrl={sourceUrl} downloadUrl={`${sourceUrl}?download=1`} fileName={`${runTitle(run)}.pdf`} kind="pdf" jumpToPage={previewJump} />
-        <div className="min-w-0 xl:row-span-1">
+        <div className={mobilePane === "statement" ? "min-w-0" : "hidden min-w-0 lg:block"}>
+          <DocumentViewer sourceUrl={sourceUrl} downloadUrl={`${sourceUrl}?download=1`} fileName={`${runTitle(run)}.pdf`} kind="pdf" jumpToPage={previewJump} />
+        </div>
+        <div className={`min-w-0 xl:row-span-1 ${mobilePane === "transactions" ? "" : "hidden lg:block"}`}>
           <RightPanel
             statementId={statementId}
             activeTab={activeTab}
