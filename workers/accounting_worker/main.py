@@ -43,6 +43,7 @@ from engine.classification import (
     owner_drawings_evidence,
     source_for_strength,
 )
+from engine.ai_prompt import build_classification_prompt
 from engine.ai_recovery import SYSTEM_PROMPT as AI_RECOVERY_SYSTEM_PROMPT
 from engine.ai_recovery import batches as ai_batches
 from engine.ai_recovery import build_prompt as build_ai_recovery_prompt
@@ -4199,61 +4200,7 @@ def request_ai_classifications(items: list[dict[str, Any]], diagnostics: dict[st
     if not api_key or not items:
         return []
 
-    prompt = {
-        "instructions": (
-            "Classify South African business bank statement transactions for accounting review. "
-            "Return strict JSON only. Do not infer amounts, balances, dates, or reconciliation. "
-            "Use conservative VAT treatment. Mark ambiguous, personal-looking, entertainment, or supplier-unknown items for review. "
-            "Do not classify purely because a generic keyword appears in the description. Use merchant semantics, recurring pattern, amount direction, known supplier context, and the existing rule result. "
-            "The account holder / company name printed on the statement is context, not a merchant. Never classify a row into a category merely because the account holder's own name appears in the description. "
-            "Where you can identify the merchant behind the bank's wording, return it as normalized_merchant using only words that appear in the description. If you cannot tell, return null - a null merchant is correct and an invented one is not."
-        ),
-        "known_supplier_guidance": [
-            {"merchant": "Discovery", "account": "Insurance", "reason": "Previously approved insurance supplier pattern."},
-            {"merchant": "FNB service fees or BYC debit", "account": "Bank Charges", "reason": "Bank fee pattern from FNB statement."},
-            {"merchant": "Google ChatGPT/OpenAI", "account": "Software Subscriptions", "reason": "Software subscription merchant pattern."},
-            {"merchant": "DHL/Paygate DHL", "account": "Courier / Freight", "reason": "Courier merchant pattern."},
-            {"merchant": "Payroll, nanny, caregiver, salary", "account": "Salaries / Drawings / Personal", "reason": "Payroll/personnel payment pattern."},
-            {"merchant": "Diesel, Engen, Shell, Sasol, Volvo or toll operators", "account": "Motor Vehicle Expenses / Road Tolls", "reason": "Recurring fleet and transport operating costs."},
-            {"merchant": "Afrigreen or customer-name EFT credits", "account": "Sales / Revenue", "reason": "Inbound customer receipt pattern when money is received."},
-            {"merchant": "Medical aid, Discovery Health, Momentum Health, Medshield or Bonitas", "account": "Salaries / Drawings / Personal", "reason": "Payroll-linked medical deduction pattern."},
-            {"merchant": "Loans, WesBank or vehicle finance instalments", "account": "Loan / Liability", "reason": "Balance-sheet loan servicing pattern."},
-            {"merchant": "Sage SA or Sage Accounting", "account": "Software Subscriptions", "reason": "Accounting software subscription pattern."},
-            {"merchant": "Scheduled home loan, savings, credit card or own-account transfers", "account": "Loan / Liability or Inter-account Transfer", "reason": "Balance-sheet movement; not VAT or P&L."},
-            {"merchant": "Netcash, Stratum or Disc Prem debit orders", "account": "Operating Expenses", "reason": "Recurring debit-order supplier, but support is required before VAT is claimed."},
-            {"merchant": "Acapolite Accounting, bookkeeping or audit fees", "account": "Accounting / Professional Fees", "reason": "Professional services supplier, invoice support required."},
-            {"merchant": "Magtape Credit 047-GP HEA / Gauteng Department of Health / Department of Health", "account": "Sales / Revenue", "reason": "Inbound government or tender/service receipt. Treat as taxable service revenue unless marked exempt by the accountant."},
-            {"merchant": "MSI Industries, RMSP Trading, Stalitrex, NMS Enterprises, JC Industries, First Works, Midway, Fabric And Leather, or other clear company-name/invoice payments", "account": "Supplier Payments", "reason": "Outbound payment to a business supplier. Do not classify as staff welfare merely because Allianz Holdings appears in the reference."},
-            {"merchant": "Senses Spa, Sloppy Kisses, Puppy Classes, Prayer Shop, hair or pharmacy purchases", "account": "Staff Welfare / Meals / Entertainment or Review Required", "reason": "Personal-looking or welfare supplier; keep review required unless user-approved."},
-        ],
-        "classification_policy": [
-            "Money In from a customer, tender, department, province, municipality, GP Health, Department of Health, or Magtape Credit must normally be Sales / Revenue with Output VAT review/standard treatment.",
-            "Money Out to a registered-looking company name, supplier name, or description containing Industries, Trading, Enterprises, Services, Invoice, or Inv must normally be Supplier Payments or Operating Expenses with invoice support required, not Staff Welfare.",
-            "Large outbound payments above 5,000 require stronger business-context review. Never classify a large invoice/company payment as meals, entertainment, travel, or staff welfare unless the merchant itself is clearly food, restaurant, catering, personal care, or entertainment.",
-            "Use Staff Welfare / Meals / Entertainment only for food, groceries, restaurant, personal care, entertainment, or welfare merchants.",
-            "If the description contains the account holder name, ignore that account-holder wording and classify by the counterparty/merchant semantics.",
-            "If a supplier is business-like but the exact expense nature is unclear, choose Supplier Payments, VAT review, invoice_required true, review_required true, and explain what invoice/support is needed.",
-        ],
-        "schema": {
-            "items": [
-                {
-                    "transaction_id": "string",
-                    "account": "string",
-                    "group": "string",
-                    "vat_treatment": "string",
-                    "vat_claim_status": "string",
-                    "review_required": True,
-                    "review_reason": "string",
-                    "invoice_required": True,
-                    "confidence": 0.72,
-                    "normalized_merchant": "string or null - the merchant behind the bank wording, using ONLY words present in the description; null if you cannot tell",
-                    "reason": "string",
-                    "explanation": "string",
-                }
-            ]
-        },
-        "transactions": items,
-    }
+    prompt = build_classification_prompt(items)
     body = {
         "model": accounting_ai_model(),
         "temperature": 0,

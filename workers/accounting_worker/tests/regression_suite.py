@@ -91,6 +91,7 @@ if importlib.util.find_spec("openpyxl") is None:
 
 from openpyxl import load_workbook
 
+from engine import ai_prompt
 import main
 from main import (
     ParsedTransaction,
@@ -4133,6 +4134,10 @@ def run() -> None:
     test_standing_does_not_reopen_the_ai_recovery_cap()
     test_provenance_is_written_but_never_at_the_ledgers_cost()
     test_bank_fee_terminology_classifies_as_bank_charges()
+    test_the_global_prompt_names_no_customer_counterparty()
+    test_the_global_prompt_is_identical_for_every_workspace()
+    test_the_global_prompt_is_built_only_from_vetted_knowledge()
+    test_the_prompt_keeps_the_patterns_the_names_stood_for()
     test_an_explicit_bank_fee_is_never_owner_drawings()
     test_non_bank_fees_are_not_swept_into_bank_charges()
     test_an_unknown_payee_does_not_default_to_owner_drawings()
@@ -4839,6 +4844,131 @@ def test_extraction_confidence_equivalent_for_structured_and_text_financially_id
         unresolved_amount_directions=0,
     )
     assert_equal(structured_score, text_score, "equivalent financial outputs must score equally")
+
+
+
+# ── The global AI classification prompt must not carry one customer's ledger ──
+#
+# Every workspace's ambiguous rows are classified with the SAME prompt. The
+# prompt used to carry a supplier list grown from a single customer's
+# statements, so classifying workspace B transmitted workspace A's trading
+# relationships to OpenAI, and steered B with a stranger's counterparties.
+#
+# These names were all read out of one workspace's statements. None of them is
+# a public brand, and none may appear in a prompt sent on behalf of anyone else.
+CUSTOMER_DERIVED_NAMES = (
+    "afrigreen",
+    "acapolite",
+    "allianz holdings",
+    "bambhanani",
+    "disc prem",
+    "fabric and leather",
+    "first works",
+    "jc industries",
+    "magtape credit 047-gp hea",
+    "047-gp hea",
+    "gp hea",
+    "msi industries",
+    "nms enterprises",
+    "prayer shop",
+    "puppy classes",
+    "rmsp trading",
+    "senses spa",
+    "sloppy kisses",
+    "stalitrex",
+    "stratum",
+    "adore photography",
+    "world focus",
+    "kenny s intermedia",
+    "freight aces",
+    "millenium trans",
+    "pablo logistics",
+    "kavi comm",
+    "orca freight",
+    "arca freight",
+    "emporers ridge",
+    "sunnydale pharm",
+    "khumbu hair",
+    "raquel hair",
+)
+
+
+def test_the_global_prompt_names_no_customer_counterparty() -> None:
+    """No name learned from a statement may appear in the global prompt."""
+    text = ai_prompt.global_prompt_text().lower()
+    leaked = [name for name in CUSTOMER_DERIVED_NAMES if name in text]
+    assert_equal(leaked, [], "no customer-derived counterparty in the global prompt")
+
+
+def test_the_global_prompt_is_identical_for_every_workspace() -> None:
+    """The only tenant-specific part of the prompt is the rows being classified.
+
+    This is the invariant that outlives the name list above: whatever is added
+    to the prompt later, everything except `transactions` has to be the same
+    object for every workspace, so no future edit can smuggle one customer's
+    data into another's request.
+    """
+    workspace_a = [{"transaction_id": "a1", "description": "Payment To Acme Trading 4471", "money_out": "1200.00"}]
+    workspace_b = [{"transaction_id": "b1", "description": "Eft Credit Beta Holdings", "money_in": "9900.00"}]
+
+    prompt_a = ai_prompt.build_classification_prompt(workspace_a)
+    prompt_b = ai_prompt.build_classification_prompt(workspace_b)
+
+    # The rows themselves must survive — this is a leak test, not a mute test.
+    assert_equal(prompt_a["transactions"], workspace_a, "workspace A's rows are sent")
+    assert_equal(prompt_b["transactions"], workspace_b, "workspace B's rows are sent")
+
+    global_a = {key: value for key, value in prompt_a.items() if key != "transactions"}
+    global_b = {key: value for key, value in prompt_b.items() if key != "transactions"}
+    assert_equal(global_a, global_b, "everything but the rows is identical across workspaces")
+
+    # And no word of A's description may reach the part B also receives.
+    assert_equal("acme" in json.dumps(global_b).lower(), False, "A's counterparty never reaches B's prompt")
+
+
+def test_the_global_prompt_is_built_only_from_vetted_knowledge() -> None:
+    """Merchant guidance comes from the vetted file, not from a hand-written literal.
+
+    The original defect was an inline list that anyone could append a customer
+    name to while debugging a single statement. Sourcing the guidance from
+    ai_prompt_knowledge.json means adding a name is a deliberate edit to a file
+    whose stated policy is "public brands only".
+    """
+    knowledge = ai_prompt.prompt_knowledge()
+    prompt = ai_prompt.build_classification_prompt([])
+    assert_equal(prompt["public_merchant_knowledge"], knowledge["public_merchants"], "public merchants come from the file")
+    assert_equal(prompt["merchant_patterns"], knowledge["merchant_patterns"], "patterns come from the file")
+    assert_equal("known_supplier_guidance" in prompt, False, "the leaking key is gone, not renamed around")
+
+    # The vetted file is itself subject to the rule it states.
+    vetted = json.dumps(knowledge["public_merchants"]) + json.dumps(knowledge["merchant_patterns"])
+    leaked = [name for name in CUSTOMER_DERIVED_NAMES if name in vetted.lower()]
+    assert_equal(leaked, [], "the vetted knowledge file names no customer counterparty")
+
+
+def test_the_prompt_keeps_the_patterns_the_names_stood_for() -> None:
+    """Removing the names must not remove the classification value they carried.
+
+    Each deleted entry stood for a general rule — an inbound credit against a
+    trading reference is revenue, an outbound payment to a registered-looking
+    company is a supplier payment, a personal-looking merchant stays in review.
+    Those rules are what the model could generalise from; the names were not.
+    """
+    text = ai_prompt.global_prompt_text().lower()
+    for phrase, why in (
+        ("sales / revenue", "inbound trading receipts still route to revenue"),
+        ("supplier payments", "outbound company payments still route to supplier payments"),
+        ("review required", "personal-looking merchants still stay in review"),
+        ("accounting / professional fees", "bookkeeping and audit work still has a home"),
+        ("government department", "public-body receipts are still covered, generically"),
+        ("industries", "the registered-looking-name pattern survives without a company name"),
+        ("invoice support is required", "VAT support is still demanded before claiming"),
+    ):
+        assert_equal(phrase in text, True, why)
+
+    # Public brands are still allowed, and still there.
+    for brand in ("discovery", "dhl", "sage", "wesbank", "sars", "engen"):
+        assert_equal(brand in text, True, f"public brand {brand} is still available to the model")
 
 
 if __name__ == "__main__":

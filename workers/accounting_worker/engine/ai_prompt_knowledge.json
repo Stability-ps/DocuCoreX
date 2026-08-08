@@ -1,0 +1,34 @@
+{
+  "version": 1,
+  "note": "Merchant knowledge that may appear in the GLOBAL AI classification prompt. Every workspace's transactions are sent with this text, so a name here is disclosed to the model on behalf of every tenant, not just the one it came from. Entries must therefore be publicly known brands that any South African bookkeeper would recognise without access to a customer's ledger.",
+  "why": "The prompt previously carried a hand-written supplier list grown from one customer's statements: Afrigreen, Acapolite, RMSP Trading, Stalitrex, NMS Enterprises, JC Industries, Fabric And Leather, Allianz Holdings, Senses Spa, Sloppy Kisses, Puppy Classes, Prayer Shop, Magtape Credit 047-GP HEA, Stratum and Disc Prem. Those are counterparties of a single workspace. Sending them with every other workspace's rows disclosed one customer's trading relationships to a third party while classifying another's, and steered the model with a stranger's ledger.",
+  "policy": "A merchant may be listed here only if it is a public brand, listed company, statutory body, or bank/payment scheme. A counterparty learned from a statement belongs in the workspace's own learned rules, never here. Patterns that carry real classification value without naming anyone are expressed in merchant_patterns instead.",
+
+  "public_merchants": [
+    {"merchant": "Discovery, Discovery Health, Momentum Health, Medshield or Bonitas", "account": "Insurance or payroll-linked medical deduction", "reason": "Public South African insurers and medical schemes."},
+    {"merchant": "Bank-named service fees, monthly account fees, cash-handling or overdraft fees", "account": "Bank Charges", "reason": "Charged by the bank that issued the statement and named by it on the statement."},
+    {"merchant": "Google, Microsoft, OpenAI/ChatGPT, Adobe, AWS or Sage", "account": "Software Subscriptions", "reason": "Public software and cloud vendors."},
+    {"merchant": "DHL, Aramex, PostNet or The Courier Guy", "account": "Courier / Freight", "reason": "Public courier operators."},
+    {"merchant": "Engen, Shell, Sasol, BP, Caltex, Total or a named toll operator", "account": "Motor Vehicle Expenses / Road Tolls", "reason": "Public fuel retailers and toll concessionaires."},
+    {"merchant": "WesBank or a named bank's vehicle and asset finance instalment", "account": "Loan / Liability", "reason": "Public vehicle finance providers; balance-sheet servicing."},
+    {"merchant": "SARS", "account": "Tax / Statutory", "reason": "The South African Revenue Service, a statutory body."},
+    {"merchant": "Netcash, PayShap, PayGate, Ozow or Stitch", "account": "determined by the underlying counterparty, not the channel", "reason": "Public payment rails. These name HOW money moved, not WHO was paid, so they must not decide a category on their own."}
+  ],
+
+  "merchant_patterns": [
+    {"pattern": "Inbound credit whose reference carries a company, customer or invoice number", "account": "Sales / Revenue", "reason": "Money received against a trading reference is normally taxable revenue."},
+    {"pattern": "Inbound credit from a government department, province, municipality or a magnetic-tape/bulk credit run", "account": "Sales / Revenue", "reason": "A receipt for work or services supplied to a public body. Treat as taxable service revenue unless the accountant marks it exempt."},
+    {"pattern": "Outbound payment to a name containing Industries, Trading, Enterprises, Services, Holdings, Invoice or Inv", "account": "Supplier Payments", "reason": "A registered-looking business counterparty. Invoice support is required, and it must not be read as staff welfare."},
+    {"pattern": "Recurring debit order to a payment aggregator or collection service", "account": "Operating Expenses", "reason": "Operational, but the underlying supplier is hidden by the collection channel, so support is required before VAT is claimed."},
+    {"pattern": "Payment for bookkeeping, accounting, audit, tax practitioner or company secretarial work", "account": "Accounting / Professional Fees", "reason": "Professional services; invoice support required."},
+    {"pattern": "Payroll, salary, wages, nanny or caregiver payments", "account": "Salaries / Drawings / Personal", "reason": "Personnel payment pattern."},
+    {"pattern": "Scheduled transfer to a home loan, savings, credit card or another account of the same holder", "account": "Loan / Liability or Inter-account Transfer", "reason": "Balance-sheet movement; not VAT and not profit or loss."},
+    {"pattern": "Spa, salon, hair, pet, photography, gift, devotional or similar personal-looking merchant", "account": "Review Required", "reason": "Personal-looking supplier. Keep it in review rather than upgrading it to an operating expense."}
+  ],
+
+  "forbidden_examples": [
+    "Naming a specific customer, supplier or payee learned from any statement",
+    "Quoting a bulk-credit or debit-order reference number seen on a statement",
+    "Describing a rule in terms of one workspace's account holder"
+  ]
+}
