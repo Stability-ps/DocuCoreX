@@ -2758,12 +2758,12 @@ def test_provenance_is_written_but_never_at_the_ledgers_cost() -> None:
         transaction_date="2025-05-02", description="ACC 1 SERVICE FEE", debit_amount=10.0,
     )
     row = main.transaction_insert_row(transaction, "run-1", "ws-1")
-    for column in main.PROVENANCE_COLUMNS:
+    for column in main.OPTIONAL_TRANSACTION_COLUMNS:
         if column not in row:
             raise AssertionError(f"{column} has a column as of migration 021 and should be written")
 
     stripped = main.strip_provenance_columns([row])[0]
-    for column in main.PROVENANCE_COLUMNS:
+    for column in main.OPTIONAL_TRANSACTION_COLUMNS:
         if column in stripped:
             raise AssertionError(f"{column} must be droppable for a database without migration 021")
     for essential in ("transaction_date", "description", "debit_amount", "running_balance", "run_id", "workspace_id"):
@@ -2857,10 +2857,14 @@ def test_the_migration_adds_every_column_the_worker_writes() -> None:
     """A column the worker writes but the migration omits fails the whole insert."""
     import main
 
-    migration = (ROOT / "supabase" / "migrations" / "021_classification_provenance.sql").read_text()
-    for column in main.PROVENANCE_COLUMNS:
-        if f"add column if not exists {column}" not in migration:
-            raise AssertionError(f"migration 021 must add {column}")
+    # Every optional column must be added by SOME migration. They span two:
+    # source_row comes from 005, the classification provenance from 021.
+    migrations = "\n".join(
+        path.read_text() for path in sorted((ROOT / "supabase" / "migrations").glob("*.sql"))
+    )
+    for column in main.OPTIONAL_TRANSACTION_COLUMNS:
+        if f"add column if not exists {column}" not in migrations:
+            raise AssertionError(f"no migration adds {column}, so writing it would fail the whole insert")
 
 
 # ── AI classification safety ──────────────────────────────────────────────────
@@ -3863,7 +3867,104 @@ def test_learned_rules_never_touch_the_ledger() -> None:
     assert_equal(main.validation_summary(transactions), summary_before, "and the totals are identical")
 
 
+# ── Canonical transaction order ───────────────────────────────────────────────
+#
+# The stored ledger had no recoverable order: source_row was dropped on write,
+# created_at was one identical timestamp for the whole batch, and source_page
+# narrows only to a page. The same 615 production rows produced 17, 513 or 615
+# running-balance "gaps" depending on how they were sorted, while the true order
+# has none.
+
+
+def test_every_stored_transaction_carries_its_sequence() -> None:
+    """The order the parser validated must survive the write."""
+    import main
+
+    source = (ROOT / "workers" / "accounting_worker" / "main.py").read_text()
+    if "row.pop(\"source_row\", None)" in source:
+        raise AssertionError("source_row must no longer be dropped on write")
+    if "transaction.source_row = sequence" not in source:
+        raise AssertionError("the canonical sequence must be stamped before the insert")
+
+    transaction = main.build_transaction("01 May 2025", "ACC 1 SERVICE FEE", 10.0, None, -1000.0, {}, 1, "raw", 90)
+    transaction.source_row = 7
+    row = main.transaction_insert_row(transaction, "run-1", "ws-1")
+    assert_equal(row.get("source_row"), 7, "the sequence is written")
+    assert_equal(row.get("source_page"), 1, "and the page is preserved alongside it")
+
+
+def test_canonical_order_reconstructs_the_chain_when_nothing_else_does() -> None:
+    """Ordering by date or insertion time invents gaps; the sequence does not."""
+    import main
+
+    pages = [{"page": 1, "tables": [], "text": "\n".join([
+        "STANDARD BANK",
+        "Date Description Payments Deposits Balance",
+        "STATEMENT OPENING BALANCE -1,000.00",
+        # Three movements on ONE day: their order within the day is what the
+        # chain depends on, and a date sort cannot recover it.
+        "02 May 25 PAYMENT A 100.00 -1,100.00",
+        "02 May 25 DEPOSIT B 500.00 -600.00",
+        "02 May 25 PAYMENT C 250.00 -850.00",
+        "03 May 25 PAYMENT D 50.00 -900.00",
+    ])}]
+    text = pages[0]["text"]
+    metadata = main.parse_metadata(text)
+    transactions = main.parse_transactions(pages, metadata, text, GENERIC_PROFILE)
+    for sequence, transaction in enumerate(transactions, start=1):
+        transaction.source_row = sequence
+
+    assert_equal(len(transactions), 4, "all four movements parsed")
+    assert_equal(len(main.balance_gap_diagnostics(metadata, transactions)), 0, "canonical order has no gaps")
+
+    # Reordered by date alone — a stable sort leaves the same-day rows in place,
+    # so shuffle them the way a database read would.
+    scrambled = [transactions[2], transactions[0], transactions[1], transactions[3]]
+    if not main.balance_gap_diagnostics(metadata, scrambled):
+        raise AssertionError("this fixture must actually break when misordered, or it proves nothing")
+
+    # Restoring by source_row recovers the chain exactly.
+    restored = sorted(scrambled, key=lambda t: t.source_row or 0)
+    assert_equal(len(main.balance_gap_diagnostics(metadata, restored)), 0, "the sequence restores continuity")
+    assert_equal([t.source_row for t in restored], [1, 2, 3, 4], "and the sequence is dense and ordered")
+
+
+def test_persisting_order_changes_nothing_about_the_money() -> None:
+    """PR 2 must not touch a single financial field."""
+    import main
+
+    pages = [{"page": 1, "tables": [], "text": "\n".join([
+        "STANDARD BANK",
+        "Date Description Payments Deposits Balance",
+        "STATEMENT OPENING BALANCE -1,000.00",
+        "02 May 25 PAYMENT A 100.00 -1,100.00",
+        "03 May 25 DEPOSIT B 500.00 -600.00",
+    ])}]
+    text = pages[0]["text"]
+    metadata = main.parse_metadata(text)
+    transactions = main.parse_transactions(pages, metadata, text, GENERIC_PROFILE)
+    before = [(t.transaction_date, t.description, t.debit_amount, t.credit_amount, t.running_balance) for t in transactions]
+    summary_before = main.validation_summary(transactions)
+
+    for sequence, transaction in enumerate(transactions, start=1):
+        transaction.source_row = sequence
+
+    after = [(t.transaction_date, t.description, t.debit_amount, t.credit_amount, t.running_balance) for t in transactions]
+    assert_equal(after, before, "dates, descriptions, amounts and balances untouched")
+    assert_equal(main.validation_summary(transactions), summary_before, "and the totals are identical")
+
+
+def test_the_read_path_orders_by_the_canonical_sequence() -> None:
+    server = (ROOT / "lib" / "accounting" / "server.ts").read_text()
+    if '.order("source_row"' not in server:
+        raise AssertionError("the run detail must be read in canonical order")
+
+
 def run() -> None:
+    test_every_stored_transaction_carries_its_sequence()
+    test_canonical_order_reconstructs_the_chain_when_nothing_else_does()
+    test_persisting_order_changes_nothing_about_the_money()
+    test_the_read_path_orders_by_the_canonical_sequence()
     test_normalisation_no_longer_eats_words_beginning_with_m()
     test_a_key_must_be_able_to_identify_a_counterparty()
     test_the_production_d_rule_can_no_longer_claim_unrelated_rows()

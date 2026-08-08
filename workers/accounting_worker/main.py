@@ -4720,18 +4720,23 @@ def transaction_insert_row(transaction: ParsedTransaction, run_id: str, workspac
         "run_id": run_id,
         "workspace_id": workspace_id,
     }
-    # source_row is useful for in-memory ordering/deduping, but older production
-    # databases do not have this optional column yet. Keep writes compatible.
-    row.pop("source_row", None)
     return row
 
 
-# The provenance columns added by migration 021. Named explicitly because this
-# row is built by spreading model_dump(): a new field on ParsedTransaction
-# reaches Supabase automatically, and an insert naming a column that does not
-# exist fails the WHOLE batch — losing every transaction in the run. A field
-# only becomes writable once its migration is listed here.
-PROVENANCE_COLUMNS = (
+# Columns a very old database may not have. Named explicitly because this row is
+# built by spreading model_dump(): a new field on ParsedTransaction reaches
+# Supabase automatically, and an insert naming a column that does not exist fails
+# the WHOLE batch — losing every transaction in the run. A field only becomes
+# writable once it is listed here.
+#
+# source_row was previously dropped unconditionally, which is why the stored
+# ledger had no recoverable order: every row carried NULL, created_at was one
+# identical timestamp, and source_page only narrows to ~17 rows. The same 615
+# rows produced 17, 513 or 615 balance "gaps" depending on how they were sorted,
+# while the true order has none. It is written now, and the fallback only drops
+# it on a database that predates migration 005.
+OPTIONAL_TRANSACTION_COLUMNS = (
+    "source_row",
     "classification_source",
     "classification_strength",
     "classification_confidence",
@@ -4742,7 +4747,7 @@ PROVENANCE_COLUMNS = (
 
 def strip_provenance_columns(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """The same rows as they would have been written before migration 021."""
-    return [{key: value for key, value in row.items() if key not in PROVENANCE_COLUMNS} for row in rows]
+    return [{key: value for key, value in row.items() if key not in OPTIONAL_TRANSACTION_COLUMNS} for row in rows]
 
 
 def classify_transactions_with_ai(
@@ -5821,6 +5826,15 @@ def process_fnb_statement(payload: ProcessRequest, authorization: str | None = H
             **{key: value for key, value in ai_classification_stats.items() if key != "ai_rejected_after_guardrails"},
             rejected=ai_classification_stats.get("ai_rejected_after_guardrails"),
         )
+
+        # Stamp the canonical sequence. The parser validated the running-balance
+        # chain in THIS order, so it is the only order in which the stored ledger
+        # can be verified again — and nothing else recovers it: created_at is one
+        # timestamp for the whole batch, source_page narrows only to a page, and
+        # a UUID says nothing. Assigned here, after every classification stage,
+        # so it describes exactly what is written.
+        for sequence, transaction in enumerate(transactions, start=1):
+            transaction.source_row = sequence
 
         supabase.table("accounting_transactions").delete().eq("run_id", payload.run_id).execute()
         rows = [transaction_insert_row(transaction, payload.run_id, payload.workspace_id) for transaction in transactions]

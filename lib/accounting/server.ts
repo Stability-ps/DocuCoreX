@@ -574,6 +574,12 @@ export async function getAccountingRunDetail(runId: string): Promise<AccountingR
     .select("*")
     .eq("workspace_id", context.workspaceId)
     .eq("run_id", runId)
+    // Canonical statement order. source_row is the sequence the parser validated
+    // the running-balance chain in; date is not a substitute, because a statement
+    // prints several movements per day and their order within the day is what the
+    // chain depends on. Ordering by date + created_at produced 513 phantom
+    // balance "gaps" on a ledger that actually has none.
+    .order("source_row", { ascending: true, nullsFirst: false })
     .order("transaction_date", { ascending: true, nullsFirst: false })
     .order("created_at", { ascending: true });
 
