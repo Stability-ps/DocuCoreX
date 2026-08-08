@@ -3710,7 +3710,168 @@ def test_an_ai_classification_does_not_mark_a_row_ready_by_itself() -> None:
         assert_equal(transaction.classification_confidence, round(confidence * 100, 2), "confidence is recorded faithfully")
 
 
+# ── Learned-rule safety ───────────────────────────────────────────────────────
+#
+# Production: the key "d" — normalised from the alias "mr d" of the seeded
+# merchant "Mr D Food" — matched 425 of 615 rows on a real 37-page statement and
+# booked them all to Meals & Groceries, including OVERDRAFT SERVICE FEE. Three
+# faults compounded: normalisation destroyed the name, the key was one
+# character, and matching was an unrestricted substring test.
+
+
+def test_normalisation_no_longer_eats_words_beginning_with_m() -> None:
+    """The reference-stripping pattern consumed any word starting with m.
+
+    `m` followed by `[\\w-]+` matched "Momentum", "MSI" and the "mr" of "mr d".
+    A reference beginning with m is followed by a digit; a merchant name is not.
+    """
+    import main
+
+    assert_equal(main.normalize_merchant_key("Mr D Food"), "mr d food", "the name survives")
+    assert_equal(main.normalize_merchant_key("mr d"), "mr d", "and is no longer reduced to a letter")
+    assert_equal(main.normalize_merchant_key("Momentum Health"), "momentum health", "Momentum is not eaten")
+    assert_equal(main.normalize_merchant_key("Mr Price Home"), "mr price home", "nor Mr Price")
+
+    # The references the pattern exists to remove must still be removed.
+    assert_equal(main.normalize_merchant_key("M12345 TRANSFER"), "transfer", "an m-prefixed reference still goes")
+    assert_equal(main.normalize_merchant_key("REF 8823 PAYMENT"), "payment", "a ref still goes")
+    assert_equal(main.normalize_merchant_key("INVOICE 4471 SETTLEMENT"), "settlement", "an invoice ref still goes")
+    assert_equal(main.normalize_merchant_key("MSI Industries Inv109034"), "msi industries", "name kept, reference dropped")
+
+
+def test_a_key_must_be_able_to_identify_a_counterparty() -> None:
+    """Length alone cannot judge a key, so the policy is semantic.
+
+    AWS and DHL are real merchants at three characters; VAT and INV are not
+    merchants at all. The floor only excludes one- and two-character keys, which
+    cannot identify anyone.
+    """
+    from engine.merchant_keys import is_safe_merchant_key, merchant_key_rejection
+
+    for unsafe in ("d", "mr", "mr d", "inv", "account fee", "transfer to credit card", "payment", ""):
+        if is_safe_merchant_key(unsafe):
+            raise AssertionError(f"{unsafe!r} cannot identify a counterparty and must be rejected")
+        if not merchant_key_rejection(unsafe):
+            raise AssertionError(f"{unsafe!r} must carry a rejection reason")
+
+    # Domain words that name a real class of transaction stay ACCEPTED: a
+    # workspace keying a rule on "salary" is making a defensible choice, and on
+    # the real statement that rule claims 10 genuine salary payments. Only
+    # mechanism and title terms are refused.
+    for safe in ("aws", "dhl", "mr d food", "woolworths", "uber eats", "msi industries",
+                 "cartrack", "salary", "sars", "levy", "vat"):
+        if not is_safe_merchant_key(safe):
+            raise AssertionError(f"{safe!r} is a real merchant and must be accepted: {merchant_key_rejection(safe)}")
+
+
+def test_the_production_d_rule_can_no_longer_claim_unrelated_rows() -> None:
+    """The demonstrated regression, pinned."""
+    import main
+
+    hostile = [{"merchant_key": "d", "account_category": "Meals / Groceries - Non Deductible Review",
+                "vat_treatment": "review", "review_status": "ready", "confidence": 86}]
+    descriptions = [
+        "301981485 OVERDRAFT SERVICE FEE",
+        "ADT JHB 2117556751ADT5087498 ACCOUNT PAYMENT",
+        "CARTRACK CART25D5S58NYRV ACCOUNT PAYMENT",
+        "OK MM WELKOM 4278*5999 CHEQUE CARD PURCHASE",
+        "MQ FIN DO * ELECTRONIC BANKING COLLECT TO",
+    ]
+    transactions = [
+        main.build_transaction("01 May 2025", description, 100.0, None, -1000.0, {}, 1, "raw", 90)
+        for description in descriptions
+    ]
+    applied = main.apply_learned_classification_rules(transactions, hostile)
+    assert_equal(applied, 0, "a one-character key claims nothing")
+    for transaction in transactions:
+        if "Meals" in transaction.account_category:
+            raise AssertionError(f"{transaction.description!r} was claimed by the 'd' rule")
+
+
+def test_hard_evidence_outranks_a_conflicting_learned_rule() -> None:
+    """A workspace may teach us its counterparties, not what a bank charge is."""
+    import main
+
+    for description in (
+        "301981485 OVERDRAFT SERVICE FEE",
+        "301981485 3004 HONOURING FEE",
+        "ACC 301981485 0051 NOTIFICATION FEE: MYUPDATES FOR BUSINESS",
+        "ACC 301981485 MONTHLY MANAGEMENT FEE",
+    ):
+        transaction = main.build_transaction("01 May 2025", description, 100.0, None, -1000.0, {}, 1, "raw", 90)
+        assert_equal(transaction.account_category, "Bank Charges", f"{description!r} is HARD")
+        hostile = [{"merchant_key": main.normalize_merchant_key(description),
+                    "account_category": "Meals / Groceries - Non Deductible Review",
+                    "vat_treatment": "review", "review_status": "ready", "confidence": 99}]
+        main.apply_learned_classification_rules([transaction], hostile)
+        assert_equal(transaction.account_category, "Bank Charges", f"{description!r} survives a conflicting rule")
+
+
+def test_a_learned_rule_may_still_improve_a_soft_classification() -> None:
+    """The capability is not removed, only bounded."""
+    import main
+    from engine.classification import SOURCE_LEARNED_RULE, STRENGTH_LEARNED, STRENGTH_SOFT
+
+    transaction = main.build_transaction("01 May 2025", "ENGEN WELKOM 20250503", 900.0, None, -1000.0, {}, 1, "raw", 90)
+    assert_equal(transaction.classification_strength, STRENGTH_SOFT, "a merchant match is revisable")
+
+    rule = [{"merchant_key": "engen", "account_category": "Operating Expenses",
+             "vat_treatment": "review", "review_status": "ready", "confidence": 96}]
+    assert_equal(main.apply_learned_classification_rules([transaction], rule), 1, "the rule applies")
+    assert_equal(transaction.account_category, "Operating Expenses", "and improves the soft result")
+    assert_equal(transaction.classification_strength, STRENGTH_LEARNED, "standing recorded")
+    assert_equal(transaction.classification_source, SOURCE_LEARNED_RULE, "source recorded")
+
+
+def test_an_unsafe_rule_does_not_settle_a_row_and_block_ai() -> None:
+    """A rejected rule must leave the row eligible for the rest of the pipeline."""
+    import main
+    from engine.classification import STRENGTH_NONE
+
+    transaction = main.build_transaction("01 May 2025", "QQQ ZZZ 4471", 900.0, None, -1000.0, {}, 1, "raw", 90)
+    main.apply_learned_classification_rules([transaction], [{"merchant_key": "d", "account_category": "Operating Expenses",
+                                                            "vat_treatment": "review", "review_status": "ready", "confidence": 99}])
+    assert_equal(transaction.classification_strength, STRENGTH_NONE, "still unresolved")
+    row = main.professional_transaction_row(transaction, "src")
+    assert_equal(main.row_needs_ai(row), True, "and still reaches AI")
+
+
+def test_learned_rule_matching_is_boundary_aware() -> None:
+    """"d" must not match inside OVERDRAFT, CARD or ADT."""
+    from engine.classification import keyword_matches
+
+    for haystack in ("overdraft service fee", "cheque card purchase", "adt jhb account payment"):
+        assert_equal(keyword_matches(haystack, "d"), False, f"'d' must not match inside {haystack!r}")
+    assert_equal(keyword_matches("mr d food delivery", "d"), True, "but does match the standalone word")
+
+
+def test_learned_rules_never_touch_the_ledger() -> None:
+    """Classification may not move a cent, whatever rule fires."""
+    import main
+
+    transactions = [
+        main.build_transaction("01 May 2025", "ENGEN WELKOM", 900.0, None, -1900.0, {}, 1, "raw", 90),
+        main.build_transaction("02 May 2025", "CLIENT EFT CREDIT", None, 5000.0, 3100.0, {}, 1, "raw", 90),
+    ]
+    before = [(t.transaction_date, t.description, t.debit_amount, t.credit_amount, t.running_balance) for t in transactions]
+    summary_before = main.validation_summary(transactions)
+    main.apply_learned_classification_rules(transactions, [
+        {"merchant_key": "engen", "account_category": "Operating Expenses", "vat_treatment": "review",
+         "review_status": "ready", "confidence": 96}])
+    after = [(t.transaction_date, t.description, t.debit_amount, t.credit_amount, t.running_balance) for t in transactions]
+    assert_equal(after, before, "date, description, amounts, direction and balance untouched")
+    assert_equal(main.validation_summary(transactions), summary_before, "and the totals are identical")
+
+
 def run() -> None:
+    test_normalisation_no_longer_eats_words_beginning_with_m()
+    test_a_key_must_be_able_to_identify_a_counterparty()
+    test_the_production_d_rule_can_no_longer_claim_unrelated_rows()
+    test_hard_evidence_outranks_a_conflicting_learned_rule()
+    test_a_learned_rule_may_still_improve_a_soft_classification()
+    test_an_unsafe_rule_does_not_settle_a_row_and_block_ai()
+    test_learned_rule_matching_is_boundary_aware()
+    test_learned_rules_never_touch_the_ledger()
     test_classification_distribution_on_a_real_shaped_statement()
     test_classification_distribution_by_provenance()
     test_only_unsettled_rows_would_be_sent_to_ai()

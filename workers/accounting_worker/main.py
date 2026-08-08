@@ -35,6 +35,7 @@ from engine.classification import (
     SOURCE_LEARNED_RULE,
     Classification,
     any_keyword_matches,
+    keyword_matches,
     canonicalise_category,
     is_valid_ai_account,
     is_valid_vat_claim_status,
@@ -48,6 +49,7 @@ from engine.ai_recovery import build_prompt as build_ai_recovery_prompt
 from engine.ai_recovery import candidate_lines as ai_candidate_lines
 from engine.ai_recovery import dropped_line_count as ai_dropped_line_count
 from engine.ai_recovery import ground_rows as ground_ai_rows
+from engine.merchant_keys import merchant_key_rejection
 from engine.merchants import identify_merchant, merchant_is_grounded
 from engine.generic_parser import count_candidate_lines as generic_candidate_lines
 from engine.generic_parser import extract_generic_rows
@@ -331,43 +333,73 @@ def is_ai_recovered(transaction: ParsedTransaction) -> bool:
 
 
 def apply_learned_classification_rules(transactions: list[ParsedTransaction], rules: list[dict[str, Any]]) -> int:
+    """Apply a workspace's approved corrections — specifically, and never over HARD evidence.
+
+    Three production faults are closed here.
+
+    Matching was `rule_key in normalize_merchant_key(description)`, an
+    unrestricted substring test. The key "d" therefore matched 425 of 615 rows
+    on a real statement and booked them all to Meals & Groceries. Matching is
+    now boundary-aware, and that same rule matches 3 rows.
+
+    A learned rule overrode whatever the deterministic rules had decided,
+    including HARD evidence, so a bank fee the bank named itself lost to a
+    merchant rule. HARD is now authoritative: a workspace can teach the system
+    about its counterparties, not about what a bank charge is.
+
+    And a rule whose key cannot identify a counterparty is skipped entirely
+    rather than applied weakly — so an unsafe rule already stored in production
+    neither classifies a row nor, by claiming it, suppresses the AI stage that
+    would otherwise look at it.
+    """
     if not rules:
         return 0
-    sorted_rules = sorted(
-        rules,
-        key=lambda rule: len(str(rule.get("merchant_key") or "")),
-        reverse=True,
-    )
+
+    usable: list[dict[str, Any]] = []
+    skipped: dict[str, int] = {}
+    for rule in rules:
+        rejection = merchant_key_rejection(str(rule.get("merchant_key") or ""))
+        if rejection:
+            reason = rejection.split(":")[0]
+            skipped[reason] = skipped.get(reason, 0) + 1
+            continue
+        usable.append(rule)
+    if skipped:
+        log_warning(
+            "worker.learned_rules_skipped_unsafe",
+            skipped=skipped,
+            usable=len(usable),
+            total=len(rules),
+            note="keys too generic to identify a counterparty; they neither classify nor suppress AI",
+        )
+
+    # Longest key first: the most specific matching rule wins.
+    sorted_rules = sorted(usable, key=lambda rule: len(str(rule.get("merchant_key") or "")), reverse=True)
     applied = 0
     for transaction in transactions:
+        # HARD deterministic evidence outranks a learned rule.
+        if transaction.classification_strength == STRENGTH_HARD:
+            continue
         key = normalize_merchant_key(transaction.description)
         if not key:
             continue
-        matched_rule = next((rule for rule in sorted_rules if str(rule.get("merchant_key") or "") and str(rule.get("merchant_key")) in key), None)
+        matched_rule = next(
+            (rule for rule in sorted_rules if keyword_matches(key, str(rule["merchant_key"]))),
+            None,
+        )
         if not matched_rule:
             continue
+
         rule_category = str(matched_rule.get("account_category") or transaction.account_category)
         transaction.account_category = canonicalise_category(rule_category) or rule_category
         transaction.vat_treatment = str(matched_rule.get("vat_treatment") or transaction.vat_treatment)
         if is_ai_recovered(transaction):
             # Classification certainty is not extraction certainty.
-            #
-            # A learned rule knows what a merchant IS — it says nothing about
-            # whether this row was read off the document reliably. An
-            # AI-recovered row was located by a model, not parsed, and a rule
-            # matching its merchant was promoting it to 94-96 confidence and
-            # "ready", so a row nobody had checked read as a confident
-            # extraction. The rule's category and VAT still apply; its
-            # certainty does not.
             transaction.confidence = min(float(transaction.confidence or 0), AI_RECOVERED_MAX_CONFIDENCE)
             transaction.review_status = "needs_review"
         else:
             transaction.review_status = str(matched_rule.get("review_status") or transaction.review_status)
             transaction.confidence = max(float(transaction.confidence or 0), float(matched_rule.get("confidence") or 94))
-        # A rule this workspace approved against a real correction is settled
-        # evidence, whatever the deterministic rules made of the row — including
-        # for AI-recovered rows, whose confidence stays capped above but whose
-        # CLASSIFICATION is now a decision a person actually made.
         transaction.classification_strength = STRENGTH_LEARNED
         transaction.classification_reason = str(matched_rule.get("reason") or "workspace-approved classification rule")
         transaction.classification_source = SOURCE_LEARNED_RULE
@@ -1079,7 +1111,16 @@ def is_staff_welfare_merchant(text: str) -> bool:
 def normalize_merchant_key(description: str) -> str:
     lowered = description.lower()
     lowered = re.sub(r"\b\d{1,2}\s+[a-z]{3,9}\b", " ", lowered)
-    lowered = re.sub(r"\b(?:inv|invoice|ref|rmsp|m)\s*[\w-]+\b", " ", lowered)
+    # Strip reference tokens — "INV109034", "REF 8823", "M12345".
+    #
+    # The bare `m` alternative used to sit in this group, and `m` followed by
+    # `[\w-]+` consumes ANY word beginning with m: "Momentum Health" became
+    # "health", "MSI Industries" became "industries", and "mr d" became "d" —
+    # the key that then matched 425 of 615 rows on a real statement. A reference
+    # beginning with m is followed by a digit; a merchant name is not, so that
+    # is what the pattern now requires.
+    lowered = re.sub(r"\b(?:inv|invoice|ref|rmsp)\s*[\w-]+\b", " ", lowered)
+    lowered = re.sub(r"\bm\d[\w-]*\b", " ", lowered)
     lowered = re.sub(r"\b\d{3,}\b", " ", lowered)
     lowered = re.sub(r"\d+[.,]\d{2}\s*(cr|dr)?", " ", lowered)
     lowered = re.sub(r"\b(pty|ltd|business account)\b", " ", lowered)
