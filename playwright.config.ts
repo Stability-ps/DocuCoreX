@@ -18,9 +18,31 @@ export default defineConfig({
     trace: "retain-on-failure",
   },
   webServer: {
-    command: "NEXT_PUBLIC_REQUIRE_AUTH=false pnpm exec next dev -p 3100",
+    command: "pnpm exec next dev -p 3100",
     url: "http://127.0.0.1:3100",
-    reuseExistingServer: true,
+    // The suite must see the same app CI sees, and NEXT_PUBLIC_REQUIRE_AUTH=false
+    // alone did not achieve that. middleware.ts requires auth whenever a real
+    // Supabase backend is configured, regardless of that flag — deliberately, so
+    // a real backend never serves protected pages unauthenticated. A developer
+    // with credentials in .env.local therefore got /login for every protected
+    // route and could not exercise the app shell at all, while CI, which has no
+    // .env.local, ran unauthenticated and green.
+    //
+    // Blanking the Supabase variables for the test server puts it in the same
+    // no-backend mode as CI. Next.js does not overwrite variables already
+    // present in the environment, so these win over .env.local. The middleware
+    // rule itself is untouched.
+    env: {
+      NEXT_PUBLIC_SUPABASE_URL: "",
+      NEXT_PUBLIC_SUPABASE_ANON_KEY: "",
+      NEXT_PUBLIC_REQUIRE_AUTH: "false",
+    },
+    // Not reused: a server left on 3100 from an earlier run is configured
+    // however that run left it, and reusing it silently tests something other
+    // than what this config describes. Costs a few seconds of startup; buys the
+    // guarantee that a local run and a CI run mean the same thing. 3100 is
+    // test-only, so this does not disturb `pnpm dev` on 3000.
+    reuseExistingServer: false,
     timeout: 120_000,
   },
   projects: [

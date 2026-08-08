@@ -99,14 +99,12 @@ jobs:
     # twice — on #63 and on main at aa002f6, 22 passed / 20 skipped / 0 failed.
     #
     # A failure here now stops a merge, so treat a red run as a real signal
-    # rather than something to re-run. Two things worth knowing if it does go
-    # red unexpectedly:
-    #   - playwright.config.ts sets `reuseExistingServer: true`, so locally it
-    #     will silently test whatever already listens on 3100.
-    #   - a local run is NOT equivalent to this one. middleware.ts forces
-    #     authRequired whenever NEXT_PUBLIC_SUPABASE_URL is set, ignoring
-    #     NEXT_PUBLIC_REQUIRE_AUTH, so a developer with .env.local gets
-    #     /login redirects for every protected route while CI does not.
+    # rather than something to re-run. `pnpm test` locally reproduces this job:
+    # playwright.config.ts blanks the Supabase variables for its own dev server
+    # and refuses to reuse one left on port 3100, so a developer with a real
+    # .env.local sees the same app CI does. That was not true before #69, when a
+    # local run redirected every protected route to /login and could not
+    # exercise the app shell at all.
     name: E2E
     runs-on: ubuntu-latest
     steps:
