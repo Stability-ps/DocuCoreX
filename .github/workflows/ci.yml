@@ -58,33 +58,19 @@ jobs:
         if: '!cancelled()'
         run: pnpm test:export
 
-  accounting-regression:
-    name: Accounting worker regression (Python)
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
-          cache: pip
-          cache-dependency-path: workers/accounting_worker/requirements.txt
-
-      # run_regression.sh prefers workers/accounting_worker/.venv and treats a
-      # missing test dependency as a hard failure rather than a silent skip, so
-      # the venv is created at exactly that path (matching the local setup in
-      # CLAUDE.md) instead of installing into the system interpreter.
-      - name: Install worker dependencies
-        working-directory: workers/accounting_worker
-        run: |
-          python -m venv .venv
-          .venv/bin/python -m pip install --upgrade pip
-          .venv/bin/python -m pip install -r requirements.txt
-
-      # Invoked directly rather than through `pnpm test:accounting-regression`,
-      # so this job needs no Node toolchain.
-      - name: Regression suite
-        run: ./workers/accounting_worker/tests/run_regression.sh
+  # NOT RUN HERE: pnpm test:accounting-regression.
+  #
+  # regression_suite.py:1047-1057 pins two real FNB statements by absolute path
+  # under a specific machine's iCloud Drive, and asserts at :1166 that at least
+  # one of them opened. Those PDFs are real financial documents, correctly not
+  # committed, so the suite cannot pass on any machine but that one — a CI job
+  # for it would fail permanently and mean nothing.
+  #
+  # The hard failure is deliberate (see the header of run_regression.sh: real
+  # cases once silently returned when pdfplumber was missing, hiding a live
+  # parser defect). Fixing this properly means committing sanitised fixtures and
+  # pointing the cases at them, which is a change to the suite's own design and
+  # out of scope here. Until then it stays a local, manually-run suite.
 
   e2e:
     # NON-BLOCKING. The Playwright suite has 3 failures that predate this
