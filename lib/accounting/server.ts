@@ -3,6 +3,7 @@ import { recordAuditLog } from "@/lib/audit";
 import { PENDING_BANK_NAME, PENDING_PARSER_PROFILE } from "@/lib/accounting/engine/bank-detection";
 import { BASE_MERCHANT_KNOWLEDGE } from "@/lib/accounting/engine/merchant-kb";
 import { canonicaliseCategory } from "@/lib/accounting/categories";
+import { merchantKeyRejection } from "@/lib/accounting/merchant-keys";
 import { isUnresolvedAccountingCategory } from "@/lib/accounting/review-options";
 import { getWorkspaceContext } from "@/lib/server-documents";
 import { createDocumentVersionRecord } from "@/lib/supabase-server-adapter";
@@ -107,7 +108,15 @@ function normalizeMerchantKey(description: string) {
   return description
     .toLowerCase()
     .replace(/\b\d{1,2}\s+[a-z]{3,9}\b/g, " ")
-    .replace(/\b(?:inv|invoice|ref|rmsp|m)\s*[\w-]+\b/g, " ")
+    // Strip reference tokens — "INV109034", "REF 8823", "M12345".
+    //
+    // The bare `m` alternative used to sit in this group, and `m` followed by
+    // `[\w-]+` consumes ANY word beginning with m: "Momentum Health" became
+    // "health", "MSI Industries" became "industries", and "mr d" became "d" —
+    // the key that then matched 425 of 615 rows on a real statement. A reference
+    // beginning with m is followed by a digit; a merchant name is not.
+    .replace(/\b(?:inv|invoice|ref|rmsp)\s*[\w-]+\b/g, " ")
+    .replace(/\bm\d[\w-]*\b/g, " ")
     .replace(/\b\d{3,}\b/g, " ")
     .replace(/\d+[.,]\d{2}\s*(cr|dr)?/g, " ")
     .replace(/\b(pty|ltd|business account)\b/g, " ")
@@ -343,6 +352,17 @@ async function ensureMerchantKnowledgeBase() {
     const phrases = [entry.canonicalName, ...entry.aliases];
     return phrases
       .map((phrase) => ({ phrase, merchantKey: normalizeMerchantKey(phrase) }))
+      // A seeded alias that normalises to something too generic to identify a
+      // counterparty must not become a rule. "mr d" is where the production key
+      // "d" came from, and it then claimed 425 of 615 rows on a real statement.
+      .filter((rule) => {
+        const rejection = merchantKeyRejection(rule.merchantKey);
+        if (rejection) {
+          console.warn("[accounting] merchant alias rejected as a learned rule", { phrase: rule.phrase, key: rule.merchantKey, rejection });
+          return false;
+        }
+        return true;
+      })
       .filter((rule, index, list) => rule.merchantKey && list.findIndex((item) => item.merchantKey === rule.merchantKey) === index)
       .map(({ phrase, merchantKey }) => ({
         workspace_id: context.workspaceId,
@@ -712,11 +732,19 @@ export async function updateAccountingTransaction(transactionId: string, patch: 
   // means nobody decided yet, and teaching it would suppress future review.
   const learnableCategory = canonicaliseCategory(transaction.accountCategory);
   const categoryIsTeachable = learnableCategory !== null && !isUnresolvedAccountingCategory(learnableCategory);
-  if (shouldLearn && learningMerchantKeys.length && categoryIsTeachable) {
+  // Only keys specific enough to identify a counterparty may be taught. A
+  // correction on a description that normalises to a generic fragment would
+  // otherwise create a rule that claims unrelated transactions forever.
+  const safeMerchantKeys = learningMerchantKeys.filter((key) => {
+    const rejection = merchantKeyRejection(key);
+    if (rejection) console.warn("[accounting] learned key rejected", { key, rejection });
+    return !rejection;
+  });
+  if (shouldLearn && safeMerchantKeys.length && categoryIsTeachable) {
     const { error: learningError } = await context.supabase
       .from("accounting_classification_rules")
       .upsert(
-        learningMerchantKeys.map((key) => ({
+        safeMerchantKeys.map((key) => ({
           workspace_id: context.workspaceId,
           merchant_key: key,
           account_category: learnableCategory,

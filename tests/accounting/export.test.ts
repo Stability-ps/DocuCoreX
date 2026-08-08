@@ -399,7 +399,9 @@ test("starter supplier knowledge seeds worker learning rules", () => {
   assert.match(kb, /canonicalName: "Netcash Debit Orders"/);
   assert.match(server, /deriveLearningMerchantKeys/);
   assert.match(server, /supplierMatch/);
-  assert.match(server, /learningMerchantKeys\.map/);
+  // Renamed to safeMerchantKeys: only keys specific enough to identify a
+  // counterparty are written, after the production key "d" claimed 425 rows.
+  assert.match(server, /safeMerchantKeys\.map/);
   assert.match(kb, /canonicalName: "Savings and Home Loan Transfers"/);
   assert.match(kb, /canonicalName: "Accounting and Professional Fees"/);
   assert.match(server, /\.from\("accounting_classification_rules"\)/);
