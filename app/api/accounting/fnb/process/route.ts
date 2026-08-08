@@ -425,17 +425,33 @@ function normalizeWorkerFailure(input: {
   return `${detail || `Accounting worker returned HTTP ${input.status}.`} (endpoint: ${input.workerEndpoint}).${workerMetaSuffix}`;
 }
 
-// 280s of the 300s maxDuration below, leaving ~20s for response handling and
-// cleanup. It was 120s, which aborted the worker less than half way into the
-// window the function is allowed — production showed /api/accounting/fnb/process
-// giving up at 120s on a statement that had not failed, only taken longer than
-// an arbitrary limit. All three Render services are Starter and always-on, so
-// this is not a cold-start workaround.
+// The CEILING for a single worker call. The real limit is whatever remains of
+// the request budget below — a call gets min(this, remaining), so the first
+// attempt cannot starve the Enhanced-OCR retry and no attempt can outlive the
+// function.
 //
-// ⚠️ This is the budget for ONE call, and the function can make two: callWorker
-// runs again for the Enhanced-OCR retry, and pre-extraction runs before either.
-// See the note above maxDuration.
+// It was 120s, which aborted the worker less than half way into the window the
+// function is allowed: production showed /api/accounting/fnb/process giving up
+// on a statement that had not failed, only taken longer than an arbitrary
+// limit. All three Render services are Starter and always-on, so this was never
+// a cold-start workaround.
 const ACCOUNTING_WORKER_TIMEOUT_MS = 280_000;
+
+// Everything in one request shares maxDuration: pre-extraction, the worker call,
+// and — on the Enhanced-OCR fallback — a second pipeline run and a second worker
+// call. Bounding each stage independently cannot prevent the total exceeding the
+// function's lifetime, so the stages are measured against one deadline instead.
+//
+// 280s of the 300s below, leaving ~20s for response handling and cleanup. When a
+// stage starts, it gets what is left; when too little is left to be worth
+// starting, it fails with a diagnosable message rather than being killed
+// mid-flight by the platform.
+const ACCOUNTING_REQUEST_BUDGET_MS = 280_000;
+
+// Below this there is no point dispatching to the worker: the statement cannot
+// realistically parse in the time left, and a doomed request costs the worker
+// real work and returns nothing.
+const ACCOUNTING_MIN_WORKER_SLICE_MS = 20_000;
 // Every document is analysed before extraction, so the pipeline now runs by
 // default. The strategy keeps this affordable: a genuine digital statement takes
 // the "native" path and never calls OCR. Set ACCOUNTING_PRE_EXTRACT=false to
@@ -448,19 +464,17 @@ const ACCOUNTING_OCR_FALLBACK_ENABLED = process.env.ACCOUNTING_OCR_FALLBACK !== 
 // Allow the background work (after the response is sent) to run beyond the default
 // so extraction + worker + reconciliation can finish off the request path.
 //
-// ⚠️ 300s is the budget for EVERYTHING in this request, not just the worker call:
+// 300s is the budget for EVERYTHING in this request, not just the worker call:
 //   1. runExtractionPipeline pre-extraction (on by default; OCR, Mistral and
 //      Azure each carry their own 120s ceiling)
-//   2. callWorker — ACCOUNTING_WORKER_TIMEOUT_MS
+//   2. callWorker — min(ACCOUNTING_WORKER_TIMEOUT_MS, budget remaining)
 //   3. on the Enhanced-OCR fallback, a second pipeline run AND a second
-//      callWorker
-// With the worker timeout at 280s, a single slow call can consume nearly the
-// whole window, so anything that ran before it pushes the function past 300s and
-// Vercel terminates it before the AbortController fires. The failure then
-// surfaces as an opaque platform timeout rather than the clean
-// "Accounting worker timed out after 280s." message, and the retry never runs.
-// Raising this ceiling, or budgeting the stages against a shared deadline, is
-// the real fix if statements start needing the full window.
+//      callWorker, taking what is left
+// The stages share one deadline (ACCOUNTING_REQUEST_BUDGET_MS, set when the
+// background work starts), so time spent earlier shortens what later stages may
+// take and the total cannot outlive the function. Before that, each stage was
+// bounded independently and 280 + 280 could exceed 300 — the platform killed the
+// function mid-flight and the failure arrived with no diagnosable message.
 export const maxDuration = 300;
 
 function toParserDebug(pipelineDebug: PipelineDebug | null) {
@@ -495,6 +509,13 @@ function toParserDebug(pipelineDebug: PipelineDebug | null) {
 // response has already been returned. Nothing below blocks the user's request.
 async function processStatementInBackground(context: WorkspaceContext, detail: AccountingRunDetail, workerUrl: string, runId: string, force: boolean) {
   const jobId = detail.run.processingJobId;
+
+  // One deadline for the whole request. Every stage measures against it, so
+  // pre-extraction spending time necessarily shortens what the worker call may
+  // take, and a first attempt that runs long leaves the retry a smaller slice
+  // rather than pushing the function past its lifetime.
+  const deadlineAt = Date.now() + ACCOUNTING_REQUEST_BUDGET_MS;
+  const remainingBudgetMs = () => deadlineAt - Date.now();
 
   // Report the current processing step so the UI can show it with an elapsed
   // timer. Writes the human label to the run (processing_step) and mirrors it to
@@ -581,8 +602,22 @@ async function processStatementInBackground(context: WorkspaceContext, detail: A
       declaredBank: detail.run.bank,
     });
 
+    // The ceiling, or whatever is left of the request budget — whichever is
+    // smaller. Refuse outright when the remainder is too small to be useful:
+    // dispatching costs the worker a full parse and returns nothing, and the
+    // caller gets a message it can act on instead of a killed function.
+    const sliceMs = Math.min(ACCOUNTING_WORKER_TIMEOUT_MS, remainingBudgetMs());
+    if (sliceMs < ACCOUNTING_MIN_WORKER_SLICE_MS) {
+      const message =
+        `Ran out of processing time before the accounting worker could be called ` +
+        `(${Math.max(0, Math.round(remainingBudgetMs() / 1000))}s left of a ` +
+        `${ACCOUNTING_REQUEST_BUDGET_MS / 1000}s budget). The statement was not processed.`;
+      console.error("[accounting/process] budget exhausted", { requestId, endpoint: workerEndpoint, runId, message });
+      return { kind: "unreachable", error: message };
+    }
+
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), ACCOUNTING_WORKER_TIMEOUT_MS);
+    const timer = setTimeout(() => controller.abort(), sliceMs);
     let response: Response;
     let responseText: string;
     try {
@@ -598,7 +633,10 @@ async function processStatementInBackground(context: WorkspaceContext, detail: A
       responseText = await response.text();
     } catch (fetchError) {
       const aborted = fetchError instanceof Error && fetchError.name === "AbortError";
-      const message = aborted ? `Accounting worker timed out after ${ACCOUNTING_WORKER_TIMEOUT_MS / 1000}s.` : `Accounting worker unreachable: ${fetchError instanceof Error ? fetchError.message : String(fetchError)}`;
+      // Report the slice actually granted, not the ceiling — on a retry, or
+      // after slow pre-extraction, they differ, and the ceiling would send
+      // someone hunting for a timeout that never applied.
+      const message = aborted ? `Accounting worker timed out after ${Math.round(sliceMs / 1000)}s.` : `Accounting worker unreachable: ${fetchError instanceof Error ? fetchError.message : String(fetchError)}`;
       console.error("[accounting/process] worker fetch failed", { requestId, endpoint: workerEndpoint, runId, message });
       return { kind: "unreachable", error: message };
     } finally {
