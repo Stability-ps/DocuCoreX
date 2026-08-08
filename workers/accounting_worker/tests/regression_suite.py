@@ -92,6 +92,7 @@ if importlib.util.find_spec("openpyxl") is None:
 from openpyxl import load_workbook
 
 from engine import ai_prompt
+from engine import counterparty
 import main
 from main import (
     ParsedTransaction,
@@ -4134,6 +4135,17 @@ def run() -> None:
     test_standing_does_not_reopen_the_ai_recovery_cap()
     test_provenance_is_written_but_never_at_the_ledgers_cost()
     test_bank_fee_terminology_classifies_as_bank_charges()
+    test_channel_wording_never_becomes_the_counterparty()
+    test_a_row_naming_nobody_returns_nobody()
+    test_a_reference_number_is_not_part_of_the_name()
+    test_a_truncated_name_is_known_to_be_truncated()
+    test_the_name_uses_only_words_the_description_contains()
+    test_evidence_is_measured_not_assumed()
+    test_one_transaction_proves_no_relationship()
+    test_money_flowing_both_ways_proves_no_relationship()
+    test_a_consistent_direction_over_months_is_a_strong_relationship()
+    test_a_relationship_is_not_an_accounting_treatment()
+    test_grouping_ignores_rows_that_name_nobody()
     test_the_global_prompt_names_no_customer_counterparty()
     test_the_global_prompt_is_identical_for_every_workspace()
     test_the_global_prompt_is_built_only_from_vetted_knowledge()
@@ -4969,6 +4981,174 @@ def test_the_prompt_keeps_the_patterns_the_names_stood_for() -> None:
     # Public brands are still allowed, and still there.
     for brand in ("discovery", "dhl", "sage", "wesbank", "sars", "engen"):
         assert_equal(brand in text, True, f"public brand {brand} is still available to the model")
+
+
+
+# ── Counterparty identity and what a statement proves about it ───────────────
+#
+# The production baseline left 426 of 615 rows unresolved. The instinct is to
+# grow the merchant list; that instinct is what put one customer's suppliers
+# into every workspace's AI prompt, and a list can only know what it was taught.
+#
+# The statement knows more. 87% of those rows name a counterparty that appears
+# again in the same statement, and every counterparty with two or more rows
+# moves money in one consistent direction.
+
+
+def test_channel_wording_never_becomes_the_counterparty() -> None:
+    """HOW money moved must not be mistaken for WHO was paid.
+
+    "CHEQUE CARD PURCHASE" appears on 291 of 615 rows on the real statement. If
+    it reached the key, 291 unrelated purchases would collapse into one
+    imaginary merchant — the same confusion that let a fuel brand authorise a
+    VAT claim, one layer earlier.
+    """
+    for description, expected in (
+        ("OK MM WELKOM 4278*5999 CHEQUE CARD PURCHASE", "OK MM WELKOM"),
+        ("ABSA BANK 8090806375 ACCOUNT PAYMENT", "ABSA BANK"),
+        ("MQ FIN DO * ELECTRONIC BANKING COLLECT TO", "MQ FIN DO"),
+        ("A HARMONY698002 CREDIT TRANSFER", "A HARMONY"),
+    ):
+        party = counterparty.extract_counterparty(description)
+        assert_equal(party.display if party else None, expected, f"counterparty of {description!r}")
+        for phrase in counterparty.CHANNEL_PHRASES:
+            assert_equal(phrase in (party.display if party else ""), False, f"{phrase} is not a counterparty")
+
+
+def test_a_row_naming_nobody_returns_nobody() -> None:
+    """None is a real answer, not a failure to try.
+
+    ". 08H29 IB TRANSFER TO" is an own-account transfer where the bank recorded
+    only a time. Guessing here would manufacture a merchant out of a timestamp.
+    """
+    for description in (". 08H29 IB TRANSFER TO", "", "   ", "IB TRANSFER FROM", "4278*5999"):
+        assert_equal(counterparty.extract_counterparty(description), None, f"{description!r} names nobody")
+
+
+def test_a_reference_number_is_not_part_of_the_name() -> None:
+    """Fused references must be cut, or recurrence becomes invisible.
+
+    The 67 payments from A HARMONY each carry a different reference printed
+    against the name. Left fused, every one keys differently and the pattern
+    they prove together disappears.
+    """
+    keys = {
+        counterparty.extract_counterparty(d).key
+        for d in ("A HARMONY698002 CREDIT TRANSFER",
+                  "A HARMONY707498-707535 CREDIT TRANSFER",
+                  "A HARMONY714798 CREDIT TRANSFER")
+    }
+    assert_equal(sorted(keys), ["a harmony"], "one counterparty, not three")
+
+    # But a short number that is part of the name survives.
+    for description, expected in (("N1 VAAL 4278*5999 CHEQUE CARD PURCHASE", "N1 VAAL"),
+                                  ("CHECKERS SIXTY60 4278*5999 CHEQUE CARD PURCHASE", "CHECKERS SIXTY60")):
+        assert_equal(counterparty.extract_counterparty(description).display, expected, f"{description!r} keeps its digits")
+
+
+def test_a_truncated_name_is_known_to_be_truncated() -> None:
+    """The bank cuts the field at 14 characters, and we must not forget it.
+
+    "GOLDWAGEN HILT4278*5999" is Goldwagen Hilton cut short. Treating a prefix
+    as a complete name is how a learned rule comes to claim rows it never meant
+    to — the same class of error as the one-character key "d".
+    """
+    cut = counterparty.extract_counterparty("GOLDWAGEN HILT4278*5999 CHEQUE CARD PURCHASE")
+    assert_equal(cut.truncated, True, "name running into the mask was truncated")
+    whole = counterparty.extract_counterparty("N1 VAAL 4278*5999 CHEQUE CARD PURCHASE")
+    assert_equal(whole.truncated, False, "name separated from the mask was not truncated")
+
+
+def test_the_name_uses_only_words_the_description_contains() -> None:
+    """Extraction, never invention — the same rule AI recovery is held to."""
+    for description in ("OK MM WELKOM 4278*5999 CHEQUE CARD PURCHASE",
+                        "STEERS THEUNIS4278*5999 CHEQUE CARD PURCHASE",
+                        "ADT JHB 2117556751ADT5087498 ACCOUNT PAYMENT"):
+        party = counterparty.extract_counterparty(description)
+        upper = description.upper()
+        for word in party.display.split():
+            assert_equal(word in upper, True, f"{word!r} appears in the description")
+
+
+def _party_rows(description, amounts, dates, credit=False):
+    return [{"description": description,
+             "debit_amount": None if credit else amount,
+             "credit_amount": amount if credit else None,
+             "transaction_date": date}
+            for amount, date in zip(amounts, dates)]
+
+
+def test_evidence_is_measured_not_assumed() -> None:
+    rows = _party_rows("ADT JHB 111111 ACCOUNT PAYMENT", [380.0] * 5,
+                       ["2025-05-01", "2025-06-01", "2025-07-01", "2025-08-01", "2025-09-01"])
+    evidence = counterparty.counterparty_evidence("adt jhb", "ADT JHB", rows)
+    assert_equal(evidence.occurrences, 5, "occurrences counted")
+    assert_equal(evidence.months_spanned, 5, "months counted")
+    assert_equal(evidence.single_direction, True, "one direction")
+    assert_equal(evidence.recurring, True, "three or more months is recurring")
+    assert_equal(evidence.fixed_amount, True, "identical amounts")
+    assert_equal(evidence.credit_count, 0, "no credits")
+
+
+def test_one_transaction_proves_no_relationship() -> None:
+    """A payment out is a payment out. It is not yet a supplier."""
+    rows = _party_rows("SOMEONE 4278*5999 CHEQUE CARD PURCHASE", [500.0], ["2025-05-01"])
+    evidence = counterparty.counterparty_evidence("someone", "SOMEONE", rows)
+    relationship = counterparty.infer_relationship(evidence)
+    assert_equal(relationship.kind, counterparty.RELATIONSHIP_UNKNOWN, "one movement proves nothing")
+    assert_equal(relationship.strength, counterparty.RELATIONSHIP_STRENGTH_NONE, "no strength")
+
+
+def test_money_flowing_both_ways_proves_no_relationship() -> None:
+    """Paid and received is ambiguous — a refund, a loan, a correction."""
+    rows = _party_rows("BOTHWAYS 111111 ACCOUNT PAYMENT", [500.0, 300.0], ["2025-05-01", "2025-06-01"])
+    rows += _party_rows("BOTHWAYS 111111 ACCOUNT PAYMENT", [200.0], ["2025-07-01"], credit=True)
+    evidence = counterparty.counterparty_evidence("bothways", "BOTHWAYS", rows)
+    assert_equal(evidence.single_direction, False, "both directions seen")
+    assert_equal(counterparty.infer_relationship(evidence).kind, counterparty.RELATIONSHIP_UNKNOWN,
+                 "two-way flow proves no relationship")
+
+
+def test_a_consistent_direction_over_months_is_a_strong_relationship() -> None:
+    supplier = counterparty.counterparty_evidence(
+        "welkom fresh p", "WELKOM FRESH P",
+        _party_rows("WELKOM FRESH P4278*5999 CHEQUE CARD PURCHASE", [9100.0, 8200.0, 7400.0],
+                    ["2025-05-02", "2025-06-02", "2025-07-02"]))
+    customer = counterparty.counterparty_evidence(
+        "a harmony", "A HARMONY",
+        _party_rows("A HARMONY698002 CREDIT TRANSFER", [27835.30, 31000.0, 25000.0],
+                    ["2025-05-03", "2025-06-03", "2025-07-03"], credit=True))
+    assert_equal(counterparty.infer_relationship(supplier).kind, counterparty.RELATIONSHIP_SUPPLIER, "paid out = supplier")
+    assert_equal(counterparty.infer_relationship(supplier).strength, counterparty.RELATIONSHIP_STRENGTH_STRONG, "recurring")
+    assert_equal(counterparty.infer_relationship(customer).kind, counterparty.RELATIONSHIP_CUSTOMER, "received = customer")
+
+
+def test_a_relationship_is_not_an_accounting_treatment() -> None:
+    """The safety invariant this whole module rests on.
+
+    Knowing someone is a supplier does NOT say the payment is an operating
+    expense — it could be stock, an asset, or a loan repayment. Knowing someone
+    is a customer does NOT say the receipt is revenue — it could be a refund or
+    a returned deposit. If this ever starts emitting a category or a VAT
+    treatment, the fuel-VAT defect has been rebuilt one layer up.
+    """
+    evidence = counterparty.counterparty_evidence(
+        "welkom fresh p", "WELKOM FRESH P",
+        _party_rows("WELKOM FRESH P4278*5999 CHEQUE CARD PURCHASE", [9100.0, 8200.0, 7400.0],
+                    ["2025-05-02", "2025-06-02", "2025-07-02"]))
+    relationship = counterparty.infer_relationship(evidence)
+    fields = set(relationship.__dict__)
+    assert_equal(sorted(fields), ["kind", "reason", "strength"], "a relationship carries no treatment")
+    for forbidden in ("category", "account", "vat", "vat_treatment", "claimable"):
+        assert_equal(forbidden in fields, False, f"relationship must not carry {forbidden}")
+
+
+def test_grouping_ignores_rows_that_name_nobody() -> None:
+    rows = _party_rows("A HARMONY698002 CREDIT TRANSFER", [100.0, 200.0], ["2025-05-01", "2025-06-01"], credit=True)
+    rows += _party_rows(". 08H29 IB TRANSFER TO", [5000.0], ["2025-05-04"])
+    groups = counterparty.group_by_counterparty(rows)
+    assert_equal(sorted(groups), ["a harmony"], "the anonymous transfer forms no group")
+    assert_equal(len(groups["a harmony"]), 2, "both payments grouped")
 
 
 if __name__ == "__main__":
