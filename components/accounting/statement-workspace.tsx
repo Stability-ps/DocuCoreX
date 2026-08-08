@@ -107,6 +107,16 @@ export function StatementWorkspace({ statementId }: { statementId: string }) {
   const [banner, setBanner] = useState<string | null>(null);
   const [exportOpen, setExportOpen] = useState(false);
   const [moreOpen, setMoreOpen] = useState(false);
+  // Page of the statement to show for the transaction the user picked. The
+  // nonce lets the same transaction be selected twice and still return to its
+  // page. Transactions whose sourcePage is null simply never set this.
+  const [previewJump, setPreviewJump] = useState<{ page: number; nonce: number } | null>(null);
+  const jumpNonce = useRef(0);
+  const showTransactionInStatement = useCallback((page: number | null) => {
+    if (!page || page < 1) return;
+    jumpNonce.current += 1;
+    setPreviewJump({ page, nonce: jumpNonce.current });
+  }, []);
 
   const sourceUrl = `/api/accounting/fnb/runs/${statementId}/source`;
 
@@ -470,7 +480,7 @@ export function StatementWorkspace({ statementId }: { statementId: string }) {
           the left, the work surface on the right, starting on the same line.
           The sidebar's remaining detail moves below — see StatementSidebar. */}
       <div className="mt-3 grid gap-4 lg:grid-cols-[minmax(0,36fr)_minmax(0,64fr)]">
-        <DocumentViewer sourceUrl={sourceUrl} downloadUrl={`${sourceUrl}?download=1`} fileName={`${runTitle(run)}.pdf`} kind="pdf" />
+        <DocumentViewer sourceUrl={sourceUrl} downloadUrl={`${sourceUrl}?download=1`} fileName={`${runTitle(run)}.pdf`} kind="pdf" jumpToPage={previewJump} />
         <div className="min-w-0 xl:row-span-1">
           <RightPanel
             statementId={statementId}
@@ -482,6 +492,7 @@ export function StatementWorkspace({ statementId }: { statementId: string }) {
             totals={totals}
             reviewItems={reviewItems}
             patchTransaction={patchTransaction}
+            onShowInStatement={showTransactionInStatement}
           />
         </div>
       </div>
@@ -642,6 +653,7 @@ function RightPanel({
   totals,
   reviewItems,
   patchTransaction,
+  onShowInStatement,
 }: {
   statementId: string;
   activeTab: Tab;
@@ -652,6 +664,8 @@ function RightPanel({
   totals: { moneyIn: number; moneyOut: number; charges: number; opening: number; closing: number; expectedClosing: number; difference: number; reconciled: boolean };
   reviewItems: AccountingTransaction[];
   patchTransaction: (t: AccountingTransaction, patch: AccountingTransactionPatch) => Promise<void>;
+  /** Show a transaction's page in the statement preview. */
+  onShowInStatement: (page: number | null) => void;
 }) {
   return (
     <section className="flex min-h-[520px] flex-col rounded-xl border border-slate-200 bg-white shadow-sm">
@@ -670,7 +684,7 @@ function RightPanel({
         ))}
       </div>
       <div className="min-h-0 flex-1 overflow-auto p-3">
-        {activeTab === "transactions" ? <TransactionsTab model={model} /> : null}
+        {activeTab === "transactions" ? <TransactionsTab model={model} onShowInStatement={onShowInStatement} /> : null}
         {activeTab === "review" ? <ReviewTab reviewItems={reviewItems} patchTransaction={patchTransaction} /> : null}
         {activeTab === "insights" ? <InsightsTab statementId={statementId} transactions={transactions} model={model} totals={totals} /> : null}
         {activeTab === "difference" ? <DifferenceTab totals={totals} model={model} /> : null}
@@ -689,7 +703,14 @@ function statusTone(status: string): string {
   return "bg-amber-100 text-amber-800";
 }
 
-function TransactionsTab({ model }: { model: Model }) {
+function TransactionsTab({
+  model,
+  onShowInStatement,
+}: {
+  model: Model;
+  /** Show a transaction's page in the statement preview. */
+  onShowInStatement: (page: number | null) => void;
+}) {
   const [query, setQuery] = useState("");
   const rows = useMemo(() => {
     const q = query.trim().toLowerCase();
@@ -718,7 +739,17 @@ function TransactionsTab({ model }: { model: Model }) {
           </thead>
           <tbody>
             {rows.map((t) => (
-              <tr key={t.id} className="border-t border-slate-100 hover:bg-slate-50">
+              /* Selecting a row shows its page in the statement preview. Only
+                 rows the extractor recorded a page for are actionable — the
+                 rest stay inert rather than pretending to navigate. There are
+                 no bounding boxes in the data, so this jumps to the page and
+                 makes no claim to highlight a region. */
+              <tr
+                key={t.id}
+                onClick={t.sourcePage ? () => onShowInStatement(t.sourcePage) : undefined}
+                title={t.sourcePage ? `Show page ${t.sourcePage} of the statement` : undefined}
+                className={`border-t border-slate-100 hover:bg-slate-50 ${t.sourcePage ? "cursor-pointer" : ""}`}
+              >
                 <td className="whitespace-nowrap px-2 py-1.5 font-semibold text-slate-600">{fmtDate(t.date)}</td>
                 <td className="max-w-[180px] truncate px-2 py-1.5 font-semibold text-navy-950" title={t.description}>
                   {t.description}
