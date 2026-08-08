@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createDocxFile, createPdfFile, createXlsxFile } from "@/lib/file-output";
 import { convertDocumentContent, ConversionError, verifyOcrRuntime } from "@/lib/document-conversion-engine";
+import { createMinimalPptx } from "./fixtures/minimal-pptx";
 
 const encoder = new TextEncoder();
 const decoder = new TextDecoder("latin1");
@@ -381,10 +382,6 @@ startxref
 190
 %%EOF`,
   );
-}
-
-function createMinimalPptx() {
-  return encoder.encode("PK\u0003\u0004minimal-pptx-placeholder");
 }
 
 function withEnv(values: Record<string, string>) {
