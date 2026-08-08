@@ -54,3 +54,56 @@ services:
     buildCommand: pip install -r requirements.txt
     startCommand: uvicorn app:app --host 0.0.0.0 --port $PORT
     healthCheckPath: /health
+
+  # FNB bank-statement processing worker (workers/accounting_worker). Vercel's
+  # /api/accounting/fnb/process proxies here and waits up to 120s.
+  #
+  # ⚠️ THIS SERVICE ALREADY EXISTS AND WAS CREATED OUTSIDE THIS BLUEPRINT. It is
+  # declared here so all three services are in version control, but the values
+  # below were reconstructed from the code, not read from the live service —
+  # nobody could see its dashboard configuration when this was written. Before
+  # syncing the blueprint, check the live service and reconcile:
+  #   - `name` must match it EXACTLY or a sync creates a second service rather
+  #     than adopting this one. The name here is taken from the hostname in the
+  #     production logs, docucorex-accounting-worker.onrender.com.
+  #   - `plan` is set to starter for consistency with the two services above. If
+  #     the live service is on a different plan, syncing CHANGES it. Worth
+  #     checking regardless: production shows /api/accounting/fnb/process timing
+  #     out after 120s intermittently (8 times over 6–8 Aug), and a plan that
+  #     sleeps when idle would explain that — a cold start plus a large
+  #     statement parse exceeds the timeout.
+  - type: web
+    name: docucorex-accounting-worker
+    runtime: python
+    plan: starter
+    rootDir: workers/accounting_worker
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /health
+    envVars:
+      # REQUIRED. auth.py fails closed: with this unset the worker answers 503 to
+      # every POST rather than serving everybody. Must match ACCOUNTING_WORKER_TOKEN
+      # on Vercel exactly — the two are compared with compare_digest.
+      - key: ACCOUNTING_WORKER_TOKEN
+        sync: false
+      # Statement PDFs are read from, and workbooks written back to, Supabase
+      # storage using the service role.
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_SERVICE_ROLE_KEY
+        sync: false
+      - key: SUPABASE_BUCKET
+        sync: false
+      # AI classification of ambiguous transactions runs on THIS service, not on
+      # Vercel, so the key is required here. Setting it only on Vercel silently
+      # disables classification for every statement.
+      - key: OPENAI_API_KEY
+        sync: false
+      # Optional overrides; the worker has defaults for both.
+      - key: OPENAI_ACCOUNTING_MODEL
+        sync: false
+      # Optional. "false" disables AI-assisted ledger recovery, which is on by
+      # default when OPENAI_API_KEY is set. Recovery sends statement lines to the
+      # model — a wider disclosure than classification — so it has its own switch.
+      - key: ACCOUNTING_AI_RECOVERY
+        sync: false
