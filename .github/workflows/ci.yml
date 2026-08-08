@@ -77,16 +77,21 @@ jobs:
   # out of scope here. Until then it stays a local, manually-run suite.
 
   e2e:
-    # NON-BLOCKING. The Playwright suite has 3 failures that predate this
-    # workflow (verified at 81227c3, before #60):
-    #   app-smoke.spec.ts:11        desktop new menu links to routed workspaces
-    #   app-smoke.spec.ts:27        mobile bottom navigation / profile menu
-    #   conversion-engine.spec.ts:293  PDF page image export without a renderer
-    # Running it here surfaces those and any new breakage without blocking
-    # merges. Remove continue-on-error once the three are fixed.
-    name: E2E (non-blocking)
+    # BLOCKING. It was continue-on-error while the suite carried failures that
+    # predated the workflow; those are now fixed (#62, #63) and it has run clean
+    # twice — on #63 and on main at aa002f6, 22 passed / 20 skipped / 0 failed.
+    #
+    # A failure here now stops a merge, so treat a red run as a real signal
+    # rather than something to re-run. Two things worth knowing if it does go
+    # red unexpectedly:
+    #   - playwright.config.ts sets `reuseExistingServer: true`, so locally it
+    #     will silently test whatever already listens on 3100.
+    #   - a local run is NOT equivalent to this one. middleware.ts forces
+    #     authRequired whenever NEXT_PUBLIC_SUPABASE_URL is set, ignoring
+    #     NEXT_PUBLIC_REQUIRE_AUTH, so a developer with .env.local gets
+    #     /login redirects for every protected route while CI does not.
+    name: E2E
     runs-on: ubuntu-latest
-    continue-on-error: true
     steps:
       - uses: actions/checkout@v4
 
