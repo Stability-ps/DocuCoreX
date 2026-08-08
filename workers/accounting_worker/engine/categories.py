@@ -77,3 +77,27 @@ def is_canonical_category(value: str | None) -> bool:
 def is_known_category(value: str | None) -> bool:
     """True for a canonical id or any historical alias of one."""
     return canonicalise_category(value) is not None
+
+
+@lru_cache(maxsize=1)
+def unresolved_categories() -> frozenset[str]:
+    """Categories that mean "nothing could determine this", not a decision.
+
+    Flagged explicitly in categories.json rather than matched by pattern. A
+    regex over "review|suspense|uncategori" also catches
+    "Meals / Groceries - Non Deductible Review", "SARS / Tax Suspense" and
+    "Refund / Suspense" — all real decisions a reviewer can act on — so a
+    pattern would quietly demote three genuine classifications.
+    """
+    return frozenset(
+        category["id"] for category in _load()["categories"] if category.get("unresolved")
+    )
+
+
+def is_unresolved_category(value: str | None) -> bool:
+    """Whether a category is a parking bucket rather than an accounting answer.
+
+    Canonicalises first, so an alias of a parking bucket is recognised as one.
+    """
+    canonical = canonicalise_category(value)
+    return canonical is not None and canonical in unresolved_categories()

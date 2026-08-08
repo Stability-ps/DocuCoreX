@@ -54,6 +54,7 @@ from engine.ai_counterparty import build_prompt as build_counterparty_prompt
 from engine.ai_counterparty import build_questions as build_counterparty_questions
 from engine.ai_counterparty import validate_answers as validate_counterparty_answers
 from engine.categories import canonical_categories
+from engine.categories import is_unresolved_category
 from engine.counterparty import group_by_counterparty as counterparty_group_by
 from engine.ai_recovery import SYSTEM_PROMPT as AI_RECOVERY_SYSTEM_PROMPT
 from engine.ai_recovery import batches as ai_batches
@@ -4607,8 +4608,14 @@ def apply_ai_counterparty_reasoning(
     report["counterparty_rejected"] = rejected_total
 
     applied = 0
+    declined_groups = 0
     for verdict in verdicts:
-        if verdict.category is None:
+        # Declining is a valid answer, and the same rule applies here as on the
+        # row-by-row path: a parking bucket is not a classification, so the
+        # group keeps source=unresolved rather than being recorded as settled
+        # by a model that said it could not tell.
+        if verdict.category is None or is_unresolved_category(verdict.category):
+            declined_groups += 1
             continue
         for transaction in groups.get(verdict.key, ()):  # noqa: B020
             # Never over a settled row. A bank-named fee and a human's own
@@ -4628,6 +4635,7 @@ def apply_ai_counterparty_reasoning(
             applied += 1
 
     report["counterparty_applied"] = applied
+    report["counterparty_declined"] = declined_groups
     log_event("worker.ai_counterparty_reasoning", **report)
     if diagnostics is not None:
         diagnostics.update(report)
@@ -5066,6 +5074,7 @@ def classify_transactions_with_ai(
     diagnostics = apply_ai_classifications(rows, workspace_id)
 
     applied = 0
+    declined = 0
     rejected: dict[str, int] = {}
     for transaction, row in zip(transactions, rows):
         if not row.get("ai_used"):
@@ -5075,6 +5084,25 @@ def classify_transactions_with_ai(
             # Already validated on the way in, so this means the guardrails in
             # apply_ai_result_to_row produced something outside the vocabulary.
             rejected["account_outside_vocabulary"] = rejected.get("account_outside_vocabulary", 0) + 1
+            continue
+
+        # "I do not know" is not an accounting classification.
+        #
+        # A model asked about an unidentifiable row often answers with a parking
+        # bucket — Suspense / Review Required, Other Income / Review,
+        # Uncategorised. That is the correct answer, and it must not be recorded
+        # as a successful one. Stamping SOURCE_AI here erased `unresolved` from
+        # the ledger entirely: on the real 615-row statement every row came back
+        # sourced `ai`, coverage reported 100% automated while 482 rows needed a
+        # human, and the run's classification confidence became an average
+        # dragged down by 345 rows that were not classifications at all.
+        #
+        # The row keeps what the evidence layers decided — the same parking
+        # bucket at source=unresolved, strength=none. The attempt is recorded in
+        # diagnostics, so "asked and declined" stays visible without pretending
+        # the model answered.
+        if is_unresolved_category(category):
+            declined += 1
             continue
 
         transaction.account_category = category
@@ -5092,6 +5120,7 @@ def classify_transactions_with_ai(
         applied += 1
 
     diagnostics["ai_transactions_applied_to_ledger"] = applied
+    diagnostics["ai_declined_left_unresolved"] = declined
     diagnostics["ai_rejected_after_guardrails"] = rejected
     return diagnostics
 

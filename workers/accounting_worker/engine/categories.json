@@ -3,42 +3,194 @@
   "note": "The one accounting category vocabulary. Consumed by the Python worker (engine/categories.py) and by TypeScript (lib/accounting/categories.ts), which imports this exact file so the two cannot drift. It lives inside the worker package because the worker deploys from workers/accounting_worker and must have it at runtime.",
   "idIsStoredValue": "`id` is the string written to accounting_transactions.account_category. Ids are the existing professional-chart strings wherever one existed, so the great majority of stored rows already match and need no migration. `label` is what a person reads; `aliases` are historical spellings that still render and are accepted on read, never written.",
   "categories": [
-    { "id": "Sales / Revenue", "label": "Sales / Revenue", "aliases": [] },
-    { "id": "Cash Deposits / Revenue", "label": "Cash Deposits", "aliases": [] },
-    { "id": "Other Income / Review", "label": "Other Income (review)", "aliases": ["Income", "Revenue Review"] },
-    { "id": "Interest Income", "label": "Interest Income", "aliases": [] },
-
-    { "id": "Bank Charges", "label": "Bank Charges", "aliases": [] },
-    { "id": "Finance Costs", "label": "Finance Costs", "aliases": [] },
-
-    { "id": "Supplier Payments", "label": "Supplier Payments", "aliases": [] },
-    { "id": "Operating Expenses", "label": "Operating Expenses", "aliases": ["Other Operating Expenses"] },
-    { "id": "Accounting / Professional Fees", "label": "Accounting / Professional Fees", "aliases": [] },
-    { "id": "Software / IT", "label": "Software / IT", "aliases": ["Software Subscriptions"] },
-    { "id": "Telephone / Internet / Communication", "label": "Telephone / Internet", "aliases": [] },
-    { "id": "Courier / Freight", "label": "Courier / Freight", "aliases": ["Courier / Delivery"] },
-    { "id": "Motor Vehicle Expenses", "label": "Motor Vehicle Expenses", "aliases": [] },
-    { "id": "Road Tolls", "label": "Road Tolls", "aliases": [] },
-    { "id": "Insurance", "label": "Insurance", "aliases": ["Insurance Expense"] },
-    { "id": "Medical Expenses", "label": "Medical Expenses", "aliases": [] },
-    { "id": "Meals / Groceries - Non Deductible Review", "label": "Meals & Groceries (non-deductible, review)", "aliases": ["Staff Welfare / Meals / Entertainment"] },
-    { "id": "Levies", "label": "Levies", "aliases": [] },
-    { "id": "Rent", "label": "Rent", "aliases": [] },
-    { "id": "Repairs & Maintenance", "label": "Repairs & Maintenance", "aliases": [] },
-    { "id": "Utilities", "label": "Utilities", "aliases": [] },
-
-    { "id": "Salaries / Drawings / Personal", "label": "Salaries & Wages", "aliases": ["Salaries & Wages"] },
-    { "id": "Director Loan / Drawings", "label": "Director / Owner Drawings", "aliases": ["Related Party / Drawings"] },
-    { "id": "Loan / Liability", "label": "Loan / Liability", "aliases": [] },
-    { "id": "Inter-account Transfer", "label": "Inter-account Transfer", "aliases": [] },
-    { "id": "Inter-account Transfer In", "label": "Inter-account Transfer In", "aliases": [] },
-    { "id": "Inter-account Transfer Out / Loan", "label": "Inter-account Transfer Out / Loan", "aliases": [] },
-
-    { "id": "SARS / Tax Suspense", "label": "SARS / Tax Suspense", "aliases": ["Tax / SARS Suspense"] },
-    { "id": "VAT Control", "label": "VAT Control", "aliases": [] },
-
-    { "id": "Refund / Suspense", "label": "Refund / Suspense", "aliases": [] },
-    { "id": "Suspense / Review Required", "label": "Suspense (needs review)", "aliases": ["Review Required", "Review Required Suspense"] },
-    { "id": "Uncategorised", "label": "Uncategorised", "aliases": ["Uncategorised Expense", "Unclassified Expense"] }
-  ]
+    {
+      "id": "Sales / Revenue",
+      "label": "Sales / Revenue",
+      "aliases": []
+    },
+    {
+      "id": "Cash Deposits / Revenue",
+      "label": "Cash Deposits",
+      "aliases": []
+    },
+    {
+      "id": "Other Income / Review",
+      "label": "Other Income (review)",
+      "aliases": [
+        "Income",
+        "Revenue Review"
+      ],
+      "unresolved": true
+    },
+    {
+      "id": "Interest Income",
+      "label": "Interest Income",
+      "aliases": []
+    },
+    {
+      "id": "Bank Charges",
+      "label": "Bank Charges",
+      "aliases": []
+    },
+    {
+      "id": "Finance Costs",
+      "label": "Finance Costs",
+      "aliases": []
+    },
+    {
+      "id": "Supplier Payments",
+      "label": "Supplier Payments",
+      "aliases": []
+    },
+    {
+      "id": "Operating Expenses",
+      "label": "Operating Expenses",
+      "aliases": [
+        "Other Operating Expenses"
+      ]
+    },
+    {
+      "id": "Accounting / Professional Fees",
+      "label": "Accounting / Professional Fees",
+      "aliases": []
+    },
+    {
+      "id": "Software / IT",
+      "label": "Software / IT",
+      "aliases": [
+        "Software Subscriptions"
+      ]
+    },
+    {
+      "id": "Telephone / Internet / Communication",
+      "label": "Telephone / Internet",
+      "aliases": []
+    },
+    {
+      "id": "Courier / Freight",
+      "label": "Courier / Freight",
+      "aliases": [
+        "Courier / Delivery"
+      ]
+    },
+    {
+      "id": "Motor Vehicle Expenses",
+      "label": "Motor Vehicle Expenses",
+      "aliases": []
+    },
+    {
+      "id": "Road Tolls",
+      "label": "Road Tolls",
+      "aliases": []
+    },
+    {
+      "id": "Insurance",
+      "label": "Insurance",
+      "aliases": [
+        "Insurance Expense"
+      ]
+    },
+    {
+      "id": "Medical Expenses",
+      "label": "Medical Expenses",
+      "aliases": []
+    },
+    {
+      "id": "Meals / Groceries - Non Deductible Review",
+      "label": "Meals & Groceries (non-deductible, review)",
+      "aliases": [
+        "Staff Welfare / Meals / Entertainment"
+      ]
+    },
+    {
+      "id": "Levies",
+      "label": "Levies",
+      "aliases": []
+    },
+    {
+      "id": "Rent",
+      "label": "Rent",
+      "aliases": []
+    },
+    {
+      "id": "Repairs & Maintenance",
+      "label": "Repairs & Maintenance",
+      "aliases": []
+    },
+    {
+      "id": "Utilities",
+      "label": "Utilities",
+      "aliases": []
+    },
+    {
+      "id": "Salaries / Drawings / Personal",
+      "label": "Salaries & Wages",
+      "aliases": [
+        "Salaries & Wages"
+      ]
+    },
+    {
+      "id": "Director Loan / Drawings",
+      "label": "Director / Owner Drawings",
+      "aliases": [
+        "Related Party / Drawings"
+      ]
+    },
+    {
+      "id": "Loan / Liability",
+      "label": "Loan / Liability",
+      "aliases": []
+    },
+    {
+      "id": "Inter-account Transfer",
+      "label": "Inter-account Transfer",
+      "aliases": []
+    },
+    {
+      "id": "Inter-account Transfer In",
+      "label": "Inter-account Transfer In",
+      "aliases": []
+    },
+    {
+      "id": "Inter-account Transfer Out / Loan",
+      "label": "Inter-account Transfer Out / Loan",
+      "aliases": []
+    },
+    {
+      "id": "SARS / Tax Suspense",
+      "label": "SARS / Tax Suspense",
+      "aliases": [
+        "Tax / SARS Suspense"
+      ]
+    },
+    {
+      "id": "VAT Control",
+      "label": "VAT Control",
+      "aliases": []
+    },
+    {
+      "id": "Refund / Suspense",
+      "label": "Refund / Suspense",
+      "aliases": []
+    },
+    {
+      "id": "Suspense / Review Required",
+      "label": "Suspense (needs review)",
+      "aliases": [
+        "Review Required",
+        "Review Required Suspense"
+      ],
+      "unresolved": true
+    },
+    {
+      "id": "Uncategorised",
+      "label": "Uncategorised",
+      "aliases": [
+        "Uncategorised Expense",
+        "Unclassified Expense"
+      ],
+      "unresolved": true
+    }
+  ],
+  "unresolvedNote": "A category flagged `unresolved` is a PARKING BUCKET, not an accounting decision. It records that nothing could determine what the transaction is. Marked explicitly rather than matched by pattern: a regex over 'review|suspense|uncategori' also catches 'Meals / Groceries - Non Deductible Review', 'SARS / Tax Suspense' and 'Refund / Suspense', which are real decisions a reviewer can act on. The distinction matters because a model answering with one of these has declined to classify, and recording that as a successful classification is what erased `unresolved` from provenance entirely."
 }
