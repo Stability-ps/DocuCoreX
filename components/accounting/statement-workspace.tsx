@@ -450,9 +450,26 @@ export function StatementWorkspace({ statementId }: { statementId: string }) {
         ) : null}
       </div>
 
-      {/* ── Three-column layout ─────────────────────────────────────────── */}
-      <div className="mt-4 grid gap-4 lg:grid-cols-[300px_minmax(0,1fr)] xl:grid-cols-[300px_minmax(0,1fr)_460px]">
-        <StatementSidebar run={run} totals={totals} reviewCount={reviewItems.length} dataQuality={dataQuality} stale={runQuality.needsFreshExtraction} onReview={() => setActiveTab("review")} />
+      {/* ── Summary metrics ─────────────────────────────────────────────
+          The same figures the sidebar already derived from `totals`, lifted
+          into one compact horizontal row so they read at a glance instead of
+          as a vertical list competing with the document for width. No new
+          calculations: every value comes from the existing totals, run and
+          reviewItems. */}
+      <StatementMetrics
+        run={run}
+        totals={totals}
+        reviewCount={reviewItems.length}
+        stale={runQuality.needsFreshExtraction}
+      />
+
+      {/* ── Statement + transactions, side by side ──────────────────────
+          Was three columns (300px sidebar | document | 460px tools), which
+          left the document a middle strip and the tools too narrow for a
+          transaction table. Now two panes at roughly 36/64: the document on
+          the left, the work surface on the right, starting on the same line.
+          The sidebar's remaining detail moves below — see StatementSidebar. */}
+      <div className="mt-3 grid gap-4 lg:grid-cols-[minmax(0,36fr)_minmax(0,64fr)]">
         <DocumentViewer sourceUrl={sourceUrl} downloadUrl={`${sourceUrl}?download=1`} fileName={`${runTitle(run)}.pdf`} kind="pdf" />
         <div className="min-w-0 xl:row-span-1">
           <RightPanel
@@ -469,9 +486,77 @@ export function StatementWorkspace({ statementId }: { statementId: string }) {
         </div>
       </div>
 
+      {/* ── Statement detail + status ────────────────────────────────────
+          Relocated from the left column so the document and the transaction
+          table get the full width. Nothing is dropped: the same two cards,
+          the same rows, and both Review actions still call setActiveTab. */}
+      <StatementSidebar run={run} totals={totals} reviewCount={reviewItems.length} dataQuality={dataQuality} stale={runQuality.needsFreshExtraction} onReview={() => setActiveTab("review")} />
+
       {/* ── Bottom quick review + notes ─────────────────────────────────── */}
       <QuickReview model={model} transactions={transactions} totals={totals} onOpenReview={() => setActiveTab("review")} />
       <NotesPanel statementId={statementId} />
+    </div>
+  );
+}
+
+// ── Summary metrics ───────────────────────────────────────────────────────────
+
+/**
+ * One compact horizontal row of the figures that matter at a glance. Every
+ * value is already computed upstream — `totals` from the reconciliation logic,
+ * `transactionCount` from the run, `reviewCount` from getReviewItems — so this
+ * presents existing numbers and calculates nothing of its own.
+ */
+function StatementMetrics({
+  run,
+  totals,
+  reviewCount,
+  stale,
+}: {
+  run: AccountingStatementRun;
+  totals: { moneyIn: number; moneyOut: number; opening: number; closing: number };
+  reviewCount: number;
+  stale: boolean;
+}) {
+  const refreshing = (value: string) => (stale ? "Refreshing…" : value);
+  const cards: Array<{ label: string; value: string; detail: string; tone?: "in" | "out" | "review" }> = [
+    { label: "Transactions", value: String(run.transactionCount || 0), detail: "Total in statement" },
+    { label: "Review Items", value: String(reviewCount), detail: "Need your review", tone: reviewCount ? "review" : undefined },
+    { label: "Opening Balance", value: fmtMoney(totals.opening), detail: fmtDate(run.statementPeriodStart) || "—" },
+    { label: "Money In", value: refreshing(fmtMoney(totals.moneyIn)), detail: "Received", tone: "in" },
+    { label: "Money Out", value: refreshing(fmtMoney(totals.moneyOut)), detail: "Paid out", tone: "out" },
+    { label: "Closing Balance", value: fmtMoney(totals.closing), detail: fmtDate(run.statementPeriodEnd) || "—" },
+  ];
+
+  return (
+    // Horizontally scrollable on narrow screens rather than wrapping into a
+    // tall block that pushes the statement itself below the fold.
+    <div className="-mx-1 overflow-x-auto px-1 pb-1">
+      <dl className="grid min-w-max grid-cols-6 gap-2 sm:min-w-0 sm:gap-3">
+        {cards.map((card) => (
+          <div
+            key={card.label}
+            className="min-w-[140px] rounded-xl border border-slate-200 bg-white p-3 shadow-sm sm:min-w-0"
+          >
+            <dt className="text-[11px] font-bold uppercase tracking-wide text-slate-400">{card.label}</dt>
+            <dd
+              className={`mt-1 truncate text-lg font-black tabular-nums ${
+                card.tone === "in"
+                  ? "text-emerald-700"
+                  : card.tone === "out"
+                    ? "text-rose-700"
+                    : card.tone === "review"
+                      ? "text-amber-700"
+                      : "text-navy-950"
+              }`}
+              title={card.value}
+            >
+              {card.value}
+            </dd>
+            <p className="mt-0.5 truncate text-xs font-semibold text-slate-500">{card.detail}</p>
+          </div>
+        ))}
+      </dl>
     </div>
   );
 }
@@ -494,7 +579,8 @@ function StatementSidebar({
   onReview: () => void;
 }) {
   return (
-    <aside className="space-y-4">
+    /* Two columns now that this sits below the split rather than beside it. */
+    <aside className="grid gap-4 md:grid-cols-2">
       <section className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
         <h2 className="text-sm font-black text-navy-950">Statement Details</h2>
         <dl className="mt-3 space-y-2 text-sm">
