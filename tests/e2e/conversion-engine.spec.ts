@@ -290,19 +290,34 @@ cp "${searchablePath}" "$last"
     expect(body).toContain("Real converted bundle content");
   });
 
-  test("fails PDF page image export until a renderer provider is configured", async () => {
+  test("PDF page image export fails with RENDERER_REQUIRED when no renderer is available", async () => {
     const pdf = createPdfFile("statement.pdf", ["Date Description Debit Credit Balance", "2026-07-01 Fuel 100.00 900.00"]);
 
-    await expect(
-      convertDocumentContent(
+    // The renderer is forced off explicitly instead of relying on the host to
+    // lack poppler. Previously this test asserted only that the call rejected,
+    // which meant it passed on a bare machine and failed the moment pdftoppm was
+    // installed — as it did once CI gained the conversion toolchain. It also
+    // matched the message "rendering provider", which no longer appears in the
+    // error. Pinning the code keeps it honest through rewording.
+    const restore = withEnv({ PDFTOPPM_PATH: "/definitely/missing/pdftoppm" });
+    try {
+      const error = await convertDocumentContent(
         {
           name: "statement.pdf",
           mimeType: "application/pdf",
           content: pdf.content,
         },
         "images",
-      ),
-    ).rejects.toThrow("rendering provider");
+      ).then(
+        () => null,
+        (thrown: unknown) => thrown,
+      );
+
+      expect(error).toBeInstanceOf(ConversionError);
+      expect(error instanceof ConversionError ? error.code : "").toBe("RENDERER_REQUIRED");
+    } finally {
+      restore();
+    }
   });
 
   test("fails image OCR when no OCR provider is configured", async () => {
