@@ -4177,6 +4177,13 @@ def run() -> None:
     test_the_evidence_layers_preserve_existing_automation()
     test_coverage_counts_what_was_decided_and_on_what_evidence()
     test_coverage_calls_a_drop_in_automation_a_regression()
+    test_ai_answering_suspense_leaves_the_row_unresolved()
+    test_ai_answering_other_income_review_leaves_the_row_unresolved()
+    test_ai_returning_no_category_leaves_the_row_unresolved()
+    test_a_genuine_ai_category_is_still_applied()
+    test_a_parking_bucket_is_named_not_pattern_matched()
+    test_coverage_reports_unresolved_rows_honestly()
+    test_the_declined_attempt_is_recorded_not_hidden()
     test_the_model_is_given_evidence_not_just_a_name()
     test_one_counterparty_is_one_question_not_many()
     test_a_counterparty_seen_once_is_not_dressed_up_as_a_pattern()
@@ -5848,6 +5855,153 @@ def test_the_counterparty_prompt_is_identical_for_every_workspace() -> None:
     assert_equal(global_a, global_b, "everything but the counterparties is shared")
     import json as _json
     assert_equal("alpha" in _json.dumps(global_b).lower(), False, "one workspace's payee never reaches another's prompt")
+
+
+
+# ── "I do not know" is not an accounting classification ─────────────────────
+#
+# A model asked about an unidentifiable row answers with a parking bucket —
+# Suspense / Review Required, Other Income / Review, Uncategorised. That is the
+# right answer. Recording it as a successful classification was not.
+#
+# On the real 615-row statement every single row came back sourced `ai`.
+# coverage.measure() reported 100% automated while 482 rows needed a human, and
+# the run's classification confidence became an unweighted mean dragged down by
+# 345 rows that were not classifications at all. `unresolved`, built as a
+# first-class outcome, never reached the database.
+
+
+def _declining_ai_row(account, *, used=True, confidence=0.7, review=True):
+    """A workbook row shaped as apply_ai_classifications leaves it."""
+    return {
+        "description": "ZZQQ UNIDENTIFIABLE PAYEE 4278*5999 CHEQUE CARD PURCHASE",
+        "date": "2025-05-01", "money_in": 0, "money_out": 1000,
+        "account": account, "group": "", "vat_treatment": "review",
+        "vat_claim_status": "Review", "rule_confidence": 55,
+        "ai_used": used, "ai_confidence": confidence,
+        "classification_reason": "Ambiguous transaction.",
+        "review_required": review, "normalized_merchant": None,
+    }
+
+
+def _declining_ai_transaction():
+    from engine.classification import SOURCE_UNRESOLVED, STRENGTH_NONE
+
+    return main.ParsedTransaction(
+        transaction_date="2025-05-01",
+        description="ZZQQ UNIDENTIFIABLE PAYEE 4278*5999 CHEQUE CARD PURCHASE",
+        debit_amount=1000.0,
+        account_category="Suspense / Review Required",
+        vat_treatment="review",
+        confidence=55,
+        classification_strength=STRENGTH_NONE,
+        classification_source=SOURCE_UNRESOLVED,
+        review_status="needs_review",
+    )
+
+
+def _apply(account, **kw):
+    """Drive the REAL write-back, with the model's answer stubbed in.
+
+    classify_transactions_with_ai builds workbook rows, calls
+    apply_ai_classifications (the network step) and then writes the answers back
+    onto the transactions. Only the network step is replaced here, so the
+    assertion exercises production code rather than a copy of it — the first cut
+    of these tests reimplemented the guard inline and passed even with the guard
+    deleted from main.py.
+    """
+    transaction = _declining_ai_transaction()
+    answer = _declining_ai_row(account, **kw)
+
+    real = main.apply_ai_classifications
+
+    def stubbed(rows, workspace_id=""):
+        for row in rows:
+            row.update({key: value for key, value in answer.items()
+                        if key in {"account", "ai_used", "ai_confidence", "classification_reason", "review_required"}})
+        return main.ai_diagnostics(enabled=True)
+
+    main.apply_ai_classifications = stubbed
+    try:
+        main.classify_transactions_with_ai([transaction], "workspace", "statement.pdf")
+    finally:
+        main.apply_ai_classifications = real
+    return transaction
+
+
+def test_ai_answering_suspense_leaves_the_row_unresolved() -> None:
+    from engine.classification import SOURCE_UNRESOLVED, STRENGTH_NONE
+
+    transaction = _apply("Suspense / Review Required")
+    assert_equal(transaction.classification_source, SOURCE_UNRESOLVED, "declining is not classifying")
+    assert_equal(transaction.classification_strength, STRENGTH_NONE, "and carries no standing")
+    assert_equal(transaction.account_category, "Suspense / Review Required", "the parking bucket is kept")
+    assert_equal(transaction.review_status, "needs_review", "and it still needs a human")
+
+
+def test_ai_answering_other_income_review_leaves_the_row_unresolved() -> None:
+    """An unidentified receipt is an unidentified receipt, whoever says so."""
+    from engine.classification import SOURCE_UNRESOLVED
+
+    transaction = _apply("Other Income / Review")
+    assert_equal(transaction.classification_source, SOURCE_UNRESOLVED, "a credit nobody identified is still unresolved")
+
+
+def test_ai_returning_no_category_leaves_the_row_unresolved() -> None:
+    from engine.classification import SOURCE_UNRESOLVED
+
+    for answer in ("", "   ", "Uncategorised"):
+        transaction = _apply(answer)
+        assert_equal(transaction.classification_source, SOURCE_UNRESOLVED, f"answer {answer!r} settles nothing")
+
+
+def test_a_genuine_ai_category_is_still_applied() -> None:
+    """The fix must not stop the model from being useful."""
+    from engine.classification import SOURCE_AI, STRENGTH_SOFT
+
+    transaction = _apply("Operating Expenses")
+    assert_equal(transaction.account_category, "Operating Expenses", "a real treatment is taken")
+    assert_equal(transaction.classification_source, SOURCE_AI, "and attributed to the model")
+    assert_equal(transaction.classification_strength, STRENGTH_SOFT, "as revisable, never settled")
+    assert_equal(transaction.classification_confidence, 70.0, "with its confidence recorded")
+
+
+def test_a_parking_bucket_is_named_not_pattern_matched() -> None:
+    """Three real categories contain the words a regex would catch.
+
+    "Meals / Groceries - Non Deductible Review", "SARS / Tax Suspense" and
+    "Refund / Suspense" are decisions a reviewer can act on. Matching
+    /review|suspense|uncategori/ would silently demote all three.
+    """
+    for parking in ("Suspense / Review Required", "Other Income / Review", "Uncategorised"):
+        assert_equal(main.is_unresolved_category(parking), True, f"{parking} is a parking bucket")
+    for decision in ("Meals / Groceries - Non Deductible Review", "SARS / Tax Suspense",
+                     "Refund / Suspense", "Motor Vehicle Expenses", "Bank Charges"):
+        assert_equal(main.is_unresolved_category(decision), False, f"{decision} is a real decision")
+
+
+def test_coverage_reports_unresolved_rows_honestly() -> None:
+    """A system that cannot classify 400 rows must not report 100% automated."""
+    from engine import coverage as coverage_module
+    from engine.classification import SOURCE_AI, SOURCE_UNRESOLVED, STRENGTH_NONE, STRENGTH_SOFT
+
+    rows = (
+        [{"classification_source": SOURCE_UNRESOLVED, "classification_strength": STRENGTH_NONE,
+          "account_category": "Suspense / Review Required", "debit_amount": 100} for _ in range(400)]
+        + [{"classification_source": SOURCE_AI, "classification_strength": STRENGTH_SOFT,
+            "account_category": "Operating Expenses", "debit_amount": 100} for _ in range(215)]
+    )
+    measured = coverage_module.measure(rows)
+    assert_equal(measured.unresolved, 400, "unresolved rows are counted as unresolved")
+    assert_equal(measured.automated, 215, "and not as automation")
+    assert_equal(measured.automated_pct, 35.0, "the percentage reflects what was actually decided")
+
+
+def test_the_declined_attempt_is_recorded_not_hidden() -> None:
+    """Leaving a row unresolved must not lose the fact that we asked."""
+    source = pathlib.Path(main.__file__).read_text()
+    assert_equal("ai_declined_left_unresolved" in source, True, "the row-level path counts declines")
+    assert_equal("counterparty_declined" in source, True, "so does the counterparty path")
 
 
 if __name__ == "__main__":
