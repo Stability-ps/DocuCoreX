@@ -700,6 +700,11 @@ def parse_metadata(full_text: str) -> dict[str, Any]:
         r"Statement\s*Date\s*[:\-]?\s*(\d{1,2}[\/ ](?:\d{1,2}|[A-Za-z]{3,9})[\/ ]\d{2,4})",
     ], full_text)
 
+    # Standard Bank prints the period as two separate labelled lines, repeated in
+    # every page header, rather than as one "Statement Period X to Y" phrase.
+    period_from = find_first([r"\bFrom\s*:\s*(\d{1,2}\s+[A-Za-z]{3,9}\s+\d{2,4})"], full_text)
+    period_to = find_first([r"\bTo\s*:\s*(\d{1,2}\s+[A-Za-z]{3,9}\s+\d{2,4})"], full_text)
+
     period = re.search(
         r"(?:Statement\s*Period|Period)\s*[:\-]?\s*(\d{1,2}[\/ ](?:\d{1,2}|[A-Za-z]{3,9})[\/ ]\d{2,4})\s*(?:to|-)\s*(\d{1,2}[\/ ](?:\d{1,2}|[A-Za-z]{3,9})[\/ ]\d{2,4})",
         full_text,
@@ -740,7 +745,12 @@ def parse_metadata(full_text: str) -> dict[str, Any]:
     debit_total = find_first([
         r"Debit\s*[Tt]ransactions?\s*\d+\s+R?\s*([0-9,]+\.\d{2})",
         r"Total\s*Debits?\s*[:\-]?\s*R?\s*([0-9,]+\.\d{2})",
+        # Standard Bank's summary block. The minus is the bank showing an
+        # outflow, not a negative total, so only the magnitude is taken.
+        r"^\s*Payments\s+-?R?\s*([0-9,]+\.\d{2})\s*$",
     ], full_text)
+    if credit_total is None:
+        credit_total = find_first([r"^\s*Deposits\s+-?R?\s*([0-9,]+\.\d{2})\s*$"], full_text)
 
     # Declared bank fee / VAT summary (do NOT treat cash deposit *amounts* as fees).
     service_fees = find_first([r"Service\s*Fees?\s*[:\-]?\s*R?\s*([0-9,]+\.\d{2})"], full_text)
@@ -755,8 +765,8 @@ def parse_metadata(full_text: str) -> dict[str, Any]:
         "account_number": detect_account_number(full_text),
         "statement_number": statement_number.strip() if statement_number else None,
         "statement_date": parse_date(statement_date) if statement_date else None,
-        "statement_period_start": parse_date(period.group(1)) if period else None,
-        "statement_period_end": parse_date(period.group(2)) if period else None,
+        "statement_period_start": parse_date(period.group(1)) if period else parse_date(period_from) if period_from else None,
+        "statement_period_end": parse_date(period.group(2)) if period else parse_date(period_to) if period_to else None,
         "opening_balance": parse_money(opening_balance),
         "closing_balance": parse_money(closing_balance),
         "expected_credit_count": int(credit_txn_count) if credit_txn_count is not None else None,
@@ -2866,6 +2876,67 @@ def bank_charges_from_statement(metadata: dict[str, Any], transactions: list[Par
     ).quantize(CENT)
 
 
+def derive_closing_balance(
+    metadata: dict[str, Any],
+    transactions: list[ParsedTransaction],
+) -> tuple[float | None, str]:
+    """The statement's closing balance, and the evidence it rests on.
+
+    Not every statement prints the words "Closing Balance". Standard Bank does
+    not: it prints a per-page "Available Balance", a running balance on every
+    row, and a summary block of Payments and Deposits. Leaving closing NULL for
+    those statements has real consequences — the summary tiles show "-", and the
+    stale-extraction check reads a missing closing balance as ZERO, computes a
+    difference of the entire opening balance, and puts the run into a permanent
+    "needs fresh extraction" state that re-processes it forever.
+
+    But the last row's balance is not evidence on its own. A statement whose
+    final rows were mis-parsed would hand us a confident wrong number, and a
+    closing balance is what every downstream reconciliation is measured against.
+
+    So it is only accepted when the bank's OWN declared turnover agrees with it:
+
+        opening + declared deposits - declared payments == last printed balance
+
+    Two independent figures the bank printed, reconciling to the cent. If they
+    disagree, or either is missing, the answer is None — an unknown closing
+    balance is safer than a plausible wrong one.
+    """
+    explicit = metadata.get("closing_balance")
+    if explicit is not None:
+        return float(explicit), "explicit"
+
+    opening = metadata.get("opening_balance")
+    declared_debits = metadata.get("declared_debit_total")
+    declared_credits = metadata.get("declared_credit_total")
+    if opening is None or declared_debits is None or declared_credits is None or not transactions:
+        return None, "unavailable"
+
+    last_balance = next(
+        (t.running_balance for t in reversed(transactions) if t.running_balance is not None),
+        None,
+    )
+    if last_balance is None:
+        return None, "unavailable"
+
+    expected = (
+        decimal_amount(opening) + decimal_amount(declared_credits) - decimal_amount(declared_debits)
+    ).quantize(CENT)
+    if abs(expected - decimal_amount(last_balance)) > Decimal("0.05"):
+        log_warning(
+            "worker.closing_balance_not_verified",
+            opening=str(decimal_amount(opening)),
+            declared_credits=str(decimal_amount(declared_credits)),
+            declared_debits=str(decimal_amount(declared_debits)),
+            expected=str(expected),
+            last_printed=str(decimal_amount(last_balance)),
+            note="the bank's declared turnover does not agree with the final printed balance; closing left unknown",
+        )
+        return None, "unverified"
+
+    return float(decimal_amount(last_balance)), "last_running_balance_verified"
+
+
 def validate_extraction(metadata: dict[str, Any], transactions: list[ParsedTransaction]) -> dict[str, Any]:
     """General, bank-agnostic extraction validation. Compares what we extracted
     against the statement's own declared totals and the opening/closing balance.
@@ -3596,6 +3667,7 @@ def statement_run_metadata(metadata: dict[str, Any]) -> dict[str, Any]:
         "statement_date",
         "opening_balance",
         "closing_balance",
+        "closing_balance_source",
         "parser_profile",
         "parser_version",
     }
@@ -3608,6 +3680,7 @@ def statement_run_metadata(metadata: dict[str, Any]) -> dict[str, Any]:
 # update drops these and retries rather than failing outright, so shipping the
 # worker ahead of its migration degrades instead of breaking.
 OPTIONAL_RUN_COLUMNS = (
+    "closing_balance_source",
     "statement_date",
     "processing_step",
     # migration 019 — the confidence split
@@ -5839,6 +5912,24 @@ def process_fnb_statement(payload: ProcessRequest, authorization: str | None = H
         supabase.table("accounting_transactions").delete().eq("run_id", payload.run_id).execute()
         rows = [transaction_insert_row(transaction, payload.run_id, payload.workspace_id) for transaction in transactions]
         provenance_persisted = insert_transactions(supabase, rows, payload.run_id)
+
+        # Derive the closing balance from the statement's own evidence before
+        # validating against it. A NULL closing balance is read downstream as
+        # zero, which turns a reconciled statement into a permanent
+        # "needs fresh extraction" loop.
+        derived_closing, closing_source = derive_closing_balance(metadata, transactions)
+        if derived_closing is not None and metadata.get("closing_balance") is None:
+            metadata["closing_balance"] = derived_closing
+        metadata["closing_balance_source"] = closing_source
+        log_event(
+            "worker.closing_balance_resolved",
+            run_id=payload.run_id,
+            closing_balance=derived_closing,
+            source=closing_source,
+            opening_balance=metadata.get("opening_balance"),
+            declared_debits=metadata.get("declared_debit_total"),
+            declared_credits=metadata.get("declared_credit_total"),
+        )
 
         # General extraction validation (count / totals / reconciliation vs the
         # statement's own declared figures). Bank charges come from the declared

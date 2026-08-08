@@ -3960,7 +3960,115 @@ def test_the_read_path_orders_by_the_canonical_sequence() -> None:
         raise AssertionError("the run detail must be read in canonical order")
 
 
+# ── Closing balance from statement evidence ───────────────────────────────────
+#
+# Standard Bank never prints the words "Closing Balance". The column stayed
+# NULL, and downstream a NULL closing balance was read as ZERO — producing a
+# reconciliation difference equal to the whole opening balance and putting a
+# correctly reconciled statement into a permanent "needs fresh extraction" loop.
+
+
+SBSA_SUMMARY_TEXT = "\n".join([
+    "STANDARD BANK 6 month statement",
+    "From: 30 Apr 25",
+    "To: 27 Oct 25",
+    "Date Description Payments Deposits Balance",
+    "STATEMENT OPENING BALANCE -1,000.00",
+    "01 May 25 PAYMENT A 300.00 -1,300.00",
+    "02 May 25 DEPOSIT B 500.00 -800.00",
+    "Statement Summary",
+    "Payments -R300.00",
+    "Deposits R500.00",
+])
+
+
+def test_the_statement_period_is_read_from_labelled_lines() -> None:
+    """Standard Bank prints From/To as separate labelled lines, not one phrase."""
+    import main
+
+    metadata = main.parse_metadata(SBSA_SUMMARY_TEXT)
+    assert_equal(metadata["statement_period_start"], "2025-04-30", "period start")
+    assert_equal(metadata["statement_period_end"], "2025-10-27", "period end")
+
+
+def test_the_declared_summary_totals_are_read() -> None:
+    """The bank's own turnover block is evidence, and was going unparsed."""
+    import main
+
+    metadata = main.parse_metadata(SBSA_SUMMARY_TEXT)
+    assert_equal(metadata["declared_debit_total"], 300.0, "Payments becomes the declared debit total")
+    assert_equal(metadata["declared_credit_total"], 500.0, "Deposits becomes the declared credit total")
+
+
+def test_a_derived_closing_balance_requires_corroboration() -> None:
+    """The last row's balance is not evidence on its own."""
+    import main
+
+    pages = [{"page": 1, "tables": [], "text": SBSA_SUMMARY_TEXT}]
+    metadata = main.parse_metadata(SBSA_SUMMARY_TEXT)
+    transactions = main.parse_transactions(pages, metadata, SBSA_SUMMARY_TEXT, GENERIC_PROFILE)
+
+    closing, source = main.derive_closing_balance(metadata, transactions)
+    assert_equal(closing, -800.0, "opening -1000 + 500 - 300 agrees with the final printed balance")
+    assert_equal(source, "last_running_balance_verified", "and the evidence is recorded")
+
+    # If the bank's declared turnover disagrees with the final balance, one of
+    # them is wrong and we do not get to choose. Unknown beats plausible.
+    disagreeing = dict(metadata)
+    disagreeing["declared_credit_total"] = 900.0
+    closing, source = main.derive_closing_balance(disagreeing, transactions)
+    assert_equal(closing, None, "a disagreement yields no closing balance")
+    assert_equal(source, "unverified", "and says why")
+
+
+def test_an_explicit_closing_balance_always_wins() -> None:
+    import main
+
+    metadata = {"closing_balance": -42.0, "opening_balance": -1000.0,
+                "declared_debit_total": 300.0, "declared_credit_total": 500.0}
+    closing, source = main.derive_closing_balance(metadata, [])
+    assert_equal(closing, -42.0, "a printed closing balance is used as printed")
+    assert_equal(source, "explicit", "and recorded as explicit")
+
+
+def test_no_evidence_means_no_closing_balance() -> None:
+    """Never invent one merely because a final row has a balance."""
+    import main
+
+    pages = [{"page": 1, "tables": [], "text": SBSA_SUMMARY_TEXT}]
+    metadata = main.parse_metadata(SBSA_SUMMARY_TEXT)
+    transactions = main.parse_transactions(pages, metadata, SBSA_SUMMARY_TEXT, GENERIC_PROFILE)
+
+    without_summary = {key: value for key, value in metadata.items()
+                       if key not in ("declared_debit_total", "declared_credit_total")}
+    closing, source = main.derive_closing_balance(without_summary, transactions)
+    assert_equal(closing, None, "a final balance alone is not evidence")
+    assert_equal(source, "unavailable", "and that is stated")
+
+
+def test_deriving_the_closing_balance_touches_nothing_else() -> None:
+    import main
+
+    pages = [{"page": 1, "tables": [], "text": SBSA_SUMMARY_TEXT}]
+    metadata = main.parse_metadata(SBSA_SUMMARY_TEXT)
+    transactions = main.parse_transactions(pages, metadata, SBSA_SUMMARY_TEXT, GENERIC_PROFILE)
+    before = [(t.transaction_date, t.description, t.debit_amount, t.credit_amount, t.running_balance) for t in transactions]
+    summary_before = main.validation_summary(transactions)
+
+    main.derive_closing_balance(metadata, transactions)
+
+    after = [(t.transaction_date, t.description, t.debit_amount, t.credit_amount, t.running_balance) for t in transactions]
+    assert_equal(after, before, "the ledger is untouched")
+    assert_equal(main.validation_summary(transactions), summary_before, "and so are the totals")
+
+
 def run() -> None:
+    test_the_statement_period_is_read_from_labelled_lines()
+    test_the_declared_summary_totals_are_read()
+    test_a_derived_closing_balance_requires_corroboration()
+    test_an_explicit_closing_balance_always_wins()
+    test_no_evidence_means_no_closing_balance()
+    test_deriving_the_closing_balance_touches_nothing_else()
     test_every_stored_transaction_carries_its_sequence()
     test_canonical_order_reconstructs_the_chain_when_nothing_else_does()
     test_persisting_order_changes_nothing_about_the_money()
