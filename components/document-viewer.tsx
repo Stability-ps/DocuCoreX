@@ -68,6 +68,7 @@ export function DocumentViewer({
   kind = "pdf",
   className = "",
   minHeightClass = "min-h-[520px]",
+  jumpToPage,
 }: {
   sourceUrl: string;
   downloadUrl?: string;
@@ -75,6 +76,15 @@ export function DocumentViewer({
   kind?: DocumentViewerKind;
   className?: string;
   minHeightClass?: string;
+  /**
+   * Optional page to jump to, for callers that can map their own records to a
+   * page in this document. Additive and uncontrolled: the viewer keeps owning
+   * its page state and its toolbar still works normally, so a caller that omits
+   * this — or passes null because it has no page for the record — changes
+   * nothing. Re-passing the same value does not re-jump; pass a new object
+   * identity to request the same page again.
+   */
+  jumpToPage?: { page: number; nonce: number } | null;
 }) {
   const resolvedDownloadUrl = downloadUrl ?? sourceUrl;
   const [fullscreen, setFullscreen] = useState(false);
@@ -98,6 +108,7 @@ export function DocumentViewer({
       kind={kind}
       fullscreen={fullscreen}
       onToggleFullscreen={() => setFullscreen((v) => !v)}
+      jumpToPage={jumpToPage}
     />
   );
 
@@ -118,6 +129,7 @@ function PdfCanvasViewer({
   kind,
   fullscreen,
   onToggleFullscreen,
+  jumpToPage,
 }: {
   sourceUrl: string;
   downloadUrl: string;
@@ -125,6 +137,7 @@ function PdfCanvasViewer({
   kind: DocumentViewerKind;
   fullscreen: boolean;
   onToggleFullscreen: () => void;
+  jumpToPage?: { page: number; nonce: number } | null;
 }) {
   const containerRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -280,6 +293,17 @@ function PdfCanvasViewer({
   function goToPage(next: number) {
     setPage((current) => Math.min(numPages || 1, Math.max(1, next || current)));
   }
+
+  // Honour an external jump once the document is loaded and the target is a
+  // real page. Keyed on the caller's nonce so selecting the same record twice
+  // still returns to its page, while re-renders do not fight the toolbar.
+  const jumpNonce = jumpToPage?.nonce ?? null;
+  const jumpPage = jumpToPage?.page ?? null;
+  useEffect(() => {
+    if (jumpNonce === null || jumpPage === null) return;
+    if (!numPages || jumpPage < 1 || jumpPage > numPages) return;
+    setPage(jumpPage);
+  }, [jumpNonce, jumpPage, numPages]);
   function zoomTo(next: number) {
     setFitMode(false);
     setScale(Math.min(4, Math.max(0.25, +next.toFixed(2))));
