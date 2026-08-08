@@ -2,6 +2,8 @@ import type { DocumentRecord, DocumentDownload, ExtractionResult, OcrResult } fr
 import { convertDocumentContent } from "@/lib/document-conversion-engine";
 import { isSupabaseConfigured } from "@/lib/supabase";
 import { selectOcrProvider, selectExtractionProvider, isSelectionError } from "@/lib/providers/selection";
+import { describeSelections, selectionFlags } from "@/lib/providers/reporting";
+import type { EnvCredentials, ProviderDetection, ProviderName } from "@/lib/providers/reporting";
 import {
   OpenAIVisionOcrProvider,
   OpenAIExtractionProvider,
@@ -11,21 +13,9 @@ import {
   UnavailableExtractionProvider,
 } from "@/lib/providers/real-providers";
 
-export type ProviderName = "mock" | "openai" | "tesseract" | "google_vision" | "aws_textract" | "azure_form_recognizer";
-
-export type ProviderDetection = {
-  ocr: ProviderName;
-  extraction: ProviderName;
-  conversion: ProviderName;
-  configured: {
-    openai: boolean;
-    googleVision: boolean;
-    aws: boolean;
-    azureFormRecognizer: boolean;
-    /** Secondary OCR engine — escalation only, never the primary selection. */
-    mistral: boolean;
-  };
-};
+// Provider naming and detection reporting live in lib/providers/reporting.ts
+// (pure, unit-tested). Re-exported here so existing importers are unaffected.
+export type { ProviderName, ProviderDetection } from "@/lib/providers/reporting";
 
 export interface OCRProvider {
   name: ProviderName;
@@ -151,75 +141,55 @@ function documentContent(document: DocumentRecord) {
   return content;
 }
 
-export function detectProviderConfig(): ProviderDetection {
-  const configured = {
+function readEnvCredentials(): EnvCredentials {
+  return {
     openai: Boolean(process.env.OPENAI_API_KEY),
     googleVision: Boolean(process.env.GOOGLE_VISION_API_KEY || process.env.GOOGLE_APPLICATION_CREDENTIALS),
     aws: Boolean(process.env.AWS_ACCESS_KEY_ID && process.env.AWS_SECRET_ACCESS_KEY),
     azureFormRecognizer: Boolean(process.env.AZURE_FORM_RECOGNIZER_ENDPOINT && process.env.AZURE_FORM_RECOGNIZER_KEY),
-    // Reported truthfully: Mistral is an escalation engine inside the pipeline,
-    // not a selectable primary provider, so it never appears as `ocr` below.
+    // Mistral is an escalation engine inside the pipeline, not a selectable
+    // primary provider, so it never appears as `ocr`/`extraction`.
     mistral: Boolean(process.env.MISTRAL_API_KEY),
-  };
-
-  const ocr: ProviderName = configured.googleVision
-    ? "google_vision"
-    : configured.aws
-      ? "aws_textract"
-      : configured.azureFormRecognizer
-        ? "azure_form_recognizer"
-        : configured.openai
-          ? "openai"
-          : "mock";
-
-  const extraction: ProviderName = configured.azureFormRecognizer
-    ? "azure_form_recognizer"
-    : configured.aws
-      ? "aws_textract"
-      : configured.openai
-        ? "openai"
-        : "mock";
-
-  return {
-    ocr,
-    extraction,
-    conversion: "mock",
-    configured,
   };
 }
 
-export function createWorkflowAdapters(options: { enhanced?: boolean } = {}) {
-  const detection = detectProviderConfig();
+function resolveSelections() {
+  const env = readEnvCredentials();
+  const configured = selectionFlags(env);
   // Mock is permissible ONLY when there is genuinely no Supabase backend (local
   // dev / demo). A real production backend NEVER silently uses mock output.
   const allowMock = !isSupabaseConfigured;
-  // We implement OpenAI (vision + structured) and Tesseract (via the conversion
-  // worker's /api/ocr-text). Only advertise those to the selector so it never
-  // resolves to an unimplemented cloud engine.
-  const configured = {
-    openai: detection.configured.openai,
-    googleVision: false,
-    aws: false,
-    azureFormRecognizer: false,
-  };
   const tesseractAvailable = Boolean(process.env.CONVERSION_WORKER_URL?.trim());
 
-  const ocrSelection = selectOcrProvider({
-    configured,
-    tesseractAvailable,
-    override: process.env.OCR_PROVIDER,
-    allowMock,
-  });
-  const extractionSelection = selectExtractionProvider({
-    configured,
-    override: process.env.EXTRACTION_PROVIDER,
-    allowMock,
-  });
+  return {
+    env,
+    ocr: selectOcrProvider({
+      configured,
+      tesseractAvailable,
+      override: process.env.OCR_PROVIDER,
+      allowMock,
+    }),
+    extraction: selectExtractionProvider({
+      configured,
+      override: process.env.EXTRACTION_PROVIDER,
+      allowMock,
+    }),
+  };
+}
+
+export function detectProviderConfig(): ProviderDetection {
+  return describeSelections(resolveSelections());
+}
+
+export function createWorkflowAdapters(options: { enhanced?: boolean } = {}) {
+  const resolved = resolveSelections();
 
   return {
-    detection,
-    ocr: buildOcrProvider(ocrSelection, options.enhanced === true),
-    extraction: buildExtractionProvider(extractionSelection),
+    // Built from the same selection results as the adapters below, so the
+    // reported engine is always the engine that actually runs.
+    detection: describeSelections(resolved),
+    ocr: buildOcrProvider(resolved.ocr, options.enhanced === true),
+    extraction: buildExtractionProvider(resolved.extraction),
     conversion: new MockConversionProvider(),
   };
 }

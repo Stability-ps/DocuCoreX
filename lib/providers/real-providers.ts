@@ -88,16 +88,26 @@ export class OpenAIExtractionProvider extends PipelineExtractionProvider {
 // when selection fails to resolve a real provider, the request surfaces an error
 // instead of returning fabricated output.
 export class UnavailableOcrProvider implements OCRProvider {
-  name: ProviderName = "mock";
-  constructor(private readonly reason: string) {}
+  // Not "mock" — nothing runs, and audit logs must not record a failed request
+  // as though a mock provider produced it.
+  name: ProviderName = "unavailable";
+  // Plain field, not a constructor parameter property: parameter properties are
+  // unsupported by node's strip-only TypeScript loader, which the unit tests use.
+  private readonly reason: string;
+  constructor(reason: string) {
+    this.reason = reason;
+  }
   async run(): Promise<OcrResult> {
     throw new Error(this.reason);
   }
 }
 
 export class UnavailableExtractionProvider implements ExtractionProvider {
-  name: ProviderName = "mock";
-  constructor(private readonly reason: string) {}
+  name: ProviderName = "unavailable";
+  private readonly reason: string;
+  constructor(reason: string) {
+    this.reason = reason;
+  }
   async run(): Promise<ExtractionResult> {
     throw new Error(this.reason);
   }

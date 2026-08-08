@@ -54,7 +54,9 @@ Setting `NEXT_PUBLIC_REQUIRE_AUTH=false` disables auth entirely (the default for
 2. Falls back to local execution (fails on Vercel where system tools aren't available)
 3. In worker mode (`CONVERSION_WORKER_MODE=true`), accepts a shared secret via `x-docucorex-worker-secret`
 
-Conversion logic lives in `lib/document-conversion-engine.ts`. Provider selection (mock vs. real OCR/AI) is handled by `lib/workflow-adapters.ts` — real providers activate when their respective API keys are present.
+Conversion logic lives in `lib/document-conversion-engine.ts`. Provider selection (mock vs. real OCR/AI) is handled by `lib/workflow-adapters.ts`, which delegates to two pure modules: `lib/providers/selection.ts` (which engine to pick) and `lib/providers/reporting.ts` (what to report as picked).
+
+Only **OpenAI** (vision OCR + structured extraction) and **Tesseract** (via the conversion worker) are implemented. Keys for Google Vision, AWS Textract and Azure Form Recognizer are read but withheld from the selector, so they never change which engine runs; they surface in `providers.unimplemented` on the `/api/jobs/process` response. Mock is permitted only when no Supabase backend is configured — a real backend fails the request instead of fabricating output.
 
 ### Accounting intelligence
 

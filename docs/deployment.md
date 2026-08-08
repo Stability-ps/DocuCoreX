@@ -12,13 +12,21 @@ Set these in Vercel Project Settings:
 
 Optional provider variables:
 
-- `OPENAI_API_KEY`
-- `GOOGLE_VISION_API_KEY`
-- `GOOGLE_APPLICATION_CREDENTIALS`
-- `AWS_ACCESS_KEY_ID`
-- `AWS_SECRET_ACCESS_KEY`
-- `AZURE_FORM_RECOGNIZER_ENDPOINT`
-- `AZURE_FORM_RECOGNIZER_KEY`
+- `OPENAI_API_KEY` — vision OCR and structured extraction
+- `MISTRAL_API_KEY` — secondary OCR engine (escalation inside the extraction pipeline)
+- `AZURE_DOCUMENT_INTELLIGENCE_ENDPOINT` and `AZURE_DOCUMENT_INTELLIGENCE_KEY` —
+  Azure Document Intelligence (`prebuilt-layout`) in the multi-parser PDF pipeline
+
+The following are read for reporting but **have no effect** — no client for these
+engines exists in the codebase, and provider selection never picks them:
+
+- `GOOGLE_VISION_API_KEY` / `GOOGLE_APPLICATION_CREDENTIALS`
+- `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY`
+- `AZURE_FORM_RECOGNIZER_ENDPOINT` / `AZURE_FORM_RECOGNIZER_KEY` (distinct from the
+  `AZURE_DOCUMENT_INTELLIGENCE_*` pair above, which is live)
+
+If set, they are listed in `providers.unimplemented` on `POST /api/jobs/process`.
+See `docs/PROCESSING_PIPELINE.md` §3.
 
 For Accounting Intelligence, also set `OPENAI_API_KEY` on the Render `docucorex-accounting-worker` service. Vercel environment variables are not automatically available to the FastAPI worker.
 
