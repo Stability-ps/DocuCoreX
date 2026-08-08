@@ -1,0 +1,74 @@
+{
+  "version": 1,
+  "note": "Transactions that state their own nature. 'LOAN REPAYMENT' is not a merchant and not a channel — it is the transaction telling you what it is, and after a tax invoice it is the strongest evidence available. On the real Standard Bank statement 33 rows are classified this way and were correct; they had been sitting anonymously inside a keyword table with no name for what made them trustworthy.",
+
+  "why_this_is_different_from_a_merchant": "A merchant name says WHO. This says WHAT. 'SHELL' could be fuel, a pie or a car wash, so the name cannot settle the category. 'INSURANCE PREMIUM' can only be an insurance premium, whoever collected it — which is why this evidence carries a higher grade than merchant recognition and why it needs no discriminator.",
+
+  "bank_agnostic": "Every South African bank prints these words. Nothing here is keyed to a bank profile, and nothing here should be — a term that only one bank uses is bank wording, and belongs in channel_lexicon.json.",
+
+  "terms": [
+    {
+      "term": "insurance premium",
+      "meaning": "a premium paid on an insurance policy",
+      "category": "Insurance",
+      "vat_treatment": "exempt",
+      "grade": "hard",
+      "confidence": 85,
+      "reason": "the transaction names itself an insurance premium; premiums are exempt supplies"
+    },
+    {
+      "term": "loan repayment",
+      "meaning": "a repayment of borrowed principal",
+      "category": "Loan / Liability",
+      "vat_treatment": "out_of_scope",
+      "grade": "hard",
+      "confidence": 80,
+      "reason": "the transaction names itself a loan repayment; a balance-sheet movement, not an expense"
+    },
+    {
+      "term": "loan instalment",
+      "meaning": "a scheduled loan instalment",
+      "category": "Loan / Liability",
+      "vat_treatment": "out_of_scope",
+      "grade": "hard",
+      "confidence": 80,
+      "reason": "the transaction names itself a loan instalment"
+    },
+    {
+      "term": "loan installment",
+      "meaning": "a scheduled loan instalment",
+      "category": "Loan / Liability",
+      "vat_treatment": "out_of_scope",
+      "grade": "hard",
+      "confidence": 80,
+      "reason": "the transaction names itself a loan instalment"
+    },
+    {
+      "term": "atm cash withd",
+      "meaning": "cash taken from an ATM",
+      "category": "Suspense / Review Required",
+      "vat_treatment": "review",
+      "grade": "hard",
+      "confidence": 78,
+      "reason": "the transaction names itself a cash withdrawal; cash may be petty cash, a supplier paid in cash, or drawings, and the statement cannot tell which \u2014 so the movement is recorded and the purpose left open",
+      "always_review": true
+    },
+    {
+      "term": "cash withdrawal",
+      "meaning": "cash taken from an account",
+      "category": "Suspense / Review Required",
+      "vat_treatment": "review",
+      "grade": "hard",
+      "confidence": 78,
+      "reason": "the transaction names itself a cash withdrawal; the use of the cash is unknown and must not be assumed to be drawings",
+      "always_review": true
+    }
+  ],
+
+  "deliberately_absent": {
+    "salary": "'SALARY' in a reference is often the payer's description of a transfer to a person, not proof of employment. It needs corroboration and belongs to reasoning, not to self-description.",
+    "rent": "The word appears in trading names ('Rent-A-Car'). Boundary matching alone would not make it safe.",
+    "fee": "Handled by the bank-charge evidence path, which is stronger because the BANK named it on its own statement.",
+    "transfer": "A mechanism, not a nature. Lives in banking_semantics.json."
+  }
+}

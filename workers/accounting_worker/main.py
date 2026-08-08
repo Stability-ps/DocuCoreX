@@ -44,6 +44,7 @@ from engine.classification import (
     source_for_strength,
 )
 from engine.ai_prompt import build_classification_prompt
+from engine.reasoning import decide as reasoning_decide
 from engine.ai_recovery import SYSTEM_PROMPT as AI_RECOVERY_SYSTEM_PROMPT
 from engine.ai_recovery import batches as ai_batches
 from engine.ai_recovery import build_prompt as build_ai_recovery_prompt
@@ -901,23 +902,38 @@ def _classify_transaction_rules(description: str, debit: float | None, credit: f
     # that used to sit further down the list.
     if owner_drawings_evidence(description):
         return Classification("Director Loan / Drawings", "out_of_scope", False, 88, STRENGTH_HARD, f"explicit drawings terminology ({owner_drawings_evidence(description)})")
-    # A merchant we actually know, identified by name rather than by a fragment.
+    # The evidence layers, ahead of the keyword table.
     #
-    # Placed above the keyword table because a known brand is better evidence
-    # than a keyword that happens to appear: "C*FUELZONE 4278*5999" is a fuel
-    # retailer because FUELZONE is one, not because the letters "fuel" are in
-    # the string — the same letters are in FUELLED CATERING.
+    # engine/reasoning.decide asks what the transaction says about itself, what
+    # the movement proves, and what kind of entity was paid — then decides, and
+    # records which of those it used. It returns None when none of them knows
+    # anything, and the keyword table below continues to answer those rows
+    # exactly as before. That is deliberate: the new architecture ships ALONGSIDE
+    # the old one and takes over only where it has better evidence, so nothing
+    # can silently fall into review while this is being proven.
     #
-    # It sits BELOW the two hard rules above, which the priority order does not
-    # say to invert and which no merchant should: a fee the bank charged is a
-    # bank charge whoever else the row names.
+    # It sits BELOW the two hard rules above, which no evidence should invert: a
+    # fee the bank charged is a bank charge whoever else the row names.
+    reasoned = reasoning_decide(description, debit, credit)
+    if reasoned is not None:
+        return Classification(
+            reasoned.category,
+            reasoned.vat_treatment,
+            reasoned.bank_charge,
+            reasoned.confidence,
+            reasoned.strength,
+            reasoned.explain(),
+        )
+    # A merchant we know by name but have no TYPE for yet — the old model, kept
+    # until merchant_types.json covers every record that deserves to survive.
+    # Its VAT is still forced conservative here, for the reason the fuel defect
+    # made concrete: knowing WHO was paid does not establish that input VAT is
+    # claimable, that a valid tax invoice exists, or that the purpose was
+    # business.
     merchant = identify_merchant(description)
     if merchant is not None:
         return Classification(
             merchant.category,
-            # Conservative regardless of the merchant's own default: knowing WHO
-            # was paid does not establish that input VAT is claimable, that a
-            # valid tax invoice exists, or that the purpose was business.
             "review" if merchant.vat_treatment == "standard" else merchant.vat_treatment,
             False,
             merchant.confidence,

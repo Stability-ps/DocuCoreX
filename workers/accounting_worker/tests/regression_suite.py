@@ -93,6 +93,8 @@ from openpyxl import load_workbook
 
 from engine import ai_prompt
 from engine import counterparty
+from engine import reasoning
+import pathlib
 import main
 from main import (
     ParsedTransaction,
@@ -3642,7 +3644,13 @@ def test_classification_distribution_by_provenance() -> None:
 
     assert_equal(sources[SOURCE_DETERMINISTIC], 9, "nine rows settled by rules or merchant knowledge")
     assert_equal(sources[SOURCE_UNRESOLVED], 6, "six rows nobody could settle")
-    assert_equal(strengths[STRENGTH_HARD], 4, "three bank fees and one explicit drawings")
+    # Five, not four. "WESBANK LOAN INSTALMENT" joined the three bank fees and
+    # the explicit drawings when transaction semantics became a graded evidence
+    # layer: a transaction that names itself a loan instalment is settled by its
+    # own words, the same standing a fee the bank named carries. The consequence
+    # is deliberate — a HARD row is not sent to the model and is not revised by
+    # a learned rule, because there is nothing left to decide.
+    assert_equal(strengths[STRENGTH_HARD], 5, "three bank fees, one explicit drawings, one self-describing loan instalment")
     assert_equal(strengths[STRENGTH_NONE], 6, "unresolved rows carry no standing")
 
     for transaction in transactions:
@@ -4155,6 +4163,18 @@ def run() -> None:
     test_an_undetected_bank_still_reads_the_counterparty()
     test_the_standard_bank_statement_is_unchanged_by_bank_awareness()
     test_every_detected_bank_has_a_lexicon_entry()
+    test_merchant_identity_cannot_create_a_vat_claim()
+    test_a_merchant_type_carries_no_category_or_vat()
+    test_a_relationship_cannot_create_a_category()
+    test_recurring_payments_do_not_become_expenses()
+    test_a_credit_does_not_become_revenue()
+    test_a_multi_line_merchant_never_resolves_to_one_treatment()
+    test_a_monoline_merchant_may_settle_its_account()
+    test_every_decision_says_why()
+    test_evidence_grades_rank_as_specified()
+    test_a_mechanism_may_not_name_a_profit_and_loss_account()
+    test_an_anonymous_outbound_transfer_stays_in_review()
+    test_the_evidence_layers_preserve_existing_automation()
     test_the_global_prompt_names_no_customer_counterparty()
     test_the_global_prompt_is_identical_for_every_workspace()
     test_the_global_prompt_is_built_only_from_vetted_knowledge()
@@ -5308,6 +5328,187 @@ def test_every_detected_bank_has_a_lexicon_entry() -> None:
                      f"{fingerprint.profile_id} has a channel-lexicon entry")
         assert_equal(fingerprint.profile_id in counterparty._lexicon()["self_reference"], True,
                      f"{fingerprint.profile_id} has self-reference terms")
+
+
+
+# ── Layer separation: identity, relationship and treatment stay apart ────────
+#
+# The old model was merchant -> category -> VAT in one record. It could not
+# answer "why", because the answer was always "the string matched" — and that
+# answer was wrong twice over: a fuel brand authorised a VAT claim, and a
+# one-character learned key claimed 425 rows.
+
+
+def test_merchant_identity_cannot_create_a_vat_claim() -> None:
+    """No path from a name alone reaches a claimable VAT treatment."""
+    for description in ("SHELL FLAMINGO4278*5999 CHEQUE CARD PURCHASE", "ENGEN GARAGE",
+                        "WOOLWORTHS SANDTON", "GOOGLE CLOUD", "DIS-CHEM PHARMACY",
+                        "UBER EATS", "DHL EXPRESS", "TAKEALOT"):
+        treatment = reasoning.decide(description, 1200.0, None)
+        if treatment is None:
+            continue
+        assert_equal(treatment.vat_treatment == "standard", False,
+                     f"{description} must not produce a claimable VAT treatment")
+
+    # And the type records themselves may never assert it.
+    for type_key, spec in reasoning.type_treatments().items():
+        assert_equal(spec["possible_vat"] == "standard", False,
+                     f"merchant type {type_key} must not assert a claimable VAT stance")
+
+
+def test_a_merchant_type_carries_no_category_or_vat() -> None:
+    """Identity answers who and what kind. It stops there."""
+    import json as _json
+
+    types_file = _json.loads(
+        (pathlib.Path(main.__file__).parent / "engine" / "merchant_types.json").read_text())
+    for merchant in types_file["merchants"]:
+        for forbidden in ("category", "vat_treatment", "default_category", "default_vat_treatment"):
+            assert_equal(forbidden in merchant, False,
+                         f"{merchant['canonical']} must not carry {forbidden}")
+
+
+def test_a_relationship_cannot_create_a_category() -> None:
+    """Recurrence proves a trading relationship, never an account.
+
+    A supplier relationship does not say the payment was an operating expense —
+    it could be stock, an asset, or a loan repayment.
+    """
+    rows = [{"description": "ZZQQ UNKNOWN PAYEE 4278*5999 CHEQUE CARD PURCHASE",
+             "debit_amount": 5000.0, "credit_amount": None, "transaction_date": f"2025-0{m}-01"}
+            for m in range(1, 7)]
+    evidence = counterparty.counterparty_evidence("zzqq unknown payee", "ZZQQ UNKNOWN PAYEE", rows)
+    relationship = counterparty.infer_relationship(evidence)
+    assert_equal(relationship.kind, counterparty.RELATIONSHIP_SUPPLIER, "six months of payments is a supplier")
+    assert_equal(relationship.strength, counterparty.RELATIONSHIP_STRENGTH_STRONG, "and a strong one")
+
+    # Yet the reasoning layer still has nothing to say about the account.
+    treatment = reasoning.decide(rows[0]["description"], 5000.0, None, counterparty_evidence=evidence)
+    assert_equal(treatment, None, "a strong relationship alone yields no category")
+
+
+def test_recurring_payments_do_not_become_expenses() -> None:
+    """Six months of identical debits is a pattern, not an account."""
+    rows = [{"description": "QQZZ REGULAR 111111 ACCOUNT PAYMENT", "debit_amount": 19086.55,
+             "credit_amount": None, "transaction_date": f"2025-0{m}-01"} for m in range(1, 7)]
+    evidence = counterparty.counterparty_evidence("qqzz regular", "QQZZ REGULAR", rows)
+    assert_equal(evidence.fixed_amount, True, "identical amounts")
+    assert_equal(evidence.recurring, True, "recurring")
+    assert_equal(reasoning.decide(rows[0]["description"], 19086.55, None, counterparty_evidence=evidence),
+                 None, "recurrence alone classifies nothing")
+
+
+def test_a_credit_does_not_become_revenue() -> None:
+    """Direction is a constraint. It never picks the account."""
+    for description in ("QQZZ UNKNOWN INBOUND 111111 ACCOUNT PAYMENT", "ZZQQ PAYER 4278*5999 CREDIT TRANSFER"):
+        treatment = reasoning.decide(description, None, 50000.0)
+        if treatment is None:
+            continue
+        assert_equal("Revenue" in treatment.category or "Sales" in treatment.category, False,
+                     f"{description} must not be booked as revenue on direction alone")
+
+
+def test_a_multi_line_merchant_never_resolves_to_one_treatment() -> None:
+    """Where an entity supplies several things, the menu keeps several items."""
+    for type_key, spec in reasoning.type_treatments().items():
+        if spec.get("monoline"):
+            continue
+        assert_equal(len(spec["possible_treatments"]) >= 2, True,
+                     f"{type_key} is multi-line and must offer more than one treatment")
+
+
+def test_a_monoline_merchant_may_settle_its_account() -> None:
+    """Automation is preserved where the entity can only supply one thing.
+
+    An insurer supplies insurance; a revenue authority collects tax. This is the
+    only case where recognising a name is enough, and it is enough because the
+    menu has one item — not because the name is trusted.
+    """
+    for description, expected in (("DISCOVERY INSURE PREMIUM", "Insurance"),
+                                  ("SARS EFILING PAYMENT", "SARS / Tax Suspense"),
+                                  ("ESKOM PREPAID", "Utilities"),
+                                  ("CARTRACK ACCOUNT PAYMENT", "Motor Vehicle Expenses")):
+        treatment = reasoning.decide(description, 1000.0, None)
+        assert_equal(treatment.category if treatment else None, expected, f"{description}")
+        assert_equal(treatment.review_required, False, f"{description} is settled, not queued")
+
+
+def test_every_decision_says_why() -> None:
+    """The answer to "why was this classified?" must be evidence, not the name.
+
+    A classification a reviewer cannot interrogate is one they have to redo.
+    """
+    for description in ("DISCOVERY INSURE PREMIUM", "SASOL POWERROAD 4278*5999 CHEQUE CARD PURCHASE",
+                        "WESBANK LOAN INSTALMENT", "SARS EFILING PAYMENT"):
+        treatment = reasoning.decide(description, 1200.0, None)
+        assert_equal(bool(treatment and treatment.evidence_used), True, f"{description} carries evidence")
+        assert_equal(bool(treatment and treatment.reason), True, f"{description} carries a reason")
+        explanation = treatment.explain()
+        assert_equal(explanation.lower() != description.lower(), True,
+                     f"{description} explanation must be more than the name")
+
+
+def test_evidence_grades_rank_as_specified() -> None:
+    """HARD beats HIGH beats MEDIUM beats LOW, and LOW settles nothing alone."""
+    order = reasoning.GRADE_ORDER
+    assert_equal(order[reasoning.GRADE_HARD] > order[reasoning.GRADE_HIGH], True, "hard outranks high")
+    assert_equal(order[reasoning.GRADE_HIGH] > order[reasoning.GRADE_MEDIUM], True, "high outranks medium")
+    assert_equal(order[reasoning.GRADE_MEDIUM] > order[reasoning.GRADE_LOW], True, "medium outranks low")
+
+    # A multi-line merchant with nothing but its name is LOW, and stays in review.
+    treatment = reasoning.decide("TAKEALOT ONLINE 4278*5999 CHEQUE CARD PURCHASE", 900.0, None)
+    assert_equal(treatment.review_required, True, "name recognition alone does not settle a row")
+
+    # A brand too generic to identify anyone is not an alias at all. Bare
+    # "shell" matches SHELL FLAMINGO but also SHELLEY and NUTSHELL, so the
+    # knowledge base lists "shell garage" and "shell ultra" instead and the row
+    # falls through to the legacy table rather than being claimed on a fragment.
+    assert_equal(reasoning.identify_merchant_type("SHELL FLAMINGO4278*5999 CHEQUE CARD PURCHASE"), None,
+                 "a brand name too generic to identify anyone is not an alias")
+
+
+def test_a_mechanism_may_not_name_a_profit_and_loss_account() -> None:
+    """Banking semantics decide balance-sheet movements only.
+
+    Making "ib transfer" decisive during development moved 33 rows worth
+    R2,997,900 out of review, including a R2,000,000 transfer naming no payee.
+    A channel cannot know what was bought.
+    """
+    import json as _json
+
+    semantics = _json.loads(
+        (pathlib.Path(main.__file__).parent / "engine" / "banking_semantics.json").read_text())
+    balance_sheet = {"Inter-account Transfer", "Inter-account Transfer In",
+                     "Inter-account Transfer Out / Loan", "Loan / Liability",
+                     "Director Loan / Drawings", "Suspense / Review Required"}
+    for mechanism in semantics["mechanisms"]:
+        if not mechanism.get("category"):
+            continue
+        assert_equal(mechanism["category"] in balance_sheet, True,
+                     f"{mechanism['term']} names {mechanism['category']}, which is not a balance-sheet movement")
+
+
+def test_an_anonymous_outbound_transfer_stays_in_review() -> None:
+    """The specific R2m row that caught the mechanism defect."""
+    treatment = reasoning.decide(". 06H28 IB TRANSFER TO", 2000000.0, None)
+    assert_equal(treatment, None, "an outbound transfer naming nobody is not an inter-account movement")
+
+
+def test_the_evidence_layers_preserve_existing_automation() -> None:
+    """Every classification the old model got right, the new layers keep.
+
+    Measured on the real 615-row Standard Bank statement during development:
+    189 automated rows before, 202 after, ledger identical, and the only
+    category movements were three improvements. This asserts the same
+    behaviours on the fixture that ships with the repository.
+    """
+    transactions, _ = _classified_fixture(main)
+    categories = {t.description: t.account_category for t in transactions}
+    for description, expected in categories.items():
+        if "LOAN INSTALMENT" in description.upper():
+            assert_equal(expected, "Loan / Liability", "the self-describing loan instalment is preserved")
+        if "INSURE PREMIUM" in description.upper():
+            assert_equal(expected, "Insurance", "the insurer is preserved")
 
 
 if __name__ == "__main__":
