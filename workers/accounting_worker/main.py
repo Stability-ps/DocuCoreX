@@ -3828,6 +3828,7 @@ OPTIONAL_RUN_COLUMNS = (
     # migration 019 — the confidence split
     "classification_confidence",
     "reconciliation_confidence",
+    "workbook_generation_duration_ms",
 )
 
 
@@ -6425,6 +6426,7 @@ def process_fnb_statement(payload: ProcessRequest, authorization: str | None = H
                 "reconciliation_confidence": reconciliation_confidence(
                     extraction_check, missing_rows
                 ),
+                "workbook_generation_duration_ms": int(workbook_generation_duration_ms),
                 "error": run_error,
                 "updated_at": datetime.utcnow().isoformat(),
             },
