@@ -5,6 +5,7 @@ import os
 import re
 import subprocess
 import tempfile
+import threading
 import time
 import urllib.error
 import urllib.request
@@ -6526,6 +6527,98 @@ def _claim_processing_job(job_id: str) -> bool:
         return False
 
 
+# Liveness is not progress.
+#
+# Heartbeats used to be written only at the seven stage boundaries, so the
+# freshest liveness signal a run had was "the stage last changed". A stage that
+# legitimately runs long — classification is roughly 21 model round trips for a
+# 613-transaction statement, each with retries — looked identical to a dead
+# worker, and the stale detector failed the run at 10 minutes while it was
+# healthy and working.
+#
+# So the two signals are now separate:
+#
+#   PROGRESS   accounting_statement_runs.processing_step, and
+#              processing_jobs.message/progress — written at stage boundaries.
+#              Unchanged.
+#
+#   LIVENESS   processing_jobs.updated_at — touched on a timer for as long as
+#              the task is running, regardless of which stage it is in.
+#
+# No migration: processing_jobs.updated_at already exists and is already
+# maintained by heartbeat_step; it simply was not the thing being read.
+LIVENESS_TICK_SECONDS = 45
+
+
+class _LivenessHeartbeat:
+    """Touch processing_jobs.updated_at while a job is genuinely running.
+
+    Bound to one dispatched task: started when it begins, stopped in a finally
+    so it cannot outlive the work. A leaked ticker would keep a dead job looking
+    alive forever — the exact inverse of the bug this fixes, and far harder to
+    notice, so the stop is not optional.
+
+    Fenced. Before each tick it confirms the run still points at this job; once
+    superseded it stops rather than refreshing liveness on the new job's behalf.
+    A superseded worker's own heartbeat_step will raise StaleJobError at its next
+    stage boundary and end the task properly — this thread only stops lying in
+    the meantime.
+    """
+
+    def __init__(self, run_id: str, workspace_id: str, job_id: str) -> None:
+        self._run_id = run_id
+        self._workspace_id = workspace_id
+        self._job_id = job_id
+        self._stop = threading.Event()
+        self._thread: threading.Thread | None = None
+
+    def _still_owns_run(self, supabase: Client) -> bool:
+        try:
+            result = (
+                supabase.table("accounting_statement_runs")
+                .select("active_job_id")
+                .eq("id", self._run_id)
+                .eq("workspace_id", self._workspace_id)
+                .limit(1)
+                .execute()
+            )
+            rows = getattr(result, "data", None) or []
+            if not rows:
+                return False
+            active = rows[0].get("active_job_id")
+            # NULL means never claimed — a pre-024 row or the legacy synchronous
+            # path — not that someone else owns it. Same rule as the fenced
+            # heartbeat write.
+            return active is None or active == self._job_id
+        except Exception:  # noqa: BLE001 — a transient read must not kill the job
+            # Unknown ownership: keep beating. Stopping here would let a healthy
+            # job be declared stale because of one failed SELECT.
+            return True
+
+    def _run(self) -> None:
+        while not self._stop.wait(LIVENESS_TICK_SECONDS):
+            try:
+                supabase = get_supabase()
+                if not self._still_owns_run(supabase):
+                    log_event("worker.liveness_superseded", run_id=self._run_id, job_id=self._job_id)
+                    return
+                supabase.table("processing_jobs").update(
+                    {"updated_at": datetime.now(timezone.utc).isoformat()}
+                ).eq("id", self._job_id).eq("status", "running").execute()
+            except Exception as exc:  # noqa: BLE001 — never let liveness kill the work
+                log_warning("worker.liveness_tick_failed", run_id=self._run_id, job_id=self._job_id, error=str(exc)[:200])
+
+    def __enter__(self) -> "_LivenessHeartbeat":
+        self._thread = threading.Thread(target=self._run, name=f"liveness-{self._job_id[:8]}", daemon=True)
+        self._thread.start()
+        return self
+
+    def __exit__(self, *_exc: Any) -> None:
+        self._stop.set()
+        if self._thread:
+            self._thread.join(timeout=5)
+
+
 def _run_dispatched_job(payload: ProcessRequest, authorization: str | None) -> None:
     """Run the pipeline for an already-accepted job, in the background.
 
@@ -6535,7 +6628,9 @@ def _run_dispatched_job(payload: ProcessRequest, authorization: str | None) -> N
     because an escaping one would only reach a dead request."""
     run_id = payload.run_id
     try:
-        process_fnb_statement(payload, authorization)
+        # The ticker lives exactly as long as the pipeline call.
+        with _LivenessHeartbeat(run_id, payload.workspace_id, payload.processing_job_id or ""):
+            process_fnb_statement(payload, authorization)
     except StaleJobError as exc:
         # A Force Reprocess replaced this job while it was running. Correct
         # behaviour is to stop and leave the newer job's work alone.
