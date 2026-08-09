@@ -248,3 +248,34 @@ test("the replace is scoped by workspace, not just run", () => {
   assert.match(migration, /revoke all on function[\s\S]*from public/);
   assert.match(migration, /grant execute on function[\s\S]*to service_role/);
 });
+
+// ── Heartbeat fencing ───────────────────────────────────────────────────────
+//
+// heartbeat_step was the one worker write that ignored active_job_id. A
+// superseded job kept stamping processing_step and updated_at onto a run it no
+// longer owned — overwriting the new job's stage label and refreshing the
+// liveness signal on its behalf, which is precisely the signal the stale
+// detector reads.
+
+test("the heartbeat is fenced by the job that owns the run", () => {
+  const worker = read("workers/accounting_worker/main.py");
+  const hb = worker.slice(worker.indexOf("def heartbeat_step"), worker.indexOf("def heartbeat_step") + 2000);
+  const runUpdate = hb.slice(0, hb.indexOf('supabase.table("processing_jobs")'));
+  assert.match(runUpdate, /job_id=processing_job_id/, "the heartbeat must identify its job");
+});
+
+test("an unclaimed run is not treated as superseded", () => {
+  // active_job_id NULL means never claimed — a pre-024 row, or the legacy
+  // synchronous endpoint. Refusing those would kill healthy jobs.
+  const worker = read("workers/accounting_worker/main.py");
+  const hb = worker.slice(worker.indexOf("def heartbeat_step"), worker.indexOf("def heartbeat_step") + 2000);
+  assert.match(hb, /allow_unclaimed=True/);
+  assert.match(worker, /active_job_id\.eq\.\{job_id\},active_job_id\.is\.null/, "only a DIFFERENT id is a supersession");
+});
+
+test("result writes stay strictly fenced", () => {
+  // allow_unclaimed is for liveness only. A run's RESULTS must never be written
+  // by a job that does not own it, unclaimed or otherwise.
+  const worker = read("workers/accounting_worker/main.py");
+  assert.match(worker, /allow_unclaimed: bool = False/, "strict fencing remains the default");
+});

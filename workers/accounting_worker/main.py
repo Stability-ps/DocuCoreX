@@ -3852,6 +3852,7 @@ def update_statement_run(
     fields: dict[str, Any],
     *,
     job_id: str | None = None,
+    allow_unclaimed: bool = False,
 ) -> None:
     """Update the run record, retrying without OPTIONAL columns when the DB schema
     is missing them (e.g. statement_date before migration 012 is applied), so a
@@ -3865,7 +3866,14 @@ def update_statement_run(
 
     def apply(payload: dict[str, Any]) -> int:
         query = supabase.table("accounting_statement_runs").update(payload).eq("id", run_id).eq("workspace_id", workspace_id)
-        if job_id:
+        if job_id and allow_unclaimed:
+            # Block a SUPERSEDED job without blocking an unclaimed run. A run
+            # whose active_job_id is NULL was never claimed — a row written
+            # before migration 024, or one processed through the legacy
+            # synchronous endpoint — and refusing those would kill healthy jobs
+            # to fix a problem they do not have.
+            query = query.or_(f"active_job_id.eq.{job_id},active_job_id.is.null")
+        elif job_id:
             query = query.eq("active_job_id", job_id)
         result = query.execute()
         # postgrest returns the affected rows; no rows means the fence rejected us.
@@ -3903,6 +3911,19 @@ def heartbeat_step(
     progress: int,
 ) -> None:
     now_iso = datetime.utcnow().isoformat()
+    # Fenced. This was the one worker write that ignored active_job_id: a
+    # superseded job kept stamping processing_step and updated_at onto a run it
+    # no longer owned, overwriting the new job's stage label and refreshing the
+    # liveness signal on its behalf.
+    #
+    # allow_unclaimed, because a NULL active_job_id means "never claimed" — a
+    # pre-024 row or the legacy synchronous endpoint — not "someone else owns
+    # it". Only a DIFFERENT job id is a supersession.
+    #
+    # A rejected heartbeat raises StaleJobError, which _run_dispatched_job
+    # catches and logs as worker.dispatch_superseded. That is deliberate: the
+    # next heartbeat is where a superseded worker discovers it should stop, and
+    # stopping is the correct response.
     update_statement_run(
         supabase,
         run_id,
@@ -3911,6 +3932,8 @@ def heartbeat_step(
             "processing_step": step_label,
             "updated_at": now_iso,
         },
+        job_id=processing_job_id,
+        allow_unclaimed=True,
     )
     if processing_job_id:
         supabase.table("processing_jobs").update(
