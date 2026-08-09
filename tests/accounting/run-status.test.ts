@@ -169,3 +169,36 @@ test("already_running still counts as the worker owning the job", () => {
   const branch = route.slice(route.indexOf("if (response.status === 202)"));
   assert.match(branch.slice(0, 400), /jobAccepted = true/, "a repeat dispatch must not be failed by the caller");
 });
+
+// ── The stuck sweeper must respect ownership ────────────────────────────────
+//
+// markRunStuckIfNeeded runs on READ and writes status:"failed". It knew nothing
+// about job ownership, so it reintroduced through the read path the exact defect
+// #79 removed from the dispatch path: a run marked failed while the worker was
+// still working. Production hit it — "Processing stale — no heartbeat update for
+// 10 minutes" on a 37-page, 613-transaction statement the worker had accepted.
+
+test("an accepted run is never failed by the read-path sweeper", () => {
+  const server = read("lib/accounting/server.ts");
+  const sweeper = server.slice(server.indexOf("async function markRunStuckIfNeeded"));
+  const guards = sweeper.slice(0, sweeper.indexOf("const reason = processingStuckReason"));
+  assert.match(guards, /if \(row\.job_accepted_at\) return row;/, "the worker owns an accepted job's terminal state");
+});
+
+test("a queued run is never failed for taking too long", () => {
+  // Queued means waiting for someone to press Process (#78). It has not started,
+  // so it cannot be stuck, and may legitimately sit for days.
+  const server = read("lib/accounting/server.ts");
+  const sweeper = server.slice(server.indexOf("async function markRunStuckIfNeeded"));
+  const guards = sweeper.slice(0, sweeper.indexOf("const reason = processingStuckReason"));
+  assert.match(guards, /if \(row\.status === "queued"\) return row;/);
+});
+
+test("an unowned processing run can still be failed", () => {
+  // Dispatch died before the worker took the job: nobody owns it, nobody else
+  // will resolve it. That one remains Vercel's to fail.
+  const server = read("lib/accounting/server.ts");
+  const sweeper = server.slice(server.indexOf("async function markRunStuckIfNeeded"));
+  assert.match(sweeper, /status: "failed"/, "the unowned case is still handled");
+  assert.match(sweeper, /processing_step: "Stuck \/ Needs retry"/);
+});
