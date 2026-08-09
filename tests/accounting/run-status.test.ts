@@ -142,9 +142,10 @@ test("worker writes are fenced and stale ones rejected", () => {
 test("dispatch claims the job atomically before scheduling", () => {
   const worker = read("workers/accounting_worker/main.py");
   assert.match(worker, /def _claim_processing_job/);
-  // The claim IS the queued -> running transition; a conditional UPDATE is
-  // atomic, so concurrent dispatches serialise on it.
-  assert.match(worker, /\.update\(\{"status": "running"[\s\S]{0,160}?\.eq\("status", "queued"\)/);
+  // The claim IS a conditional UPDATE, so concurrent dispatches serialise on
+  // it. Claimable when queued, or when running but the heartbeat has gone cold
+  // — the reclaim clause added after a dead worker stranded a job permanently.
+  assert.match(worker, /\.update\(\{"status": "running"[\s\S]{0,240}?status\.eq\.queued,and\(status\.eq\.running/);
   assert.match(worker, /if not _claim_processing_job\(payload\.processing_job_id\)/, "claim gates the dispatch");
 });
 
@@ -158,7 +159,7 @@ test("an unclaimable job is reported running and schedules nothing", () => {
 
 test("the claim fails closed", () => {
   const worker = read("workers/accounting_worker/main.py");
-  const claim = worker.slice(worker.indexOf("def _claim_processing_job"), worker.indexOf("def _run_dispatched_job"));
+  const claim = worker.slice(worker.indexOf("def _claim_processing_job"), worker.indexOf("class _LivenessHeartbeat"));
   assert.match(claim, /except Exception/);
   assert.match(claim, /return False/, "an unevaluable claim must refuse, never schedule");
   assert.match(claim, /worker\.dispatch_claim_failed/, "and say so");
@@ -321,4 +322,45 @@ test("the sweeper judges liveness by the job heartbeat, not the run's stage", ()
   // And says something true when it does fire.
   assert.match(server, /no worker heartbeat for/);
   assert.doesNotMatch(server, /no heartbeat update for \$\{minutes\} minutes\. Marked as stuck/, "the old stage-based wording is gone");
+});
+
+// ── The claim must be reclaimable ───────────────────────────────────────────
+//
+// The original claim was a one-way door: it marked 'running' and nothing ever
+// set it back, so a worker lost to a restart or deploy left the job permanently
+// unclaimable — every retry answered already_running, nothing scheduled, the run
+// stuck in processing forever. Production hit it: job 35982d77 was claimed at
+// 17:20, its worker died in a deploy, and an hour later dispatches were still
+// being refused.
+
+test("a dead job can be reclaimed once its heartbeat goes cold", () => {
+  const worker = read("workers/accounting_worker/main.py");
+  const claim = worker.slice(worker.indexOf("def _claim_processing_job"), worker.indexOf("class _LivenessHeartbeat"));
+  assert.match(claim, /STALE_CLAIM_RECLAIM_SECONDS/);
+  assert.match(
+    claim,
+    /status\.eq\.queued,and\(status\.eq\.running,updated_at\.lt\./,
+    "claimable when queued OR running-but-silent",
+  );
+});
+
+test("the reclaim window is several missed heartbeats, not one", () => {
+  const worker = read("workers/accounting_worker/main.py");
+  const tick = Number(worker.match(/LIVENESS_TICK_SECONDS = (\d+)/)?.[1]);
+  const reclaim = Number(worker.match(/STALE_CLAIM_RECLAIM_SECONDS = (\d+)/)?.[1]);
+  assert.ok(Number.isFinite(tick) && Number.isFinite(reclaim));
+  assert.ok(
+    reclaim >= tick * 4,
+    `reclaim (${reclaim}s) must tolerate several missed ticks (${tick}s) or a slow beat gets a live job stolen`,
+  );
+});
+
+test("the claim is still a single atomic update", () => {
+  // Two dispatches must not both win. The reclaim clause widens WHICH rows are
+  // claimable; it must not turn the claim into read-then-write.
+  const worker = read("workers/accounting_worker/main.py");
+  const claim = worker.slice(worker.indexOf("def _claim_processing_job"), worker.indexOf("class _LivenessHeartbeat"));
+  assert.match(claim, /\.update\(\{"status": "running"/);
+  assert.doesNotMatch(claim, /\.select\(/, "no read-then-write; the UPDATE itself is the lock");
+  assert.match(claim, /except Exception[\s\S]*return False/, "still fails closed");
 });
