@@ -14,7 +14,7 @@ from typing import Any
 
 import fitz
 import pdfplumber
-from fastapi import FastAPI, Header, HTTPException, Request
+from fastapi import BackgroundTasks, FastAPI, Header, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse, Response
 from openpyxl import Workbook
@@ -3837,20 +3837,60 @@ def is_missing_column_error(message: str) -> bool:
     )
 
 
-def update_statement_run(supabase: Client, run_id: str, workspace_id: str, fields: dict[str, Any]) -> None:
+class StaleJobError(Exception):
+    """This job no longer owns the run, so its writes were rejected.
+
+    Raised when a fenced update matches zero rows: an explicit Force Reprocess
+    replaced active_job_id while this worker was still running. Expected, not a
+    defect — the correct response is to stop, not to retry."""
+
+
+def update_statement_run(
+    supabase: Client,
+    run_id: str,
+    workspace_id: str,
+    fields: dict[str, Any],
+    *,
+    job_id: str | None = None,
+) -> None:
     """Update the run record, retrying without OPTIONAL columns when the DB schema
     is missing them (e.g. statement_date before migration 012 is applied), so a
-    missing migration never fails the whole processing job with HTTP 422."""
+    missing migration never fails the whole processing job with HTTP 422.
+
+    When job_id is given the update is FENCED: it only applies while this job is
+    still the run's active_job_id. A superseded worker matches zero rows and
+    raises StaleJobError rather than overwriting the current attempt. Callers
+    without a job_id keep the previous unfenced behaviour, so existing paths and
+    a pre-024 database are unaffected."""
+
+    def apply(payload: dict[str, Any]) -> int:
+        query = supabase.table("accounting_statement_runs").update(payload).eq("id", run_id).eq("workspace_id", workspace_id)
+        if job_id:
+            query = query.eq("active_job_id", job_id)
+        result = query.execute()
+        # postgrest returns the affected rows; no rows means the fence rejected us.
+        return len(getattr(result, "data", None) or [])
+
     try:
-        supabase.table("accounting_statement_runs").update(fields).eq("id", run_id).eq("workspace_id", workspace_id).execute()
-        return
+        matched = apply(fields)
     except Exception as exc:  # noqa: BLE001 — degrade gracefully on schema mismatch only
         droppable = [column for column in OPTIONAL_RUN_COLUMNS if column in fields]
         if not droppable or not is_missing_column_error(str(exc)):
             raise
         safe_fields = {key: value for key, value in fields.items() if key not in OPTIONAL_RUN_COLUMNS}
         log_warning("worker.run_update_dropped_optional_columns", run_id=run_id, dropped=droppable, error=str(exc))
-        supabase.table("accounting_statement_runs").update(safe_fields).eq("id", run_id).eq("workspace_id", workspace_id).execute()
+        matched = apply(safe_fields)
+
+    if job_id and matched == 0:
+        # Logged rather than swallowed: a rejected write is the fence doing its
+        # job, and seeing it is how a superseded run is explained later.
+        log_warning(
+            "worker.run_update_rejected_stale_job",
+            run_id=run_id,
+            job_id=job_id,
+            fields=sorted(fields.keys()),
+        )
+        raise StaleJobError(f"job {job_id} no longer owns run {run_id}")
 
 
 def heartbeat_step(
@@ -6396,6 +6436,68 @@ def process_fnb_statement(payload: ProcessRequest, authorization: str | None = H
                 {"status": "failed", "progress": 100, "message": message, "error": message, "updated_at": datetime.utcnow().isoformat()}
             ).eq("id", payload.processing_job_id).execute()
         raise HTTPException(status_code=422, detail=with_worker_version({"message": message})) from exc
+
+
+def _run_dispatched_job(payload: ProcessRequest, authorization: str | None) -> None:
+    """Run the pipeline for an already-accepted job, in the background.
+
+    Nothing is returned to anyone: the caller was answered with 202 long ago and
+    has gone. Results reach the UI the way they always have — the pipeline writes
+    them to Supabase and the frontend polls. Every exception is contained here,
+    because an escaping one would only reach a dead request."""
+    run_id = payload.run_id
+    try:
+        process_fnb_statement(payload, authorization)
+    except StaleJobError as exc:
+        # A Force Reprocess replaced this job while it was running. Correct
+        # behaviour is to stop and leave the newer job's work alone.
+        log_event("worker.dispatch_superseded", run_id=run_id, job_id=payload.processing_job_id, detail=str(exc))
+    except Exception as exc:  # noqa: BLE001 — a background task has nowhere to raise to
+        log_exception("worker.dispatch_failed", run_id=run_id, job_id=payload.processing_job_id, error=str(exc))
+
+
+@app.post("/process-statement/dispatch", status_code=202)
+def dispatch_statement(
+    payload: ProcessRequest,
+    background: BackgroundTasks,
+    authorization: str | None = Header(default=None),
+) -> dict[str, Any]:
+    """Accept a statement for processing and return immediately.
+
+    This exists because holding one HTTP request open for the whole pipeline made
+    the caller's timeout decide the run's fate: extraction would finish and the
+    run would still be marked failed, because Vercel stopped waiting at 254s of
+    its 280s budget while this service carried on working.
+
+    Ownership hands over at the 202. Everything after it — progress, results,
+    terminal state — belongs to this service, and the caller is expected to stop
+    caring. /process-statement is unchanged for anyone still calling it
+    synchronously.
+
+    Authentication is verified BEFORE accepting: a request that cannot be
+    authenticated is a dispatch failure, which is the caller's to own, and it
+    must not be answered 202."""
+    verify_worker_token(authorization)
+
+    if not payload.processing_job_id:
+        # The fence has no meaning without a job id, and an unfenced background
+        # run could overwrite a newer attempt. Refuse rather than accept blind.
+        raise HTTPException(status_code=400, detail="processing_job_id is required to dispatch a job.")
+
+    log_event(
+        "worker.dispatch_accepted",
+        run_id=payload.run_id,
+        job_id=payload.processing_job_id,
+        workspace_id=payload.workspace_id,
+    )
+    background.add_task(_run_dispatched_job, payload, authorization)
+    return {
+        "accepted": True,
+        "run_id": payload.run_id,
+        "job_id": payload.processing_job_id,
+        # Explicit so the caller cannot mistake acceptance for completion.
+        "status": "processing",
+    }
 
 
 @app.post("/process-statement")
