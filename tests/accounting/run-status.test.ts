@@ -127,3 +127,45 @@ test("worker writes are fenced and stale ones rejected", () => {
   assert.match(worker, /@app\.post\("\/process-statement\/dispatch", status_code=202\)/);
   assert.match(worker, /@app\.post\("\/process-statement"\)/, "the synchronous endpoint stays available");
 });
+
+// ── Job claim ───────────────────────────────────────────────────────────────
+//
+// active_job_id fences a SUPERSEDED job — a different id — out of a run. It
+// cannot stop the SAME id being dispatched twice, because both writers satisfy
+// "active_job_id = mine". Production did exactly that: job f1d9d778 for run
+// 1ee084e3 was accepted at 16:23 and again at 16:42.
+//
+// Two pipelines on one run is worse than duplicate rows: transactions are
+// written delete-then-insert keyed on run_id, so one worker's DELETE can land
+// between the other's DELETE and INSERT and destroy completed results.
+
+test("dispatch claims the job atomically before scheduling", () => {
+  const worker = read("workers/accounting_worker/main.py");
+  assert.match(worker, /def _claim_processing_job/);
+  // The claim IS the queued -> running transition; a conditional UPDATE is
+  // atomic, so concurrent dispatches serialise on it.
+  assert.match(worker, /\.update\(\{"status": "running"[\s\S]{0,160}?\.eq\("status", "queued"\)/);
+  assert.match(worker, /if not _claim_processing_job\(payload\.processing_job_id\)/, "claim gates the dispatch");
+});
+
+test("an unclaimable job is reported running and schedules nothing", () => {
+  const worker = read("workers/accounting_worker/main.py");
+  const dispatch = worker.slice(worker.indexOf("def dispatch_statement"));
+  const alreadyRunning = dispatch.slice(0, dispatch.indexOf("background.add_task"));
+  assert.match(alreadyRunning, /"already_running": True/, "the repeat dispatch is answered honestly");
+  assert.match(alreadyRunning, /return \{/, "and returns BEFORE add_task is reached");
+});
+
+test("the claim fails closed", () => {
+  const worker = read("workers/accounting_worker/main.py");
+  const claim = worker.slice(worker.indexOf("def _claim_processing_job"), worker.indexOf("def _run_dispatched_job"));
+  assert.match(claim, /except Exception/);
+  assert.match(claim, /return False/, "an unevaluable claim must refuse, never schedule");
+  assert.match(claim, /worker\.dispatch_claim_failed/, "and say so");
+});
+
+test("already_running still counts as the worker owning the job", () => {
+  const route = read("app/api/accounting/fnb/process/route.ts");
+  const branch = route.slice(route.indexOf("if (response.status === 202)"));
+  assert.match(branch.slice(0, 400), /jobAccepted = true/, "a repeat dispatch must not be failed by the caller");
+});
