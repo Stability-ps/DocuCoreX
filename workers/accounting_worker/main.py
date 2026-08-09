@@ -9,7 +9,7 @@ import threading
 import time
 import urllib.error
 import urllib.request
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal, ROUND_HALF_UP
 from typing import Any
 
@@ -6494,19 +6494,36 @@ def process_fnb_statement(payload: ProcessRequest, authorization: str | None = H
         raise HTTPException(status_code=422, detail=with_worker_version({"message": message})) from exc
 
 
+# A job whose heartbeat has been silent this long is presumed dead and may be
+# reclaimed. The ticker beats every LIVENESS_TICK_SECONDS, so this is roughly
+# six missed beats — long enough that a slow tick or a brief network problem
+# cannot get a live job stolen, short enough that a deploy does not strand a run
+# for the rest of the day.
+STALE_CLAIM_RECLAIM_SECONDS = 300
+
+
 def _claim_processing_job(job_id: str) -> bool:
     """Atomically take ownership of a job for execution. True if we claimed it.
 
-    The claim is `status = 'running' WHERE status = 'queued'` on processing_jobs.
-    A single conditional UPDATE is atomic, so of two concurrent dispatches for
-    the same job exactly one affects a row and the other sees none — no lock,
-    no new table, no new column, using the job_status enum that has existed
-    since migration 001.
+    Claimable when the job is 'queued', OR when it is 'running' but its
+    heartbeat has been silent for STALE_CLAIM_RECLAIM_SECONDS.
 
-    A job already in 'running' (or any terminal state) cannot be claimed again,
-    which is the invariant: a processing_job_id may be accepted for execution
-    only once. Force Reprocess is unaffected — it allocates a NEW job, which
-    starts 'queued' and claims cleanly.
+    The reclaim clause exists because the original claim was a one-way door. It
+    marked 'running' and nothing ever set it back, so a worker lost to a restart
+    or a deploy left the job permanently unclaimable: every retry was answered
+    already_running, nothing was ever scheduled, and the run sat in processing
+    forever. Production hit exactly that — job 35982d77 was claimed at 17:20,
+    its worker died in a deploy, and an hour later dispatches were still being
+    politely refused.
+
+    This is only safe because liveness is now a real signal. Before #84 the
+    "heartbeat" moved only at stage boundaries, so a long classification pass
+    would have looked reclaimable and produced two workers on one run — the very
+    thing the claim exists to prevent. A cold heartbeat now means a dead task.
+
+    Still one atomic conditional UPDATE: exactly one dispatch affects a row.
+    Force Reprocess is unaffected — it allocates a NEW job, which starts
+    'queued' and claims immediately.
 
     Fails CLOSED. If the claim cannot be evaluated — no database, transport
     error — we refuse rather than scheduling work we cannot prove is unique.
@@ -6514,14 +6531,20 @@ def _claim_processing_job(job_id: str) -> bool:
     """
     try:
         supabase = get_supabase()
+        now = datetime.now(timezone.utc)
+        cutoff = (now - timedelta(seconds=STALE_CLAIM_RECLAIM_SECONDS)).isoformat()
         result = (
             supabase.table("processing_jobs")
-            .update({"status": "running", "updated_at": datetime.now(timezone.utc).isoformat()})
+            .update({"status": "running", "updated_at": now.isoformat()})
             .eq("id", job_id)
-            .eq("status", "queued")
+            .or_(f"status.eq.queued,and(status.eq.running,updated_at.lt.{cutoff})")
             .execute()
         )
-        return len(getattr(result, "data", None) or []) == 1
+        claimed = len(getattr(result, "data", None) or []) == 1
+        if claimed:
+            previous = (getattr(result, "data", None) or [{}])[0].get("status")
+            log_event("worker.job_claimed", job_id=job_id, reclaimed=previous == "running")
+        return claimed
     except Exception as exc:  # noqa: BLE001 — see "fails closed" above
         log_exception("worker.dispatch_claim_failed", job_id=job_id, error=str(exc))
         return False
