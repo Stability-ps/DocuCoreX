@@ -4,6 +4,11 @@ import type { AccountingRunStatus } from "@/lib/accounting/types";
 const TERMINAL_STATUSES: AccountingRunStatus[] = ["completed", "failed", "review", "cancelled"];
 const ACTIVE_STATUSES = new Set(["queued", "processing", "pending"]);
 
+// No progress for this long after acceptance and the run is reported stalled.
+// Generous on purpose: a large statement legitimately takes minutes, and
+// crying stalled at a real run is worse than reporting a dead one late.
+export const STALE_PROGRESS_THRESHOLD_MS = 10 * 60 * 1000;
+
 export function normalizeRunStatus(status: string | null | undefined): AccountingRunStatus | "pending" | "error" | null {
   if (!status) return null;
   const normalized = status.toLowerCase();
@@ -45,6 +50,33 @@ export function isActiveRunStatus(status: string | null | undefined): boolean {
 export function isRunInFlight(status: string | null | undefined): boolean {
   const normalized = normalizeRunStatus(status);
   return normalized === "processing" || normalized === "pending";
+}
+
+/**
+ * A run the worker accepted but which has shown no movement since.
+ *
+ * Background work on the worker dies with the process — a restart or deploy
+ * mid-run leaves the run in "processing" with nobody working on it. There is
+ * deliberately NO automatic retry: the worker may still be running and about to
+ * commit, and a retry would duplicate a statement's transactions. The run is
+ * reported as stalled so a person can decide, and Force Reprocess supersedes the
+ * old job safely via the active_job_id fence.
+ *
+ * `acceptedAt` is job_accepted_at; `updatedAt` is the run's own updated_at, so
+ * genuine progress writes keep a slow statement out of this state.
+ */
+export function isRunStalled(
+  status: string | null | undefined,
+  acceptedAt: string | null | undefined,
+  updatedAt: string | null | undefined,
+  now: number = Date.now(),
+  thresholdMs: number = STALE_PROGRESS_THRESHOLD_MS,
+): boolean {
+  if (!isRunInFlight(status)) return false;
+  if (!acceptedAt) return false; // never accepted — dispatch never completed
+  const lastMovement = Date.parse(updatedAt || acceptedAt);
+  if (Number.isNaN(lastMovement)) return false;
+  return now - lastMovement > thresholdMs;
 }
 
 /** Uploaded and waiting for an explicit Process action. */

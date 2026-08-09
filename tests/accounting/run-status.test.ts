@@ -69,3 +69,61 @@ test("a queued run offers the explicit Process action", () => {
   assert.match(ui, /isRunAwaitingProcessing\(detail\.run\.status\)/, "queued runs get their own state");
   assert.match(ui, /Ready to process/, "and say what they are waiting for");
 });
+
+// ── Job ownership ───────────────────────────────────────────────────────────
+//
+// Once the worker accepts a job it owns the outcome. The caller's timeout,
+// disconnect or after() ending must not turn finished work into a failure —
+// which is exactly what happened at 254s while extraction had succeeded.
+
+const { isRunStalled, STALE_PROGRESS_THRESHOLD_MS } = await import("@/lib/accounting/run-status.ts");
+
+test("a run with no acceptance is never stalled", () => {
+  // Dispatch never completed, so there is nothing to be stalled — this is a
+  // dispatch failure, which the caller owns and reports directly.
+  assert.equal(isRunStalled("processing", null, null, Date.now()), false);
+});
+
+test("an accepted run that stopped moving is stalled", () => {
+  const now = Date.now();
+  const longAgo = new Date(now - STALE_PROGRESS_THRESHOLD_MS - 60_000).toISOString();
+  assert.equal(isRunStalled("processing", longAgo, longAgo, now), true);
+});
+
+test("progress writes keep a slow statement out of the stalled state", () => {
+  const now = Date.now();
+  const acceptedLongAgo = new Date(now - STALE_PROGRESS_THRESHOLD_MS - 600_000).toISOString();
+  const movedRecently = new Date(now - 30_000).toISOString();
+  assert.equal(isRunStalled("processing", acceptedLongAgo, movedRecently, now), false);
+});
+
+test("only in-flight runs can be stalled", () => {
+  const now = Date.now();
+  const longAgo = new Date(now - STALE_PROGRESS_THRESHOLD_MS - 60_000).toISOString();
+  for (const status of ["queued", "completed", "failed", "review", "cancelled"]) {
+    assert.equal(isRunStalled(status, longAgo, longAgo, now), false, status);
+  }
+});
+
+test("an accepted job is never failed by the caller", () => {
+  const route = read("app/api/accounting/fnb/process/route.ts");
+  assert.match(route, /if \(jobAccepted\) \{/, "failRun must bail once the worker owns the job");
+  assert.match(route, /not failing an accepted job/);
+  assert.match(route, /kind: "accepted"/, "202 is a distinct outcome from synchronous success");
+});
+
+test("dispatch goes to the dispatch endpoint and claims the run", () => {
+  const route = read("app/api/accounting/fnb/process/route.ts");
+  assert.match(route, /buildWorkerEndpoint\(workerUrl, "\/process-statement\/dispatch"\)/);
+  assert.match(route, /active_job_id: detail\.run\.processingJobId/, "the run must claim the job before dispatch");
+  assert.match(route, /job_accepted_at: new Date\(\)\.toISOString\(\)/, "acceptance is recorded");
+});
+
+test("worker writes are fenced and stale ones rejected", () => {
+  const worker = read("workers/accounting_worker/main.py");
+  assert.match(worker, /class StaleJobError/);
+  assert.match(worker, /query\.eq\("active_job_id", job_id\)/, "updates are conditional on owning the run");
+  assert.match(worker, /worker\.run_update_rejected_stale_job/, "a rejected write is logged, not swallowed");
+  assert.match(worker, /@app\.post\("\/process-statement\/dispatch", status_code=202\)/);
+  assert.match(worker, /@app\.post\("\/process-statement"\)/, "the synchronous endpoint stays available");
+});

@@ -546,6 +546,15 @@ async function processStatementInBackground(context: WorkspaceContext, detail: A
   // are persisted on the run by runPipelineBeforeWorker; here we set the failure
   // reason and log the full parserDebug.
   const failRun = async (error: string, parserDebug: ReturnType<typeof toParserDebug>) => {
+    // THE OWNERSHIP RULE. Once the worker has accepted the job, this function no
+    // longer decides the run's fate — the worker does, and it writes its own
+    // terminal state. Marking the run failed here is exactly the defect this
+    // change exists to remove: extraction finished, the caller stopped waiting,
+    // and finished work was recorded as a failure.
+    if (jobAccepted) {
+      console.info("[accounting/process] not failing an accepted job", { runId, error });
+      return;
+    }
     console.warn("[accounting/process] marking run failed", { runId, error, parserDebug });
     const nowIso = new Date().toISOString();
     // Persist the full parser/OCR debug alongside the failure so the workspace can
@@ -573,11 +582,20 @@ async function processStatementInBackground(context: WorkspaceContext, detail: A
     }
   };
 
-  const workerEndpoint = buildWorkerEndpoint(workerUrl, "/process-statement");
+  // Dispatch, not synchronous processing. The worker validates, claims the job
+  // and answers 202; everything after that belongs to it. /process-statement is
+  // unchanged for any caller that still wants to wait.
+  const workerEndpoint = buildWorkerEndpoint(workerUrl, "/process-statement/dispatch");
+
+  // Set once the worker has accepted. From that point this function must never
+  // write a terminal state: its own timeout, disconnect or after() ending is no
+  // longer the run's problem. Guarded inside failRun so no path can miss it.
+  let jobAccepted = false;
 
   // One attempt at the accounting worker. Returns a discriminated outcome so the
   // caller can decide whether an OCR-backed retry is worthwhile.
   type WorkerOutcome =
+    | { kind: "accepted" }
     | { kind: "ok" }
     | { kind: "failed"; status: number; error: string }
     | { kind: "unreachable"; error: string };
@@ -651,7 +669,15 @@ async function processStatementInBackground(context: WorkspaceContext, detail: A
     }
     console.info("docucorex.accounting.worker.response", { requestId, endpoint: workerEndpoint, runId, status: response.status, ok: response.ok });
 
+    if (response.status === 202) {
+      jobAccepted = true;
+      return { kind: "accepted" };
+    }
+
     if (response.ok) {
+      // A 2xx that is not 202 means the worker processed synchronously — the old
+      // contract. Kept so a worker deployed before the dispatch endpoint still
+      // works rather than failing every run during a rollout.
       updateStep("reconciling");
       return { kind: "ok" };
     }
@@ -703,6 +729,37 @@ async function processStatementInBackground(context: WorkspaceContext, detail: A
         updateStep("parsing");
         outcome = await callWorker(retry.hints);
       }
+    }
+
+    if (outcome.kind === "accepted") {
+      // Handover complete. Progress, results and the terminal state now come
+      // from the worker's own Supabase writes, which the UI already polls for.
+      //
+      // The shadow comparison below is deliberately NOT run here: it reads the
+      // finished run, and nothing is finished yet. It stays on the synchronous
+      // path rather than being given incomplete data to compare.
+      console.info("[accounting/process] worker accepted job", { runId, jobId: detail.run.processingJobId ?? null });
+      // The handover, recorded. Also the reference point for stale-progress
+      // detection: accepted long ago with no movement means recoverable by
+      // explicit Reprocess — never an automatic retry, which could duplicate
+      // work a still-running worker is about to commit.
+      await context.supabase
+        .from("accounting_statement_runs")
+        .update({ job_accepted_at: new Date().toISOString() })
+        .eq("id", runId)
+        .eq("workspace_id", context.workspaceId);
+      await recordAuditLog({
+        action: "accounting_extraction_dispatched",
+        entityType: "accounting_run",
+        entityId: runId,
+        metadata: {
+          bank: detail.run.bank,
+          detectedBank: pipelineDebug?.detectedBank ?? null,
+          worker: "fastapi",
+          jobId: detail.run.processingJobId ?? null,
+        },
+      });
+      return;
     }
 
     if (outcome.kind !== "ok") {
@@ -810,6 +867,14 @@ export async function POST(request: Request) {
       .from("accounting_statement_runs")
       .update({
         status: "processing",
+        // Claim the run for THIS attempt before anyone dispatches. Every worker
+        // write is fenced on this value, so a job superseded by a later Force
+        // Reprocess matches zero rows and cannot overwrite the newer attempt.
+        // job_superseded_at records that a previous job was retired; a rejected
+        // stale write afterwards is the fence working, not a fault.
+        active_job_id: detail.run.processingJobId ?? null,
+        job_accepted_at: null,
+        job_superseded_at: body.reprocess ? new Date().toISOString() : null,
         error: null,
         transaction_count: detail.run.transactionCount,
         workbook_storage_path: detail.run.workbookStoragePath,
