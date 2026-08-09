@@ -279,3 +279,46 @@ test("result writes stay strictly fenced", () => {
   const worker = read("workers/accounting_worker/main.py");
   assert.match(worker, /allow_unclaimed: bool = False/, "strict fencing remains the default");
 });
+
+// ── Liveness is not progress ────────────────────────────────────────────────
+//
+// Heartbeats used to be written only at the seven stage boundaries, so the
+// freshest liveness signal a run had was "the stage last changed". A stage that
+// legitimately runs long — classification is ~21 model round trips for a
+// 613-transaction statement — looked identical to a dead worker, and the run
+// was failed at 10 minutes while healthy. Stale must mean loss of liveness,
+// not absence of progress.
+
+test("a ticker keeps liveness fresh independently of stage changes", () => {
+  const worker = read("workers/accounting_worker/main.py");
+  assert.match(worker, /class _LivenessHeartbeat/);
+  assert.match(worker, /LIVENESS_TICK_SECONDS = \d+/);
+  assert.match(worker, /\.table\("processing_jobs"\)[\s\S]{0,200}?"updated_at"/, "liveness is processing_jobs.updated_at");
+});
+
+test("the ticker cannot outlive the work", () => {
+  // A leaked ticker keeps a dead job looking alive forever — the inverse bug,
+  // and harder to notice. The stop is in __exit__, so the context manager
+  // guarantees it.
+  const worker = read("workers/accounting_worker/main.py");
+  assert.match(worker, /with _LivenessHeartbeat\([\s\S]{0,120}?process_fnb_statement/, "scoped to the pipeline call");
+  assert.match(worker, /def __exit__[\s\S]{0,200}?self\._stop\.set\(\)/);
+});
+
+test("the ticker stops rather than heartbeating for a superseded job", () => {
+  const worker = read("workers/accounting_worker/main.py");
+  const hb = worker.slice(worker.indexOf("class _LivenessHeartbeat"), worker.indexOf("def _run_dispatched_job"));
+  assert.match(hb, /_still_owns_run/, "ownership is rechecked before each tick");
+  assert.match(hb, /active is None or active == self\._job_id/, "NULL means unclaimed, not superseded");
+  assert.match(hb, /worker\.liveness_superseded/);
+});
+
+test("the sweeper judges liveness by the job heartbeat, not the run's stage", () => {
+  const server = read("lib/accounting/server.ts");
+  assert.match(server, /livenessAtIso\?: string \| null/);
+  assert.match(server, /\.from\("processing_jobs"\)[\s\S]{0,160}?select\("updated_at"\)/, "reads the job's heartbeat");
+  assert.match(server, /processingStuckReason\(row, livenessAt\)/);
+  // And says something true when it does fire.
+  assert.match(server, /no worker heartbeat for/);
+  assert.doesNotMatch(server, /no heartbeat update for \$\{minutes\} minutes\. Marked as stuck/, "the old stage-based wording is gone");
+});

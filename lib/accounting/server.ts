@@ -217,10 +217,31 @@ function isProcessingLikeStatus(status: string | null | undefined) {
   return status === "processing" || status === "queued";
 }
 
-function processingStuckReason(row: Pick<AccountingRunRow, "processing_started_at" | "updated_at">): string | null {
+/**
+ * Why a run looks stuck, or null if it does not.
+ *
+ * `livenessAtIso` is the worker's heartbeat — processing_jobs.updated_at, which
+ * a ticker touches every ~45s for as long as the task is alive. It is NOT the
+ * run's updated_at, which only moves at stage boundaries.
+ *
+ * That distinction is the whole point. Reading the run's updated_at made "the
+ * stage has not changed" indistinguishable from "the worker is dead", and a
+ * legitimately long stage — classification is ~21 model round trips for a
+ * 613-transaction statement — was failed at 10 minutes while healthy. Stale
+ * must mean loss of liveness, not absence of progress.
+ *
+ * Falls back to the run's updated_at when no heartbeat is available, so a job
+ * from before the ticker existed still gets the old behaviour rather than
+ * becoming immortal.
+ */
+function processingStuckReason(
+  row: Pick<AccountingRunRow, "processing_started_at" | "updated_at">,
+  livenessAtIso?: string | null,
+): string | null {
   const now = Date.now();
   const startedAtMs = Date.parse(row.processing_started_at || "") || Date.parse(row.updated_at || "");
-  const updatedAtMs = Date.parse(row.updated_at || "");
+  const livenessParsed = Date.parse(livenessAtIso || "");
+  const updatedAtMs = Number.isFinite(livenessParsed) ? livenessParsed : Date.parse(row.updated_at || "");
   if (!Number.isFinite(startedAtMs) || !Number.isFinite(updatedAtMs)) return null;
 
   const elapsedSinceStartMs = now - startedAtMs;
@@ -232,7 +253,7 @@ function processingStuckReason(row: Pick<AccountingRunRow, "processing_started_a
   const elapsedSinceHeartbeatMs = now - updatedAtMs;
   if (elapsedSinceHeartbeatMs >= PROCESSING_HEARTBEAT_STALE_MS) {
     const minutes = Math.max(1, Math.round(elapsedSinceHeartbeatMs / 60_000));
-    return `Processing stale — no heartbeat update for ${minutes} minutes. Marked as stuck — retry or force reprocess.`;
+    return `Processing appears interrupted — no worker heartbeat for ${minutes} minutes. Your uploaded statement is safe; retry or force reprocess.`;
   }
   return null;
 }
@@ -269,7 +290,19 @@ async function markRunStuckIfNeeded(context: NonNullable<Awaited<ReturnType<type
   if (row.job_accepted_at) return row;
   // Never started — waiting on the user, not stuck.
   if (row.status === "queued") return row;
-  const reason = processingStuckReason(row);
+
+  // Liveness comes from the job's heartbeat, not the run's stage changes.
+  let livenessAt: string | null = null;
+  if (row.processing_job_id) {
+    const { data: job } = await context.supabase
+      .from("processing_jobs")
+      .select("updated_at")
+      .eq("id", row.processing_job_id)
+      .maybeSingle();
+    livenessAt = (job as { updated_at?: string } | null)?.updated_at ?? null;
+  }
+
+  const reason = processingStuckReason(row, livenessAt);
   if (!reason) return row;
 
   const nowIso = new Date().toISOString();
