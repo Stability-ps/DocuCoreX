@@ -202,3 +202,49 @@ test("an unowned processing run can still be failed", () => {
   assert.match(sweeper, /status: "failed"/, "the unowned case is still handled");
   assert.match(sweeper, /processing_step: "Stuck \/ Needs retry"/);
 });
+
+// ── Atomic transaction replace ──────────────────────────────────────────────
+//
+// The delete and the insert used to be two PostgREST calls with nothing between
+// them. A crash in that window — deploy, OOM kill, restart — left the run with
+// ZERO transactions: the whole ledger gone, no error recorded, the run still
+// reading as processed. Concurrency was never the issue here; active_job_id and
+// the processing_jobs claim already cover that. This is the crash window.
+
+test("transactions are replaced through the atomic RPC", () => {
+  const worker = read("workers/accounting_worker/main.py");
+  assert.match(worker, /def replace_transactions/);
+  assert.match(worker, /supabase\.rpc\(\s*"replace_accounting_transactions"/, "one call, one transaction");
+  assert.match(
+    worker,
+    /provenance_persisted = replace_transactions\(/,
+    "the write path must go through the atomic replace",
+  );
+});
+
+test("the delete is no longer a bare separate call on the happy path", () => {
+  const worker = read("workers/accounting_worker/main.py");
+  const replace = worker.slice(worker.indexOf("def replace_transactions"), worker.indexOf("def insert_transactions"));
+  // The only remaining delete-then-insert is inside the documented fallback,
+  // after the RPC has been found missing.
+  assert.match(replace, /except Exception/);
+  assert.match(replace, /atomic_replace_unavailable/, "the fallback is logged, not silent");
+  const beforeFallback = replace.slice(0, replace.indexOf("except Exception"));
+  assert.doesNotMatch(beforeFallback, /\.delete\(\)/, "the happy path must not delete separately");
+});
+
+test("the function body is what provides atomicity", () => {
+  const migration = read("supabase/migrations/025_atomic_transaction_replace.sql");
+  assert.match(migration, /create or replace function public\.replace_accounting_transactions/);
+  assert.match(migration, /delete from public\.accounting_transactions/);
+  assert.match(migration, /insert into public\.accounting_transactions/);
+  assert.match(migration, /language plpgsql/, "a function body is one implicit transaction");
+});
+
+test("the replace is scoped by workspace, not just run", () => {
+  const migration = read("supabase/migrations/025_atomic_transaction_replace.sql");
+  const body = migration.slice(migration.indexOf("delete from public.accounting_transactions"));
+  assert.match(body.slice(0, 200), /and workspace_id = p_workspace_id/, "a service-role key must not cross workspaces");
+  assert.match(migration, /revoke all on function[\s\S]*from public/);
+  assert.match(migration, /grant execute on function[\s\S]*to service_role/);
+});

@@ -5165,6 +5165,39 @@ def classify_transactions_with_ai(
     return diagnostics
 
 
+def replace_transactions(supabase: Client, rows: list[dict[str, Any]], run_id: str, workspace_id: str) -> bool:
+    """Replace a run's transactions atomically. Returns whether provenance was kept.
+
+    The delete and the insert used to be two separate PostgREST calls. A crash
+    between them — a deploy, an OOM kill, a restart — left the run with ZERO
+    transactions: the whole ledger gone, no error recorded, the run still
+    reading as processed. PostgREST cannot express a client-side transaction, so
+    the pair is now one call to replace_accounting_transactions (migration 025),
+    whose function body is a single implicit transaction.
+
+    Falls back to the previous delete-then-insert when the function is absent,
+    so a database that has not run 025 still processes statements. That path
+    keeps the old crash window, which is strictly no worse than before.
+    """
+    try:
+        supabase.rpc(
+            "replace_accounting_transactions",
+            {"p_run_id": run_id, "p_workspace_id": workspace_id, "p_rows": rows},
+        ).execute()
+        return True
+    except Exception as exc:  # noqa: BLE001 — see fallback note above
+        message = str(exc)
+        log_warning(
+            "worker.atomic_replace_unavailable",
+            run_id=run_id,
+            error=message[:400],
+            note="migration 025 not applied? falling back to delete-then-insert",
+        )
+
+    supabase.table("accounting_transactions").delete().eq("run_id", run_id).eq("workspace_id", workspace_id).execute()
+    return insert_transactions(supabase, rows, run_id)
+
+
 def insert_transactions(supabase: Client, rows: list[dict[str, Any]], run_id: str) -> bool:
     """Write the transactions, degrading to the pre-provenance shape if needed.
 
@@ -6199,9 +6232,8 @@ def process_fnb_statement(payload: ProcessRequest, authorization: str | None = H
         for sequence, transaction in enumerate(transactions, start=1):
             transaction.source_row = sequence
 
-        supabase.table("accounting_transactions").delete().eq("run_id", payload.run_id).execute()
         rows = [transaction_insert_row(transaction, payload.run_id, payload.workspace_id) for transaction in transactions]
-        provenance_persisted = insert_transactions(supabase, rows, payload.run_id)
+        provenance_persisted = replace_transactions(supabase, rows, payload.run_id, payload.workspace_id)
 
         # Derive the closing balance from the statement's own evidence before
         # validating against it. A NULL closing balance is read downstream as
