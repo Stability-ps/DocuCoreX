@@ -670,7 +670,13 @@ async function processStatementInBackground(context: WorkspaceContext, detail: A
     console.info("docucorex.accounting.worker.response", { requestId, endpoint: workerEndpoint, runId, status: response.status, ok: response.ok });
 
     if (response.status === 202) {
+      // Covers both "we scheduled it" and "it was already running". Either way
+      // the worker owns the run from here, and the caller must not fail it.
       jobAccepted = true;
+      const alreadyRunning = Boolean(asRecord(result)?.already_running);
+      if (alreadyRunning) {
+        console.info("[accounting/process] job already running on the worker", { runId, jobId: detail.run.processingJobId ?? null });
+      }
       return { kind: "accepted" };
     }
 
@@ -832,6 +838,19 @@ export async function POST(request: Request) {
 
     // Duplicate-job protection: never start a second extraction for a run that is
     // already processing (unless this is an explicit manual re-process).
+    //
+    // This gates on run.status, so a re-dispatch while the status has not yet
+    // been written — or has already moved on — sends the SAME processing_job_id
+    // again. That happened in production: job f1d9d778 for run 1ee084e3 was
+    // dispatched at 16:23 and again at 16:42, both answered 202. active_job_id
+    // does not catch it, because both requests carry the same id and therefore
+    // both satisfy the fence.
+    //
+    // The worker now claims the job atomically (queued -> running on
+    // processing_jobs) and answers already_running without scheduling a second
+    // pipeline, so correctness does not depend on this check. It stays as the
+    // cheap first line: not sending a doomed dispatch is better than having one
+    // rejected.
     if (detail.run.status === "processing" && !body.reprocess) {
       return NextResponse.json({ ok: true, skipped: true, reason: "already_processing", status: "processing", runId, jobId: detail.run.processingJobId ?? null });
     }

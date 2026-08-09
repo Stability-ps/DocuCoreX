@@ -8,7 +8,7 @@ import tempfile
 import time
 import urllib.error
 import urllib.request
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 from decimal import Decimal, ROUND_HALF_UP
 from typing import Any
 
@@ -6438,6 +6438,39 @@ def process_fnb_statement(payload: ProcessRequest, authorization: str | None = H
         raise HTTPException(status_code=422, detail=with_worker_version({"message": message})) from exc
 
 
+def _claim_processing_job(job_id: str) -> bool:
+    """Atomically take ownership of a job for execution. True if we claimed it.
+
+    The claim is `status = 'running' WHERE status = 'queued'` on processing_jobs.
+    A single conditional UPDATE is atomic, so of two concurrent dispatches for
+    the same job exactly one affects a row and the other sees none — no lock,
+    no new table, no new column, using the job_status enum that has existed
+    since migration 001.
+
+    A job already in 'running' (or any terminal state) cannot be claimed again,
+    which is the invariant: a processing_job_id may be accepted for execution
+    only once. Force Reprocess is unaffected — it allocates a NEW job, which
+    starts 'queued' and claims cleanly.
+
+    Fails CLOSED. If the claim cannot be evaluated — no database, transport
+    error — we refuse rather than scheduling work we cannot prove is unique.
+    A refused dispatch is recoverable; two pipelines racing on one run is not.
+    """
+    try:
+        supabase = get_supabase()
+        result = (
+            supabase.table("processing_jobs")
+            .update({"status": "running", "updated_at": datetime.now(timezone.utc).isoformat()})
+            .eq("id", job_id)
+            .eq("status", "queued")
+            .execute()
+        )
+        return len(getattr(result, "data", None) or []) == 1
+    except Exception as exc:  # noqa: BLE001 — see "fails closed" above
+        log_exception("worker.dispatch_claim_failed", job_id=job_id, error=str(exc))
+        return False
+
+
 def _run_dispatched_job(payload: ProcessRequest, authorization: str | None) -> None:
     """Run the pipeline for an already-accepted job, in the background.
 
@@ -6484,6 +6517,36 @@ def dispatch_statement(
         # run could overwrite a newer attempt. Refuse rather than accept blind.
         raise HTTPException(status_code=400, detail="processing_job_id is required to dispatch a job.")
 
+    # Claim the job before scheduling anything.
+    #
+    # active_job_id fences a SUPERSEDED job — a different id — out of the run.
+    # It cannot stop the SAME id being dispatched twice: both writers satisfy
+    # "active_job_id = mine". That is not theoretical; production dispatched
+    # job f1d9d778 for run 1ee084e3 at 16:23 and again at 16:42, and both were
+    # answered 202. Two pipelines on one run is worse than duplicate rows,
+    # because transactions are written delete-then-insert keyed on run_id: one
+    # worker's DELETE can land between the other's DELETE and INSERT and destroy
+    # results that had already completed.
+    #
+    # The claim is the queued -> running transition on processing_jobs, which
+    # Postgres already gives us. A conditional UPDATE is atomic on its own, so
+    # concurrent dispatches serialise: exactly one sees a row affected.
+    if not _claim_processing_job(payload.processing_job_id):
+        log_event(
+            "worker.dispatch_already_running",
+            run_id=payload.run_id,
+            job_id=payload.processing_job_id,
+        )
+        # Not an error. The caller asked for work that is already happening, and
+        # the honest answer is "yes, it is running" — with NOTHING scheduled.
+        return {
+            "accepted": True,
+            "already_running": True,
+            "run_id": payload.run_id,
+            "job_id": payload.processing_job_id,
+            "status": "processing",
+        }
+
     log_event(
         "worker.dispatch_accepted",
         run_id=payload.run_id,
@@ -6493,6 +6556,7 @@ def dispatch_statement(
     background.add_task(_run_dispatched_job, payload, authorization)
     return {
         "accepted": True,
+        "already_running": False,
         "run_id": payload.run_id,
         "job_id": payload.processing_job_id,
         # Explicit so the caller cannot mistake acceptance for completion.
