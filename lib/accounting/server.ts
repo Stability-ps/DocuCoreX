@@ -61,6 +61,10 @@ type AccountingRunRow = {
   requires_review?: boolean | null;
   processing_step?: string | null;
   processing_started_at?: string | null;
+  // Migration 024. Present on every select("*"); declared here so the stuck
+  // sweeper can tell an accepted job from one that never reached the worker.
+  active_job_id?: string | null;
+  job_accepted_at?: string | null;
   parser_debug?: Record<string, unknown> | null;
   confidence: number | string;
   error: string | null;
@@ -233,8 +237,38 @@ function processingStuckReason(row: Pick<AccountingRunRow, "processing_started_a
   return null;
 }
 
+/**
+ * Mark a run stuck when NOBODY owns it.
+ *
+ * This runs on read, and it used to write status:"failed" for any run that had
+ * been "processing" or "queued" too long — with no knowledge of job ownership.
+ * That reintroduced, through the read path, exactly the defect #79 removed from
+ * the dispatch path: a run marked failed while the worker was still working on
+ * it. Production hit it — "Processing stale — no heartbeat update for 10
+ * minutes" on a 37-page, 613-transaction statement the worker had accepted and
+ * was still processing.
+ *
+ * Two cases are now left alone:
+ *
+ *   ACCEPTED (job_accepted_at set) — the worker owns the terminal state, per
+ *   #79. A long gap between heartbeats means slow, not dead; isRunStalled
+ *   surfaces that to the user as stalled, and Force Reprocess supersedes the
+ *   job safely through the active_job_id fence. Vercel must not decide.
+ *
+ *   QUEUED — uploaded and waiting for someone to press Process (#78). It has
+ *   not started, so it cannot be stuck, and it may legitimately sit there for
+ *   days. Failing it after a timeout would be nonsense.
+ *
+ * What remains: a run stuck in "processing" that was never accepted — dispatch
+ * died between marking the run and the worker taking it. Nobody owns that one,
+ * so nobody else will ever resolve it, and it is Vercel's to fail.
+ */
 async function markRunStuckIfNeeded(context: NonNullable<Awaited<ReturnType<typeof getWorkspaceContext>>>, row: AccountingRunRow): Promise<AccountingRunRow> {
   if (!isProcessingLikeStatus(row.status)) return row;
+  // The worker accepted this job; its outcome is not ours to write.
+  if (row.job_accepted_at) return row;
+  // Never started — waiting on the user, not stuck.
+  if (row.status === "queued") return row;
   const reason = processingStuckReason(row);
   if (!reason) return row;
 
