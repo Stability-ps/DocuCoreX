@@ -20,9 +20,36 @@ export function isTerminalRunStatus(status: string | null | undefined): boolean 
   return normalized === "error" || (Boolean(normalized) && TERMINAL_STATUSES.includes(normalized as AccountingRunStatus));
 }
 
+/**
+ * Not finished yet — covers a run waiting for someone to start it as well as
+ * one being worked on. Use this for lifecycle questions ("can this be
+ * cancelled?"), NOT for "is something happening right now".
+ */
 export function isActiveRunStatus(status: string | null | undefined): boolean {
   const normalized = normalizeRunStatus(status);
   return typeof normalized === "string" && ACTIVE_STATUSES.has(normalized);
+}
+
+/**
+ * Work is genuinely underway.
+ *
+ * "queued" is deliberately excluded. server.ts:504 inserts the run as "queued"
+ * at UPLOAD, and the process route only moves it to "processing" when work
+ * actually starts — uploading is not the same act as asking for processing
+ * (see tests/accounting/export.test.ts). Treating "queued" as in-flight made an
+ * untouched upload indistinguishable from a stuck job: production showed a
+ * "Processing…" banner and a pipeline frozen on "Detecting PDF type" for a run
+ * nobody had asked to process, while the UI polled it 102 times waiting for a
+ * transition that could never come.
+ */
+export function isRunInFlight(status: string | null | undefined): boolean {
+  const normalized = normalizeRunStatus(status);
+  return normalized === "processing" || normalized === "pending";
+}
+
+/** Uploaded and waiting for an explicit Process action. */
+export function isRunAwaitingProcessing(status: string | null | undefined): boolean {
+  return normalizeRunStatus(status) === "queued";
 }
 
 // Signals used to decide a run has really finished even if its status row still
