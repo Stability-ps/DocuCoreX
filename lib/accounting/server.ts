@@ -9,6 +9,7 @@ import { MAX_TAG_LENGTH, dedupeTags, normalizeTag, sameTag, sortTags, tagRejecti
 import { bestTransferCandidates, findTransferCandidates, type TransferCandidate, type TransferSide } from "@/lib/accounting/transfers";
 import { findRecurringPatterns, type RecurringInput, type RecurringPattern } from "@/lib/accounting/recurring";
 import { latestBalancesByAccount, summarizeCashflow, type CashflowInput, type CashflowSummary } from "@/lib/accounting/cashflow";
+import { buildCoverage, type CoverageResult, type CoverageStatement } from "@/lib/accounting/coverage";
 import { getWorkspaceContext } from "@/lib/server-documents";
 import { createDocumentVersionRecord } from "@/lib/supabase-server-adapter";
 import type {
@@ -1470,4 +1471,98 @@ export async function getWorkspaceCashflow(): Promise<{
   }));
 
   return { summary: summarizeCashflow(inputs, confirmedTransferIds), balances };
+}
+
+/** Statement coverage for the workspace, measured against its engagement. */
+export async function getWorkspaceCoverage(): Promise<{
+  coverage: CoverageResult;
+  engagement: { startDate: string | null; endDate: string | null; expectedAccounts: string[] };
+}> {
+  const context = await getWorkspaceContext();
+  const noEngagement = { startDate: null, endDate: null, expectedAccounts: [] as string[] };
+  if (!context) return { coverage: buildCoverage([], { startMonth: null, endMonth: null, expectedAccounts: [] }), engagement: noEngagement };
+
+  const { data: engagementRow, error: engagementError } = await context.supabase
+    .from("accounting_engagement")
+    .select("start_date, end_date, expected_accounts")
+    .eq("workspace_id", context.workspaceId)
+    .maybeSingle();
+
+  // A missing table (migration 034 not applied) simply means no engagement is
+  // configured, which coverage already handles by reporting interior gaps only.
+  if (engagementError && engagementError.code !== "42P01" && engagementError.code !== "PGRST116") {
+    console.warn("[accounting] engagement unreadable", engagementError.message);
+  }
+
+  const engagement = {
+    startDate: (engagementRow?.start_date as string | null) ?? null,
+    endDate: (engagementRow?.end_date as string | null) ?? null,
+    expectedAccounts: ((engagementRow?.expected_accounts as string[] | null) ?? []).filter(Boolean),
+  };
+
+  const { data: runRows } = await context.supabase
+    .from("accounting_statement_runs")
+    .select("bank, account_number, statement_period_end, closing_balance, opening_balance, transaction_count, status")
+    .eq("workspace_id", context.workspaceId);
+
+  const statements: CoverageStatement[] = (runRows ?? [])
+    .filter((run) => run.statement_period_end)
+    .map((run) => {
+      const closing = (run.closing_balance as number | null) ?? null;
+      return {
+        accountLabel:
+          [run.bank as string | undefined, run.account_number as string | undefined].filter(Boolean).join(" ") ||
+          "Unknown account",
+        month: String(run.statement_period_end).slice(0, 7),
+        // "Reconciled" here means the statement completed AND a closing balance
+        // was established. A run still in review has not proven anything.
+        reconciled: (run.status as string) === "completed" && closing != null,
+        hasClosingBalance: closing != null,
+        transactionCount: (run.transaction_count as number | null) ?? 0,
+      };
+    });
+
+  return {
+    coverage: buildCoverage(statements, {
+      startMonth: engagement.startDate ? engagement.startDate.slice(0, 7) : null,
+      endMonth: engagement.endDate ? engagement.endDate.slice(0, 7) : null,
+      expectedAccounts: engagement.expectedAccounts,
+    }),
+    engagement,
+  };
+}
+
+export async function saveWorkspaceEngagement(input: {
+  startDate: string | null;
+  endDate: string | null;
+  expectedAccounts: string[];
+}): Promise<void> {
+  const context = await getWorkspaceContext();
+  if (!context) throw new Error("Unauthorized");
+
+  if (input.startDate && input.endDate && input.startDate > input.endDate) {
+    throw new Error("The engagement start date must not be after the end date.");
+  }
+
+  const { error } = await context.supabase.from("accounting_engagement").upsert(
+    {
+      workspace_id: context.workspaceId,
+      start_date: input.startDate,
+      end_date: input.endDate,
+      expected_accounts: input.expectedAccounts.map((account) => account.trim()).filter(Boolean),
+      updated_by: context.userId,
+      updated_at: new Date().toISOString(),
+    },
+    { onConflict: "workspace_id" },
+  );
+  if (error) throw new Error(error.message);
+
+  // Changing the engagement changes which statements are considered owed, so
+  // it is recorded like any other decision that moves a reported figure.
+  await recordAccountingActionAudit({
+    action: "engagement_updated",
+    entityType: "accounting_engagement",
+    entityId: context.workspaceId,
+    newValue: input as unknown as Record<string, unknown>,
+  });
 }
