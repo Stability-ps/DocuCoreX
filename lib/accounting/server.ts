@@ -6,6 +6,7 @@ import { canonicaliseCategory } from "@/lib/accounting/categories";
 import { merchantKeyRejection } from "@/lib/accounting/merchant-keys";
 import { isUnresolvedAccountingCategory } from "@/lib/accounting/review-options";
 import { MAX_TAG_LENGTH, dedupeTags, normalizeTag, sameTag, sortTags, tagRejection } from "@/lib/accounting/tags";
+import { bestTransferCandidates, findTransferCandidates, type TransferCandidate, type TransferSide } from "@/lib/accounting/transfers";
 import { getWorkspaceContext } from "@/lib/server-documents";
 import { createDocumentVersionRecord } from "@/lib/supabase-server-adapter";
 import type {
@@ -1173,4 +1174,147 @@ async function listTagsForTransaction(context: NonNullable<Awaited<ReturnType<ty
     .eq("workspace_id", context.workspaceId)
     .eq("transaction_id", transactionId);
   return sortTags(dedupeTags((data ?? []).map((row: { tag: string }) => row.tag)));
+}
+
+/**
+ * Transfer candidates across every statement in the workspace.
+ *
+ * Cross-run by necessity: a transfer's two legs are recorded on two different
+ * statements, so a per-statement query can never see both. The window is bounded
+ * by transaction count rather than left open, because this runs on request.
+ */
+export async function getWorkspaceTransferCandidates(): Promise<{
+  candidates: TransferCandidate[];
+  decided: Array<{ outboundTransactionId: string; inboundTransactionId: string; status: string }>;
+}> {
+  const context = await getWorkspaceContext();
+  if (!context) return { candidates: [], decided: [] };
+
+  const { data: runRows } = await context.supabase
+    .from("accounting_statement_runs")
+    .select("id, bank, account_number")
+    .eq("workspace_id", context.workspaceId);
+
+  const runs = new Map((runRows ?? []).map((row) => [row.id as string, row]));
+  if (runs.size < 2) {
+    // One statement cannot contain both legs, so there is nothing to match and
+    // no reason to read the transactions at all.
+    return { candidates: [], decided: [] };
+  }
+
+  const { data: rows } = await context.supabase
+    .from("accounting_transactions")
+    .select("id, run_id, transaction_date, debit_amount, credit_amount, description")
+    .eq("workspace_id", context.workspaceId)
+    .order("transaction_date", { ascending: false })
+    .limit(5000);
+
+  const sides: TransferSide[] = (rows ?? []).map((row) => {
+    const run = runs.get(row.run_id as string);
+    const accountNumber = (run?.account_number as string | null) ?? null;
+    return {
+      transactionId: row.id as string,
+      runId: row.run_id as string,
+      accountNumber,
+      accountLabel: [run?.bank as string | undefined, accountNumber].filter(Boolean).join(" ") || "Unknown account",
+      date: (row.transaction_date as string | null) ?? null,
+      debit: (row.debit_amount as number | null) ?? null,
+      credit: (row.credit_amount as number | null) ?? null,
+      description: (row.description as string) ?? "",
+    };
+  });
+
+  const { data: decisions, error: decisionError } = await context.supabase
+    .from("accounting_transfer_matches")
+    .select("outbound_transaction_id, inbound_transaction_id, status")
+    .eq("workspace_id", context.workspaceId);
+
+  // A missing table (migration 032 not applied) means no decisions yet, not a
+  // failure to show candidates.
+  if (decisionError && decisionError.code !== "42P01") {
+    console.warn("[accounting] transfer decisions unreadable", decisionError.message);
+  }
+
+  // Both a confirmation and a rejection take a pair out of circulation: a
+  // rejected pair must not be re-offered after every reprocess.
+  const decidedIds = new Set<string>();
+  for (const row of decisions ?? []) {
+    decidedIds.add(row.outbound_transaction_id as string);
+    decidedIds.add(row.inbound_transaction_id as string);
+  }
+
+  return {
+    candidates: bestTransferCandidates(findTransferCandidates(sides, decidedIds)),
+    decided: (decisions ?? []).map((row) => ({
+      outboundTransactionId: row.outbound_transaction_id as string,
+      inboundTransactionId: row.inbound_transaction_id as string,
+      status: row.status as string,
+    })),
+  };
+}
+
+export async function decideTransferMatch(input: {
+  outboundTransactionId: string;
+  inboundTransactionId: string;
+  status: "confirmed" | "rejected";
+  evidence?: string[];
+}): Promise<void> {
+  const context = await getWorkspaceContext();
+  if (!context) throw new Error("Unauthorized");
+
+  if (input.outboundTransactionId === input.inboundTransactionId) {
+    throw new Error("A transaction cannot be transferred to itself.");
+  }
+
+  // Both legs must belong to this workspace. RLS enforces it too, but a
+  // membership check here produces a truthful 404 instead of a write that
+  // silently affects nothing.
+  const { data: legs } = await context.supabase
+    .from("accounting_transactions")
+    .select("id")
+    .eq("workspace_id", context.workspaceId)
+    .in("id", [input.outboundTransactionId, input.inboundTransactionId]);
+  if ((legs ?? []).length !== 2) throw new Error("Transaction not found.");
+
+  const { error } = await context.supabase.from("accounting_transfer_matches").upsert(
+    {
+      workspace_id: context.workspaceId,
+      outbound_transaction_id: input.outboundTransactionId,
+      inbound_transaction_id: input.inboundTransactionId,
+      status: input.status,
+      evidence: input.evidence ?? [],
+      decided_by: context.userId,
+      decided_at: new Date().toISOString(),
+    },
+    { onConflict: "outbound_transaction_id,inbound_transaction_id" },
+  );
+  if (error) throw new Error(error.message);
+
+  // A transfer decision changes reported profit, so it is never anonymous.
+  await recordAccountingActionAudit({
+    action: input.status === "confirmed" ? "transfer_confirmed" : "transfer_rejected",
+    entityType: "accounting_transfer_match",
+    entityId: `${input.outboundTransactionId}:${input.inboundTransactionId}`,
+    newValue: { status: input.status, evidence: input.evidence ?? [] },
+  });
+}
+
+/** Undo a decision, returning the pair to the candidate list. */
+export async function clearTransferMatch(outboundTransactionId: string, inboundTransactionId: string): Promise<void> {
+  const context = await getWorkspaceContext();
+  if (!context) throw new Error("Unauthorized");
+
+  const { error } = await context.supabase
+    .from("accounting_transfer_matches")
+    .delete()
+    .eq("workspace_id", context.workspaceId)
+    .eq("outbound_transaction_id", outboundTransactionId)
+    .eq("inbound_transaction_id", inboundTransactionId);
+  if (error) throw new Error(error.message);
+
+  await recordAccountingActionAudit({
+    action: "transfer_decision_cleared",
+    entityType: "accounting_transfer_match",
+    entityId: `${outboundTransactionId}:${inboundTransactionId}`,
+  });
 }
