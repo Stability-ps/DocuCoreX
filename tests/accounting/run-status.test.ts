@@ -364,3 +364,35 @@ test("the claim is still a single atomic update", () => {
   assert.doesNotMatch(claim, /\.select\(/, "no read-then-write; the UPDATE itself is the lock");
   assert.match(claim, /except Exception[\s\S]*return False/, "still fails closed");
 });
+
+// ── The claim must not be pre-empted ────────────────────────────────────────
+//
+// The worker claims a job by moving processing_jobs.status queued -> running
+// (#80), and that claim is the only thing preventing two pipelines on one run.
+// Vercel also wrote status:"running" — before dispatch, and on every
+// pre-extraction stage. By dispatch time the job was already running with a
+// fresh heartbeat, so it was neither claimable nor reclaimable: every dispatch
+// was answered already_running and NOTHING was scheduled. Production stopped
+// processing entirely until this was removed.
+
+test("the caller never writes processing_jobs.status running", () => {
+  const route = read("app/api/accounting/fnb/process/route.ts");
+  assert.doesNotMatch(
+    route,
+    /status: "running"/,
+    "status is the worker's claim; writing it here pre-empts the claim and blocks all processing",
+  );
+});
+
+test("the caller still reports progress", () => {
+  // Removing status must not silence progress reporting — the stage label and
+  // percentage are what the UI shows, and updated_at is the liveness signal.
+  const route = read("app/api/accounting/fnb/process/route.ts");
+  assert.match(route, /\.update\(\{ progress, message: label, updated_at:/);
+  assert.match(route, /\.update\(\{ progress: 10, message: "Queued for extraction", updated_at:/);
+});
+
+test("only the worker moves a job into running", () => {
+  const worker = read("workers/accounting_worker/main.py");
+  assert.match(worker, /\.update\(\{"status": "running"/, "the claim is the worker's");
+});

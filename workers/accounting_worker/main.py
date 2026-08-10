@@ -2613,6 +2613,7 @@ def attempt_ai_recovery(
         "accepted_rows": 0,
         "rejected_rows": {},
         "failures": 0,
+        "openai_calls": 0,
     }
 
     # Recovery sends statement LINES to the model, where classification sends
@@ -2657,6 +2658,7 @@ def attempt_ai_recovery(
             ],
         }
         try:
+            diagnostics["openai_calls"] = int(diagnostics.get("openai_calls") or 0) + 1
             payload = openai_chat_completion(body, api_key)
         except Exception as exc:  # noqa: BLE001 - transport failures must not end the run here
             diagnostics["failures"] += 1
@@ -3826,6 +3828,7 @@ OPTIONAL_RUN_COLUMNS = (
     # migration 019 — the confidence split
     "classification_confidence",
     "reconciliation_confidence",
+    "workbook_generation_duration_ms",
 )
 
 
@@ -4241,6 +4244,7 @@ def ai_diagnostics(enabled: bool | None = None) -> dict[str, Any]:
         "ai_transactions_classified": 0,
         "ai_failures": 0,
         "ai_cache_hits": 0,
+        "classification_openai_calls": 0,
     }
 
 
@@ -4415,6 +4419,7 @@ def request_ai_classifications(items: list[dict[str, Any]], diagnostics: dict[st
     }
 
     def send_openai_request(request_body: dict[str, Any]) -> dict[str, Any]:
+        diagnostics["classification_openai_calls"] = int(diagnostics.get("classification_openai_calls") or 0) + 1
         return openai_chat_completion(request_body, api_key)
 
     try:
@@ -4606,6 +4611,7 @@ def apply_ai_counterparty_reasoning(
         "counterparty_answers": 0,
         "counterparty_applied": 0,
         "counterparty_rejected": {},
+        "openai_calls": 0,
     }
     api_key = os.getenv("OPENAI_API_KEY")
     if not api_key or not transactions:
@@ -4655,6 +4661,7 @@ def apply_ai_counterparty_reasoning(
             ],
         }
         try:
+            report["openai_calls"] = int(report.get("openai_calls") or 0) + 1
             payload = openai_chat_completion(body, api_key)
             content = payload.get("choices", [{}])[0].get("message", {}).get("content", "{}")
             answers, rejected = validate_counterparty_answers(
@@ -4816,6 +4823,8 @@ def build_workbook(
     allow_ai: bool = True,
     workspace_id: str = "",
 ) -> bytes:
+    _ = allow_ai
+    _ = workspace_id
     workbook = Workbook()
     totals = validation_summary(transactions)
     status, calculated_closing = validation_status(metadata, transactions)
@@ -4827,15 +4836,15 @@ def build_workbook(
     account_number = (metadata.get("account_number") or "").strip()
     source_file = metadata.get("source_file") or ""
     rows = [professional_transaction_row(transaction, source_file) for transaction in transactions]
-    ai_started = time.perf_counter()
-    if allow_ai:
-        ai_stats = apply_ai_classifications(rows, workspace_id)
-    else:
+    # The workbook consumes the classification already written onto transactions.
+    # It must not ask AI to classify a second time.
+    ai_stats = metadata.get("_ai_diagnostics")
+    if not isinstance(ai_stats, dict):
         ai_stats = ai_diagnostics(enabled=bool(os.getenv("OPENAI_API_KEY")))
-        ai_stats["ai_skipped"] = "extraction_incomplete"
-    ai_duration_ms = round((time.perf_counter() - ai_started) * 1000, 2)
-    ai_stats["ai_classification_duration_ms"] = ai_duration_ms
-    log_event("worker.ai_classification_duration", duration_ms=ai_duration_ms, parser_profile=WORKER_PARSER_VERSION)
+        ai_stats["ai_skipped"] = "workbook_no_ai_pass"
+    ai_stats["ai_classification_duration_ms"] = float(ai_stats.get("ai_classification_duration_ms") or 0)
+    ai_stats["classification_openai_calls"] = int(ai_stats.get("classification_openai_calls") or 0)
+    ai_stats["workbook_openai_calls"] = 0
     mark_possible_duplicates(rows)
     metadata["_ai_diagnostics"] = ai_stats
     months = month_summary(rows)
@@ -6240,6 +6249,7 @@ def process_fnb_statement(payload: ProcessRequest, authorization: str | None = H
             payload.workspace_id,
             str(metadata.get("source_file") or ""),
         )
+        metadata["_ai_diagnostics"] = ai_classification_stats
         log_event(
             "worker.ai_classification_applied",
             run_id=payload.run_id,
@@ -6290,13 +6300,25 @@ def process_fnb_statement(payload: ProcessRequest, authorization: str | None = H
             step_label="Generating workbook",
             progress=97,
         )
+        workbook_started = time.perf_counter()
         workbook_bytes = build_workbook(
             metadata,
             transactions,
             allow_ai=not extraction_incomplete and review_issue is None,
             workspace_id=payload.workspace_id,
         )
+        workbook_generation_duration_ms = round((time.perf_counter() - workbook_started) * 1000, 2)
         ai_stats = metadata.get("_ai_diagnostics") or ai_diagnostics(enabled=False)
+        classification_openai_calls = int(ai_stats.get("classification_openai_calls") or 0) if isinstance(ai_stats, dict) else 0
+        workbook_openai_calls = int(ai_stats.get("workbook_openai_calls") or 0) if isinstance(ai_stats, dict) else 0
+        counterparty_openai_calls = int(ai_counterparty.get("openai_calls") or 0)
+        recovery_openai_calls = int(ai_recovery.get("openai_calls") or 0)
+        total_openai_calls = (
+            classification_openai_calls
+            + workbook_openai_calls
+            + counterparty_openai_calls
+            + recovery_openai_calls
+        )
         workbook_path = f"{payload.workspace_id}/accounting/fnb/exports/{payload.run_id}.xlsx"
         export_started = time.perf_counter()
         with tempfile.NamedTemporaryFile(suffix=".xlsx") as handle:
@@ -6312,6 +6334,15 @@ def process_fnb_statement(payload: ProcessRequest, authorization: str | None = H
             )
         export_duration_ms = round((time.perf_counter() - export_started) * 1000, 2)
         log_event("worker.workbook_exported", run_id=payload.run_id, duration_ms=export_duration_ms, parser_profile=WORKER_PARSER_VERSION)
+        log_event(
+            "worker.openai_usage",
+            run_id=payload.run_id,
+            total_openai_calls=total_openai_calls,
+            classification_openai_calls=classification_openai_calls,
+            workbook_openai_calls=workbook_openai_calls,
+            counterparty_openai_calls=counterparty_openai_calls,
+            ai_recovery_openai_calls=recovery_openai_calls,
+        )
 
         bank_charges_total = float(bank_charges_from_statement(metadata, transactions))
         avg_confidence = sum(transaction.confidence for transaction in transactions) / len(transactions)
@@ -6395,6 +6426,7 @@ def process_fnb_statement(payload: ProcessRequest, authorization: str | None = H
                 "reconciliation_confidence": reconciliation_confidence(
                     extraction_check, missing_rows
                 ),
+                "workbook_generation_duration_ms": int(workbook_generation_duration_ms),
                 "error": run_error,
                 "updated_at": datetime.utcnow().isoformat(),
             },
@@ -6427,6 +6459,12 @@ def process_fnb_statement(payload: ProcessRequest, authorization: str | None = H
             export_duration_ms=export_duration_ms,
             parser_profile=parser_profile,
             processing_duration_ms=processing_duration_ms,
+            workbook_generation_duration_ms=workbook_generation_duration_ms,
+            total_openai_calls=total_openai_calls,
+            classification_openai_calls=classification_openai_calls,
+            workbook_openai_calls=workbook_openai_calls,
+            counterparty_openai_calls=counterparty_openai_calls,
+            ai_recovery_openai_calls=recovery_openai_calls,
         )
 
         return {
@@ -6450,6 +6488,12 @@ def process_fnb_statement(payload: ProcessRequest, authorization: str | None = H
             },
             "ai_recovery": ai_recovery,
             "processing_duration_ms": processing_duration_ms,
+            "workbook_generation_duration_ms": workbook_generation_duration_ms,
+            "total_openai_calls": total_openai_calls,
+            "classification_openai_calls": classification_openai_calls,
+            "workbook_openai_calls": workbook_openai_calls,
+            "counterparty_openai_calls": counterparty_openai_calls,
+            "ai_recovery_openai_calls": recovery_openai_calls,
             "worker": worker_version(),
         }
     except HTTPException as exc:
