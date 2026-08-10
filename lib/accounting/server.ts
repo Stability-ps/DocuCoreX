@@ -295,8 +295,10 @@ function processingStuckReason(
  */
 async function markRunStuckIfNeeded(context: NonNullable<Awaited<ReturnType<typeof getWorkspaceContext>>>, row: AccountingRunRow): Promise<AccountingRunRow> {
   if (!isProcessingLikeStatus(row.status)) return row;
-  // Never started — waiting on the user, not stuck.
-  if (row.status === "queued") return row;
+  // A queued run with no processing job is genuinely waiting on the user.
+  // If it already has a processing job, the handoff started and the row should
+  // be treated like an in-flight run so stale ownership can be repaired.
+  if (row.status === "queued" && !row.processing_job_id) return row;
 
   // Liveness comes from the job's heartbeat, not the run's stage changes.
   let livenessAt: string | null = null;
@@ -322,7 +324,8 @@ async function markRunStuckIfNeeded(context: NonNullable<Awaited<ReturnType<type
   // Accepted work has a live heartbeat every ~45s. Do not impose a total runtime
   // ceiling on healthy work, but do recover it when that heartbeat is genuinely
   // stale. Without this, a process lost during deploy remains immortal.
-  const reason = terminalJobMismatch ?? processingStuckReason(row, livenessAt, !row.job_accepted_at);
+  const enforceTotalTimeout = row.status === "queued" ? false : !row.job_accepted_at;
+  const reason = terminalJobMismatch ?? processingStuckReason(row, livenessAt, enforceTotalTimeout);
   if (!reason) return row;
 
   const livenessCutoff = new Date(Date.now() - PROCESSING_HEARTBEAT_STALE_MS).toISOString();
