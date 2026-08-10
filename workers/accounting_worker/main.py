@@ -9,6 +9,7 @@ import threading
 import time
 import urllib.error
 import urllib.request
+from concurrent.futures import ThreadPoolExecutor
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal, ROUND_HALF_UP
 from typing import Any
@@ -138,6 +139,7 @@ DEFAULT_AI_MODEL = "gpt-4o-mini"
 # workspace's own corrections and chart of accounts; they are not shared facts.
 AI_CLASSIFICATION_CACHE: dict[tuple[str, str], dict[str, Any]] = {}
 AI_CLASSIFICATION_BATCH_SIZE = 30
+AI_CLASSIFICATION_MAX_CONCURRENCY = 3
 ACCOUNTING_REPORT_DISCLAIMER = (
     "Draft management report generated from bank-statement data only. "
     "This is not a final IFRS or Companies Act financial statement and requires accountant review."
@@ -4614,9 +4616,34 @@ def _apply_ai_classifications(rows: list[dict[str, Any]], workspace_id: str) -> 
         cache_key_by_id[transaction_id] = cache_key
 
     diagnostics["ai_transactions_sent"] = len(batch)
-    for start in range(0, len(batch), AI_CLASSIFICATION_BATCH_SIZE):
-        chunk = batch[start : start + AI_CLASSIFICATION_BATCH_SIZE]
-        for result in request_ai_classifications(chunk, diagnostics):
+    chunks = [
+        batch[start : start + AI_CLASSIFICATION_BATCH_SIZE]
+        for start in range(0, len(batch), AI_CLASSIFICATION_BATCH_SIZE)
+    ]
+
+    def classify_chunk(chunk: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], int, int]:
+        # A private diagnostics object avoids lost increments when requests run
+        # concurrently. Results are merged below on the caller thread.
+        chunk_diagnostics = ai_diagnostics()
+        results = request_ai_classifications(chunk, chunk_diagnostics)
+        return (
+            results,
+            int(chunk_diagnostics.get("classification_openai_calls") or 0),
+            int(chunk_diagnostics.get("ai_failures") or 0),
+        )
+
+    chunk_results: list[tuple[list[dict[str, Any]], int, int]] = []
+    if chunks:
+        with ThreadPoolExecutor(max_workers=min(AI_CLASSIFICATION_MAX_CONCURRENCY, len(chunks))) as executor:
+            # executor.map preserves input order even though requests overlap,
+            # so applying classifications and populating the cache remains
+            # deterministic.
+            chunk_results = list(executor.map(classify_chunk, chunks))
+
+    for results, openai_calls, failures in chunk_results:
+        diagnostics["classification_openai_calls"] += openai_calls
+        diagnostics["ai_failures"] += failures
+        for result in results:
             row = row_by_id.get(result["transaction_id"])
             if not row:
                 continue

@@ -388,8 +388,11 @@ test("balanced count-only FNB reviews do not store suspected missing transaction
 test("AI accounting classification is batched and allowed enough response tokens", () => {
   const worker = read("workers/accounting_worker/main.py");
   assert.match(worker, /AI_CLASSIFICATION_BATCH_SIZE = 30/);
+  assert.match(worker, /AI_CLASSIFICATION_MAX_CONCURRENCY = 3/);
   assert.match(worker, /"max_tokens": 6000/);
   assert.match(worker, /for start in range\(0, len\(batch\), AI_CLASSIFICATION_BATCH_SIZE\)/);
+  assert.match(worker, /ThreadPoolExecutor\(max_workers=min\(AI_CLASSIFICATION_MAX_CONCURRENCY, len\(chunks\)\)\)/);
+  assert.match(worker, /executor\.map\(classify_chunk, chunks\)/, "batch results must retain deterministic input order");
 });
 
 test("combined dashboard labels VAT-classified monthly movement", () => {
