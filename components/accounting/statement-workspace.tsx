@@ -478,7 +478,7 @@ export function StatementWorkspace({ statementId }: { statementId: string }) {
         </div>
         {banner ? <div className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm font-bold text-amber-900">{banner}</div> : null}
         {detail?.run.status === "processing" || busy === "reprocess" ? (
-          <ProcessingSteps step={detail?.run.processingStep ?? null} startedAt={detail?.run.processingStartedAt ?? null} />
+          <ProcessingSteps step={detail?.run.processingStep ?? null} startedAt={detail?.run.processingStartedAt ?? null} updatedAt={detail?.run.updatedAt ?? null} />
         ) : null}
         {detail?.run.status === "failed" ? (
           <FailedRunPanel run={detail.run} busy={busy === "reprocess" || busy === "cancel"} onRetryWithoutForce={() => void reprocess()} onRetry={() => void reprocess()} />

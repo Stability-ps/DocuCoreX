@@ -21,7 +21,7 @@ function formatElapsed(ms: number): string {
 // steps ("Detecting PDF type" → "Running OCR" → "Parsing transactions" →
 // "Reconciling"), an elapsed timer, and a reassurance once it runs long
 // (scanned PDFs legitimately take longer).
-export function ProcessingSteps({ step, startedAt }: { step?: string | null; startedAt?: string | null }) {
+export function ProcessingSteps({ step, startedAt, updatedAt }: { step?: string | null; startedAt?: string | null; updatedAt?: string | null }) {
   const [now, setNow] = useState<number | null>(null);
 
   useEffect(() => {
@@ -32,6 +32,8 @@ export function ProcessingSteps({ step, startedAt }: { step?: string | null; sta
 
   const startMs = startedAt ? new Date(startedAt).getTime() : null;
   const elapsedMs = startMs !== null && now !== null ? Math.max(0, now - startMs) : 0;
+  const updatedMs = updatedAt ? new Date(updatedAt).getTime() : null;
+  const sinceUpdateMs = updatedMs !== null && now !== null ? Math.max(0, now - updatedMs) : null;
   const showLongNotice = elapsedMs >= LONG_PROCESSING_THRESHOLD_MS;
   const showStaleNotice = elapsedMs >= STALE_PROCESSING_THRESHOLD_MS;
 
@@ -53,6 +55,9 @@ export function ProcessingSteps({ step, startedAt }: { step?: string | null; sta
           </span>
         ) : null}
       </div>
+      {sinceUpdateMs !== null ? (
+        <p className="mt-1 text-[11px] font-semibold text-blue-700">Last update {formatElapsed(sinceUpdateMs)} ago</p>
+      ) : null}
 
       <ol className="mt-2 flex flex-wrap gap-x-3 gap-y-1">
         {PROCESSING_STEP_ORDER.map((s, index) => {

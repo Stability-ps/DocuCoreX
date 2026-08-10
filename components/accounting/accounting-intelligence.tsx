@@ -150,11 +150,11 @@ function fileSize(bytes: number) {
 
 function statusLabel(status: AccountingStatementRun["status"]) {
   const labels: Record<AccountingStatementRun["status"], string> = {
-    queued: "Queued",
+    queued: "Ready to process",
     processing: "Processing",
     review: "Review Required",
     completed: "Completed",
-    failed: "Failed",
+    failed: "Processing Failed",
     cancelled: "Cancelled",
   };
   return labels[status];
@@ -369,7 +369,7 @@ function fileNameFromContentDisposition(header: string | null) {
 }
 
 type CombineOverrideType = "account" | "continuity";
-type LiveRefreshState = "idle" | "processing" | "refreshing";
+type LiveRefreshState = "idle" | "refreshing";
 
 export function AccountingIntelligence() {
   const inputRef = useRef<HTMLInputElement>(null);
@@ -377,6 +377,7 @@ export function AccountingIntelligence() {
   const [runs, setRuns] = useState<AccountingStatementRun[]>([]);
   const [uploadQueue, setUploadQueue] = useState<UploadQueueItem[]>([]);
   const [selectedRunIds, setSelectedRunIds] = useState<string[]>([]);
+  const [selectionMode, setSelectionMode] = useState(false);
   const [selectedRunId, setSelectedRunId] = useState("");
   const [showExportModal, setShowExportModal] = useState(false);
   const [detail, setDetail] = useState<AccountingRunDetail | null>(null);
@@ -398,9 +399,14 @@ export function AccountingIntelligence() {
   const [deleteTargetIds, setDeleteTargetIds] = useState<string[]>([]);
   const selectedRun = useMemo(() => runs.find((run) => run.id === selectedRunId) ?? null, [runs, selectedRunId]);
   const runById = useMemo(() => new Map(runs.map((run) => [run.id, run])), [runs]);
+  const selectedEffectiveStatus = detail
+    ? deriveEffectiveRunStatus(detail.run, detail.transactions.length) ?? detail.run.status
+    : null;
   const hasActiveRuns = useMemo(
-    () => runs.some((run) => isRunInFlight(run.status)) || isRunInFlight(detail?.run.status ?? null),
-    [detail?.run.status, runs],
+    () =>
+      runs.some((run) => isRunInFlight(deriveEffectiveRunStatus(run, run.transactionCount) ?? run.status)) ||
+      isRunInFlight(selectedEffectiveStatus),
+    [runs, selectedEffectiveStatus],
   );
 
   useEffect(() => {
@@ -425,81 +431,28 @@ export function AccountingIntelligence() {
     preferredRunId?: string,
     options?: { silent?: boolean; keepLiveState?: boolean },
   ) {
-    const nextLiveState = options?.keepLiveState ? liveRefreshState : hasActiveRuns ? "processing" : "refreshing";
-    if (!options?.silent) setLiveRefreshState(nextLiveState);
+    if (!options?.silent) setLiveRefreshState("refreshing");
+    try {
+      const nextRuns = await fetchRunsFromApi();
+      setRuns(nextRuns);
 
-    const nextRuns = await fetchRunsFromApi();
-    setRuns(nextRuns);
+      const preferred = preferredRunId ?? selectedRunIdRef.current ?? "";
+      const nextRunId = preferred && nextRuns.some((run) => run.id === preferred) ? preferred : nextRuns[0]?.id ?? "";
+      setSelectedRunId(nextRunId);
 
-    const preferred = preferredRunId ?? selectedRunIdRef.current ?? "";
-    const nextRunId = preferred && nextRuns.some((run) => run.id === preferred) ? preferred : nextRuns[0]?.id ?? "";
-    setSelectedRunId(nextRunId);
+      if (!nextRunId) {
+        setDetail(null);
+        return null;
+      }
 
-    if (!nextRunId) {
-      setDetail(null);
+      const nextDetail = await fetchRunDetailFromApi(nextRunId);
+      setDetail(nextDetail);
+      return nextDetail;
+    } finally {
+      // Refreshing is a short-lived transport state, never an accounting
+      // lifecycle state. It must clear on success, failure, or supersession.
       setLiveRefreshState("idle");
-      return;
     }
-
-    const nextDetail = await fetchRunDetailFromApi(nextRunId);
-    setDetail(nextDetail);
-    setLiveRefreshState(isRunInFlight(nextDetail.run.status) || nextRuns.some((run) => isRunInFlight(run.status)) ? "processing" : "idle");
-  }
-
-  function applyRunRefreshState(runId: string) {
-    const nowIso = new Date().toISOString();
-    setRuns((current) =>
-      current.map((run) =>
-        run.id === runId
-          ? {
-              ...run,
-              status: "processing",
-              error: null,
-              transactionCount: 0,
-              parserMethod: null,
-              extractionConfidence: null,
-              detectedPdfType: null,
-              ocrUsed: null,
-              routeReason: null,
-              extractionWarnings: null,
-              validationStatus: null,
-              reconciliationDifference: null,
-              missingTransactionCount: null,
-              requiresReview: null,
-              processingStep: "Detecting PDF type",
-              processingStartedAt: nowIso,
-              updatedAt: nowIso,
-            }
-          : run,
-      ),
-    );
-    setDetail((current) =>
-      current && current.run.id === runId
-        ? {
-            run: {
-              ...current.run,
-              status: "processing",
-              error: null,
-              transactionCount: 0,
-              parserMethod: null,
-              extractionConfidence: null,
-              detectedPdfType: null,
-              ocrUsed: null,
-              routeReason: null,
-              extractionWarnings: null,
-              validationStatus: null,
-              reconciliationDifference: null,
-              missingTransactionCount: null,
-              requiresReview: null,
-              processingStep: "Detecting PDF type",
-              processingStartedAt: nowIso,
-              updatedAt: nowIso,
-              parserDebug: null,
-            },
-            transactions: [],
-          }
-        : current,
-    );
   }
 
   // Keep upload-queue rows in sync with the DB run status (source of truth), so
@@ -563,7 +516,7 @@ export function AccountingIntelligence() {
   async function loadRunDetail(runId: string) {
     const nextDetail = await fetchRunDetailFromApi(runId);
     setDetail(nextDetail);
-    setLiveRefreshState(isRunInFlight(nextDetail.run.status) ? "processing" : "idle");
+    setLiveRefreshState("idle");
   }
 
   useEffect(() => {
@@ -587,7 +540,6 @@ export function AccountingIntelligence() {
 
   useEffect(() => {
     if (!hasActiveRuns) return;
-    setLiveRefreshState("processing");
     const interval = window.setInterval(() => {
       void refreshAccountingData(selectedRunIdRef.current || undefined, { silent: true, keepLiveState: true }).catch(() => undefined);
     }, 3000);
@@ -871,9 +823,7 @@ export function AccountingIntelligence() {
     if (manageBusy) setBusy(`process:${runId}`);
     setError("");
     setDiagnostics("");
-    setMessage("Processing… extracting and reconciling your statement.");
-    setLiveRefreshState("processing");
-    applyRunRefreshState(runId);
+    setMessage("");
 
     try {
       const response = await fetch("/api/accounting/fnb/process", {
@@ -908,12 +858,19 @@ export function AccountingIntelligence() {
       }
 
       // Processing now runs in the background — poll the run until it is terminal.
-      if (refreshAfter) await refreshAccountingData(runId, { silent: true, keepLiveState: true }).catch(() => undefined);
+      const acceptedDetail = await refreshAccountingData(runId, { silent: true });
+      const acceptedStatus = acceptedDetail
+        ? deriveEffectiveRunStatus(acceptedDetail.run, acceptedDetail.transactions.length) ?? acceptedDetail.run.status
+        : null;
+      if (!isRunInFlight(acceptedStatus)) {
+        throw new Error("Processing was not accepted by the server. The statement remains ready to process.");
+      }
+      setMessage("Processing your statement.");
       const outcome = await pollRunUntilTerminal(runId, { onTick: () => void loadRuns(runId).catch(() => undefined) });
       // Final cleanup once polling stops: refresh the list + selected statement +
       // summary cards, then retire the stale upload-queue entry (status-sync Req 5).
       if (!outcome.timedOut) await refreshAccountingData(runId, { silent: true }).catch(() => undefined);
-      else if (refreshAfter) await refreshAccountingData(runId, { silent: true, keepLiveState: true }).catch(() => undefined);
+      else if (refreshAfter) await refreshAccountingData(runId, { silent: true }).catch(() => undefined);
       if (outcome.timedOut) {
         setMessage("Still processing — this is taking longer than usual. It will keep running; refresh to check.");
       } else if (outcome.status === "failed") {
@@ -936,6 +893,7 @@ export function AccountingIntelligence() {
     } catch (processError) {
       setError(processError instanceof Error ? processError.message : "Processing failed.");
       setLiveRefreshState("idle");
+      setMessage("");
       if (refreshAfter) await refreshAccountingData(runId, { silent: true }).catch(() => undefined);
     } finally {
       if (manageBusy) setBusy("");
@@ -1083,12 +1041,9 @@ export function AccountingIntelligence() {
       auditSummary: buildAuditSummary(txns, run, duplicates, unusuals, vatAnomalies, riskScore),
     };
   }, [detail, totals]);
-  const liveRefreshBanner =
-    liveRefreshState === "processing"
-      ? "Processing… waiting for the latest accounting results."
-      : liveRefreshState === "refreshing"
-        ? "Refreshing latest results…"
-        : "";
+  const liveRefreshBanner = liveRefreshState === "refreshing" ? "Refreshing latest results…" : "";
+  const visibleMessage =
+    message === "Processing your statement." && !isRunInFlight(selectedEffectiveStatus) ? "" : message;
 
   return (
     /* Application density, not marketing spacing: ~20-28px horizontal padding
@@ -1207,7 +1162,7 @@ export function AccountingIntelligence() {
         <div className="grid gap-3 xl:grid-cols-[1fr_auto] xl:items-center">
           <div>
             <div className="flex flex-wrap items-center gap-2">
-              <p className="text-sm font-semibold text-navy-950">FNB bank statements</p>
+              <p className="text-sm font-semibold text-navy-950">Bank Statements</p>
               {uploadCollapsed ? (
                 <button type="button" onClick={() => setUploadCollapsed(false)} className="text-xs font-black text-royal-700">
                   Show upload options
@@ -1236,7 +1191,7 @@ export function AccountingIntelligence() {
                 className="inline-flex h-10 w-full min-w-40 items-center justify-center gap-2 rounded-lg bg-royal-600 px-4 text-sm font-semibold text-white shadow-sm transition hover:bg-royal-700 disabled:cursor-not-allowed disabled:bg-slate-300 sm:w-auto"
               >
                 {busy === "upload" ? <Loader2 className="h-4 w-4 animate-spin" /> : <UploadCloud className="h-4 w-4" />}
-                Upload PDFs
+                Upload Statement
               </button>
               <p className="mt-1 text-[11px] font-semibold text-slate-500">PDF up to 200MB</p>
             </div>
@@ -1277,12 +1232,15 @@ export function AccountingIntelligence() {
         <div className="flex flex-wrap items-center gap-2">
           <button
             type="button"
-            disabled={busy === "upload"}
-            onClick={() => inputRef.current?.click()}
-            className="inline-flex min-h-10 items-center justify-center gap-2 rounded-lg bg-royal-600 px-3 text-xs font-black text-white shadow-sm disabled:bg-slate-300"
+            onClick={() => {
+              setSelectionMode((current) => {
+                if (current) setSelectedRunIds([]);
+                return !current;
+              });
+            }}
+            className="inline-flex min-h-10 items-center justify-center rounded-lg border border-slate-200 bg-white px-3 text-xs font-black text-slate-700"
           >
-            <UploadCloud className="h-4 w-4" />
-            Upload Statements
+            {selectionMode ? "Done Selecting" : "Select"}
           </button>
           <button
             type="button"
@@ -1291,14 +1249,6 @@ export function AccountingIntelligence() {
             className="inline-flex min-h-10 items-center justify-center rounded-lg border border-slate-200 bg-white px-3 text-xs font-black text-slate-700 disabled:text-slate-300"
           >
             {busy === "bulk-process" ? "Processing..." : "Process All"}
-          </button>
-          <button
-            type="button"
-            disabled={!selectedRunIds.length || !selectedProcessableRunIds.length || busy === "bulk-process"}
-            onClick={() => void processSelectedRuns()}
-            className="inline-flex min-h-10 items-center justify-center rounded-lg border border-slate-200 bg-white px-3 text-xs font-black text-slate-700 disabled:text-slate-300"
-          >
-            {busy === "bulk-process" ? "Processing..." : "Process Selected"}
           </button>
           <button
             type="button"
@@ -1314,7 +1264,7 @@ export function AccountingIntelligence() {
         </div>
       </section>
 
-      {selectedRunIds.length ? (
+      {selectionMode && selectedRunIds.length ? (
         <section className="sticky top-2 z-40 rounded-xl border border-royal-200 bg-royal-50/95 p-3 shadow-md backdrop-blur supports-[backdrop-filter]:bg-royal-50/80 md:p-4">
           <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
             <p className="text-sm font-black text-navy-950">{selectedRunLabel}</p>
@@ -1369,7 +1319,7 @@ export function AccountingIntelligence() {
                       // before then show the file name (never a guessed month).
                       const run = item.runId ? runById.get(item.runId) : null;
                       const named = run && statementReferenceDate(run) ? statementDisplayName(run) : null;
-                      const uploadName = cleanStatementLabel(item.name) ?? "Uploaded FNB statement";
+                      const uploadName = cleanStatementLabel(item.name) ?? "Uploaded bank statement";
                       return (
                         <>
                           <p className="truncate text-sm font-black text-navy-950" title={named ?? uploadName}>
@@ -1399,11 +1349,12 @@ export function AccountingIntelligence() {
                     <div className="h-full w-2/3 animate-pulse rounded-full bg-royal-500" />
                   </div>
                 ) : null}
-                {item.status === "Uploaded" ? <p className="mt-2 break-words text-xs font-semibold text-slate-600">Uploaded. Starting processing…</p> : null}
+                {item.status === "Uploaded" ? <p className="mt-2 break-words text-xs font-semibold text-slate-600">Uploaded. Ready to process.</p> : null}
                 {item.status === "Processing" ? (
                   <ProcessingSteps
                     step={item.runId ? runById.get(item.runId)?.processingStep ?? null : null}
                     startedAt={item.runId ? runById.get(item.runId)?.processingStartedAt ?? null : null}
+                    updatedAt={item.runId ? runById.get(item.runId)?.updatedAt ?? null : null}
                   />
                 ) : null}
                 {item.status === "Ready" ? <p className="mt-2 break-words text-xs font-semibold text-emerald-700">Ready for review and export.</p> : null}
@@ -1447,7 +1398,7 @@ export function AccountingIntelligence() {
           <span>{liveRefreshBanner}</span>
         </div>
       ) : null}
-      {message ? <div className="rounded-lg border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm font-bold text-emerald-800">{message}</div> : null}
+      {visibleMessage ? <div className="rounded-lg border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm font-bold text-emerald-800">{visibleMessage}</div> : null}
       {error ? (
         <div className="rounded-lg border border-rose-200 bg-rose-50 px-4 py-3 text-sm font-bold text-rose-800">
           <p>{error}</p>
@@ -1475,7 +1426,7 @@ export function AccountingIntelligence() {
       ) : null}
 
       <CompactSummaryBar
-        run={detail?.run ?? null}
+        run={detail ? { ...detail.run, status: selectedEffectiveStatus ?? detail.run.status } : null}
         debit={transactions.length && !runQuality.needsFreshExtraction ? totals.debit : null}
         credit={transactions.length && !runQuality.needsFreshExtraction ? totals.credit : null}
         reviewCount={totals.review}
@@ -1487,6 +1438,7 @@ export function AccountingIntelligence() {
           runs={runs}
           selectedRunId={selectedRunId}
           selectedRunIds={selectedRunIds}
+          selectionMode={selectionMode}
           search={runSearch}
           sortBy={runSort}
           onToggleSelected={(runId) =>
@@ -1512,17 +1464,25 @@ export function AccountingIntelligence() {
               <div className="flex flex-col gap-4 xl:flex-row xl:items-start xl:justify-between">
                 <div className="min-w-0">
                   <div className="flex flex-wrap items-center gap-2">
-                    <h2 className="truncate text-xl font-semibold text-navy-950">{runDisplayTitle(detail.run)}</h2>
-                    <span className={`rounded-full px-2.5 py-1 text-xs font-semibold ${statusTone(detail.run.status)}`}>{statusLabel(detail.run.status)}</span>
+                    <h2 className="truncate text-xl font-semibold text-navy-950">
+                      {runDisplayTitle({ ...detail.run, status: selectedEffectiveStatus ?? detail.run.status })}
+                    </h2>
+                    <span className={`rounded-full px-2.5 py-1 text-xs font-semibold ${statusTone(selectedEffectiveStatus ?? detail.run.status)}`}>
+                      {statusLabel(selectedEffectiveStatus ?? detail.run.status)}
+                    </span>
                   </div>
                   <p className="mt-1 text-sm font-semibold text-slate-500">
-                    {detail.run.transactionCount || detail.transactions.length} transactions · {totals.review} review items
+                    {isRunAwaitingProcessing(selectedEffectiveStatus)
+                      ? "Processing has not started yet."
+                      : isRunInFlight(selectedEffectiveStatus) && detail.transactions.length === 0
+                        ? "Processing your statement"
+                        : `${detail.run.transactionCount || detail.transactions.length} transactions · ${totals.review} review items`}
                   </p>
                 </div>
                 <div className="hidden md:block" />
               </div>
 
-              {detail.run.status === "failed" ? (
+              {selectedEffectiveStatus === "failed" ? (
                 <FailedRunPanel
                   run={detail.run}
                   busy={busy === `process:${detail.run.id}`}
@@ -1536,7 +1496,7 @@ export function AccountingIntelligence() {
                   "Processing in progress" panel below, so an untouched upload
                   looked identical to a stuck job. Say what it is waiting for
                   and offer the same Process action the toolbar uses. */}
-              {isRunAwaitingProcessing(detail.run.status) ? (
+              {isRunAwaitingProcessing(selectedEffectiveStatus) ? (
                 <section className="rounded-xl border border-slate-200 bg-white p-4">
                   <div className="flex flex-wrap items-center justify-between gap-3">
                     <div className="min-w-0">
@@ -1557,27 +1517,11 @@ export function AccountingIntelligence() {
                 </section>
               ) : null}
 
-              {isRunInFlight(detail.run.status) ? (
+              {isRunInFlight(selectedEffectiveStatus) ? (
                 <section className="rounded-xl border border-blue-200 bg-blue-50/60 p-4">
                   <div className="flex flex-wrap items-center justify-between gap-2">
                     <p className="text-sm font-bold text-blue-800">Processing in progress</p>
                     <div className="flex flex-wrap items-center gap-2">
-                      <button
-                        type="button"
-                        onClick={() => void processRun(detail.run.id)}
-                        disabled={busy === `process:${detail.run.id}` || busy === `cancel:${detail.run.id}`}
-                        className="rounded-lg border border-blue-300 bg-white px-3 py-1.5 text-xs font-bold text-blue-800 hover:bg-blue-100 disabled:opacity-50"
-                      >
-                        Retry
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => void processRun(detail.run.id, { reprocess: true })}
-                        disabled={busy === `process:${detail.run.id}` || busy === `cancel:${detail.run.id}`}
-                        className="rounded-lg bg-blue-700 px-3 py-1.5 text-xs font-bold text-white hover:bg-blue-800 disabled:opacity-50"
-                      >
-                        Force Reprocess
-                      </button>
                       <button
                         type="button"
                         onClick={() => void cancelRun(detail.run.id)}
@@ -1588,11 +1532,11 @@ export function AccountingIntelligence() {
                       </button>
                     </div>
                   </div>
-                  <ProcessingSteps step={detail.run.processingStep ?? null} startedAt={detail.run.processingStartedAt ?? null} />
+                  <ProcessingSteps step={detail.run.processingStep ?? null} startedAt={detail.run.processingStartedAt ?? null} updatedAt={detail.run.updatedAt ?? null} />
                 </section>
               ) : null}
 
-              {detail.run.status === "review" && detail.run.error ? (
+              {selectedEffectiveStatus === "review" && detail.run.error ? (
                 <ReviewRequiredPanel
                   run={detail.run}
                   diagnostics={reviewDiagnostics}
@@ -1632,7 +1576,8 @@ export function AccountingIntelligence() {
               </div>
 
               {activeTab === "transactions" || activeTab === "review" ? (
-                <>
+                detail.transactions.length ? (
+                  <>
                   <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
                     <label className="relative block w-full max-w-md">
                       <Search className="pointer-events-none absolute left-4 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
@@ -1674,7 +1619,18 @@ export function AccountingIntelligence() {
                       emptyVariant={activeTab === "review" ? "success" : "default"}
                     />
                   </div>
-                </>
+                  </>
+                ) : (
+                  <div className="rounded-xl border border-dashed border-slate-200 bg-slate-50 px-5 py-10 text-center">
+                    <p className="text-sm font-bold text-navy-950">
+                      {isRunAwaitingProcessing(selectedEffectiveStatus)
+                        ? "Process this statement to extract transactions."
+                        : isRunInFlight(selectedEffectiveStatus)
+                          ? "Transactions will appear as processing completes."
+                          : "No transactions are available for this statement."}
+                    </p>
+                  </div>
+                )
               ) : null}
 
               {activeTab === "difference" ? (
@@ -2244,13 +2200,15 @@ function CompactSummaryBar({
   reviewCount: number;
   stale?: boolean;
 }) {
+  const awaiting = isRunAwaitingProcessing(run?.status);
+  const noCalculatedRows = awaiting || (isRunInFlight(run?.status) && debit == null && credit == null);
   const items = [
-    { label: "Status", value: stale ? "Refreshing" : run ? statusLabel(run.status) : "No statement", tone: stale || run?.status === "review" ? "text-amber-700" : run?.status === "failed" ? "text-rose-700" : "text-navy-950" },
-    { label: "Opening", value: money(run?.openingBalance ?? null), tone: "text-navy-950" },
-    { label: "Closing", value: money(run?.closingBalance ?? null), tone: "text-navy-950" },
-    { label: "Money out", value: money(debit), tone: "text-rose-700" },
-    { label: "Money in", value: money(credit), tone: "text-emerald-700" },
-    { label: "Review", value: plainNumber(reviewCount), tone: reviewCount ? "text-amber-700" : "text-navy-950" },
+    { label: "Status", value: awaiting ? "Ready to process" : stale ? "Processing interrupted" : run ? statusLabel(run.status) : "No statement", tone: stale || run?.status === "review" ? "text-amber-700" : run?.status === "failed" ? "text-rose-700" : "text-navy-950" },
+    { label: "Opening", value: noCalculatedRows ? "—" : money(run?.openingBalance ?? null), tone: "text-navy-950" },
+    { label: "Closing", value: noCalculatedRows ? "—" : money(run?.closingBalance ?? null), tone: "text-navy-950" },
+    { label: "Money out", value: noCalculatedRows ? "—" : money(debit), tone: "text-rose-700" },
+    { label: "Money in", value: noCalculatedRows ? "—" : money(credit), tone: "text-emerald-700" },
+    { label: "Review", value: noCalculatedRows ? "—" : plainNumber(reviewCount), tone: reviewCount ? "text-amber-700" : "text-navy-950" },
   ];
 
   return (
@@ -2260,11 +2218,9 @@ function CompactSummaryBar({
           <div key={item.label} className="flex h-full min-w-40 flex-[0_0_auto] flex-col justify-center px-4 py-3">
             <p className="truncate whitespace-nowrap text-[11px] font-black uppercase tracking-[0.08em] text-slate-400">{item.label}</p>
             <p className={`mt-1 truncate whitespace-nowrap text-sm font-black ${item.tone}`}>{item.value}</p>
-            {item.label === "Status" && run ? (
+            {item.label === "Status" && run && !awaiting && !isRunInFlight(run.status) ? (
               <p className="mt-0.5 truncate whitespace-nowrap text-[11px] font-semibold text-slate-500">
-                {run.status === "processing" || run.status === "queued"
-                  ? "Confidence: Calculating..."
-                  : `${Math.round(run.confidences?.classification ?? run.confidence)}% classification`}
+                {`${Math.round(run.confidences?.classification ?? run.confidence)}% classification`}
               </p>
             ) : null}
           </div>
@@ -2278,6 +2234,7 @@ function StatementRuns({
   runs,
   selectedRunId,
   selectedRunIds,
+  selectionMode,
   search,
   sortBy,
   onToggleSelected,
@@ -2290,6 +2247,7 @@ function StatementRuns({
   runs: AccountingStatementRun[];
   selectedRunId: string;
   selectedRunIds: string[];
+  selectionMode: boolean;
   search: string;
   sortBy: string;
   onToggleSelected: (runId: string) => void;
@@ -2365,6 +2323,7 @@ function StatementRuns({
           />
         </label>
         <div className="flex items-center gap-2">
+          {selectionMode ? (
           <input
             type="checkbox"
             checked={allVisibleSelected}
@@ -2378,6 +2337,7 @@ function StatementRuns({
             className="h-4 w-4 rounded border-slate-300 text-royal-600"
             aria-label="Select visible statements"
           />
+          ) : null}
           <select
             value={sortBy}
             onChange={(event) => onSortChange(event.target.value)}
@@ -2394,6 +2354,9 @@ function StatementRuns({
       <div className="max-h-[620px] overflow-auto">
         {visibleRuns.length ? (
           visibleRuns.map((run) => (
+            (() => {
+              const effectiveStatus = deriveEffectiveRunStatus(run, run.transactionCount) ?? run.status;
+              return (
             <div
               key={run.id}
               onClick={() => onSelect(run.id)}
@@ -2411,7 +2374,7 @@ function StatementRuns({
               }`}
             >
               <div className="flex items-center gap-2">
-                <input
+                {selectionMode ? <input
                   type="checkbox"
                   checked={selectedRunIds.includes(run.id)}
                   onChange={(event) => {
@@ -2421,7 +2384,7 @@ function StatementRuns({
                   onClick={(event) => event.stopPropagation()}
                   className="h-4 w-4 rounded border-slate-300 text-royal-600"
                   aria-label={`Select ${runDisplayTitle(run)} for combined workbook`}
-                />
+                /> : null}
                 <div className="min-w-0 flex-1">
                   <div className="flex items-center justify-between gap-2">
                     <Link
@@ -2429,13 +2392,13 @@ function StatementRuns({
                       onClick={(event) => event.stopPropagation()}
                       className="truncate text-sm font-black text-navy-950 hover:text-royal-700 hover:underline"
                     >
-                      {runDisplayTitle(run)}
+                      {runDisplayTitle({ ...run, status: effectiveStatus })}
                     </Link>
-                    <span className={`shrink-0 rounded-full px-2 py-0.5 text-[10px] font-black ${statusTone(run.status)}`}>{statusLabel(run.status)}</span>
+                    <span className={`shrink-0 rounded-full px-2 py-0.5 text-[10px] font-black ${statusTone(effectiveStatus)}`}>{statusLabel(effectiveStatus)}</span>
                   </div>
                   <div className="mt-1 flex items-center justify-between gap-2 text-[11px] font-semibold text-slate-500">
                     <span className="truncate">{cleanStatementLabel(run.accountNumber) || cleanStatementLabel(run.companyName) || compactDateTime(run.createdAt)}</span>
-                    {run.status === "failed" ? (
+                    {effectiveStatus === "failed" ? (
                       <button
                         type="button"
                         onClick={(event) => {
@@ -2448,7 +2411,11 @@ function StatementRuns({
                       </button>
                     ) : (
                       <span title="Classification confidence — how confidently transactions were categorised">
-                        {run.status === "processing" || run.status === "queued" ? "Calculating..." : `${Math.round(run.confidences?.classification ?? run.confidence)}% class.`}
+                        {effectiveStatus === "queued"
+                          ? "Ready to process"
+                          : effectiveStatus === "processing"
+                            ? "Processing…"
+                            : `${Math.round(run.confidences?.classification ?? run.confidence)}% class.`}
                       </span>
                     )}
                   </div>
@@ -2474,10 +2441,12 @@ function StatementRuns({
                 </button>
               </div>
             </div>
+              );
+            })()
           ))
         ) : (
           <div className="p-6 text-center text-sm font-semibold text-slate-500">
-            No FNB statements uploaded yet.
+            No bank statements uploaded yet.
           </div>
         )}
         {filteredRuns.length > visibleRuns.length ? (

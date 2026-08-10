@@ -53,20 +53,20 @@ test("terminal states are neither in flight nor awaiting processing", () => {
 
 test("the processing banner and pipeline are driven by in-flight, not active", () => {
   const ui = read("components/accounting/accounting-intelligence.tsx");
-  // The live-refresh state decides both the "Processing…" banner and whether
-  // polling continues. Driving it from isActiveRunStatus is the regression.
+  // The server-derived effective status decides lifecycle presentation. The
+  // live-refresh state is transport-only and has no "processing" value.
   assert.doesNotMatch(
     ui,
     /setLiveRefreshState\(isActiveRunStatus/,
     "the processing banner must not treat a queued upload as work in progress",
   );
-  assert.match(ui, /setLiveRefreshState\(isRunInFlight/);
-  assert.match(ui, /isRunInFlight\(detail\.run\.status\) \? \(/, "the Processing in progress panel is gated on real work");
+  assert.match(ui, /type LiveRefreshState = "idle" \| "refreshing"/);
+  assert.match(ui, /isRunInFlight\(selectedEffectiveStatus\) \? \(/, "the Processing in progress panel is gated on effective work");
 });
 
 test("a queued run offers the explicit Process action", () => {
   const ui = read("components/accounting/accounting-intelligence.tsx");
-  assert.match(ui, /isRunAwaitingProcessing\(detail\.run\.status\)/, "queued runs get their own state");
+  assert.match(ui, /isRunAwaitingProcessing\(selectedEffectiveStatus\)/, "queued runs get their own state");
   assert.match(ui, /Ready to process/, "and say what they are waiting for");
 });
 

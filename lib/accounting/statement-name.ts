@@ -43,7 +43,8 @@ function monthYear(iso: string): string | null {
 // Neutral placeholder shown before a statement date has been extracted — never a
 // guessed month, never the upload date.
 export function statementPlaceholderName(run: NamingRun): string {
-  if (run.status === "queued" || run.status === "processing") return "Processing Statement…";
+  if (run.status === "queued") return "Uploaded Statement";
+  if (run.status === "processing") return "Processing Statement…";
   if (run.status === "failed") return "Statement (Processing Failed)";
   const companyName = cleanStatementLabel(run.companyName);
   if (companyName) return `${companyName} Statement`;
