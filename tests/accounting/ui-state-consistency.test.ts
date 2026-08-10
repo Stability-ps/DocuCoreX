@@ -82,3 +82,15 @@ test("every statement row keeps its upload date and time visible", () => {
   assert.match(ui, /`Uploaded \$\{compactDateTime\(run\.createdAt\)\}`/);
   assert.match(ui, /cleanStatementLabel\(run\.accountNumber\) \|\| cleanStatementLabel\(run\.companyName\)/);
 });
+
+test("the selected statement keeps real metadata, metrics, and the PDF beside transactions", () => {
+  assert.match(ui, /statementPeriodLabel\(detail\.run\)/);
+  assert.match(ui, /cleanStatementLabel\(detail\.run\.bank\)/);
+  assert.match(ui, /grid-cols-5/);
+  assert.match(ui, /lg:grid-cols-\[minmax\(0,36fr\)_minmax\(0,64fr\)\]/);
+  assert.match(ui, /<DocumentViewer/);
+  assert.match(ui, /sourceUrl=\{`\/api\/accounting\/fnb\/runs\/\$\{detail\.run\.id\}\/source`\}/);
+  assert.match(ui, /onShowInStatement=\{showTransactionInStatement\}/);
+  assert.match(ui, /onShowInStatement\?\.\(transaction\.sourcePage\)/);
+  assert.doesNotMatch(ui, /boundingBox|fakeHighlight/);
+});
