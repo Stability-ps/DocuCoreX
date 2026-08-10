@@ -3,6 +3,7 @@
 import { useState } from "react";
 import { AlertTriangle, ChevronDown, RefreshCw } from "lucide-react";
 import type { AccountingStatementRun } from "@/lib/accounting/types";
+import { assessDocumentTypeMismatch } from "@/lib/accounting/document-type-mismatch";
 
 function asRecord(value: unknown): Record<string, unknown> | null {
   return value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : null;
@@ -16,21 +17,19 @@ function JsonBlock({ value }: { value: unknown }) {
   );
 }
 
-// Shown when a statement run has failed. Surfaces the REAL reason instead of just
-// "Failed 0%": the error message, the last processing step, selected parser,
-// detected PDF type, and the full parserDebug + OCR debug — plus Retry / Force
-// Reprocess. Failed runs are never auto-deleted; this is how the user recovers.
 export function FailedRunPanel({
   run,
   onRetry,
   onRetryWithoutForce,
   onCancel,
+  onUploadAnother,
   busy,
 }: {
   run: AccountingStatementRun;
   onRetry: () => void;
   onRetryWithoutForce?: () => void;
   onCancel?: () => void;
+  onUploadAnother?: () => void;
   busy: boolean;
 }) {
   const [showDebug, setShowDebug] = useState(false);
@@ -41,13 +40,20 @@ export function FailedRunPanel({
   const selectedParser = run.parserMethod ?? (typeof parserDebug?.selected_parser === "string" ? (parserDebug.selected_parser as string) : null);
   const detectedPdfType = run.detectedPdfType ?? (typeof parserDebug?.detected_pdf_type === "string" ? (parserDebug.detected_pdf_type as string) : null);
   const warnings = Array.isArray(run.extractionWarnings) ? run.extractionWarnings : [];
+  const mismatch = assessDocumentTypeMismatch(run);
 
-  const facts: Array<[string, string]> = [
-    ["Last processing step", run.processingStep ?? "—"],
-    ["Selected parser", selectedParser ?? "—"],
-    ["Detected PDF type", detectedPdfType ?? "—"],
-    ["OCR used", run.ocrUsed == null ? "—" : run.ocrUsed ? "Yes" : "No"],
-  ];
+  const facts: Array<[string, string]> = mismatch.isMismatch
+    ? [
+        ["Document reading", "Successful"],
+        ["Transactions found", "None"],
+        ["Detected PDF type", detectedPdfType ?? "—"],
+      ]
+    : [
+        ["Last processing step", run.processingStep ?? "—"],
+        ["Selected parser", selectedParser ?? "—"],
+        ["Detected PDF type", detectedPdfType ?? "—"],
+        ["OCR used", run.ocrUsed == null ? "—" : run.ocrUsed ? "Yes" : "No"],
+      ];
 
   return (
     <div className="rounded-xl border border-rose-200 bg-rose-50/70 p-4 sm:p-5" role="alert">
@@ -55,52 +61,82 @@ export function FailedRunPanel({
         <div className="min-w-0">
           <div className="flex items-center gap-2">
             <AlertTriangle className="h-5 w-5 shrink-0 text-rose-600" />
-            <h3 className="text-lg font-semibold text-rose-900">Processing failed</h3>
+            <h3 className="text-lg font-semibold text-rose-900">{mismatch.isMismatch ? mismatch.title : "Processing failed"}</h3>
           </div>
-          <p className="mt-2 break-words text-sm font-semibold text-rose-800">{run.error || "The statement could not be processed."}</p>
-          {reasonNoTransactions && reasonNoTransactions !== run.error ? (
+          <p className="mt-2 break-words text-sm font-semibold text-rose-800">
+            {mismatch.isMismatch ? mismatch.body : run.error || "The statement could not be processed."}
+          </p>
+          {mismatch.detectedDocumentLabel ? (
+            <p className="mt-2 text-xs font-bold text-rose-700">Document detected: {mismatch.detectedDocumentLabel}</p>
+          ) : null}
+          {run.bank ? <p className="mt-1 text-xs font-bold text-rose-700">Bank: {run.bank}</p> : null}
+          {!mismatch.isMismatch && reasonNoTransactions && reasonNoTransactions !== run.error ? (
             <p className="mt-1 break-words text-xs font-semibold text-rose-700">{reasonNoTransactions}</p>
           ) : null}
         </div>
         <div className="flex shrink-0 flex-wrap items-center gap-2">
-          {onRetryWithoutForce ? (
-            <button
-              type="button"
-              onClick={onRetryWithoutForce}
-              disabled={busy}
-              className="inline-flex items-center gap-2 rounded-lg border border-rose-300 bg-white px-3 py-2 text-sm font-bold text-rose-700 shadow-sm hover:bg-rose-100 disabled:opacity-50"
-            >
-              <RefreshCw className={`h-4 w-4 ${busy ? "animate-spin" : ""}`} />
-              {busy ? "Retrying…" : "Retry"}
-            </button>
-          ) : null}
-          <button
-            type="button"
-            onClick={onRetry}
-            disabled={busy}
-            className="inline-flex items-center gap-2 rounded-lg bg-rose-600 px-3 py-2 text-sm font-bold text-white shadow-sm hover:bg-rose-700 disabled:opacity-50"
-          >
-            <RefreshCw className={`h-4 w-4 ${busy ? "animate-spin" : ""}`} />
-            {busy ? "Reprocessing…" : "Force Reprocess"}
-          </button>
-          {onCancel ? (
-            <button
-              type="button"
-              onClick={onCancel}
-              disabled={busy}
-              className="inline-flex items-center gap-2 rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm font-bold text-slate-700 shadow-sm hover:bg-slate-100 disabled:opacity-50"
-            >
-              Cancel processing
-            </button>
-          ) : null}
-          {run.transactionCount > 0 ? (
-            <a
-              href={`/api/accounting/fnb/export/${run.id}?section=all`}
-              className="inline-flex items-center gap-2 rounded-lg border border-emerald-300 bg-white px-3 py-2 text-sm font-bold text-emerald-700 shadow-sm hover:bg-emerald-50"
-            >
-              Export draft
-            </a>
-          ) : null}
+          {mismatch.isMismatch ? (
+            <>
+              {onUploadAnother ? (
+                <button
+                  type="button"
+                  onClick={onUploadAnother}
+                  className="inline-flex items-center gap-2 rounded-lg bg-royal-600 px-3 py-2 text-sm font-bold text-white shadow-sm hover:bg-royal-700"
+                >
+                  Upload another statement
+                </button>
+              ) : null}
+              <a
+                href={`/api/accounting/fnb/runs/${run.id}/source`}
+                target="_blank"
+                rel="noreferrer"
+                className="inline-flex items-center gap-2 rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm font-bold text-slate-700 shadow-sm hover:bg-slate-100"
+              >
+                View document
+              </a>
+            </>
+          ) : (
+            <>
+              {onRetryWithoutForce ? (
+                <button
+                  type="button"
+                  onClick={onRetryWithoutForce}
+                  disabled={busy}
+                  className="inline-flex items-center gap-2 rounded-lg border border-rose-300 bg-white px-3 py-2 text-sm font-bold text-rose-700 shadow-sm hover:bg-rose-100 disabled:opacity-50"
+                >
+                  <RefreshCw className={`h-4 w-4 ${busy ? "animate-spin" : ""}`} />
+                  {busy ? "Retrying…" : "Retry"}
+                </button>
+              ) : null}
+              <button
+                type="button"
+                onClick={onRetry}
+                disabled={busy}
+                className="inline-flex items-center gap-2 rounded-lg bg-rose-600 px-3 py-2 text-sm font-bold text-white shadow-sm hover:bg-rose-700 disabled:opacity-50"
+              >
+                <RefreshCw className={`h-4 w-4 ${busy ? "animate-spin" : ""}`} />
+                {busy ? "Reprocessing…" : "Force Reprocess"}
+              </button>
+              {onCancel ? (
+                <button
+                  type="button"
+                  onClick={onCancel}
+                  disabled={busy}
+                  className="inline-flex items-center gap-2 rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm font-bold text-slate-700 shadow-sm hover:bg-slate-100 disabled:opacity-50"
+                >
+                  Cancel processing
+                </button>
+              ) : null}
+              {run.transactionCount > 0 ? (
+                <a
+                  href={`/api/accounting/fnb/export/${run.id}?section=all`}
+                  className="inline-flex items-center gap-2 rounded-lg border border-emerald-300 bg-white px-3 py-2 text-sm font-bold text-emerald-700 shadow-sm hover:bg-emerald-50"
+                >
+                  Export draft
+                </a>
+              ) : null}
+            </>
+          )}
         </div>
       </div>
 
@@ -108,17 +144,21 @@ export function FailedRunPanel({
         {facts.map(([label, value]) => (
           <div key={label} className="min-w-0">
             <dt className="text-[10px] font-black uppercase tracking-wide text-rose-500">{label}</dt>
-            <dd className="truncate text-sm font-bold text-rose-900" title={value}>{value}</dd>
+            <dd className="truncate text-sm font-bold text-rose-900" title={value}>
+              {value}
+            </dd>
           </div>
         ))}
       </dl>
 
-      {run.routeReason ? <p className="mt-3 break-words text-xs font-semibold text-rose-700">Route: {run.routeReason}</p> : null}
+      {!mismatch.isMismatch && run.routeReason ? <p className="mt-3 break-words text-xs font-semibold text-rose-700">Route: {run.routeReason}</p> : null}
 
-      {warnings.length ? (
+      {!mismatch.isMismatch && warnings.length ? (
         <ul className="mt-3 list-disc space-y-1 pl-5 text-xs font-semibold text-rose-700">
           {warnings.map((warning, index) => (
-            <li key={`${warning}-${index}`} className="break-words">{warning}</li>
+            <li key={`${warning}-${index}`} className="break-words">
+              {warning}
+            </li>
           ))}
         </ul>
       ) : null}
@@ -132,7 +172,7 @@ export function FailedRunPanel({
             aria-expanded={showDebug}
           >
             <ChevronDown className={`h-4 w-4 transition ${showDebug ? "rotate-180" : ""}`} />
-            {showDebug ? "Hide technical details" : "View error details (parserDebug + OCR debug)"}
+            {showDebug ? "Hide technical details" : "Technical details"}
           </button>
           {showDebug ? (
             <div className="mt-2 space-y-3">

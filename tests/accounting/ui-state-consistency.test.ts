@@ -6,6 +6,8 @@ import { fileURLToPath } from "node:url";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
 const ui = readFileSync(join(root, "components/accounting/accounting-intelligence.tsx"), "utf8");
+const processingSteps = readFileSync(join(root, "components/accounting/processing-steps.tsx"), "utf8");
+const failedPanel = readFileSync(join(root, "components/accounting/failed-run-panel.tsx"), "utf8");
 
 test("queued presentation cannot be overridden by optimistic local processing state", () => {
   assert.doesNotMatch(ui, /function applyRunRefreshState/);
@@ -14,6 +16,22 @@ test("queued presentation cannot be overridden by optimistic local processing st
   assert.match(ui, /Processing has not started yet\./);
   assert.match(ui, /Process Statement/);
   assert.match(ui, /Process this statement to extract transactions\./);
+});
+
+test("processing uses a truthful stage-based progress bar without numeric percentages", () => {
+  assert.match(processingSteps, /role="progressbar"/);
+  assert.match(processingSteps, /aria-valuetext/);
+  assert.match(processingSteps, /Finalising your statement/);
+  assert.match(processingSteps, /animate-pulse/);
+  assert.doesNotMatch(processingSteps, /\d+%/);
+  assert.doesNotMatch(ui, /Refreshing latest results/);
+});
+
+test("non-statement mismatch panel prioritises upload\/view actions instead of retry loops", () => {
+  assert.match(failedPanel, /mismatch\.isMismatch \?/);
+  assert.match(failedPanel, /Upload another statement/);
+  assert.match(failedPanel, /View document/);
+  assert.match(failedPanel, /Technical details/);
 });
 
 test("a successful process response starts polling despite a stale immediate refresh", () => {

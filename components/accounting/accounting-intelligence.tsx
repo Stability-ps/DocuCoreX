@@ -79,6 +79,7 @@ import { WorkspaceForecast } from "@/components/accounting/workspace-forecast";
 import { WorkspaceAudit } from "@/components/accounting/workspace-audit";
 import { mergeAccountingRunProgress } from "@/lib/accounting/processing-stage";
 import { FailedRunPanel } from "@/components/accounting/failed-run-panel";
+import { assessDocumentTypeMismatch } from "@/lib/accounting/document-type-mismatch";
 import type { AiCommentaryResult, AiCommentaryType } from "@/lib/accounting/ai-service";
 import { supabase } from "@/lib/supabase";
 
@@ -1062,7 +1063,6 @@ export function AccountingIntelligence() {
       auditSummary: buildAuditSummary(txns, run, duplicates, unusuals, vatAnomalies, riskScore),
     };
   }, [detail, totals]);
-  const liveRefreshBanner = liveRefreshState === "refreshing" ? "Refreshing latest results…" : "";
   const visibleMessage =
     message === "Processing your statement." && !isRunInFlight(selectedEffectiveStatus) ? "" : message;
 
@@ -1350,12 +1350,6 @@ export function AccountingIntelligence() {
         </div>
       ) : null}
 
-      {liveRefreshBanner ? (
-        <div className="flex items-center gap-2 rounded-lg border border-blue-200 bg-blue-50 px-4 py-2.5 text-xs font-bold text-blue-800">
-          <Loader2 className="h-3.5 w-3.5 animate-spin" />
-          <span>{liveRefreshBanner}</span>
-        </div>
-      ) : null}
       {visibleMessage ? (
         <div className="flex items-start justify-between gap-3 rounded-lg border border-emerald-200 bg-emerald-50/80 px-4 py-2.5 text-xs font-bold text-emerald-900" role="status" aria-live="polite">
           <span>{visibleMessage}</span>
@@ -1446,6 +1440,7 @@ export function AccountingIntelligence() {
                   onRetryWithoutForce={() => void processRun(detail.run.id)}
                   onRetry={() => void processRun(detail.run.id, { reprocess: true })}
                   onCancel={isActiveRunStatus(detail.run.status) ? () => void cancelRun(detail.run.id) : undefined}
+                  onUploadAnother={() => inputRef.current?.click()}
                 />
               ) : null}
 
@@ -1515,6 +1510,7 @@ export function AccountingIntelligence() {
                   }}
                   onViewDifference={() => setActiveTab("difference")}
                   onRegenerate={() => void processRun(detail.run.id)}
+                  onUploadAnother={() => inputRef.current?.click()}
                   busy={busy === `process:${detail.run.id}`}
                 />
               ) : null}
@@ -1912,6 +1908,7 @@ function ReviewRequiredPanel({
   onReview,
   onViewDifference,
   onRegenerate,
+  onUploadAnother,
   busy,
 }: {
   run: AccountingStatementRun;
@@ -1920,9 +1917,47 @@ function ReviewRequiredPanel({
   onReview: () => void;
   onViewDifference: () => void;
   onRegenerate: () => void;
+  onUploadAnother?: () => void;
   busy: boolean;
 }) {
   const confidence = diagnostics.confidence ?? run.confidence;
+  const mismatch = assessDocumentTypeMismatch(run);
+
+  if (mismatch.isMismatch) {
+    return (
+      <section className="rounded-xl border border-amber-200 bg-amber-50/60 p-4">
+        <div className="flex items-center gap-2">
+          <AlertTriangle className="h-4 w-4 text-amber-700" />
+          <h3 className="text-lg font-semibold text-navy-950">{mismatch.title}</h3>
+        </div>
+        <p className="mt-2 text-sm font-semibold text-slate-700">{mismatch.body}</p>
+        {mismatch.detectedDocumentLabel ? (
+          <p className="mt-2 text-xs font-bold text-amber-800">Document detected: {mismatch.detectedDocumentLabel}</p>
+        ) : null}
+        {run.bank ? <p className="mt-1 text-xs font-bold text-amber-800">Bank: {run.bank}</p> : null}
+        <p className="mt-2 text-xs font-semibold text-slate-600">
+          Please upload a statement containing transaction activity.
+        </p>
+        <div className="mt-4 flex flex-wrap gap-2">
+          {onUploadAnother ? (
+            <button type="button" onClick={onUploadAnother} className="min-h-10 rounded-lg bg-royal-600 px-4 text-sm font-black text-white shadow-sm">
+              Upload another statement
+            </button>
+          ) : null}
+          <a
+            href={`/api/accounting/fnb/runs/${run.id}/source`}
+            target="_blank"
+            rel="noreferrer"
+            className="inline-flex min-h-10 items-center rounded-lg border border-slate-200 bg-white px-4 text-sm font-black text-slate-700"
+          >
+            View document
+          </a>
+        </div>
+        {canShowTechnicalDetails ? <TechnicalDetails diagnostics={diagnostics} /> : null}
+      </section>
+    );
+  }
+
   return (
     <section className="rounded-xl border border-amber-200 bg-amber-50/60 p-4">
       <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
