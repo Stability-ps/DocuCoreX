@@ -8,6 +8,7 @@ import { isUnresolvedAccountingCategory } from "@/lib/accounting/review-options"
 import { MAX_TAG_LENGTH, dedupeTags, normalizeTag, sameTag, sortTags, tagRejection } from "@/lib/accounting/tags";
 import { bestTransferCandidates, findTransferCandidates, type TransferCandidate, type TransferSide } from "@/lib/accounting/transfers";
 import { findRecurringPatterns, type RecurringInput, type RecurringPattern } from "@/lib/accounting/recurring";
+import { latestBalancesByAccount, summarizeCashflow, type CashflowInput, type CashflowSummary } from "@/lib/accounting/cashflow";
 import { getWorkspaceContext } from "@/lib/server-documents";
 import { createDocumentVersionRecord } from "@/lib/supabase-server-adapter";
 import type {
@@ -1401,4 +1402,72 @@ export async function decideRecurringPattern(merchant: string, status: "confirme
     entityId: trimmed,
     newValue: { status },
   });
+}
+
+/**
+ * Cashflow across every statement in the workspace.
+ *
+ * Confirmed inter-account transfers are excluded from the totals. Both legs are
+ * removed together: dropping only one would leave the gross figures disagreeing
+ * with net movement by the transfer amount.
+ */
+export async function getWorkspaceCashflow(): Promise<{
+  summary: CashflowSummary;
+  balances: Array<{ accountLabel: string; asAt: string | null; balance: number }>;
+}> {
+  const context = await getWorkspaceContext();
+  const empty = summarizeCashflow([]);
+  if (!context) return { summary: empty, balances: [] };
+
+  const { data: runRows } = await context.supabase
+    .from("accounting_statement_runs")
+    .select("bank, account_number, statement_period_end, closing_balance")
+    .eq("workspace_id", context.workspaceId);
+
+  const balances = latestBalancesByAccount(
+    (runRows ?? []).map((run) => ({
+      accountLabel:
+        [run.bank as string | undefined, run.account_number as string | undefined].filter(Boolean).join(" ") ||
+        "Unknown account",
+      periodEnd: (run.statement_period_end as string | null) ?? null,
+      closingBalance: (run.closing_balance as number | null) ?? null,
+    })),
+  );
+
+  const { data: confirmedRows, error: confirmedError } = await context.supabase
+    .from("accounting_transfer_matches")
+    .select("outbound_transaction_id, inbound_transaction_id")
+    .eq("workspace_id", context.workspaceId)
+    .eq("status", "confirmed");
+
+  // A missing table (migration 032 not applied) means no confirmations yet, so
+  // nothing is excluded — the totals are then gross, which hasGaps and the
+  // excluded count make visible rather than silent.
+  if (confirmedError && confirmedError.code !== "42P01") {
+    console.warn("[accounting] confirmed transfers unreadable", confirmedError.message);
+  }
+
+  const confirmedTransferIds = new Set<string>();
+  for (const row of confirmedRows ?? []) {
+    confirmedTransferIds.add(row.outbound_transaction_id as string);
+    confirmedTransferIds.add(row.inbound_transaction_id as string);
+  }
+
+  const { data: rows } = await context.supabase
+    .from("accounting_transactions")
+    .select("id, transaction_date, debit_amount, credit_amount, account_category, bank_charge")
+    .eq("workspace_id", context.workspaceId)
+    .order("transaction_date", { ascending: true })
+    .limit(10000);
+
+  const inputs: CashflowInput[] = (rows ?? []).map((row) => ({
+    transactionId: row.id as string,
+    date: (row.transaction_date as string | null) ?? null,
+    debit: (row.debit_amount as number | null) ?? null,
+    credit: (row.credit_amount as number | null) ?? null,
+    accountCategory: (row.account_category as string) ?? "",
+    bankCharge: Boolean(row.bank_charge),
+  }));
+
+  return { summary: summarizeCashflow(inputs, confirmedTransferIds), balances };
 }
