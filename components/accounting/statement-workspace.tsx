@@ -4,6 +4,14 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import {
+  DEFAULT_VISIBLE_COLUMNS,
+  TRANSACTION_COLUMNS,
+  loadVisibleColumns,
+  normalizeVisibleColumns,
+  saveVisibleColumns,
+  type TransactionColumnId,
+} from "@/lib/accounting/transaction-columns";
+import {
   ArrowLeft,
   ChevronDown,
   Download,
@@ -769,29 +777,80 @@ function TransactionsTab({
   onShowInStatement: (page: number | null) => void;
 }) {
   const [query, setQuery] = useState("");
+  const [visibleColumns, setVisibleColumns] = useState<TransactionColumnId[]>(DEFAULT_VISIBLE_COLUMNS);
+  const [columnsOpen, setColumnsOpen] = useState(false);
+
+  // Read the stored preference after mount. Reading it during render would make
+  // the server and client markup disagree, since localStorage does not exist on
+  // the server — so the first paint is deliberately the default layout.
+  useEffect(() => {
+    setVisibleColumns(loadVisibleColumns());
+  }, []);
+
+  const shown = useMemo(() => new Set(visibleColumns), [visibleColumns]);
+  const columns = useMemo(() => TRANSACTION_COLUMNS.filter((column) => shown.has(column.id)), [shown]);
+
+  const toggleColumn = (id: TransactionColumnId) => {
+    setVisibleColumns((current) => {
+      const next = current.includes(id) ? current.filter((value) => value !== id) : [...current, id];
+      const normalized = normalizeVisibleColumns(next);
+      saveVisibleColumns(normalized);
+      return normalized;
+    });
+  };
+
   const rows = useMemo(() => {
     const q = query.trim().toLowerCase();
     return q ? model.transactions.filter((t) => `${t.description} ${t.category} ${t.reference}`.toLowerCase().includes(q)) : model.transactions;
   }, [model.transactions, query]);
   return (
     <div>
-      <label className="relative mb-2 block">
-        <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
-        <input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Search transactions" className="h-9 w-full rounded-lg border border-slate-200 pl-9 pr-3 text-sm font-medium outline-none focus:border-royal-300" />
-      </label>
+      <div className="mb-2 flex items-center gap-2">
+        <label className="relative block flex-1">
+          <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
+          <input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Search transactions" className="h-9 w-full rounded-lg border border-slate-200 pl-9 pr-3 text-sm font-medium outline-none focus:border-royal-300" />
+        </label>
+        <div className="relative shrink-0">
+          <button
+            type="button"
+            onClick={() => setColumnsOpen((open) => !open)}
+            aria-expanded={columnsOpen}
+            className="h-9 rounded-lg border border-slate-200 bg-white px-3 text-xs font-black text-slate-600 hover:bg-slate-50"
+          >
+            Columns
+          </button>
+          {columnsOpen ? (
+            <div className="absolute right-0 z-20 mt-1 w-56 rounded-lg border border-slate-200 bg-white p-2 shadow-lg">
+              {TRANSACTION_COLUMNS.map((column) => (
+                <label
+                  key={column.id}
+                  className={`flex items-center gap-2 rounded px-2 py-1.5 text-xs font-semibold ${
+                    column.locked ? "text-slate-400" : "cursor-pointer text-navy-950 hover:bg-slate-50"
+                  }`}
+                  title={column.locked ? "Always shown — a transaction cannot be identified without it." : undefined}
+                >
+                  <input
+                    type="checkbox"
+                    checked={shown.has(column.id)}
+                    disabled={column.locked}
+                    onChange={() => toggleColumn(column.id)}
+                  />
+                  {column.label}
+                </label>
+              ))}
+            </div>
+          ) : null}
+        </div>
+      </div>
       <div className="overflow-auto rounded-lg border border-slate-100">
         <table className="w-full text-left text-xs">
           <thead className="bg-slate-50 text-[10px] uppercase tracking-wide text-slate-400">
             <tr>
-              <th className="px-2 py-2 font-black">Date</th>
-              <th className="px-2 py-2 font-black">Description</th>
-              <th className="px-2 py-2 text-right font-black">Money In</th>
-              <th className="px-2 py-2 text-right font-black">Money Out</th>
-              <th className="px-2 py-2 text-right font-black">Balance</th>
-              <th className="px-2 py-2 font-black">Category</th>
-              <th className="px-2 py-2 font-black">GL</th>
-              <th className="px-2 py-2 font-black">VAT</th>
-              <th className="px-2 py-2 font-black">Status</th>
+              {columns.map((column) => (
+                <th key={column.id} className={`px-2 py-2 font-black ${column.align === "right" ? "text-right" : ""}`}>
+                  {column.label}
+                </th>
+              ))}
             </tr>
           </thead>
           <tbody>
@@ -807,23 +866,44 @@ function TransactionsTab({
                 title={t.sourcePage ? `Show page ${t.sourcePage} of the statement` : undefined}
                 className={`border-t border-slate-100 hover:bg-slate-50 ${t.sourcePage ? "cursor-pointer" : ""}`}
               >
-                <td className="whitespace-nowrap px-2 py-1.5 font-semibold text-slate-600">{fmtDate(t.date)}</td>
-                <td className="max-w-[180px] truncate px-2 py-1.5 font-semibold text-navy-950" title={t.description}>
-                  {t.description}
-                  {t.bankCharge ? <span className="ml-1 rounded bg-slate-100 px-1 text-[9px] font-black text-slate-500">FEE</span> : null}
-                </td>
-                <td className="px-2 py-1.5 text-right font-bold text-emerald-700">{t.credit ? fmtMoney(t.credit) : ""}</td>
-                <td className="px-2 py-1.5 text-right font-bold text-slate-700">{t.debit ? fmtMoney(t.debit) : ""}</td>
-                <td className="px-2 py-1.5 text-right font-semibold text-slate-500">{t.balance != null ? fmtMoney(t.balance) : "—"}</td>
-                <td className="max-w-[120px] truncate px-2 py-1.5 font-semibold text-slate-600" title={t.category}>{t.category}</td>
-                <td className="px-2 py-1.5 font-semibold text-slate-500">{t.account.number}</td>
-                <td className="px-2 py-1.5"><span className={`rounded px-1.5 py-0.5 text-[10px] font-black ${t.vatCode === "REV" ? "bg-amber-100 text-amber-800" : "bg-slate-100 text-slate-600"}`}>{t.vatCode}</span></td>
-                <td className="px-2 py-1.5"><span className={`rounded-full px-1.5 py-0.5 text-[10px] font-black ${statusTone(t.reviewStatus)}`}>{t.reviewStatus}</span></td>
+                {columns.map((column) => {
+                  switch (column.id) {
+                    case "date":
+                      return <td key={column.id} className="whitespace-nowrap px-2 py-1.5 font-semibold text-slate-600">{fmtDate(t.date)}</td>;
+                    case "description":
+                      return (
+                        <td key={column.id} className="max-w-[180px] truncate px-2 py-1.5 font-semibold text-navy-950" title={t.description}>
+                          {t.description}
+                          {t.bankCharge ? <span className="ml-1 rounded bg-slate-100 px-1 text-[9px] font-black text-slate-500">FEE</span> : null}
+                        </td>
+                      );
+                    case "credit":
+                      return <td key={column.id} className="px-2 py-1.5 text-right font-bold text-emerald-700">{t.credit ? fmtMoney(t.credit) : ""}</td>;
+                    case "debit":
+                      return <td key={column.id} className="px-2 py-1.5 text-right font-bold text-slate-700">{t.debit ? fmtMoney(t.debit) : ""}</td>;
+                    case "balance":
+                      return <td key={column.id} className="px-2 py-1.5 text-right font-semibold text-slate-500">{t.balance != null ? fmtMoney(t.balance) : "—"}</td>;
+                    case "category":
+                      return <td key={column.id} className="max-w-[120px] truncate px-2 py-1.5 font-semibold text-slate-600" title={t.category}>{t.category}</td>;
+                    case "gl":
+                      return <td key={column.id} className="px-2 py-1.5 font-semibold text-slate-500">{t.account.number}</td>;
+                    case "vat":
+                      return <td key={column.id} className="px-2 py-1.5"><span className={`rounded px-1.5 py-0.5 text-[10px] font-black ${t.vatCode === "REV" ? "bg-amber-100 text-amber-800" : "bg-slate-100 text-slate-600"}`}>{t.vatCode}</span></td>;
+                    case "status":
+                      return <td key={column.id} className="px-2 py-1.5"><span className={`rounded-full px-1.5 py-0.5 text-[10px] font-black ${statusTone(t.reviewStatus)}`}>{t.reviewStatus}</span></td>;
+                    case "sourcePage":
+                      // "—" rather than a blank: no recorded page is a fact
+                      // about the extraction, not a missing cell.
+                      return <td key={column.id} className="px-2 py-1.5 font-semibold text-slate-500">{t.sourcePage ?? "—"}</td>;
+                    default:
+                      return null;
+                  }
+                })}
               </tr>
             ))}
             {rows.length === 0 ? (
               <tr>
-                <td colSpan={9} className="px-2 py-6 text-center text-sm font-semibold text-slate-400">No transactions match.</td>
+                <td colSpan={columns.length} className="px-2 py-6 text-center text-sm font-semibold text-slate-400">No transactions match.</td>
               </tr>
             ) : null}
           </tbody>
@@ -834,6 +914,53 @@ function TransactionsTab({
 }
 
 function ReviewTab({ reviewItems, patchTransaction }: { reviewItems: AccountingTransaction[]; patchTransaction: (t: AccountingTransaction, patch: AccountingTransactionPatch) => Promise<void> }) {
+  // Focused review is one decision at a time with a position counter; the list
+  // stays available because scanning a whole queue and working through it one
+  // item at a time are different jobs, and neither replaces the other.
+  const [focused, setFocused] = useState(true);
+  const [index, setIndex] = useState(0);
+
+  // The queue shrinks as items are approved, so an index held across a change
+  // can point past the end. Clamping on length change keeps the position valid
+  // without resetting the accountant to the top of the queue on every save.
+  const clampedIndex = reviewItems.length ? Math.min(index, reviewItems.length - 1) : 0;
+  useEffect(() => {
+    setIndex((current) => (reviewItems.length ? Math.min(current, reviewItems.length - 1) : 0));
+  }, [reviewItems.length]);
+
+  const step = useCallback(
+    (delta: number) => {
+      setIndex((current) => {
+        const next = current + delta;
+        if (next < 0 || next > reviewItems.length - 1) return current;
+        return next;
+      });
+    },
+    [reviewItems.length],
+  );
+
+  // Arrow keys only move the queue when the accountant is not typing or
+  // choosing in a field — otherwise left/right inside a text box would jump the
+  // transaction out from under the edit being made.
+  useEffect(() => {
+    if (!focused || !reviewItems.length) return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      const target = event.target as HTMLElement | null;
+      const tag = target?.tagName;
+      if (tag === "INPUT" || tag === "SELECT" || tag === "TEXTAREA" || target?.isContentEditable) return;
+      if (event.metaKey || event.ctrlKey || event.altKey) return;
+      if (event.key === "ArrowLeft") {
+        event.preventDefault();
+        step(-1);
+      } else if (event.key === "ArrowRight") {
+        event.preventDefault();
+        step(1);
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [focused, reviewItems.length, step]);
+
   if (!reviewItems.length) {
     return <div className="rounded-lg border border-emerald-100 bg-emerald-50 p-4 text-sm font-bold text-emerald-800">Nothing to review — all transactions are categorised with resolved VAT.</div>;
   }
@@ -844,9 +971,7 @@ function ReviewTab({ reviewItems, patchTransaction }: { reviewItems: AccountingT
       reviewStatus: "approved",
       notes: transaction.notes || "Approved and saved for future supplier matching.",
     });
-  return (
-    <div className="space-y-2">
-      {reviewItems.map((t) => (
+  const renderItem = (t: AccountingTransaction) => (
         <div key={t.id} className="rounded-lg border border-amber-200 bg-amber-50/40 p-3">
           <div className="flex items-start justify-between gap-2">
             <div className="min-w-0">
@@ -908,7 +1033,59 @@ function ReviewTab({ reviewItems, patchTransaction }: { reviewItems: AccountingT
             <button onClick={() => void patchTransaction(t, { reviewStatus: "resolved", notes: t.notes || "Ignored during review." })} className="rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-xs font-bold text-slate-700 hover:bg-slate-50">Ignore</button>
           </div>
         </div>
-      ))}
+  );
+
+  const current = reviewItems[clampedIndex];
+
+  return (
+    <div className="space-y-2">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <p className="text-xs font-black uppercase tracking-wide text-amber-700">
+          Review required — {reviewItems.length} {reviewItems.length === 1 ? "item" : "items"}
+        </p>
+        <div className="flex items-center gap-1">
+          {focused ? (
+            <>
+              <span className="px-1 text-xs font-black text-slate-500" aria-live="polite">
+                {clampedIndex + 1} of {reviewItems.length}
+              </span>
+              <button
+                type="button"
+                onClick={() => step(-1)}
+                disabled={clampedIndex === 0}
+                className="rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-xs font-bold text-slate-700 hover:bg-slate-50 disabled:text-slate-300"
+              >
+                Previous
+              </button>
+              <button
+                type="button"
+                onClick={() => step(1)}
+                disabled={clampedIndex >= reviewItems.length - 1}
+                className="rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-xs font-bold text-slate-700 hover:bg-slate-50 disabled:text-slate-300"
+              >
+                Next
+              </button>
+            </>
+          ) : null}
+          <button
+            type="button"
+            onClick={() => setFocused((value) => !value)}
+            className="rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-xs font-black text-slate-600 hover:bg-slate-50"
+          >
+            {focused ? "Show all" : "Focus mode"}
+          </button>
+        </div>
+      </div>
+      {focused ? (
+        <>
+          {current ? renderItem(current) : null}
+          <p className="text-[11px] font-semibold text-slate-400">
+            Use ← and → to move through the queue. Approving an item removes it, and the next one takes its place.
+          </p>
+        </>
+      ) : (
+        reviewItems.map(renderItem)
+      )}
     </div>
   );
 }
