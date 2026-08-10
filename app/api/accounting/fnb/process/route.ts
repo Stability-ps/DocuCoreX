@@ -949,7 +949,8 @@ export async function POST(request: Request) {
     // reason: a run that still has 615 transactions must not advertise zero,
     // and a reviewer refreshing mid-reprocess should see the statement they had
     // rather than an empty one.
-    const { error: markError } = await context.supabase
+    let claimLanded = false;
+    const { data: claimedRows, error: markError } = await context.supabase
       .from("accounting_statement_runs")
       .update({
         status: "processing",
@@ -986,9 +987,10 @@ export async function POST(request: Request) {
       })
       .eq("workspace_id", context.workspaceId)
       .eq("id", runId)
-      .or(`active_job_id.is.null,active_job_id.eq.${processingJobId}`);
+      .or(`active_job_id.is.null,active_job_id.eq.${processingJobId}`)
+      .select("id");
     if (markError) {
-      const { error: fallbackMarkError } = await context.supabase
+      const { data: fallbackClaimedRows, error: fallbackMarkError } = await context.supabase
         .from("accounting_statement_runs")
         .update({
           // Same reasoning as the primary update above: the previous
@@ -1003,7 +1005,8 @@ export async function POST(request: Request) {
         })
         .eq("workspace_id", context.workspaceId)
         .eq("id", runId)
-        .or(`active_job_id.is.null,active_job_id.eq.${processingJobId}`);
+        .or(`active_job_id.is.null,active_job_id.eq.${processingJobId}`)
+        .select("id");
       if (fallbackMarkError) {
         if (body.reprocess) {
           await context.supabase
@@ -1019,6 +1022,49 @@ export async function POST(request: Request) {
         }
         return NextResponse.json({ error: fallbackMarkError.message }, { status: 500 });
       }
+      claimLanded = (fallbackClaimedRows ?? []).length > 0;
+    } else {
+      claimLanded = (claimedRows ?? []).length > 0;
+    }
+
+    // A conditional UPDATE that matches nothing is not an error in PostgREST —
+    // it returns success with zero rows. Without this check the claim silently
+    // no-ops, the run keeps status "queued" with a null active_job_id, and the
+    // pipeline dispatches anyway. The worker then extracts, classifies and
+    // reconciles for several minutes before replace_accounting_transactions_owned
+    // rejects the write, because migration 026 requires the very ownership the
+    // claim failed to record. All of that work is discarded, and because nothing
+    // errored the run simply looks slow.
+    //
+    // So an unclaimed run is refused HERE, before any of that cost is paid, and
+    // the refusal reports the state that blocked it rather than a generic
+    // message — the next occurrence diagnoses itself.
+    if (!claimLanded) {
+      const { data: current } = await context.supabase
+        .from("accounting_statement_runs")
+        .select("status, active_job_id, processing_job_id, job_accepted_at")
+        .eq("workspace_id", context.workspaceId)
+        .eq("id", runId)
+        .maybeSingle();
+
+      console.error("[accounting/process] run claim matched no rows — refusing to dispatch", {
+        runId,
+        attemptedJobId: processingJobId,
+        currentStatus: current?.status ?? null,
+        currentActiveJobId: current?.active_job_id ?? null,
+        currentProcessingJobId: current?.processing_job_id ?? null,
+        jobAcceptedAt: current?.job_accepted_at ?? null,
+      });
+
+      return NextResponse.json(
+        {
+          error:
+            "This statement is already claimed by another processing attempt. Wait for it to finish, or use Force Reprocess to take it over.",
+          runId,
+          status: current?.status ?? null,
+        },
+        { status: 409 },
+      );
     }
 
     if (processingJobId) {

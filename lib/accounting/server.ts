@@ -295,10 +295,18 @@ function processingStuckReason(
  */
 async function markRunStuckIfNeeded(context: NonNullable<Awaited<ReturnType<typeof getWorkspaceContext>>>, row: AccountingRunRow): Promise<AccountingRunRow> {
   if (!isProcessingLikeStatus(row.status)) return row;
-  // A queued run with no processing job is genuinely waiting on the user.
-  // If it already has a processing job, the handoff started and the row should
-  // be treated like an in-flight run so stale ownership can be repaired.
-  if (row.status === "queued" && !row.processing_job_id) return row;
+  // A queued run is waiting on the user, not stuck. Uploading does not start
+  // processing — that is a deliberate product decision, enforced by a test —
+  // and the run is INSERTED with a processing_job_id already attached (see
+  // createFnbAccountingRun). So "queued with a job" is the normal resting state
+  // of every statement someone has uploaded and not yet chosen to process.
+  //
+  // Auto-failing those was a symptom fix for runs orphaned by a claim that
+  // silently matched no rows. That cause is fixed: the claim now uses an
+  // is-null-or-mine filter, and the route refuses to dispatch when the claim
+  // lands on nothing. Repairing the symptom now costs more than it saves — it
+  // marks untouched uploads "Stuck / Needs retry" ten minutes after arrival.
+  if (row.status === "queued") return row;
 
   // Liveness comes from the job's heartbeat, not the run's stage changes.
   let livenessAt: string | null = null;
@@ -324,48 +332,10 @@ async function markRunStuckIfNeeded(context: NonNullable<Awaited<ReturnType<type
   // Accepted work has a live heartbeat every ~45s. Do not impose a total runtime
   // ceiling on healthy work, but do recover it when that heartbeat is genuinely
   // stale. Without this, a process lost during deploy remains immortal.
-  const enforceTotalTimeout = row.status === "queued" ? false : !row.job_accepted_at;
-  const reason = terminalJobMismatch ?? processingStuckReason(row, livenessAt, enforceTotalTimeout);
+  const reason = terminalJobMismatch ?? processingStuckReason(row, livenessAt, !row.job_accepted_at);
   if (!reason) return row;
 
   const livenessCutoff = new Date(Date.now() - PROCESSING_HEARTBEAT_STALE_MS).toISOString();
-  if (row.status === "queued" && row.processing_job_id) {
-    const nowIso = new Date().toISOString();
-    const { error: repairError } = await context.supabase
-      .from("accounting_statement_runs")
-      .update({
-        status: "failed",
-        error: reason,
-        processing_step: "Stuck / Needs retry",
-        updated_at: nowIso,
-      })
-      .eq("id", row.id)
-      .eq("workspace_id", row.workspace_id)
-      .eq("status", "queued")
-      .eq("processing_job_id", row.processing_job_id);
-    if (repairError) return row;
-    if (row.processing_job_id) {
-      await context.supabase
-        .from("processing_jobs")
-        .update({
-          status: "failed",
-          progress: 100,
-          message: reason,
-          error: reason,
-          updated_at: nowIso,
-        })
-        .eq("id", row.processing_job_id)
-        .in("status", ["queued", "running"]);
-    }
-    return {
-      ...row,
-      status: "failed",
-      error: reason,
-      processing_step: "Stuck / Needs retry",
-      updated_at: nowIso,
-    };
-  }
-
   const { data: repaired, error: repairError } = await context.supabase.rpc("fail_stale_accounting_run", {
     p_run_id: row.id,
     p_workspace_id: context.workspaceId,
