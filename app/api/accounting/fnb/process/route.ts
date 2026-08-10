@@ -902,24 +902,20 @@ export async function POST(request: Request) {
     // the run, so the old attempt can be fenced out by a different active_job_id.
     let processingJobId = detail.run.processingJobId;
     if (body.reprocess) {
-      const { data: replacementJob, error: replacementJobError } = await context.supabase
-        .from("processing_jobs")
-        .insert({
-          document_id: detail.run.documentId,
-          type: "extraction",
-          status: "queued",
-          progress: 0,
-          message: "Accounting reprocessing queued",
-        })
-        .select("id")
-        .single();
-      if (replacementJobError || !replacementJob) {
+      const { data: replacementJobId, error: replacementJobError } = await context.supabase.rpc(
+        "begin_accounting_reprocess",
+        {
+          p_run_id: runId,
+          p_workspace_id: context.workspaceId,
+        },
+      );
+      if (replacementJobError || !replacementJobId) {
         return NextResponse.json(
           { error: replacementJobError?.message ?? "Unable to create a replacement accounting job." },
           { status: 500 },
         );
       }
-      processingJobId = replacementJob.id;
+      processingJobId = replacementJobId;
     }
 
     if (!processingJobId) {
@@ -989,7 +985,8 @@ export async function POST(request: Request) {
         updated_at: nowIso,
       })
       .eq("workspace_id", context.workspaceId)
-      .eq("id", runId);
+      .eq("id", runId)
+      .eq("active_job_id", processingJobId);
     if (markError) {
       const { error: fallbackMarkError } = await context.supabase
         .from("accounting_statement_runs")
@@ -1005,7 +1002,8 @@ export async function POST(request: Request) {
           updated_at: nowIso,
         })
         .eq("workspace_id", context.workspaceId)
-        .eq("id", runId);
+        .eq("id", runId)
+        .eq("active_job_id", processingJobId);
       if (fallbackMarkError) {
         if (body.reprocess) {
           await context.supabase

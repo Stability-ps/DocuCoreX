@@ -106,6 +106,19 @@ test("reprocess still forces a fresh extraction and still bypasses duplicate-job
   );
 });
 
+test("force reprocess replaces the active job through one atomic database operation", () => {
+  assert.match(
+    code,
+    /rpc\(\s*"begin_accounting_reprocess"/,
+    "retiring the old job, creating the replacement, and attaching it to the run must share one transaction",
+  );
+  assert.doesNotMatch(
+    code,
+    /from\("processing_jobs"\)\s*\.insert\(/,
+    "a replacement insert outside the RPC races the one-active-job unique constraint",
+  );
+});
+
 test("the run is marked processing so the UI can show progress without hiding the statement", () => {
   assert.equal(
     code.includes('status: "processing"'),

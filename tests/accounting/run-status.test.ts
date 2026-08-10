@@ -121,9 +121,18 @@ test("dispatch goes to the dispatch endpoint and claims the run", () => {
 
 test("force reprocess creates a fresh queued job and fences out the old attempt", () => {
   const route = read("app/api/accounting/fnb/process/route.ts");
-  assert.match(route, /if \(body\.reprocess\) \{[\s\S]{0,500}?\.from\("processing_jobs"\)[\s\S]{0,500}?status: "queued"/);
+  assert.match(route, /if \(body\.reprocess\) \{[\s\S]{0,500}?\.rpc\([\s\S]{0,100}?"begin_accounting_reprocess"/);
   assert.match(route, /processing_job_id: processingJobId/);
   assert.match(route, /active_job_id: processingJobId/);
+});
+
+test("the database retires and replaces an active job atomically", () => {
+  const migration = read("supabase/migrations/028_atomic_accounting_reprocess.sql");
+  assert.match(migration, /for update/);
+  assert.match(migration, /status in \('queued', 'running'\)/);
+  assert.match(migration, /set status = 'cancelled'/);
+  assert.match(migration, /insert into public\.processing_jobs/);
+  assert.match(migration, /active_job_id = replacement_job_id/);
 });
 
 test("worker writes are fenced and stale ones rejected", () => {
