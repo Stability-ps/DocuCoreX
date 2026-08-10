@@ -12,7 +12,7 @@ import urllib.request
 from concurrent.futures import ThreadPoolExecutor
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal, ROUND_HALF_UP
-from typing import Any
+from typing import Any, Callable
 
 import fitz
 import pdfplumber
@@ -4889,9 +4889,15 @@ def build_workbook(
     transactions: list[ParsedTransaction],
     allow_ai: bool = True,
     workspace_id: str = "",
+    progress_callback: Callable[[str, int], None] | None = None,
 ) -> bytes:
     _ = allow_ai
     _ = workspace_id
+
+    def emit_progress(step_label: str, progress: int) -> None:
+        if progress_callback is not None:
+            progress_callback(step_label, progress)
+
     workbook = Workbook()
     totals = validation_summary(transactions)
     status, calculated_closing = validation_status(metadata, transactions)
@@ -4903,6 +4909,7 @@ def build_workbook(
     account_number = (metadata.get("account_number") or "").strip()
     source_file = metadata.get("source_file") or ""
     rows = [professional_transaction_row(transaction, source_file) for transaction in transactions]
+    emit_progress("Generating workbook", 12)
     # The workbook consumes the classification already written onto transactions.
     # It must not ask AI to classify a second time.
     ai_stats = metadata.get("_ai_diagnostics")
@@ -4951,6 +4958,7 @@ def build_workbook(
         ("Transactions extracted", len(transactions)),
         ("Reconciliation status", "Reconciled" if status == "PASSED" else "Review required"),
     ]
+    emit_progress("Generating workbook", 22)
     for index, row in enumerate(dashboard_rows, start=3):
         write_row(dashboard, list(row), index)
     dashboard["B14"].fill = PASS_FILL if status == "PASSED" else FAIL_FILL
@@ -4976,6 +4984,7 @@ def build_workbook(
         "Confidence", "Classification Reason", "Classification Explanation",
     ]
     write_row(tx, transaction_headers, 1, header=True)
+    total_rows = max(1, len(rows))
     for row_index, row in enumerate(rows, start=2):
         write_row(
             tx,
@@ -4986,36 +4995,51 @@ def build_workbook(
             ],
             row_index,
         )
+        if progress_callback is not None and row_index % 50 == 0:
+            emit_progress("Generating workbook", min(70, 30 + int(20 * row_index / total_rows)))
     apply_number_formats(tx, [4, 5, 6, 8, 9, 14, 15])
+    emit_progress("Generating workbook", 72)
 
     vat, vat_detail_header_row, vat_column_count = write_vat_schedule_sheet(workbook, rows)
 
     ledger = workbook.create_sheet("General Ledger")
     write_row(ledger, ["Date", "Description", "Account", "Debit", "Credit"], 1, header=True)
+    ledger_entries: list[list[Any]] = []
+    ledger_entries.append([workbook_date(metadata.get("statement_period_start")), "Opening balance per bank statement", "Bank", opening, Decimal("0.00")])
+    ledger_entries.append([workbook_date(metadata.get("statement_period_start")), "Opening balance per bank statement", "Opening Equity / Prior Periods", Decimal("0.00"), opening])
     gl_row = 2
-    write_row(ledger, [workbook_date(metadata.get("statement_period_start")), "Opening balance per bank statement", "Bank", opening, Decimal("0.00")], gl_row)
-    gl_row += 1
-    write_row(ledger, [workbook_date(metadata.get("statement_period_start")), "Opening balance per bank statement", "Opening Equity / Prior Periods", Decimal("0.00"), opening], gl_row)
-    gl_row += 1
+    for entry in ledger_entries:
+        write_row(ledger, entry, gl_row)
+        gl_row += 1
     for row in rows:
         if row["money_out"] > 0:
-            write_row(ledger, [row["date"], row["description"], reporting_account(row), row["money_out"], Decimal("0.00")], gl_row)
-            gl_row += 1
-            write_row(ledger, [row["date"], row["description"], "Bank", Decimal("0.00"), row["money_out"]], gl_row)
-            gl_row += 1
+            ledger_entries.append([row["date"], row["description"], reporting_account(row), row["money_out"], Decimal("0.00")])
+            ledger_entries.append([row["date"], row["description"], "Bank", Decimal("0.00"), row["money_out"]])
         elif row["money_in"] > 0:
-            write_row(ledger, [row["date"], row["description"], "Bank", row["money_in"], Decimal("0.00")], gl_row)
-            gl_row += 1
-            write_row(ledger, [row["date"], row["description"], reporting_account(row), Decimal("0.00"), row["money_in"]], gl_row)
-            gl_row += 1
+            ledger_entries.append([row["date"], row["description"], "Bank", row["money_in"], Decimal("0.00")])
+            ledger_entries.append([row["date"], row["description"], reporting_account(row), Decimal("0.00"), row["money_in"]])
+    for entry in ledger_entries[2:]:
+        write_row(ledger, entry, gl_row)
+        gl_row += 1
     apply_number_formats(ledger, [4, 5])
+    emit_progress("Generating workbook", 90)
 
     trial = workbook.create_sheet("Trial Balance")
     write_row(trial, ["Account", "Total Debits", "Total Credits", "Debit Balance", "Credit Balance"], 1, header=True)
-    ledger_accounts = sorted({ledger.cell(row=row, column=3).value for row in range(2, ledger.max_row + 1) if ledger.cell(row=row, column=3).value})
+    trial_totals: dict[str, dict[str, Decimal]] = {}
+    for entry in ledger_entries:
+        account = entry[2]
+        if not account:
+            continue
+        bucket = trial_totals.setdefault(account, {"debits": Decimal("0.00"), "credits": Decimal("0.00")})
+        debit = decimal_amount(entry[3]) if entry[3] is not None else Decimal("0.00")
+        credit = decimal_amount(entry[4]) if entry[4] is not None else Decimal("0.00")
+        bucket["debits"] += debit
+        bucket["credits"] += credit
+    ledger_accounts = sorted(trial_totals.keys())
     for row_index, account in enumerate(ledger_accounts, start=2):
-        debits = sum(decimal_amount(ledger.cell(row=row, column=4).value) for row in range(2, ledger.max_row + 1) if ledger.cell(row=row, column=3).value == account)
-        credits = sum(decimal_amount(ledger.cell(row=row, column=5).value) for row in range(2, ledger.max_row + 1) if ledger.cell(row=row, column=3).value == account)
+        debits = trial_totals[account]["debits"]
+        credits = trial_totals[account]["credits"]
         net = (debits - credits).quantize(CENT)
         write_row(trial, [account, debits, credits, net if net > 0 else Decimal("0.00"), abs(net) if net < 0 else Decimal("0.00")], row_index)
     total_row = len(ledger_accounts) + 2
@@ -6381,11 +6405,31 @@ def process_fnb_statement(payload: ProcessRequest, authorization: str | None = H
             progress=97,
         )
         workbook_started = time.perf_counter()
+
+        def emit_workbook_progress(step_label: str, progress: int) -> None:
+            try:
+                heartbeat_step(
+                    supabase,
+                    run_id=payload.run_id,
+                    workspace_id=payload.workspace_id,
+                    processing_job_id=payload.processing_job_id,
+                    step_label=step_label,
+                    progress=progress,
+                )
+            except Exception as exc:  # noqa: BLE001 — keep workbook generation from failing on heartbeat issues
+                log_warning(
+                    "worker.workbook_progress_heartbeat_failed",
+                    run_id=payload.run_id,
+                    job_id=payload.processing_job_id,
+                    error=str(exc)[:200],
+                )
+
         workbook_bytes = build_workbook(
             metadata,
             transactions,
             allow_ai=not extraction_incomplete and review_issue is None,
             workspace_id=payload.workspace_id,
+            progress_callback=emit_workbook_progress,
         )
         workbook_generation_duration_ms = round((time.perf_counter() - workbook_started) * 1000, 2)
         ai_stats = metadata.get("_ai_diagnostics") or ai_diagnostics(enabled=False)

@@ -3339,6 +3339,47 @@ def test_build_workbook_never_calls_ai_classification() -> None:
     assert_equal(ai_diagnostics.get("workbook_openai_calls"), 0, "workbook makes no OpenAI classification calls")
 
 
+def test_build_workbook_emits_progress_updates() -> None:
+    """Workbook generation should keep the run liveness signal fresh while it writes sheets."""
+    import main
+
+    metadata = {
+        "opening_balance": 0,
+        "closing_balance": -100.0,
+        "statement_period_start": "2025-05-01",
+        "statement_period_end": "2025-05-31",
+        "company_name": "ACME (PTY) LTD",
+        "account_number": "123456789",
+        "source_file": "statement.pdf",
+    }
+    transaction = main.ParsedTransaction(
+        transaction_date="2025-05-02",
+        description="Test payment",
+        debit_amount=100.0,
+        credit_amount=None,
+        running_balance=-100.0,
+        account_category="Bank Charges",
+        vat_treatment="standard",
+        review_status="ready",
+    )
+
+    progress_updates: list[tuple[str, int]] = []
+
+    def capture(step_label: str, progress: int) -> None:
+        progress_updates.append((step_label, progress))
+
+    workbook_bytes = main.build_workbook(metadata, [transaction], progress_callback=capture)
+    if not workbook_bytes:
+        raise AssertionError("build_workbook must still produce a workbook when it reports progress")
+    if not progress_updates:
+        raise AssertionError("build_workbook must emit progress updates while writing the workbook")
+    if not any(step_label == "Generating workbook" for step_label, _ in progress_updates):
+        raise AssertionError("build_workbook must report the workbook stage while it is ongoing")
+    for step_label, progress in progress_updates:
+        if step_label != "Generating workbook" or not (0 <= progress <= 100):
+            raise AssertionError(f"unexpected progress callback payload: {(step_label, progress)}")
+
+
 def test_combined_workbook_never_calls_ai_classification() -> None:
     """Combined workbooks should reuse already-classified rows rather than asking AI again."""
     import main
