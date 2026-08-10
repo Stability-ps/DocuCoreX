@@ -1420,9 +1420,6 @@ export function AccountingIntelligence() {
                         : `${detail.run.transactionCount || detail.transactions.length} transactions · ${totals.review} review items`}
                   </p>
                 </div>
-                <Link href={`/accounting/statements/${detail.run.id}`} className="inline-flex h-9 shrink-0 items-center justify-center rounded-lg border border-slate-200 bg-white px-3 text-xs font-bold text-navy-950 hover:bg-slate-50">
-                  Actions
-                </Link>
                 </div>
                 <CompactSummaryBar
                   run={{ ...detail.run, status: selectedEffectiveStatus ?? detail.run.status }}
@@ -1467,10 +1464,15 @@ export function AccountingIntelligence() {
                 </section>
               ) : null}
 
-              {isRunInFlight(selectedEffectiveStatus) ? (
+              {isRunInFlight(selectedEffectiveStatus) || busy === `process:${detail.run.id}` ? (
                 <section className="rounded-xl border border-blue-200 bg-blue-50/60 p-4">
                   <div className="flex flex-wrap items-center justify-between gap-2">
-                    <p className="text-sm font-bold text-blue-800">Processing your statement</p>
+                    <div className="flex items-center gap-2">
+                      <Loader2 className={`h-4 w-4 text-blue-700 ${busy === `process:${detail.run.id}` ? "animate-spin" : "animate-pulse"}`} />
+                      <p className="text-sm font-bold text-blue-800">
+                        {busy === `process:${detail.run.id}` ? "Processing statement…" : "Processing your statement"}
+                      </p>
+                    </div>
                     <div className="flex flex-wrap items-center gap-2">
                       <button
                         type="button"
