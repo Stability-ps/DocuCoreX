@@ -35,6 +35,7 @@ import { VAT_TREATMENT_OPTIONS, categoryOptionsFor, isUnresolvedAccountingCatego
 import { cleanStatementLabel, statementDisplayName } from "@/lib/accounting/statement-name";
 import { parserMethodLabel } from "@/lib/pdf/workerHandoff";
 import { pollRunUntilTerminal } from "@/lib/accounting/poll-run";
+import { dedupeTags, isValidTag, sortTags } from "@/lib/accounting/tags";
 import { detectDuplicates, detectUnusualTransactions, detectDirectorTransactions, summarizeMerchants } from "@/lib/accounting/analytics";
 import { accountingRunQuality, accountingTransactionTotals } from "@/lib/accounting/run-quality";
 import { DocumentViewer } from "@/components/document-viewer";
@@ -110,6 +111,12 @@ function isReviewItem(t: AccountingTransaction): boolean {
 export function StatementWorkspace({ statementId }: { statementId: string }) {
   const router = useRouter();
   const [detail, setDetail] = useState<AccountingRunDetail | null>(null);
+  // Tags are keyed by transaction id and kept beside the detail rather than
+  // merged into it: they are a business grouping, not part of the accounting
+  // record the pipeline produced, and a reprocess replaces transactions without
+  // touching this map.
+  const [tagsByTransaction, setTagsByTransaction] = useState<Record<string, string[]>>({});
+  const [tagVocabulary, setTagVocabulary] = useState<string[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<Tab>("transactions");
@@ -137,6 +144,25 @@ export function StatementWorkspace({ statementId }: { statementId: string }) {
 
   const sourceUrl = `/api/accounting/fnb/runs/${statementId}/source`;
 
+  // Tag writes go to their own endpoint and return the transaction's full tag
+  // list, which replaces local state. Reconciling by echoing the request would
+  // drift from the database's case-insensitive uniqueness — adding "project
+  // alpha" where "Project Alpha" exists is a no-op server-side, and the
+  // response is what says so.
+  const mutateTag = useCallback(async (transactionId: string, tag: string, action: "add" | "remove") => {
+    const url = `/api/accounting/fnb/transactions/${transactionId}/tags`;
+    const response = await fetch(action === "add" ? url : `${url}?tag=${encodeURIComponent(tag)}`, {
+      method: action === "add" ? "POST" : "DELETE",
+      headers: action === "add" ? { "Content-Type": "application/json" } : undefined,
+      body: action === "add" ? JSON.stringify({ tag }) : undefined,
+    });
+    const body = (await response.json().catch(() => ({}))) as { tags?: string[]; error?: string };
+    if (!response.ok || !body.tags) throw new Error(body.error || "Tag could not be saved.");
+
+    setTagsByTransaction((current) => ({ ...current, [transactionId]: body.tags! }));
+    setTagVocabulary((current) => sortTags(dedupeTags([...current, ...body.tags!])));
+  }, []);
+
   const loadDetail = useCallback(async () => {
     setLoading(true);
     setError(null);
@@ -146,10 +172,15 @@ export function StatementWorkspace({ statementId }: { statementId: string }) {
         const body = (await response.json().catch(() => ({}))) as { error?: string };
         throw new Error(body.error || "Unable to load statement.");
       }
-      const incoming = (await response.json()) as AccountingRunDetail;
+      const incoming = (await response.json()) as AccountingRunDetail & {
+        tags?: Record<string, string[]>;
+        tagVocabulary?: string[];
+      };
       const acceptedRun = mergeAccountingRunProgress(runProgressRef.current, incoming.run);
       runProgressRef.current = acceptedRun;
       setDetail({ ...incoming, run: acceptedRun });
+      setTagsByTransaction(incoming.tags ?? {});
+      setTagVocabulary(incoming.tagVocabulary ?? []);
     } catch (loadError) {
       setError(loadError instanceof Error ? loadError.message : "Unable to load statement.");
     } finally {
@@ -559,6 +590,9 @@ export function StatementWorkspace({ statementId }: { statementId: string }) {
             reviewItems={reviewItems}
             patchTransaction={patchTransaction}
             onShowInStatement={showTransactionInStatement}
+            tagsByTransaction={tagsByTransaction}
+            tagVocabulary={tagVocabulary}
+            onMutateTag={mutateTag}
           />
         </div>
       </div>
@@ -720,6 +754,9 @@ function RightPanel({
   reviewItems,
   patchTransaction,
   onShowInStatement,
+  tagsByTransaction,
+  tagVocabulary,
+  onMutateTag,
 }: {
   statementId: string;
   activeTab: Tab;
@@ -732,6 +769,9 @@ function RightPanel({
   patchTransaction: (t: AccountingTransaction, patch: AccountingTransactionPatch) => Promise<void>;
   /** Show a transaction's page in the statement preview. */
   onShowInStatement: (page: number | null) => void;
+  tagsByTransaction: Record<string, string[]>;
+  tagVocabulary: string[];
+  onMutateTag: (transactionId: string, tag: string, action: "add" | "remove") => Promise<void>;
 }) {
   return (
     <section className="flex min-h-[520px] flex-col rounded-xl border border-slate-200 bg-white shadow-sm">
@@ -751,7 +791,7 @@ function RightPanel({
       </div>
       <div className="min-h-0 flex-1 overflow-auto p-3">
         {activeTab === "transactions" ? <TransactionsTab model={model} onShowInStatement={onShowInStatement} /> : null}
-        {activeTab === "review" ? <ReviewTab reviewItems={reviewItems} patchTransaction={patchTransaction} /> : null}
+        {activeTab === "review" ? <ReviewTab reviewItems={reviewItems} patchTransaction={patchTransaction} tagsByTransaction={tagsByTransaction} tagVocabulary={tagVocabulary} onMutateTag={onMutateTag} /> : null}
         {activeTab === "merchants" ? <MerchantsTab transactions={transactions} /> : null}
         {activeTab === "insights" ? <InsightsTab statementId={statementId} transactions={transactions} model={model} totals={totals} /> : null}
         {activeTab === "difference" ? <DifferenceTab totals={totals} model={model} /> : null}
@@ -915,7 +955,19 @@ function TransactionsTab({
   );
 }
 
-function ReviewTab({ reviewItems, patchTransaction }: { reviewItems: AccountingTransaction[]; patchTransaction: (t: AccountingTransaction, patch: AccountingTransactionPatch) => Promise<void> }) {
+function ReviewTab({
+  reviewItems,
+  patchTransaction,
+  tagsByTransaction,
+  tagVocabulary,
+  onMutateTag,
+}: {
+  reviewItems: AccountingTransaction[];
+  patchTransaction: (t: AccountingTransaction, patch: AccountingTransactionPatch) => Promise<void>;
+  tagsByTransaction: Record<string, string[]>;
+  tagVocabulary: string[];
+  onMutateTag: (transactionId: string, tag: string, action: "add" | "remove") => Promise<void>;
+}) {
   // Focused review is one decision at a time with a position counter; the list
   // stays available because scanning a whole queue and working through it one
   // item at a time are different jobs, and neither replaces the other.
@@ -1034,6 +1086,12 @@ function ReviewTab({ reviewItems, patchTransaction }: { reviewItems: AccountingT
             </button>
             <button onClick={() => void patchTransaction(t, { reviewStatus: "resolved", notes: t.notes || "Ignored during review." })} className="rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-xs font-bold text-slate-700 hover:bg-slate-50">Ignore</button>
           </div>
+          <TagEditor
+            transactionId={t.id}
+            tags={tagsByTransaction[t.id] ?? []}
+            vocabulary={tagVocabulary}
+            onMutate={onMutateTag}
+          />
         </div>
   );
 
@@ -1088,6 +1146,96 @@ function ReviewTab({ reviewItems, patchTransaction }: { reviewItems: AccountingT
       ) : (
         reviewItems.map(renderItem)
       )}
+    </div>
+  );
+}
+
+function TagEditor({
+  transactionId,
+  tags,
+  vocabulary,
+  onMutate,
+}: {
+  transactionId: string;
+  tags: string[];
+  vocabulary: string[];
+  onMutate: (transactionId: string, tag: string, action: "add" | "remove") => Promise<void>;
+}) {
+  const [draft, setDraft] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const run = async (tag: string, action: "add" | "remove") => {
+    setBusy(true);
+    setError(null);
+    try {
+      await onMutate(transactionId, tag, action);
+      if (action === "add") setDraft("");
+    } catch (mutateError) {
+      setError(mutateError instanceof Error ? mutateError.message : "Tag could not be saved.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  // Offer only tags this transaction does not already carry, compared on the
+  // same case-insensitive rule the database uses.
+  const suggestions = vocabulary.filter((tag) => !tags.some((existing) => existing.toLowerCase() === tag.toLowerCase()));
+
+  return (
+    <div className="mt-2 border-t border-amber-200/60 pt-2">
+      <div className="flex flex-wrap items-center gap-1">
+        <span className="text-[10px] font-black uppercase tracking-wide text-slate-500">Tags</span>
+        {tags.map((tag) => (
+          <span key={tag} className="inline-flex items-center gap-1 rounded-full bg-slate-100 px-2 py-0.5 text-[10px] font-bold text-slate-700">
+            {tag}
+            <button
+              type="button"
+              disabled={busy}
+              onClick={() => void run(tag, "remove")}
+              aria-label={`Remove tag ${tag}`}
+              className="font-black text-slate-400 hover:text-slate-700 disabled:text-slate-300"
+            >
+              ×
+            </button>
+          </span>
+        ))}
+        {!tags.length ? <span className="text-[10px] font-semibold text-slate-400">None</span> : null}
+      </div>
+
+      <div className="mt-1 flex flex-wrap items-center gap-1">
+        <input
+          value={draft}
+          onChange={(event) => setDraft(event.target.value)}
+          onKeyDown={(event) => {
+            if (event.key !== "Enter" || !isValidTag(draft)) return;
+            event.preventDefault();
+            void run(draft, "add");
+          }}
+          list={`tag-options-${transactionId}`}
+          placeholder="Add a tag"
+          aria-label="Add a tag"
+          className="h-7 w-40 rounded border border-slate-200 px-2 text-[11px] font-semibold outline-none focus:border-royal-300"
+        />
+        <datalist id={`tag-options-${transactionId}`}>
+          {suggestions.map((tag) => (
+            <option key={tag} value={tag} />
+          ))}
+        </datalist>
+        <button
+          type="button"
+          disabled={busy || !isValidTag(draft)}
+          onClick={() => void run(draft, "add")}
+          className="rounded border border-slate-200 bg-white px-2 py-1 text-[11px] font-bold text-slate-700 hover:bg-slate-50 disabled:text-slate-300"
+        >
+          Add
+        </button>
+      </div>
+
+      {error ? <p className="mt-1 text-[10px] font-bold text-rose-700">{error}</p> : null}
+      <p className="mt-1 text-[10px] font-medium text-slate-400">
+        A tag groups transactions for the business. It does not change the account category or VAT treatment.
+      </p>
     </div>
   );
 }
