@@ -2373,16 +2373,20 @@ function StatementRuns({
               return (
             <div
               key={run.id}
-              onClick={() => onSelect(run.id)}
-              onDoubleClick={() => router.push(`/accounting/statements/${run.id}`)}
+              onClick={() => (selectionMode ? onToggleSelected(run.id) : onSelect(run.id))}
+              onDoubleClick={() => {
+                if (!selectionMode) router.push(`/accounting/statements/${run.id}`);
+              }}
               onKeyDown={(event) => {
                 if (event.key === "Enter" || event.key === " ") {
                   event.preventDefault();
-                  onSelect(run.id);
+                  if (selectionMode) onToggleSelected(run.id);
+                  else onSelect(run.id);
                 }
               }}
               role="button"
               tabIndex={0}
+              aria-pressed={selectionMode ? selectedRunIds.includes(run.id) : undefined}
               className={`group border-b border-slate-100 px-2 py-2 text-left transition ${
                 selectedRunId === run.id ? "bg-royal-50" : "hover:bg-slate-50"
               }`}
@@ -2403,7 +2407,15 @@ function StatementRuns({
                   <div className="flex items-center justify-between gap-2">
                     <Link
                       href={`/accounting/statements/${run.id}`}
-                      onClick={(event) => event.stopPropagation()}
+                      onClick={(event) => {
+                        if (selectionMode) {
+                          event.preventDefault();
+                          event.stopPropagation();
+                          onToggleSelected(run.id);
+                          return;
+                        }
+                        event.stopPropagation();
+                      }}
                       className="truncate text-sm font-black text-navy-950 hover:text-royal-700 hover:underline"
                     >
                       {runDisplayTitle({ ...run, status: effectiveStatus })}
@@ -2434,15 +2446,15 @@ function StatementRuns({
                     )}
                   </div>
                 </div>
-                <Link
+                {!selectionMode ? <Link
                   href={`/accounting/statements/${run.id}`}
                   onClick={(event) => event.stopPropagation()}
                   className="rounded-md px-2 py-1 text-[11px] font-black text-royal-700 opacity-0 transition hover:bg-royal-50 group-hover:opacity-100"
                   aria-label={`View ${runDisplayTitle(run)}`}
                 >
                   View
-                </Link>
-                <button
+                </Link> : null}
+                {!selectionMode ? <button
                   type="button"
                   onClick={(event) => {
                     event.stopPropagation();
@@ -2452,7 +2464,7 @@ function StatementRuns({
                   aria-label={`Preview ${runDisplayTitle(run)}`}
                 >
                   <MoreVertical className="h-4 w-4" />
-                </button>
+                </button> : null}
               </div>
             </div>
               );

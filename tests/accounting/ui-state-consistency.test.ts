@@ -64,3 +64,9 @@ test("bulk selection and transaction tools are explicit", () => {
   assert.doesNotMatch(ui, /Upload Statements/);
   assert.doesNotMatch(ui, /FNB bank statements/);
 });
+
+test("the whole statement row toggles selection while select mode is active", () => {
+  assert.match(ui, /onClick=\{\(\) => \(selectionMode \? onToggleSelected\(run\.id\) : onSelect\(run\.id\)\)\}/);
+  assert.match(ui, /if \(selectionMode\) onToggleSelected\(run\.id\);[\s\S]*else onSelect\(run\.id\);/);
+  assert.match(ui, /aria-pressed=\{selectionMode \? selectedRunIds\.includes\(run\.id\) : undefined\}/);
+});
