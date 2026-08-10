@@ -20,6 +20,7 @@ declare
   current_job_id uuid;
   current_status text;
   inserted integer;
+  normalized_rows jsonb;
 begin
   select active_job_id, status
     into current_job_id, current_status
@@ -40,9 +41,22 @@ begin
    where run_id = p_run_id
      and workspace_id = p_workspace_id;
 
+  select coalesce(
+           jsonb_agg(
+             case
+               when nullif(transaction_row ->> 'id', '') is null
+                 then jsonb_set(transaction_row, '{id}', to_jsonb(gen_random_uuid()), true)
+               else transaction_row
+             end
+           ),
+           '[]'::jsonb
+         )
+    into normalized_rows
+    from jsonb_array_elements(coalesce(p_rows, '[]'::jsonb)) as transaction_row;
+
   insert into public.accounting_transactions
   select *
-    from jsonb_populate_recordset(null::public.accounting_transactions, p_rows);
+    from jsonb_populate_recordset(null::public.accounting_transactions, normalized_rows);
 
   get diagnostics inserted = row_count;
   return inserted;

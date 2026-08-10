@@ -280,6 +280,14 @@ test("the function body locks ownership and replaces in one transaction", () => 
   );
 });
 
+test("atomic replacement generates transaction ids before record expansion", () => {
+  const migration = read("supabase/migrations/029_generate_accounting_transaction_ids.sql");
+  assert.match(migration, /nullif\(transaction_row ->> 'id', ''\) is null/);
+  assert.match(migration, /jsonb_set\(transaction_row, '\{id\}', to_jsonb\(gen_random_uuid\(\)\), true\)/);
+  assert.match(migration, /jsonb_populate_recordset\(null::public\.accounting_transactions, normalized_rows\)/);
+  assert.match(migration, /for update/, "ownership and replacement must remain in one locked transaction");
+});
+
 test("the replace is scoped by workspace, not just run", () => {
   const migration = read("supabase/migrations/026_accounting_attempt_fencing.sql");
   const body = migration.slice(migration.indexOf("delete from public.accounting_transactions"));
