@@ -7,6 +7,7 @@ import { merchantKeyRejection } from "@/lib/accounting/merchant-keys";
 import { isUnresolvedAccountingCategory } from "@/lib/accounting/review-options";
 import { MAX_TAG_LENGTH, dedupeTags, normalizeTag, sameTag, sortTags, tagRejection } from "@/lib/accounting/tags";
 import { bestTransferCandidates, findTransferCandidates, type TransferCandidate, type TransferSide } from "@/lib/accounting/transfers";
+import { findRecurringPatterns, type RecurringInput, type RecurringPattern } from "@/lib/accounting/recurring";
 import { getWorkspaceContext } from "@/lib/server-documents";
 import { createDocumentVersionRecord } from "@/lib/supabase-server-adapter";
 import type {
@@ -1316,5 +1317,88 @@ export async function clearTransferMatch(outboundTransactionId: string, inboundT
     action: "transfer_decision_cleared",
     entityType: "accounting_transfer_match",
     entityId: `${outboundTransactionId}:${inboundTransactionId}`,
+  });
+}
+
+/**
+ * Recurring patterns across every statement in the workspace, with decisions.
+ *
+ * Cross-run by nature: a monthly commitment only becomes visible once several
+ * statements exist, so a per-statement view would show almost nothing.
+ */
+export async function getWorkspaceRecurringPatterns(): Promise<{
+  patterns: RecurringPattern[];
+  confirmed: string[];
+  dismissed: string[];
+}> {
+  const context = await getWorkspaceContext();
+  if (!context) return { patterns: [], confirmed: [], dismissed: [] };
+
+  const { data: decisions, error: decisionError } = await context.supabase
+    .from("accounting_recurring_decisions")
+    .select("merchant, status")
+    .eq("workspace_id", context.workspaceId);
+
+  // A missing table (migration 033 not applied) means no decisions yet.
+  if (decisionError && decisionError.code !== "42P01") {
+    console.warn("[accounting] recurring decisions unreadable", decisionError.message);
+  }
+
+  const confirmed: string[] = [];
+  const dismissed = new Set<string>();
+  for (const row of decisions ?? []) {
+    const merchant = (row.merchant as string) ?? "";
+    if ((row.status as string) === "dismissed") dismissed.add(merchant.trim().toLowerCase());
+    else confirmed.push(merchant);
+  }
+
+  const { data: rows } = await context.supabase
+    .from("accounting_transactions")
+    .select("id, normalized_merchant, transaction_date, debit_amount, credit_amount, account_category")
+    .eq("workspace_id", context.workspaceId)
+    .order("transaction_date", { ascending: false })
+    .limit(5000);
+
+  const inputs: RecurringInput[] = (rows ?? []).map((row) => ({
+    transactionId: row.id as string,
+    merchant: (row.normalized_merchant as string | null) ?? null,
+    date: (row.transaction_date as string | null) ?? null,
+    debit: (row.debit_amount as number | null) ?? null,
+    credit: (row.credit_amount as number | null) ?? null,
+    accountCategory: (row.account_category as string) ?? "",
+  }));
+
+  return {
+    patterns: findRecurringPatterns(inputs, dismissed),
+    confirmed,
+    dismissed: [...dismissed],
+  };
+}
+
+export async function decideRecurringPattern(merchant: string, status: "confirmed" | "dismissed", observed?: unknown): Promise<void> {
+  const context = await getWorkspaceContext();
+  if (!context) throw new Error("Unauthorized");
+
+  const trimmed = merchant.trim();
+  if (!trimmed) throw new Error("A merchant is required.");
+
+  const { error } = await context.supabase.from("accounting_recurring_decisions").upsert(
+    {
+      workspace_id: context.workspaceId,
+      merchant: trimmed,
+      status,
+      observed: observed ?? {},
+      decided_by: context.userId,
+      decided_at: new Date().toISOString(),
+    },
+    { onConflict: "workspace_id,merchant" },
+  );
+  if (error) throw new Error(error.message);
+
+  await recordAccountingActionAudit({
+    action: status === "confirmed" ? "recurring_confirmed" : "recurring_dismissed",
+    entityType: "accounting_recurring_pattern",
+    entityId: trimmed,
+    newValue: { status },
   });
 }
