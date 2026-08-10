@@ -379,6 +379,7 @@ export function AccountingIntelligence() {
   const [runs, setRuns] = useState<AccountingStatementRun[]>([]);
   const [uploadQueue, setUploadQueue] = useState<UploadQueueItem[]>([]);
   const [selectedRunIds, setSelectedRunIds] = useState<string[]>([]);
+  const [selectionMode, setSelectionMode] = useState(false);
   const [selectedRunId, setSelectedRunId] = useState("");
   const [showExportModal, setShowExportModal] = useState(false);
   const [detail, setDetail] = useState<AccountingRunDetail | null>(null);
@@ -1236,32 +1237,6 @@ export function AccountingIntelligence() {
         </div>
       </section>
 
-      {selectedRunIds.length ? (
-        <section className="sticky top-2 z-40 rounded-xl border border-royal-200 bg-royal-50/95 p-3 shadow-md backdrop-blur supports-[backdrop-filter]:bg-royal-50/80 md:p-4">
-          <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
-            <p className="text-sm font-black text-navy-950">{selectedRunLabel}</p>
-            <div className="flex flex-wrap gap-2">
-              <button
-                type="button"
-                onClick={() => void processSelectedRuns()}
-                disabled={!selectedProcessableRunIds.length || busy === "bulk-process"}
-                className="inline-flex min-h-10 items-center justify-center rounded-lg border border-slate-200 bg-white px-3 text-xs font-black text-slate-700 disabled:text-slate-300"
-              >
-                {contextualProcessLabel}
-              </button>
-              <button
-                type="button"
-                onClick={() => setShowExportModal(true)}
-                className="inline-flex min-h-10 items-center justify-center gap-1.5 rounded-lg bg-royal-600 px-3 text-xs font-black text-white hover:bg-royal-700"
-              >
-                <ArrowDownToLine className="h-3.5 w-3.5" />
-                Export
-              </button>
-            </div>
-          </div>
-        </section>
-      ) : null}
-
       {uploadQueue.length ? (
         <section className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
           <div className="mb-3 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
@@ -1269,9 +1244,10 @@ export function AccountingIntelligence() {
               <h2 className="font-semibold text-navy-950">Upload queue</h2>
               <p className="text-sm font-medium text-slate-500">Multiple statements can be uploaded and processed together.</p>
             </div>
-            <button type="button" onClick={() => setUploadQueue([])} className="text-xs font-black text-slate-500" title="Remove all items from queue">
-              Clear Queue
-            </button>
+            <div className="flex items-center gap-3">
+              <button type="button" onClick={() => setUploadQueue((queue) => queue.filter((item) => item.status !== "Ready" && item.status !== "Review Required"))} className="text-xs font-black text-slate-500">Clear Completed</button>
+              <button type="button" onClick={() => setUploadQueue([])} className="text-xs font-black text-slate-500" title="Remove all items from queue">Clear Queue</button>
+            </div>
           </div>
           <div className="w-full space-y-4">
             {uploadQueue.map((item) => (
@@ -1403,38 +1379,19 @@ export function AccountingIntelligence() {
           runs={runs}
           selectedRunId={selectedRunId}
           selectedRunIds={selectedRunIds}
+          selectionMode={selectionMode}
           actions={
-            <>
-              <button
-                type="button"
-                disabled={!processableRunIds.length || busy === "bulk-process"}
-                onClick={() => void processAllRuns()}
-                className="inline-flex min-h-9 items-center justify-center rounded-lg border border-slate-200 bg-white px-3 text-xs font-black text-slate-700 disabled:text-slate-300"
-              >
-                {busy === "bulk-process" ? "Processing..." : "Process All"}
-              </button>
-              <button
-                type="button"
-                disabled={!uploadQueue.some((item) => item.status === "Ready" || item.status === "Review Required")}
-                onClick={() => {
-                  setUploadQueue((queue) => queue.filter((item) => item.status !== "Ready" && item.status !== "Review Required"));
-                  setMessage("Finished queue items cleared.");
-                }}
-                className="inline-flex min-h-9 items-center justify-center rounded-lg border border-slate-200 bg-white px-3 text-xs font-black text-slate-700 disabled:text-slate-300"
-              >
-                Clear Completed
-              </button>
-              <button
-                type="button"
-                onClick={() => requestDelete(selectedRunIds)}
-                disabled={!selectedRunIds.length || busy === "delete"}
-                className="inline-flex min-h-9 items-center justify-center gap-1.5 rounded-lg border border-rose-200 bg-white px-3 text-xs font-black text-rose-700 disabled:border-slate-200 disabled:text-slate-300"
-              >
-                <Trash2 className="h-3.5 w-3.5" />
-                Delete Selected
-              </button>
-            </>
+            <button type="button" onClick={() => { setSelectionMode((current) => !current); setSelectedRunIds([]); }} className="inline-flex min-h-9 items-center rounded-lg border border-slate-200 bg-white px-3 text-xs font-black text-slate-700">
+              {selectionMode ? "Done Selecting" : "Select"}
+            </button>
           }
+          selectionActions={selectionMode ? <>
+            <span className="text-xs font-black text-navy-950">{selectedRunLabel}</span>
+            <button type="button" disabled={!selectedProcessableRunIds.length || busy === "bulk-process"} onClick={() => void processSelectedRuns()} className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs font-black disabled:text-slate-300">{contextualProcessLabel}</button>
+            <button type="button" disabled={!processableRunIds.length || busy === "bulk-process"} onClick={() => void processAllRuns()} className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs font-black disabled:text-slate-300">Process All</button>
+            <button type="button" onClick={() => requestDelete(selectedRunIds)} disabled={!selectedRunIds.length || busy === "delete"} className="rounded-lg border border-rose-200 bg-white px-3 py-2 text-xs font-black text-rose-700 disabled:text-slate-300">Delete</button>
+            <button type="button" onClick={() => setShowExportModal(true)} disabled={!selectedRunIds.length} className="rounded-lg bg-royal-600 px-3 py-2 text-xs font-black text-white disabled:bg-slate-300">Export</button>
+          </> : null}
           search={runSearch}
           sortBy={runSort}
           onToggleSelected={(runId) =>
@@ -2230,7 +2187,9 @@ function StatementRuns({
   runs,
   selectedRunId,
   selectedRunIds,
+  selectionMode,
   actions,
+  selectionActions,
   search,
   sortBy,
   onToggleSelected,
@@ -2243,7 +2202,9 @@ function StatementRuns({
   runs: AccountingStatementRun[];
   selectedRunId: string;
   selectedRunIds: string[];
+  selectionMode: boolean;
   actions: ReactNode;
+  selectionActions: ReactNode;
   search: string;
   sortBy: string;
   onToggleSelected: (runId: string) => void;
@@ -2311,15 +2272,16 @@ function StatementRuns({
           </button>
         </div>
       </div>
+      {selectionMode ? <div className="flex flex-wrap items-center gap-2 border-b border-royal-100 bg-royal-50 px-3 py-2">{selectionActions}</div> : null}
       <div className="grid gap-2 border-b border-slate-100 p-2">
         <label className="relative block">
           <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
-          <input
+          {selectionMode ? <input
             value={search}
             onChange={(event) => onSearchChange(event.target.value)}
             placeholder="Search statements"
             className="h-9 w-full rounded-lg border border-slate-200 bg-white pl-9 pr-3 text-sm font-medium outline-none focus:border-royal-300"
-          />
+          /> : null}
         </label>
         <div className="flex items-center gap-2">
           <input
@@ -2356,12 +2318,13 @@ function StatementRuns({
               return (
             <div
               key={run.id}
-              onClick={() => onSelect(run.id)}
-              onDoubleClick={() => router.push(`/accounting/statements/${run.id}`)}
+              onClick={() => selectionMode ? onToggleSelected(run.id) : onSelect(run.id)}
+              onDoubleClick={() => { if (!selectionMode) router.push(`/accounting/statements/${run.id}`); }}
               onKeyDown={(event) => {
                 if (event.key === "Enter" || event.key === " ") {
                   event.preventDefault();
-                  onSelect(run.id);
+                  if (selectionMode) onToggleSelected(run.id);
+                  else onSelect(run.id);
                 }
               }}
               role="button"
@@ -2371,7 +2334,7 @@ function StatementRuns({
               }`}
             >
               <div className="flex items-center gap-2">
-                <input
+                {selectionMode ? <input
                   type="checkbox"
                   checked={selectedRunIds.includes(run.id)}
                   onChange={(event) => {
@@ -2381,12 +2344,12 @@ function StatementRuns({
                   onClick={(event) => event.stopPropagation()}
                   className="h-4 w-4 rounded border-slate-300 text-royal-600"
                   aria-label={`Select ${runDisplayTitle(run)} for combined workbook`}
-                />
+                /> : null}
                 <div className="min-w-0 flex-1">
                   <div className="flex items-center justify-between gap-2">
                     <Link
                       href={`/accounting/statements/${run.id}`}
-                      onClick={(event) => event.stopPropagation()}
+                      onClick={(event) => { if (selectionMode) event.preventDefault(); event.stopPropagation(); if (selectionMode) onToggleSelected(run.id); }}
                       className="truncate text-sm font-black text-navy-950 hover:text-royal-700 hover:underline"
                     >
                       {runDisplayTitle({ ...run, status: effectiveStatus })}
@@ -2417,15 +2380,15 @@ function StatementRuns({
                     )}
                   </div>
                 </div>
-                <Link
+                {!selectionMode ? <Link
                   href={`/accounting/statements/${run.id}`}
                   onClick={(event) => event.stopPropagation()}
                   className="rounded-md px-2 py-1 text-[11px] font-black text-royal-700 opacity-0 transition hover:bg-royal-50 group-hover:opacity-100"
                   aria-label={`View ${runDisplayTitle(run)}`}
                 >
                   View
-                </Link>
-                <button
+                </Link> : null}
+                {!selectionMode ? <button
                   type="button"
                   onClick={(event) => {
                     event.stopPropagation();
@@ -2435,7 +2398,7 @@ function StatementRuns({
                   aria-label={`Preview ${runDisplayTitle(run)}`}
                 >
                   <MoreVertical className="h-4 w-4" />
-                </button>
+                </button> : null}
               </div>
             </div>
               );
