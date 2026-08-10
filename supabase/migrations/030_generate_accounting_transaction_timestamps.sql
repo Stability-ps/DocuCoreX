@@ -1,6 +1,6 @@
--- Follow-up for databases where migration 026 was already applied.
--- jsonb_populate_recordset produces SQL NULL for an absent JSON field, so an
--- INSERT ... SELECT does not invoke the accounting_transactions.id default.
+-- Follow-up for databases where migration 029 was already applied.
+-- INSERT ... SELECT also bypasses the created_at and updated_at defaults when
+-- jsonb_populate_recordset expands absent JSON properties to explicit NULLs.
 
 create or replace function public.replace_accounting_transactions_owned(
   p_run_id uuid,

@@ -288,6 +288,14 @@ test("atomic replacement generates transaction ids before record expansion", () 
   assert.match(migration, /for update/, "ownership and replacement must remain in one locked transaction");
 });
 
+test("atomic replacement supplies every database-managed non-null field", () => {
+  const migration = read("supabase/migrations/030_generate_accounting_transaction_timestamps.sql");
+  assert.match(migration, /'\{id\}', to_jsonb\(gen_random_uuid\(\)\)/);
+  assert.match(migration, /'\{created_at\}', to_jsonb\(now\(\)\)/);
+  assert.match(migration, /'\{updated_at\}', to_jsonb\(now\(\)\)/);
+  assert.match(migration, /jsonb_populate_recordset\(null::public\.accounting_transactions, normalized_rows\)/);
+});
+
 test("the replace is scoped by workspace, not just run", () => {
   const migration = read("supabase/migrations/026_accounting_attempt_fencing.sql");
   const body = migration.slice(migration.indexOf("delete from public.accounting_transactions"));
