@@ -986,7 +986,7 @@ export async function POST(request: Request) {
       })
       .eq("workspace_id", context.workspaceId)
       .eq("id", runId)
-      .eq("active_job_id", processingJobId);
+      .or(`active_job_id.is.null,active_job_id.eq.${processingJobId}`);
     if (markError) {
       const { error: fallbackMarkError } = await context.supabase
         .from("accounting_statement_runs")
@@ -1003,7 +1003,7 @@ export async function POST(request: Request) {
         })
         .eq("workspace_id", context.workspaceId)
         .eq("id", runId)
-        .eq("active_job_id", processingJobId);
+        .or(`active_job_id.is.null,active_job_id.eq.${processingJobId}`);
       if (fallbackMarkError) {
         if (body.reprocess) {
           await context.supabase
