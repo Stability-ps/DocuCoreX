@@ -94,3 +94,13 @@ test("the selected statement keeps real metadata, metrics, and the PDF beside tr
   assert.match(ui, /onShowInStatement\?\.\(transaction\.sourcePage\)/);
   assert.doesNotMatch(ui, /boundingBox|fakeHighlight/);
 });
+
+test("the bank statement page follows the approved compact workspace hierarchy", () => {
+  assert.match(ui, /useState\(true\).*uploadCollapsed|uploadCollapsed, setUploadCollapsed\] = useState\(true\)/);
+  assert.match(ui, /Show upload options/);
+  assert.match(ui, /activeModule === "bank-statements"/);
+  assert.match(ui, /grid-cols-5 divide-x divide-slate-100/);
+  assert.match(ui, /overflow-hidden rounded-lg border border-slate-200 bg-white/);
+  assert.doesNotMatch(ui, /bg-gradient-to-r from-navy-950/);
+  assert.match(ui, /visibleMessage[\s\S]*grid items-start gap-3 xl:grid-cols-\[320px_minmax\(0,1fr\)\]/);
+});
