@@ -1082,7 +1082,32 @@ export function AccountingIntelligence() {
        and 12-18px vertical gaps, so accounting data is visible without
        scrolling past empty space. The mobile bottom padding is unchanged — it
        clears the fixed action bar and the safe-area inset. */
-    <div className={`space-y-3 bg-slate-50/60 px-4 py-3 sm:px-5 lg:px-6 lg:py-4 ${detail ? "pb-[calc(11rem+env(safe-area-inset-bottom))] md:pb-6 lg:pb-8" : ""}`}>
+    <div
+      /* Drag-and-drop moved here from the removed upload card. Dropping a
+         statement anywhere in the workspace uploads it, which is what the card
+         did within its own bounds — losing the handler with the card would have
+         removed a working input path. */
+      onDragOver={(event) => event.preventDefault()}
+      onDrop={(event) => {
+        event.preventDefault();
+        void uploadFiles(Array.from(event.dataTransfer.files));
+      }}
+      className={`space-y-3 bg-slate-50/60 px-4 py-3 sm:px-5 lg:px-6 lg:py-4 ${detail ? "pb-[calc(11rem+env(safe-area-inset-bottom))] md:pb-6 lg:pb-8" : ""}`}
+    >
+      {/* The file input the Upload Statement button opens. It lives on the
+          always-rendered root rather than inside a panel, so the ref cannot go
+          stale when the visible section changes. */}
+      <input
+        ref={inputRef}
+        type="file"
+        accept="application/pdf,.pdf"
+        multiple
+        className="hidden"
+        onChange={(event) => {
+          void uploadFiles(Array.from(event.currentTarget.files ?? []));
+          event.currentTarget.value = "";
+        }}
+      />
       {/*
         Compact application hierarchy: one breadcrumb, one title, no duplicated
         headings and no second search.
@@ -1202,60 +1227,6 @@ export function AccountingIntelligence() {
 
       {activeModule === "bank-statements" ? (
       <>
-      <section
-        onDragOver={(event) => event.preventDefault()}
-        onDrop={(event) => {
-          event.preventDefault();
-          void uploadFiles(Array.from(event.dataTransfer.files));
-        }}
-        className="rounded-xl border border-slate-200 bg-white px-3 py-2.5 shadow-sm md:px-4"
-      >
-        <input
-          ref={inputRef}
-          type="file"
-          accept="application/pdf,.pdf"
-          multiple
-          className="hidden"
-          onChange={(event) => {
-            void uploadFiles(Array.from(event.currentTarget.files ?? []));
-            event.currentTarget.value = "";
-          }}
-        />
-        <div className="grid gap-2 xl:grid-cols-[1fr_auto] xl:items-center">
-          <div>
-            <div className="flex flex-wrap items-center gap-2">
-              <p className="text-sm font-semibold text-navy-950">Bank Statements</p>
-            </div>
-            <p className="mt-0.5 text-xs font-semibold text-slate-500">Upload, process, review, and export bank statement transactions.</p>
-            <p className="mt-0.5 text-xs font-medium text-slate-500">Bank and account details are detected automatically where possible.</p>
-          </div>
-          {/* The panel is a drop target, and the header already carries the
-              Upload Statement action. With the panel no longer collapsed, a
-              second identical button here would be two CTAs for one job. */}
-          <div className="grid gap-3 sm:items-end">
-            <div className="rounded-xl border border-dashed border-royal-200 bg-royal-50/60 p-3 text-center">
-              <UploadCloud className="mx-auto h-4 w-4 text-royal-500" />
-              <p className="mt-1 text-[11px] font-semibold text-slate-600">Drop statements here, or use Upload Statement above.</p>
-              <p className="text-[11px] font-semibold text-slate-500">PDF up to 200MB</p>
-            </div>
-          </div>
-          <div className="xl:col-span-2">
-            {/* Sets expectations before processing starts. Deliberately makes no
-                promise about duration: processing time depends on page count,
-                whether the PDF carries a native text layer, and how much needs
-                review. A "under a minute" claim would be unbacked by any
-                telemetry this product currently collects. */}
-            <ul className="mt-3 space-y-1 text-[11px] font-medium text-slate-600">
-              <li>Digital and scanned bank statement PDFs are supported.</li>
-              <li>Bank and account details are detected automatically where possible.</li>
-              <li>One statement per file gives the most reliable result.</li>
-              <li>Transactions needing review are identified clearly after processing.</li>
-              <li>Uploading does not start processing — you choose when to process each statement.</li>
-            </ul>
-          </div>
-        </div>
-      </section>
-
       {uploadQueue.length ? (
         <section className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
           <div className="mb-3 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">

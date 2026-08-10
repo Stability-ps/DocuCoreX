@@ -154,9 +154,20 @@ test("the upload options toggle is gone, and the panel is not hidden by default"
   assert.ok(!/sr-only/.test(source), "the upload panel is not hidden from sighted users");
 });
 
-test("upload still works after removing the toggle", () => {
+test("the upload card is gone, and its guidance copy with it", () => {
+  // The card carried the toggle, a duplicate CTA and a guidance list. Removing
+  // it leaves the header as the single place the action lives.
+  const source = readFileSync("components/accounting/accounting-intelligence.tsx", "utf8");
+  assert.ok(!/Drop statements here/.test(source), "the drop-zone card is gone");
+  assert.ok(!/One statement per file gives the most reliable result/.test(source), "guidance list gone with it");
+
+  // Exactly one file input — a second would make inputRef ambiguous.
+  assert.equal((source.match(/type="file"/g) ?? []).length, 1);
+});
+
+test("upload still works after removing the toggle and the card", () => {
   // The point was to stop hiding the panel, not to lose the ability to upload.
-  // All three routes in must survive.
+  // All routes in must survive the card that used to contain them.
   const source = readFileSync("components/accounting/accounting-intelligence.tsx", "utf8");
 
   assert.ok(/type="file"/.test(source), "the hidden file input still exists");
