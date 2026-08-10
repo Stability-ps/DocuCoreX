@@ -311,7 +311,16 @@ function PdfCanvasViewer({
   function fitWidth() {
     setFitMode(true);
     setRotate(0);
+    // Fit returns to a valid baseline viewport; stale scroll offsets from a
+    // zoomed page can otherwise leave the first render anchored off-screen.
+    containerRef.current?.scrollTo({ left: 0, top: 0 });
   }
+
+  // A page switch should never inherit an impossible scroll coordinate from a
+  // differently-sized page. Reset to a valid origin for every page change.
+  useEffect(() => {
+    containerRef.current?.scrollTo({ left: 0, top: 0 });
+  }, [page]);
 
   // ── Text search: jump to pages that contain the query ─────────────────────
   const runSearch = useCallback(async () => {
@@ -485,8 +494,13 @@ function PdfCanvasViewer({
                 <Loader2 className="h-5 w-5 animate-spin" /> <span className="ml-2 text-sm font-bold">Loading document…</span>
               </div>
             ) : null}
-            <div className="flex min-h-full justify-center p-3">
-              <canvas ref={canvasRef} className="h-fit rounded border border-slate-200 bg-white shadow-sm" />
+            <div className="min-h-full min-w-full p-3">
+              {/* Center when the page fits; when zoomed larger than the viewport,
+                  width-fit content overflows in positive scroll space so both
+                  horizontal directions remain reachable via native scrolling. */}
+              <div className="mx-auto h-fit w-fit">
+                <canvas ref={canvasRef} className="h-fit rounded border border-slate-200 bg-white shadow-sm" />
+              </div>
             </div>
           </>
         )}
