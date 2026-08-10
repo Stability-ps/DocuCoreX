@@ -16,22 +16,19 @@ test("queued presentation cannot be overridden by optimistic local processing st
   assert.match(ui, /Process this statement to extract transactions\./);
 });
 
-test("process lifecycle begins only after the refreshed server state is in flight", () => {
+test("a successful process response starts polling despite a stale immediate refresh", () => {
   const processRun = ui.slice(ui.indexOf("async function processRun"), ui.indexOf("async function cancelRun"));
   assert.match(processRun, /fetch\("\/api\/accounting\/fnb\/process"/);
-  assert.match(processRun, /const acceptedDetail = await refreshAccountingData/);
-  assert.match(processRun, /if \(!isRunInFlight\(acceptedStatus\)\)/);
+  assert.match(processRun, /if \(!response\.ok\)/);
   assert.match(processRun, /setMessage\("Processing your statement\."\)/);
-  assert.ok(
-    processRun.indexOf("setMessage(\"Processing your statement.\")") > processRun.indexOf("if (!isRunInFlight(acceptedStatus))"),
-    "the processing message must follow server acceptance",
-  );
+  assert.match(processRun, /await refreshAccountingData\(runId, \{ silent: true \}\)\.catch/);
+  assert.match(processRun, /const outcome = await pollRunUntilTerminal/);
+  assert.doesNotMatch(processRun, /Processing was not accepted by the server/);
   assert.match(processRun, /catch \(processError\)[\s\S]*setLiveRefreshState\("idle"\)[\s\S]*setMessage\(""\)/);
   assert.match(processRun, /finally \{[\s\S]*setBusy\(""\)/);
 });
 
 test("an existing ledger cannot make a newly accepted reprocess look completed", () => {
-  assert.match(ui, /const acceptedStatus = acceptedDetail[\s\S]*deriveEffectiveRunStatus/);
   const runStatus = readFileSync(join(root, "lib/accounting/run-status.ts"), "utf8");
   assert.match(runStatus, /if \(status === "processing"\) return "processing"/);
 });
