@@ -32,6 +32,7 @@ import type {
   PdfAnalysis,
 } from "@/lib/pdf/types";
 import { mergeExtractionResults } from "@/lib/pdf/mergeExtractionResults";
+import { deriveClosingBalance } from "@/lib/pdf/metadata";
 import { scoreExtraction } from "@/lib/pdf/scoreExtraction";
 import { validateBankStatement } from "@/lib/accounting/validateBankStatement";
 
@@ -147,7 +148,23 @@ export function acceptExtraction(analysis: PdfAnalysis, candidates: AcceptanceCa
   if (isStatement) {
     // 2. Completeness — the fields a statement must carry.
     if (merged.metadata.openingBalance == null) rejectionReasons.push("Opening balance is missing.");
-    if (merged.metadata.closingBalance == null) rejectionReasons.push("Closing balance is missing.");
+
+    // A statement that never prints the words "Closing Balance" is not a
+    // statement without one. Standard Bank prints a running balance per row and
+    // a Deposits/Payments summary instead, and the closing figure is derivable
+    // from those two independent printed sources when they agree to the cent.
+    //
+    // Rejecting here sent every such statement up the whole escalation ladder,
+    // and no OCR engine can find a label that was never printed. The rule
+    // matches the worker's derive_closing_balance exactly.
+    const derivedClosing = deriveClosingBalance(merged.metadata, merged.transactions);
+    if (derivedClosing.closingBalance == null) {
+      rejectionReasons.push(
+        derivedClosing.source === "unverified"
+          ? "Closing balance could not be verified — the statement's declared totals disagree with its final running balance."
+          : "Closing balance is missing.",
+      );
+    }
 
     // 3. Reconciliation.
     if (!validation.valid) {

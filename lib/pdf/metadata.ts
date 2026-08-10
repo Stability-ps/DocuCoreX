@@ -30,10 +30,56 @@ export function parseStatementMetadata(text: string): ExtractionMetadata {
     accountNumber: first([/Account\s*(?:Number|No\.?)\s*[:\-]?\s*(\d{6,})/i, /Gold Business Account\s*[:\-]?\s*(\d{6,})/i], text),
     statementPeriodStart: period?.[1]?.trim() ?? null,
     statementPeriodEnd: period?.[2]?.trim() ?? null,
-    openingBalance: toNumber(first([/Opening\s*Balance\s*[:\-]?\s*(R?\s*[0-9, ]+\.\d{2})/i], text)),
-    closingBalance: toNumber(first([/Closing\s*Balance\s*[:\-]?\s*(R?\s*[0-9, ]+\.\d{2})/i], text)),
-    declaredCreditTotal: toNumber(first([/Credit\s*Transactions?\s*\d+\s+(R?\s*[0-9, ]+\.\d{2})/i, /Total\s*Credits?\s*[:\-]?\s*(R?\s*[0-9, ]+\.\d{2})/i], text)),
-    declaredDebitTotal: toNumber(first([/Debit\s*Transactions?\s*\d+\s+(R?\s*[0-9, ]+\.\d{2})/i, /Total\s*Debits?\s*[:\-]?\s*(R?\s*[0-9, ]+\.\d{2})/i], text)),
+    // `(?::|-(?=\s))?` — a colon separates the label from the figure, and so
+    // does a dash followed by a space. A minus sign printed hard against the
+    // figure belongs to the FIGURE.
+    //
+    // `[:\-]?` swallowed that minus as punctuation, so an overdrawn statement's
+    // "STATEMENT OPENING BALANCE -992,832.57" was read as +992,832.57. Every
+    // balance check then failed by twice the opening balance. The Python worker
+    // fixed exactly this in its own parser; the same defect survived here.
+    openingBalance: toNumber(
+      first(
+        [
+          /Opening\s*Balance\s*(?::|-(?=\s))?\s*(-?\(?R?\s*[0-9, ]+\.\d{2}\)?)/i,
+          /Balance\s*Brought\s*Forward\s*(?::|-(?=\s))?\s*(-?\(?R?\s*[0-9, ]+\.\d{2}\)?)/i,
+        ],
+        text,
+      ),
+    ),
+    closingBalance: toNumber(
+      first(
+        [
+          /Closing\s*Balance\s*(?::|-(?=\s))?\s*(-?\(?R?\s*[0-9, ]+\.\d{2}\)?)/i,
+          /Balance\s*Carried\s*Forward\s*(?::|-(?=\s))?\s*(-?\(?R?\s*[0-9, ]+\.\d{2}\)?)/i,
+        ],
+        text,
+      ),
+    ),
+    // Standard Bank labels its summary block "Deposits" and "Payments" rather
+    // than "Credit/Debit Transactions". The minus on Payments is the bank
+    // showing an outflow, not a negative total, so only the magnitude is taken —
+    // matching the worker's reading of the same block.
+    declaredCreditTotal: toNumber(
+      first(
+        [
+          /Credit\s*Transactions?\s*\d+\s+(R?\s*[0-9, ]+\.\d{2})/i,
+          /Total\s*Credits?\s*[:\-]?\s*(R?\s*[0-9, ]+\.\d{2})/i,
+          /^\s*Deposits\s+-?R?\s*([0-9, ]+\.\d{2})\s*$/im,
+        ],
+        text,
+      ),
+    ),
+    declaredDebitTotal: toNumber(
+      first(
+        [
+          /Debit\s*Transactions?\s*\d+\s+(R?\s*[0-9, ]+\.\d{2})/i,
+          /Total\s*Debits?\s*[:\-]?\s*(R?\s*[0-9, ]+\.\d{2})/i,
+          /^\s*Payments\s+-?R?\s*([0-9, ]+\.\d{2})\s*$/im,
+        ],
+        text,
+      ),
+    ),
     declaredCreditCount: (() => {
       const value = first([/Credit\s*Transactions?\s*[:\-]?\s*(\d+)/i], text);
       return value ? Number(value) : null;
@@ -70,4 +116,56 @@ export function parseTransactionsFromText(text: string): ExtractionTransaction[]
     });
   }
   return transactions;
+}
+
+/**
+ * The closing balance, and the evidence it rests on.
+ *
+ * Not every statement prints the words "Closing Balance". Standard Bank does
+ * not: it prints a running balance on every row and a summary block of Deposits
+ * and Payments. The Python worker already derives closing for those statements;
+ * this side did not, so the acceptance gate rejected every Standard Bank
+ * statement with "Closing balance is missing" and escalated to Azure, Mistral
+ * and tesseract — none of which can find a label that was never printed. On a
+ * 37-page statement that cost roughly 16 seconds per run and changed nothing.
+ *
+ * The last row's balance is NOT evidence on its own. A statement whose final
+ * rows were mis-parsed would hand back a confident wrong number, and closing is
+ * what every downstream reconciliation is measured against. So it is accepted
+ * only when the bank's own declared turnover agrees with it:
+ *
+ *     opening + declared deposits - declared payments === last printed balance
+ *
+ * Two independent figures the bank printed, agreeing to the cent. If they
+ * disagree, or either is absent, the answer is null: an unknown closing balance
+ * is safer than a plausible wrong one.
+ *
+ * This deliberately mirrors derive_closing_balance in the worker. The rule is an
+ * accounting judgement, and the two sides disagreeing about it would be worse
+ * than either being wrong alone.
+ */
+export function deriveClosingBalance(
+  metadata: ExtractionMetadata,
+  transactions: ExtractionTransaction[],
+): { closingBalance: number | null; source: "explicit" | "last_running_balance_verified" | "unverified" | "unavailable" } {
+  if (metadata.closingBalance != null) return { closingBalance: metadata.closingBalance, source: "explicit" };
+
+  const opening = metadata.openingBalance;
+  const credits = metadata.declaredCreditTotal;
+  const debits = metadata.declaredDebitTotal;
+  if (opening == null || credits == null || debits == null || !transactions.length) {
+    return { closingBalance: null, source: "unavailable" };
+  }
+
+  const lastBalance = [...transactions].reverse().find((t) => t.balance != null)?.balance ?? null;
+  if (lastBalance == null) return { closingBalance: null, source: "unavailable" };
+
+  // Cent tolerance, matching the worker. Anything looser would accept a
+  // statement with a genuinely missing transaction.
+  const expected = opening + credits - debits;
+  if (Math.abs(expected - lastBalance) > 0.05) {
+    return { closingBalance: null, source: "unverified" };
+  }
+
+  return { closingBalance: lastBalance, source: "last_running_balance_verified" };
 }
