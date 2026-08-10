@@ -94,17 +94,16 @@ export type RunStatusSignals = {
   validationStatus?: string | null;
 };
 
-// Derive the status the UI should show. A run must NOT keep showing "Processing"
-// once any of these hold (status-sync Req 4):
-//   • transactionCount > 0
-//   • requiresReview === true
-//   • validationStatus is failed / review / completed
-// Returns null when the run is genuinely still processing/queued.
+// Derive the status the UI should show. The explicit server lifecycle status is
+// authoritative. In particular, reprocessing intentionally keeps the previous
+// ledger readable, so transactionCount > 0 is not evidence that the new job is
+// complete while the run says processing.
 export function deriveEffectiveRunStatus(run: RunStatusSignals, transactionCount?: number): AccountingRunStatus | null {
   const status = normalizeRunStatus(run.status ?? null);
   if (status === "error") return "failed";
   if (status === "pending") return "processing";
   if (isTerminalRunStatus(status)) return status;
+  if (status === "processing") return "processing";
 
   const vs = (run.validationStatus ?? "").toLowerCase();
   const txCount = transactionCount ?? run.transactionCount ?? 0;

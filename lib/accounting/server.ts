@@ -164,6 +164,7 @@ function mapRun(row: AccountingRunRow): AccountingStatementRun {
     workspaceId: row.workspace_id,
     documentId: row.document_id,
     processingJobId: row.processing_job_id,
+    activeJobId: row.active_job_id ?? null,
     bank: cleanAccountingMetadata(row.bank) ?? row.bank,
     statementType: row.statement_type,
     status: row.status,

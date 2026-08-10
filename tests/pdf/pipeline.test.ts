@@ -695,14 +695,15 @@ test("OCR worker runs the fastest mode first and escalates only on failure (Req 
 
 test("UI shows the processing steps, elapsed time, and long-processing notice (Req 5)", () => {
   const steps = read("lib/pdf/processingSteps.ts");
-  for (const label of ["Detecting PDF type", "Running OCR", "Parsing transactions", "Reconciling"]) {
+  for (const label of ["Detecting document", "Extracting data", "Parsing transactions", "Classifying transactions", "Reconciling", "Generating workbook"]) {
     assert.match(steps, new RegExp(label), `step label: ${label}`);
   }
+  assert.doesNotMatch(steps, /Running OCR/, "OCR is extraction detail, not a primary lifecycle stage");
   assert.match(steps, /Still processing — scanned PDFs can take longer/);
   const component = read("components/accounting/processing-steps.tsx");
   assert.match(component, /formatElapsed/, "renders an elapsed timer");
   assert.match(component, /LONG_PROCESSING_NOTICE/, "shows the long-processing notice");
-  assert.match(component, /PROCESSING_STEP_ORDER/, "renders the ordered steps");
+  assert.match(component, /ACCOUNTING_PROCESSING_STAGE_ORDER/, "renders the ordered steps");
 });
 
 // ── OCR reliability (502 handling, controlled timeout, logging, caching) ──────
@@ -766,12 +767,12 @@ test("successful OCR is cached; unavailable OCR is not (so it can retry) (Req 10
 
 // ── Status synchronization ────────────────────────────────────────────────────
 
-test("deriveEffectiveRunStatus stops showing Processing once a run is really done", () => {
-  assert.equal(deriveEffectiveRunStatus({ status: "processing", transactionCount: 5 }), "completed", "transactions ⇒ completed");
-  assert.equal(deriveEffectiveRunStatus({ status: "processing", requiresReview: true }), "review", "requires_review ⇒ review");
-  assert.equal(deriveEffectiveRunStatus({ status: "processing", validationStatus: "failed" }), "failed");
-  assert.equal(deriveEffectiveRunStatus({ status: "processing", validationStatus: "review" }), "review");
-  assert.equal(deriveEffectiveRunStatus({ status: "processing", validationStatus: "completed" }), "completed");
+test("deriveEffectiveRunStatus keeps an explicitly processing replacement job active", () => {
+  assert.equal(deriveEffectiveRunStatus({ status: "processing", transactionCount: 5 }), "processing", "old transactions do not finish a replacement job");
+  assert.equal(deriveEffectiveRunStatus({ status: "processing", requiresReview: true }), "processing");
+  assert.equal(deriveEffectiveRunStatus({ status: "processing", validationStatus: "failed" }), "processing");
+  assert.equal(deriveEffectiveRunStatus({ status: "processing", validationStatus: "review" }), "processing");
+  assert.equal(deriveEffectiveRunStatus({ status: "processing", validationStatus: "completed" }), "processing");
   assert.equal(deriveEffectiveRunStatus({ status: "processing", transactionCount: 0 }), "processing", "genuinely still processing");
   assert.equal(deriveEffectiveRunStatus({ status: "completed" }), "completed", "terminal passes through");
   assert.equal(isTerminalRunStatus("processing"), false);
@@ -813,7 +814,7 @@ test("failed runs surface the real error + diagnostics with retry (not just 'Fai
   // Dashboard renders the failed panel (not the empty state), a "View error"
   // affordance, and retry force-reprocesses. Failed runs stay selectable.
   const intel = read("components/accounting/accounting-intelligence.tsx");
-  assert.match(intel, /detail\.run\.status === "failed" \? \(/, "failed status renders the panel");
+  assert.match(intel, /selectedEffectiveStatus === "failed" \? \(/, "effective failed status renders the panel");
   assert.match(intel, /<FailedRunPanel/);
   assert.match(intel, /onRetry=\{\(\) => void processRun\(detail\.run\.id, \{ reprocess: true \}\)\}/, "retry force-reprocesses");
   assert.match(intel, /View error/, "list exposes a View error affordance on failed runs");

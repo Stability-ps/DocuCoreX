@@ -42,7 +42,7 @@ test("statement name comes from the PDF period/date, not the upload date", () =>
 // month and never the upload month (the "July 2026 Statement" bug).
 test("statement name is a neutral placeholder before processing", () => {
   const queued = { statementPeriodStart: null, statementPeriodEnd: null, statementDate: null, companyName: "ALLIANZ HOLDINGS (PTY) LTD", status: "queued" as const };
-  assert.equal(statementDisplayName(queued), "Processing Statement…");
+  assert.equal(statementDisplayName(queued), "Uploaded Statement");
   assert.doesNotMatch(statementDisplayName(queued), /2026 Statement$/, "must not show a month before processing");
 
   const processing = { statementPeriodStart: null, statementPeriodEnd: null, statementDate: null, companyName: null, status: "processing" as const };
