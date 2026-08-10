@@ -10,6 +10,7 @@ import { bestTransferCandidates, findTransferCandidates, type TransferCandidate,
 import { findRecurringPatterns, type RecurringInput, type RecurringPattern } from "@/lib/accounting/recurring";
 import { latestBalancesByAccount, summarizeCashflow, type CashflowInput, type CashflowSummary } from "@/lib/accounting/cashflow";
 import { buildCoverage, type CoverageResult, type CoverageStatement } from "@/lib/accounting/coverage";
+import { buildFlowOfFunds, type FlowInput, type FlowOfFunds } from "@/lib/accounting/flow-of-funds";
 import { getWorkspaceContext } from "@/lib/server-documents";
 import { createDocumentVersionRecord } from "@/lib/supabase-server-adapter";
 import type {
@@ -1565,4 +1566,46 @@ export async function saveWorkspaceEngagement(input: {
     entityId: context.workspaceId,
     newValue: input as unknown as Record<string, unknown>,
   });
+}
+
+/**
+ * Flow of funds across the workspace, or the reason one would mislead.
+ *
+ * Confirmed transfers are excluded for the same reason as in cashflow: internal
+ * movement is neither a source of funds nor a use of them.
+ */
+export async function getWorkspaceFlowOfFunds(): Promise<FlowOfFunds> {
+  const context = await getWorkspaceContext();
+  if (!context) return buildFlowOfFunds([]);
+
+  const { data: confirmedRows, error: confirmedError } = await context.supabase
+    .from("accounting_transfer_matches")
+    .select("outbound_transaction_id, inbound_transaction_id")
+    .eq("workspace_id", context.workspaceId)
+    .eq("status", "confirmed");
+
+  if (confirmedError && confirmedError.code !== "42P01") {
+    console.warn("[accounting] confirmed transfers unreadable", confirmedError.message);
+  }
+
+  const confirmedTransferIds = new Set<string>();
+  for (const row of confirmedRows ?? []) {
+    confirmedTransferIds.add(row.outbound_transaction_id as string);
+    confirmedTransferIds.add(row.inbound_transaction_id as string);
+  }
+
+  const { data: rows } = await context.supabase
+    .from("accounting_transactions")
+    .select("id, debit_amount, credit_amount, account_category")
+    .eq("workspace_id", context.workspaceId)
+    .limit(10000);
+
+  const inputs: FlowInput[] = (rows ?? []).map((row) => ({
+    transactionId: row.id as string,
+    debit: (row.debit_amount as number | null) ?? null,
+    credit: (row.credit_amount as number | null) ?? null,
+    accountCategory: (row.account_category as string) ?? "",
+  }));
+
+  return buildFlowOfFunds(inputs, { confirmedTransferIds });
 }
