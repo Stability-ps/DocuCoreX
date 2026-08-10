@@ -1251,14 +1251,6 @@ export function AccountingIntelligence() {
               </button>
               <button
                 type="button"
-                onClick={() => requestDelete(selectedRunIds)}
-                disabled={busy === "delete"}
-                className="inline-flex min-h-10 items-center justify-center rounded-lg border border-rose-200 bg-white px-3 text-xs font-black text-rose-700 disabled:text-slate-300"
-              >
-                Delete
-              </button>
-              <button
-                type="button"
                 onClick={() => setShowExportModal(true)}
                 className="inline-flex min-h-10 items-center justify-center gap-1.5 rounded-lg bg-royal-600 px-3 text-xs font-black text-white hover:bg-royal-700"
               >
@@ -1431,6 +1423,15 @@ export function AccountingIntelligence() {
                 className="inline-flex min-h-9 items-center justify-center rounded-lg border border-slate-200 bg-white px-3 text-xs font-black text-slate-700 disabled:text-slate-300"
               >
                 Clear Completed
+              </button>
+              <button
+                type="button"
+                onClick={() => requestDelete(selectedRunIds)}
+                disabled={!selectedRunIds.length || busy === "delete"}
+                className="inline-flex min-h-9 items-center justify-center gap-1.5 rounded-lg border border-rose-200 bg-white px-3 text-xs font-black text-rose-700 disabled:border-slate-200 disabled:text-slate-300"
+              >
+                <Trash2 className="h-3.5 w-3.5" />
+                Delete Selected
               </button>
             </>
           }

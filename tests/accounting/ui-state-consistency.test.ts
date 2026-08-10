@@ -69,4 +69,6 @@ test("statement actions live inside the statements box", () => {
   assert.match(statementRunsCall, /actions=\{/);
   assert.match(statementRunsCall, /Process All/);
   assert.match(statementRunsCall, /Clear Completed/);
+  assert.match(statementRunsCall, /Delete Selected/);
+  assert.match(statementRunsCall, /disabled=\{!selectedRunIds\.length \|\| busy === "delete"\}/);
 });
