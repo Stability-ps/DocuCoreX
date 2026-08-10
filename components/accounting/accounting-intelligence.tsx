@@ -71,6 +71,7 @@ import { accountingRunQuality, accountingTransactionTotals } from "@/lib/account
 import { CATEGORY_OPTIONS, VAT_TREATMENT_OPTIONS, isUnresolvedAccountingCategory } from "@/lib/accounting/review-options";
 import { computeBalanceContinuity } from "@/lib/accounting/balance-continuity";
 import { ProcessingSteps } from "@/components/accounting/processing-steps";
+import { WorkspaceInsights } from "@/components/accounting/workspace-insights";
 import { mergeAccountingRunProgress } from "@/lib/accounting/processing-stage";
 import { FailedRunPanel } from "@/components/accounting/failed-run-panel";
 import type { AiCommentaryResult, AiCommentaryType } from "@/lib/accounting/ai-service";
@@ -1135,11 +1136,16 @@ export function AccountingIntelligence() {
       ) : null}
 
       {activeModule === "ai-intelligence" ? (
-        detailAnalytics ? (
-          <AiTransactionPanel duplicates={detailAnalytics.duplicates} unusuals={detailAnalytics.unusuals} directors={detailAnalytics.directors} />
-        ) : (
-          <ModuleNoDataMessage label="Transaction Insights" onSelect={() => setActiveModule("bank-statements")} />
-        )
+        <div className="space-y-3">
+          {/* Workspace-scoped first: a transfer's two legs are on two different
+              statements and a monthly commitment only appears across several,
+              so neither question can be answered from the selected run. This
+              renders whether or not a statement is selected. */}
+          <WorkspaceInsights />
+          {detailAnalytics ? (
+            <AiTransactionPanel duplicates={detailAnalytics.duplicates} unusuals={detailAnalytics.unusuals} directors={detailAnalytics.directors} />
+          ) : null}
+        </div>
       ) : null}
 
       {activeModule === "forecasting" ? (
