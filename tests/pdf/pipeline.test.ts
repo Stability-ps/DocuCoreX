@@ -814,7 +814,7 @@ test("failed runs surface the real error + diagnostics with retry (not just 'Fai
   // Dashboard renders the failed panel (not the empty state), a "View error"
   // affordance, and retry force-reprocesses. Failed runs stay selectable.
   const intel = read("components/accounting/accounting-intelligence.tsx");
-  assert.match(intel, /detail\.run\.status === "failed" \? \(/, "failed status renders the panel");
+  assert.match(intel, /selectedEffectiveStatus === "failed" \? \(/, "effective failed status renders the panel");
   assert.match(intel, /<FailedRunPanel/);
   assert.match(intel, /onRetry=\{\(\) => void processRun\(detail\.run\.id, \{ reprocess: true \}\)\}/, "retry force-reprocesses");
   assert.match(intel, /View error/, "list exposes a View error affordance on failed runs");
