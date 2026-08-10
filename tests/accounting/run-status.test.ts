@@ -135,7 +135,14 @@ test("dispatch goes to the dispatch endpoint and claims the run", () => {
 
 test("force reprocess creates a fresh queued job and fences out the old attempt", () => {
   const route = read("app/api/accounting/fnb/process/route.ts");
-  assert.match(route, /if \(body\.reprocess\) \{[\s\S]{0,500}?\.rpc\([\s\S]{0,100}?"begin_accounting_reprocess"/);
+  // Force Reprocess takes a fresh job UNCONDITIONALLY — that is the guarantee,
+  // and it is unchanged. What changed is that it is no longer the ONLY path that
+  // does: Retry allocates one too when its own attempt is spent, because
+  // re-sending a spent job is refused by the worker's claim. So the assertion is
+  // on the guarantee rather than on the `if (body.reprocess)` that used to be the
+  // only way to express it. See tests/accounting/retry-job-allocation.test.ts.
+  assert.match(route, /allocatedReplacementJob = body\.reprocess/, "reprocess always allocates");
+  assert.match(route, /if \(allocatedReplacementJob\) \{[\s\S]{0,500}?\.rpc\([\s\S]{0,100}?"begin_accounting_reprocess"/);
   assert.match(route, /processing_job_id: processingJobId/);
   assert.match(route, /active_job_id: processingJobId/);
 });

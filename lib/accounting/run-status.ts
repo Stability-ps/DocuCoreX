@@ -84,6 +84,28 @@ export function isRunAwaitingProcessing(status: string | null | undefined): bool
   return normalizeRunStatus(status) === "queued";
 }
 
+/**
+ * Can this processing job still be handed to the worker?
+ *
+ * A processing job is ONE EXECUTION ATTEMPT, not a permanent identity for a
+ * statement run, and the worker enforces that: its claim (main.py,
+ * `_claim_processing_job`) accepts a job only when it is "queued", or "running"
+ * with a heartbeat that has gone cold. Every other state — succeeded, failed,
+ * cancelled, or a job row that no longer exists — is a spent attempt, and
+ * dispatching it is answered 409 "Processing job is not queued or reclaimable".
+ *
+ * "running" is deliberately dispatchable. The worker answers already_running
+ * without scheduling a second pipeline, or reclaims the job if its worker died;
+ * both outcomes are correct and neither destroys anything. Treating a running
+ * job as spent would allocate a replacement while a live worker was still
+ * writing — the exact double-pipeline the claim exists to prevent.
+ */
+export function isDispatchableJobStatus(status: string | null | undefined): boolean {
+  if (!status) return false;
+  const normalized = status.toLowerCase();
+  return normalized === "queued" || normalized === "running";
+}
+
 // Signals used to decide a run has really finished even if its status row still
 // reads "processing" for a moment (the worker writes transactions/validation
 // before the status flip, or the status update lagged).
