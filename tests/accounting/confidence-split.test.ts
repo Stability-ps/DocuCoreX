@@ -124,7 +124,17 @@ test("migration 019 backfills classification from the legacy column only", () =>
 
 test("the worker writes all three and keeps the legacy column", () => {
   const worker = read("workers/accounting_worker/main.py");
-  assert.match(worker, /"classification_confidence": round\(avg_confidence, 2\)/);
+  // classification_confidence used to be the mean over EVERY row, unresolved
+  // ones included — which is not a weaker confidence but a different quantity,
+  // one that falls as the ledger grows. It is now the mean over classified rows
+  // only; the deprecated `confidence` column below keeps the historical value so
+  // existing readers are unaffected.
+  assert.match(worker, /"classification_confidence": classification_confidence_value/);
+  assert.match(
+    worker,
+    /classified_scores = \[/,
+    "the classified-only mean must be derived, not reused from avg_confidence",
+  );
   assert.match(worker, /"reconciliation_confidence": reconciliation_confidence\(/);
   assert.match(worker, /"confidence": round\(avg_confidence, 2\)/, "legacy column unchanged");
   // A missing migration must degrade, not fail the run.
