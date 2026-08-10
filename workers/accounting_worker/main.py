@@ -5197,8 +5197,14 @@ def classify_transactions_with_ai(
     return diagnostics
 
 
-def replace_transactions(supabase: Client, rows: list[dict[str, Any]], run_id: str, workspace_id: str) -> bool:
-    """Replace a run's transactions atomically. Returns whether provenance was kept.
+def replace_transactions(
+    supabase: Client,
+    rows: list[dict[str, Any]],
+    run_id: str,
+    workspace_id: str,
+    job_id: str | None,
+) -> bool:
+    """Replace a run's transactions atomically and only for its owning attempt.
 
     The delete and the insert used to be two separate PostgREST calls. A crash
     between them — a deploy, an OOM kill, a restart — left the run with ZERO
@@ -5207,27 +5213,26 @@ def replace_transactions(supabase: Client, rows: list[dict[str, Any]], run_id: s
     the pair is now one call to replace_accounting_transactions (migration 025),
     whose function body is a single implicit transaction.
 
-    Falls back to the previous delete-then-insert when the function is absent,
-    so a database that has not run 025 still processes statements. That path
-    keeps the old crash window, which is strictly no worse than before.
+    The ownership check and replacement live in the same database transaction
+    (migration 026). There is deliberately no client-side fallback: any fallback
+    would reopen either the crash window or the superseded-worker race.
     """
     try:
         supabase.rpc(
-            "replace_accounting_transactions",
-            {"p_run_id": run_id, "p_workspace_id": workspace_id, "p_rows": rows},
+            "replace_accounting_transactions_owned",
+            {
+                "p_run_id": run_id,
+                "p_workspace_id": workspace_id,
+                "p_job_id": job_id,
+                "p_rows": rows,
+            },
         ).execute()
         return True
-    except Exception as exc:  # noqa: BLE001 — see fallback note above
+    except Exception as exc:  # noqa: BLE001 — translate a rejected fence
         message = str(exc)
-        log_warning(
-            "worker.atomic_replace_unavailable",
-            run_id=run_id,
-            error=message[:400],
-            note="migration 025 not applied? falling back to delete-then-insert",
-        )
-
-    supabase.table("accounting_transactions").delete().eq("run_id", run_id).eq("workspace_id", workspace_id).execute()
-    return insert_transactions(supabase, rows, run_id)
+        if "accounting job does not own writable run" in message.lower():
+            raise StaleJobError(f"job {job_id} no longer owns run {run_id}") from exc
+        raise
 
 
 def insert_transactions(supabase: Client, rows: list[dict[str, Any]], run_id: str) -> bool:
@@ -6266,7 +6271,13 @@ def process_fnb_statement(payload: ProcessRequest, authorization: str | None = H
             transaction.source_row = sequence
 
         rows = [transaction_insert_row(transaction, payload.run_id, payload.workspace_id) for transaction in transactions]
-        provenance_persisted = replace_transactions(supabase, rows, payload.run_id, payload.workspace_id)
+        provenance_persisted = replace_transactions(
+            supabase,
+            rows,
+            payload.run_id,
+            payload.workspace_id,
+            payload.processing_job_id,
+        )
 
         # Derive the closing balance from the statement's own evidence before
         # validating against it. A NULL closing balance is read downstream as
@@ -6318,7 +6329,12 @@ def process_fnb_statement(payload: ProcessRequest, authorization: str | None = H
             + counterparty_openai_calls
             + recovery_openai_calls
         )
-        workbook_path = f"{payload.workspace_id}/accounting/fnb/exports/{payload.run_id}.xlsx"
+        # Attempts never upload to the same object. A superseded worker cannot be
+        # synchronously interrupted while generating a workbook, so sharing the
+        # run-level path let it overwrite the current attempt's export even though
+        # its final fenced run update was rejected.
+        attempt_id = payload.processing_job_id or "legacy"
+        workbook_path = f"{payload.workspace_id}/accounting/fnb/exports/{payload.run_id}/{attempt_id}.xlsx"
         export_started = time.perf_counter()
         with tempfile.NamedTemporaryFile(suffix=".xlsx") as handle:
             handle.write(workbook_bytes)
@@ -6428,6 +6444,7 @@ def process_fnb_statement(payload: ProcessRequest, authorization: str | None = H
                 "error": run_error,
                 "updated_at": datetime.utcnow().isoformat(),
             },
+            job_id=payload.processing_job_id,
         )
 
         refresh_statement_analytics(supabase, payload.workspace_id, bank_name, parser_profile, parser_version)
@@ -6494,6 +6511,8 @@ def process_fnb_statement(payload: ProcessRequest, authorization: str | None = H
             "ai_recovery_openai_calls": recovery_openai_calls,
             "worker": worker_version(),
         }
+    except StaleJobError:
+        raise
     except HTTPException as exc:
         message = json.dumps(exc.detail, default=str) if isinstance(exc.detail, (dict, list)) else str(exc.detail)
         record_parser_failure(supabase, payload.workspace_id, bank_name, message)
@@ -6506,9 +6525,13 @@ def process_fnb_statement(payload: ProcessRequest, authorization: str | None = H
             storage_path=payload.storage_path,
             error=message,
         )
-        supabase.table("accounting_statement_runs").update(
-            {"status": "failed", "error": message, "updated_at": datetime.utcnow().isoformat()}
-        ).eq("id", payload.run_id).eq("workspace_id", payload.workspace_id).execute()
+        update_statement_run(
+            supabase,
+            payload.run_id,
+            payload.workspace_id,
+            {"status": "failed", "error": message, "updated_at": datetime.utcnow().isoformat()},
+            job_id=payload.processing_job_id,
+        )
         if payload.processing_job_id:
             supabase.table("processing_jobs").update(
                 {"status": "failed", "progress": 100, "message": message, "error": message, "updated_at": datetime.utcnow().isoformat()}
@@ -6526,9 +6549,13 @@ def process_fnb_statement(payload: ProcessRequest, authorization: str | None = H
             storage_path=payload.storage_path,
             error=message,
         )
-        supabase.table("accounting_statement_runs").update(
-            {"status": "failed", "error": message, "updated_at": datetime.utcnow().isoformat()}
-        ).eq("id", payload.run_id).eq("workspace_id", payload.workspace_id).execute()
+        update_statement_run(
+            supabase,
+            payload.run_id,
+            payload.workspace_id,
+            {"status": "failed", "error": message, "updated_at": datetime.utcnow().isoformat()},
+            job_id=payload.processing_job_id,
+        )
         if payload.processing_job_id:
             supabase.table("processing_jobs").update(
                 {"status": "failed", "progress": 100, "message": message, "error": message, "updated_at": datetime.utcnow().isoformat()}
@@ -6544,8 +6571,13 @@ def process_fnb_statement(payload: ProcessRequest, authorization: str | None = H
 STALE_CLAIM_RECLAIM_SECONDS = 300
 
 
-def _claim_processing_job(job_id: str) -> bool:
-    """Atomically take ownership of a job for execution. True if we claimed it.
+def _claim_processing_job(job_id: str) -> str:
+    """Atomically take ownership of a job for execution.
+
+    Returns one of claimed, already_running, not_claimable, or error. Dispatch
+    must distinguish these: only a genuinely running job may receive an
+    idempotent 202. Reporting a database error or terminal job as accepted
+    creates an accepted run with no task behind it.
 
     Claimable when the job is 'queued', OR when it is 'running' but its
     heartbeat has been silent for STALE_CLAIM_RECLAIM_SECONDS.
@@ -6586,10 +6618,21 @@ def _claim_processing_job(job_id: str) -> bool:
         if claimed:
             previous = (getattr(result, "data", None) or [{}])[0].get("status")
             log_event("worker.job_claimed", job_id=job_id, reclaimed=previous == "running")
-        return claimed
+        if claimed:
+            return "claimed"
+
+        current = (
+            supabase.table("processing_jobs")
+            .select("status")
+            .eq("id", job_id)
+            .maybe_single()
+            .execute()
+        )
+        current_status = str((getattr(current, "data", None) or {}).get("status") or "")
+        return "already_running" if current_status == "running" else "not_claimable"
     except Exception as exc:  # noqa: BLE001 — see "fails closed" above
         log_exception("worker.dispatch_claim_failed", job_id=job_id, error=str(exc))
-        return False
+        return "error"
 
 
 # Liveness is not progress.
@@ -6746,7 +6789,8 @@ def dispatch_statement(
     # The claim is the queued -> running transition on processing_jobs, which
     # Postgres already gives us. A conditional UPDATE is atomic on its own, so
     # concurrent dispatches serialise: exactly one sees a row affected.
-    if not _claim_processing_job(payload.processing_job_id):
+    claim_result = _claim_processing_job(payload.processing_job_id)
+    if claim_result == "already_running":
         log_event(
             "worker.dispatch_already_running",
             run_id=payload.run_id,
@@ -6761,6 +6805,10 @@ def dispatch_statement(
             "job_id": payload.processing_job_id,
             "status": "processing",
         }
+    if claim_result == "error":
+        raise HTTPException(status_code=503, detail="Unable to verify processing-job ownership. The job was not accepted.")
+    if claim_result == "not_claimable":
+        raise HTTPException(status_code=409, detail="Processing job is not queued or reclaimable. Create a new job before retrying.")
 
     log_event(
         "worker.dispatch_accepted",

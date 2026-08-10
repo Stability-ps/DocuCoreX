@@ -115,8 +115,15 @@ test("an accepted job is never failed by the caller", () => {
 test("dispatch goes to the dispatch endpoint and claims the run", () => {
   const route = read("app/api/accounting/fnb/process/route.ts");
   assert.match(route, /buildWorkerEndpoint\(workerUrl, "\/process-statement\/dispatch"\)/);
-  assert.match(route, /active_job_id: detail\.run\.processingJobId/, "the run must claim the job before dispatch");
+  assert.match(route, /active_job_id: processingJobId/, "the run must claim the selected attempt before dispatch");
   assert.match(route, /job_accepted_at: new Date\(\)\.toISOString\(\)/, "acceptance is recorded");
+});
+
+test("force reprocess creates a fresh queued job and fences out the old attempt", () => {
+  const route = read("app/api/accounting/fnb/process/route.ts");
+  assert.match(route, /if \(body\.reprocess\) \{[\s\S]{0,500}?\.from\("processing_jobs"\)[\s\S]{0,500}?status: "queued"/);
+  assert.match(route, /processing_job_id: processingJobId/);
+  assert.match(route, /active_job_id: processingJobId/);
 });
 
 test("worker writes are fenced and stale ones rejected", () => {
@@ -146,7 +153,7 @@ test("dispatch claims the job atomically before scheduling", () => {
   // it. Claimable when queued, or when running but the heartbeat has gone cold
   // — the reclaim clause added after a dead worker stranded a job permanently.
   assert.match(worker, /\.update\(\{"status": "running"[\s\S]{0,240}?status\.eq\.queued,and\(status\.eq\.running/);
-  assert.match(worker, /if not _claim_processing_job\(payload\.processing_job_id\)/, "claim gates the dispatch");
+  assert.match(worker, /claim_result = _claim_processing_job\(payload\.processing_job_id\)/, "claim gates the dispatch");
 });
 
 test("an unclaimable job is reported running and schedules nothing", () => {
@@ -161,7 +168,7 @@ test("the claim fails closed", () => {
   const worker = read("workers/accounting_worker/main.py");
   const claim = worker.slice(worker.indexOf("def _claim_processing_job"), worker.indexOf("class _LivenessHeartbeat"));
   assert.match(claim, /except Exception/);
-  assert.match(claim, /return False/, "an unevaluable claim must refuse, never schedule");
+  assert.match(claim, /return "error"/, "an unevaluable claim must refuse, never schedule");
   assert.match(claim, /worker\.dispatch_claim_failed/, "and say so");
 });
 
@@ -179,11 +186,13 @@ test("already_running still counts as the worker owning the job", () => {
 // still working. Production hit it — "Processing stale — no heartbeat update for
 // 10 minutes" on a 37-page, 613-transaction statement the worker had accepted.
 
-test("an accepted run is never failed by the read-path sweeper", () => {
+test("an accepted run is recovered only from a dead heartbeat or terminal job mismatch", () => {
   const server = read("lib/accounting/server.ts");
   const sweeper = server.slice(server.indexOf("async function markRunStuckIfNeeded"));
   const guards = sweeper.slice(0, sweeper.indexOf("const reason = processingStuckReason"));
-  assert.match(guards, /if \(row\.job_accepted_at\) return row;/, "the worker owns an accepted job's terminal state");
+  assert.doesNotMatch(guards, /if \(row\.job_accepted_at\) return row;/, "acceptance must not make a dead job immortal");
+  assert.match(sweeper, /processingStuckReason\(row, livenessAt, !row\.job_accepted_at\)/);
+  assert.match(sweeper, /terminalJobMismatch/);
 });
 
 test("a queued run is never failed for taking too long", () => {
@@ -200,8 +209,24 @@ test("an unowned processing run can still be failed", () => {
   // will resolve it. That one remains Vercel's to fail.
   const server = read("lib/accounting/server.ts");
   const sweeper = server.slice(server.indexOf("async function markRunStuckIfNeeded"));
-  assert.match(sweeper, /status: "failed"/, "the unowned case is still handled");
-  assert.match(sweeper, /processing_step: "Stuck \/ Needs retry"/);
+  assert.match(sweeper, /fail_stale_accounting_run/, "the unowned case is still handled atomically");
+});
+
+test("a failed heartbeat read never becomes evidence that a worker is dead", () => {
+  const server = read("lib/accounting/server.ts");
+  const sweeper = server.slice(server.indexOf("async function markRunStuckIfNeeded"));
+  assert.match(sweeper, /error: heartbeatError/);
+  assert.match(sweeper, /if \(heartbeatError\) return row;/);
+});
+
+test("stale repair rechecks heartbeat, status, and ownership inside the database", () => {
+  const server = read("lib/accounting/server.ts");
+  assert.match(server, /rpc\("fail_stale_accounting_run"/);
+  const migration = read("supabase/migrations/026_accounting_attempt_fencing.sql");
+  assert.match(migration, /for update/);
+  assert.match(migration, /current_active_job_id is distinct from p_active_job_id/);
+  assert.match(migration, /current_job_updated_at >= p_liveness_cutoff/);
+  assert.match(migration, /current_run_status <> 'processing'/);
 });
 
 // ── Atomic transaction replace ──────────────────────────────────────────────
@@ -212,10 +237,10 @@ test("an unowned processing run can still be failed", () => {
 // reading as processed. Concurrency was never the issue here; active_job_id and
 // the processing_jobs claim already cover that. This is the crash window.
 
-test("transactions are replaced through the atomic RPC", () => {
+test("transactions are replaced through the owned atomic RPC", () => {
   const worker = read("workers/accounting_worker/main.py");
   assert.match(worker, /def replace_transactions/);
-  assert.match(worker, /supabase\.rpc\(\s*"replace_accounting_transactions"/, "one call, one transaction");
+  assert.match(worker, /supabase\.rpc\(\s*"replace_accounting_transactions_owned"/, "one call, one transaction");
   assert.match(
     worker,
     /provenance_persisted = replace_transactions\(/,
@@ -223,27 +248,31 @@ test("transactions are replaced through the atomic RPC", () => {
   );
 });
 
-test("the delete is no longer a bare separate call on the happy path", () => {
+test("transaction replacement has no client-side delete fallback", () => {
   const worker = read("workers/accounting_worker/main.py");
   const replace = worker.slice(worker.indexOf("def replace_transactions"), worker.indexOf("def insert_transactions"));
-  // The only remaining delete-then-insert is inside the documented fallback,
-  // after the RPC has been found missing.
   assert.match(replace, /except Exception/);
-  assert.match(replace, /atomic_replace_unavailable/, "the fallback is logged, not silent");
-  const beforeFallback = replace.slice(0, replace.indexOf("except Exception"));
-  assert.doesNotMatch(beforeFallback, /\.delete\(\)/, "the happy path must not delete separately");
+  assert.doesNotMatch(replace, /\.delete\(\)/, "no client-side path may delete the current ledger");
+  assert.doesNotMatch(replace, /insert_transactions\(/, "no non-atomic insertion fallback remains");
 });
 
-test("the function body is what provides atomicity", () => {
-  const migration = read("supabase/migrations/025_atomic_transaction_replace.sql");
-  assert.match(migration, /create or replace function public\.replace_accounting_transactions/);
+test("the function body locks ownership and replaces in one transaction", () => {
+  const migration = read("supabase/migrations/026_accounting_attempt_fencing.sql");
+  assert.match(migration, /create or replace function public\.replace_accounting_transactions_owned/);
+  assert.match(migration, /select active_job_id, status[\s\S]*for update/);
+  assert.match(migration, /current_job_id is distinct from p_job_id/);
   assert.match(migration, /delete from public\.accounting_transactions/);
   assert.match(migration, /insert into public\.accounting_transactions/);
   assert.match(migration, /language plpgsql/, "a function body is one implicit transaction");
+  assert.match(
+    migration,
+    /revoke execute on function public\.replace_accounting_transactions\(uuid, uuid, jsonb\) from service_role/,
+    "old workers must fail safely instead of retaining an unfenced write during rollout",
+  );
 });
 
 test("the replace is scoped by workspace, not just run", () => {
-  const migration = read("supabase/migrations/025_atomic_transaction_replace.sql");
+  const migration = read("supabase/migrations/026_accounting_attempt_fencing.sql");
   const body = migration.slice(migration.indexOf("delete from public.accounting_transactions"));
   assert.match(body.slice(0, 200), /and workspace_id = p_workspace_id/, "a service-role key must not cross workspaces");
   assert.match(migration, /revoke all on function[\s\S]*from public/);
@@ -317,8 +346,8 @@ test("the ticker stops rather than heartbeating for a superseded job", () => {
 test("the sweeper judges liveness by the job heartbeat, not the run's stage", () => {
   const server = read("lib/accounting/server.ts");
   assert.match(server, /livenessAtIso\?: string \| null/);
-  assert.match(server, /\.from\("processing_jobs"\)[\s\S]{0,160}?select\("updated_at"\)/, "reads the job's heartbeat");
-  assert.match(server, /processingStuckReason\(row, livenessAt\)/);
+  assert.match(server, /\.from\("processing_jobs"\)[\s\S]{0,160}?select\("status, updated_at"\)/, "reads job status and heartbeat");
+  assert.match(server, /processingStuckReason\(row, livenessAt, !row\.job_accepted_at\)/);
   // And says something true when it does fire.
   assert.match(server, /no worker heartbeat for/);
   assert.doesNotMatch(server, /no heartbeat update for \$\{minutes\} minutes\. Marked as stuck/, "the old stage-based wording is gone");
@@ -361,8 +390,38 @@ test("the claim is still a single atomic update", () => {
   const worker = read("workers/accounting_worker/main.py");
   const claim = worker.slice(worker.indexOf("def _claim_processing_job"), worker.indexOf("class _LivenessHeartbeat"));
   assert.match(claim, /\.update\(\{"status": "running"/);
-  assert.doesNotMatch(claim, /\.select\(/, "no read-then-write; the UPDATE itself is the lock");
-  assert.match(claim, /except Exception[\s\S]*return False/, "still fails closed");
+  const beforeClaimResult = claim.slice(0, claim.indexOf("if claimed:"));
+  assert.doesNotMatch(beforeClaimResult, /\.select\(/, "no read before the conditional UPDATE; the UPDATE itself is the lock");
+  assert.match(claim, /except Exception[\s\S]*return "error"/, "still fails closed");
+});
+
+test("claim errors and terminal jobs are never reported as accepted", () => {
+  const worker = read("workers/accounting_worker/main.py");
+  const dispatch = worker.slice(worker.indexOf("def dispatch_statement"));
+  assert.match(dispatch, /claim_result == "error"[\s\S]{0,180}?status_code=503/);
+  assert.match(dispatch, /claim_result == "not_claimable"[\s\S]{0,180}?status_code=409/);
+});
+
+test("terminal run and failure writes carry the owning job fence", () => {
+  const worker = read("workers/accounting_worker/main.py");
+  const terminalStart = worker.indexOf("processing_duration_ms = round", worker.indexOf("def process_fnb_statement"));
+  const terminal = worker.slice(terminalStart, worker.indexOf("refresh_statement_analytics", terminalStart));
+  assert.match(terminal, /job_id=payload\.processing_job_id/);
+  const failures = worker.slice(worker.indexOf("except HTTPException as exc"), worker.indexOf("STALE_CLAIM_RECLAIM_SECONDS"));
+  assert.match(failures, /job_id=payload\.processing_job_id/g);
+});
+
+test("a rejected owned replacement stops a superseded worker", () => {
+  const worker = read("workers/accounting_worker/main.py");
+  const replace = worker.slice(worker.indexOf("def replace_transactions"), worker.indexOf("def insert_transactions"));
+  assert.match(replace, /accounting job does not own writable run/);
+  assert.match(replace, /raise StaleJobError/);
+});
+
+test("each attempt publishes to its own workbook object", () => {
+  const worker = read("workers/accounting_worker/main.py");
+  assert.match(worker, /attempt_id = payload\.processing_job_id or "legacy"/);
+  assert.match(worker, /exports\/\{payload\.run_id\}\/\{attempt_id\}\.xlsx/);
 });
 
 // ── The claim must not be pre-empted ────────────────────────────────────────

@@ -114,22 +114,11 @@ test("the run is marked processing so the UI can show progress without hiding th
   );
 });
 
-/**
- * The worker's own replacement remains the only destructive step, and it is
- * placed where a failure cannot cost anything: after extraction, parsing,
- * classification, learned rules and validation have all succeeded.
- */
-test("the worker replaces the ledger only at the point of writing it", () => {
+/** The worker delegates the only destructive step to the ownership-aware RPC. */
+test("the worker replaces the ledger only through the owned atomic write", () => {
   const worker = readFileSync(new URL("../../workers/accounting_worker/main.py", import.meta.url), "utf8");
-  const deleteAt = worker.indexOf('table("accounting_transactions").delete()');
-  const insertAt = worker.indexOf('table("accounting_transactions").insert(rows)');
-  assert.ok(deleteAt > 0, "the worker still owns the replacement");
-  assert.ok(insertAt > 0, "the worker still inserts the new ledger");
-
-  // The delete must sit immediately before the write, not early in the run.
-  const between = worker.slice(deleteAt, worker.indexOf("derive_closing_balance", deleteAt));
-  assert.ok(
-    between.includes("insert_transactions(supabase, rows"),
-    "the delete and the insert must stay adjacent; separating them reopens the window this fix closed",
-  );
+  const replace = worker.slice(worker.indexOf("def replace_transactions"), worker.indexOf("def insert_transactions"));
+  assert.match(replace, /replace_accounting_transactions_owned/);
+  assert.doesNotMatch(replace, /\.delete\(\)/, "the client must never delete outside the owned transaction");
+  assert.match(worker, /provenance_persisted = replace_transactions\(/);
 });

@@ -237,6 +237,7 @@ function isProcessingLikeStatus(status: string | null | undefined) {
 function processingStuckReason(
   row: Pick<AccountingRunRow, "processing_started_at" | "updated_at">,
   livenessAtIso?: string | null,
+  enforceTotalTimeout = true,
 ): string | null {
   const now = Date.now();
   const startedAtMs = Date.parse(row.processing_started_at || "") || Date.parse(row.updated_at || "");
@@ -245,7 +246,7 @@ function processingStuckReason(
   if (!Number.isFinite(startedAtMs) || !Number.isFinite(updatedAtMs)) return null;
 
   const elapsedSinceStartMs = now - startedAtMs;
-  if (elapsedSinceStartMs >= PROCESSING_TIMEOUT_MS) {
+  if (enforceTotalTimeout && elapsedSinceStartMs >= PROCESSING_TIMEOUT_MS) {
     const minutes = Math.max(1, Math.round(elapsedSinceStartMs / 60_000));
     return `Processing timed out after ${minutes} minutes. Marked as stuck — retry or force reprocess.`;
   }
@@ -259,7 +260,7 @@ function processingStuckReason(
 }
 
 /**
- * Mark a run stuck when NOBODY owns it.
+ * Mark a run stuck only after current database state proves its owner is dead.
  *
  * This runs on read, and it used to write status:"failed" for any run that had
  * been "processing" or "queued" too long — with no knowledge of job ownership.
@@ -269,67 +270,66 @@ function processingStuckReason(
  * minutes" on a 37-page, 613-transaction statement the worker had accepted and
  * was still processing.
  *
- * Two cases are now left alone:
+ * Two cases are left alone:
  *
- *   ACCEPTED (job_accepted_at set) — the worker owns the terminal state, per
- *   #79. A long gap between heartbeats means slow, not dead; isRunStalled
- *   surfaces that to the user as stalled, and Force Reprocess supersedes the
- *   job safely through the active_job_id fence. Vercel must not decide.
+ *   ACCEPTED + LIVE — the worker owns the terminal state, per #79. A database
+ *   function rechecks the linked job's current heartbeat and active_job_id under
+ *   lock, so an observation made before a fresh heartbeat or Force Reprocess
+ *   cannot fail the live/new attempt.
  *
  *   QUEUED — uploaded and waiting for someone to press Process (#78). It has
  *   not started, so it cannot be stuck, and it may legitimately sit there for
  *   days. Failing it after a timeout would be nonsense.
  *
- * What remains: a run stuck in "processing" that was never accepted — dispatch
- * died between marking the run and the worker taking it. Nobody owns that one,
- * so nobody else will ever resolve it, and it is Vercel's to fail.
+ * Recoverable cases are an unaccepted dispatch that died, an accepted job whose
+ * heartbeat is genuinely cold, or a terminal processing_jobs row whose run never
+ * received its matching terminal write.
  */
 async function markRunStuckIfNeeded(context: NonNullable<Awaited<ReturnType<typeof getWorkspaceContext>>>, row: AccountingRunRow): Promise<AccountingRunRow> {
   if (!isProcessingLikeStatus(row.status)) return row;
-  // The worker accepted this job; its outcome is not ours to write.
-  if (row.job_accepted_at) return row;
   // Never started — waiting on the user, not stuck.
   if (row.status === "queued") return row;
 
   // Liveness comes from the job's heartbeat, not the run's stage changes.
   let livenessAt: string | null = null;
+  let jobStatus: string | null = null;
   if (row.processing_job_id) {
-    const { data: job } = await context.supabase
+    const { data: job, error: heartbeatError } = await context.supabase
       .from("processing_jobs")
-      .select("updated_at")
+      .select("status, updated_at")
       .eq("id", row.processing_job_id)
       .maybeSingle();
-    livenessAt = (job as { updated_at?: string } | null)?.updated_at ?? null;
+    // Unknown liveness is not stale liveness. A transient read error must never
+    // recreate the old bug by falling back to a stage timestamp and failing a
+    // healthy worker in a long classification stage.
+    if (heartbeatError) return row;
+    const linkedJob = job as { status?: string; updated_at?: string } | null;
+    livenessAt = linkedJob?.updated_at ?? null;
+    jobStatus = linkedJob?.status ?? null;
   }
 
-  const reason = processingStuckReason(row, livenessAt);
+  const terminalJobMismatch = row.job_accepted_at && jobStatus && ["failed", "cancelled", "completed"].includes(jobStatus)
+    ? `Processing worker ended with job status ${jobStatus}, but the statement run never reached a terminal state. Retry or force reprocess.`
+    : null;
+  // Accepted work has a live heartbeat every ~45s. Do not impose a total runtime
+  // ceiling on healthy work, but do recover it when that heartbeat is genuinely
+  // stale. Without this, a process lost during deploy remains immortal.
+  const reason = terminalJobMismatch ?? processingStuckReason(row, livenessAt, !row.job_accepted_at);
   if (!reason) return row;
 
-  const nowIso = new Date().toISOString();
-  const { error } = await context.supabase
-    .from("accounting_statement_runs")
-    .update({
-      status: "failed",
-      error: reason,
-      processing_step: "Stuck / Needs retry",
-      updated_at: nowIso,
-    })
-    .eq("workspace_id", context.workspaceId)
-    .eq("id", row.id);
-  if (error) return row;
+  const livenessCutoff = new Date(Date.now() - PROCESSING_HEARTBEAT_STALE_MS).toISOString();
+  const { data: repaired, error: repairError } = await context.supabase.rpc("fail_stale_accounting_run", {
+    p_run_id: row.id,
+    p_workspace_id: context.workspaceId,
+    p_active_job_id: row.active_job_id ?? null,
+    p_liveness_cutoff: livenessCutoff,
+    p_reason: reason,
+  });
+  // The RPC rechecks current heartbeat, status, and active_job_id under a row
+  // lock. False means the observed stale state changed before repair arrived.
+  if (repairError || repaired !== true) return row;
 
-  if (row.processing_job_id) {
-    await context.supabase
-      .from("processing_jobs")
-      .update({
-        status: "failed",
-        progress: 100,
-        message: reason,
-        error: reason,
-        updated_at: nowIso,
-      })
-      .eq("id", row.processing_job_id);
-  }
+  const nowIso = new Date().toISOString();
 
   return {
     ...row,

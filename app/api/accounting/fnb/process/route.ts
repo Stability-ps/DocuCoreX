@@ -507,8 +507,14 @@ function toParserDebug(pipelineDebug: PipelineDebug | null) {
 // All heavy work — extraction pipeline (PDF.js / pdfplumber / OCR), the accounting
 // worker call, reconciliation and status updates — runs HERE, after the HTTP
 // response has already been returned. Nothing below blocks the user's request.
-async function processStatementInBackground(context: WorkspaceContext, detail: AccountingRunDetail, workerUrl: string, runId: string, force: boolean) {
-  const jobId = detail.run.processingJobId;
+async function processStatementInBackground(
+  context: WorkspaceContext,
+  detail: AccountingRunDetail,
+  workerUrl: string,
+  runId: string,
+  jobId: string | null,
+  force: boolean,
+) {
 
   // One deadline for the whole request. Every stage measures against it, so
   // pre-extraction spending time necessarily shortens what the worker call may
@@ -677,7 +683,7 @@ async function processStatementInBackground(context: WorkspaceContext, detail: A
       jobAccepted = true;
       const alreadyRunning = Boolean(asRecord(result)?.already_running);
       if (alreadyRunning) {
-        console.info("[accounting/process] job already running on the worker", { runId, jobId: detail.run.processingJobId ?? null });
+        console.info("[accounting/process] job already running on the worker", { runId, jobId });
       }
       return { kind: "accepted" };
     }
@@ -746,7 +752,7 @@ async function processStatementInBackground(context: WorkspaceContext, detail: A
       // The shadow comparison below is deliberately NOT run here: it reads the
       // finished run, and nothing is finished yet. It stays on the synchronous
       // path rather than being given incomplete data to compare.
-      console.info("[accounting/process] worker accepted job", { runId, jobId: detail.run.processingJobId ?? null });
+      console.info("[accounting/process] worker accepted job", { runId, jobId });
       // The handover, recorded. Also the reference point for stale-progress
       // detection: accepted long ago with no movement means recoverable by
       // explicit Reprocess — never an automatic retry, which could duplicate
@@ -764,7 +770,7 @@ async function processStatementInBackground(context: WorkspaceContext, detail: A
           bank: detail.run.bank,
           detectedBank: pipelineDebug?.detectedBank ?? null,
           worker: "fastapi",
-          jobId: detail.run.processingJobId ?? null,
+          jobId,
         },
       });
       return;
@@ -857,6 +863,37 @@ export async function POST(request: Request) {
       return NextResponse.json({ ok: true, skipped: true, reason: "already_processing", status: "processing", runId, jobId: detail.run.processingJobId ?? null });
     }
 
+    // A processing job is one execution attempt, not a permanent identity for a
+    // statement run. Reusing a completed/failed job made Force Reprocess
+    // unclaimable; reusing a running job made it return "already running" without
+    // scheduling replacement work. Allocate a fresh queued job before changing
+    // the run, so the old attempt can be fenced out by a different active_job_id.
+    let processingJobId = detail.run.processingJobId;
+    if (body.reprocess) {
+      const { data: replacementJob, error: replacementJobError } = await context.supabase
+        .from("processing_jobs")
+        .insert({
+          document_id: detail.run.documentId,
+          type: "extraction",
+          status: "queued",
+          progress: 0,
+          message: "Accounting reprocessing queued",
+        })
+        .select("id")
+        .single();
+      if (replacementJobError || !replacementJob) {
+        return NextResponse.json(
+          { error: replacementJobError?.message ?? "Unable to create a replacement accounting job." },
+          { status: 500 },
+        );
+      }
+      processingJobId = replacementJob.id;
+    }
+
+    if (!processingJobId) {
+      return NextResponse.json({ error: "Accounting run has no processing job." }, { status: 409 });
+    }
+
     // Mark queued/processing so the UI can start polling immediately. Stamp the
     // start time + first step so the UI stepper/elapsed timer can begin. Best
     // effort on the new columns — the update must not fail if migration 014 is
@@ -893,7 +930,8 @@ export async function POST(request: Request) {
         // Reprocess matches zero rows and cannot overwrite the newer attempt.
         // job_superseded_at records that a previous job was retired; a rejected
         // stale write afterwards is the fence working, not a fault.
-        active_job_id: detail.run.processingJobId ?? null,
+        processing_job_id: processingJobId,
+        active_job_id: processingJobId,
         job_accepted_at: null,
         job_superseded_at: body.reprocess ? new Date().toISOString() : null,
         error: null,
@@ -921,13 +959,14 @@ export async function POST(request: Request) {
       .eq("workspace_id", context.workspaceId)
       .eq("id", runId);
     if (markError) {
-      await context.supabase
+      const { error: fallbackMarkError } = await context.supabase
         .from("accounting_statement_runs")
         .update({
           // Same reasoning as the primary update above: the previous
           // generation stays intact and correctly described until a
           // replacement is ready to take its place.
           status: "processing",
+          processing_job_id: processingJobId,
           error: null,
           transaction_count: detail.run.transactionCount,
           workbook_storage_path: detail.run.workbookStoragePath,
@@ -935,9 +974,24 @@ export async function POST(request: Request) {
         })
         .eq("workspace_id", context.workspaceId)
         .eq("id", runId);
+      if (fallbackMarkError) {
+        if (body.reprocess) {
+          await context.supabase
+            .from("processing_jobs")
+            .update({
+              status: "failed",
+              progress: 100,
+              message: "Could not attach replacement job to statement run",
+              error: fallbackMarkError.message,
+              updated_at: new Date().toISOString(),
+            })
+            .eq("id", processingJobId);
+        }
+        return NextResponse.json({ error: fallbackMarkError.message }, { status: 500 });
+      }
     }
 
-    if (detail.run.processingJobId) {
+    if (processingJobId) {
       // Deliberately does NOT set status. The worker claims a job by moving it
       // queued -> running (#80), and that claim is the only thing preventing two
       // pipelines on one run. Marking it running here pre-empted the claim: by
@@ -952,15 +1006,15 @@ export async function POST(request: Request) {
       await context.supabase
         .from("processing_jobs")
         .update({ progress: 10, message: "Queued for extraction", updated_at: new Date().toISOString() })
-        .eq("id", detail.run.processingJobId);
+        .eq("id", processingJobId);
     }
 
     // Run the extraction + worker call AFTER responding — never on the request path.
     // `reprocess` (Force reprocess) bypasses the extraction cache.
-    after(() => processStatementInBackground(context, detail, workerUrl, runId, Boolean(body.reprocess)));
+    after(() => processStatementInBackground(context, detail, workerUrl, runId, processingJobId, Boolean(body.reprocess)));
 
     // Return immediately (well under the 25s initial-response limit).
-    return NextResponse.json({ ok: true, status: "processing", runId, jobId: detail.run.processingJobId ?? null });
+    return NextResponse.json({ ok: true, status: "processing", runId, jobId: processingJobId });
   } catch (error) {
     return NextResponse.json(
       { error: error instanceof Error ? error.message : "Unable to process accounting statement." },
