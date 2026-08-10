@@ -223,7 +223,7 @@ function statementPeriodLabel(run: AccountingStatementRun) {
 }
 
 function fileNameFromPath(path: string) {
-  return cleanStatementLabel(path.split("/").pop()) ?? "FNB statement.pdf";
+  return cleanStatementLabel(path.split("/").pop()) ?? "Bank statement.pdf";
 }
 
 function runDisplayTitle(run: AccountingStatementRun) {
@@ -353,7 +353,7 @@ function parseReviewDiagnostics(run: AccountingStatementRun | null, totals?: { d
     parserVersion: typeof worker.parser_version === "string" ? worker.parser_version : run?.parserVersion ?? null,
     validationTime: run?.updatedAt ?? null,
     confidence: run?.confidence ?? null,
-    detectedLayout: run?.parserProfile ?? "FNB statement layout",
+    detectedLayout: run?.parserProfile ?? "Bank statement layout",
     balanceGap: parseAmount(gapMatch?.[1]) ?? difference,
     rawMessage: errors.length ? errors.join("\n") : rawMessage,
   } satisfies ReviewDiagnostics;
@@ -413,7 +413,7 @@ export function AccountingIntelligence() {
   const [overrideDialogOpen, setOverrideDialogOpen] = useState(false);
   const [overrideType, setOverrideType] = useState<CombineOverrideType>("account");
   const [overrideText, setOverrideText] = useState("");
-  const [uploadCollapsed, setUploadCollapsed] = useState(false);
+  const [uploadCollapsed, setUploadCollapsed] = useState(true);
   const [activeModule, setActiveModule] = useState<AccountingModule>("bank-statements");
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
   const [deleteTargetIds, setDeleteTargetIds] = useState<string[]>([]);
@@ -675,7 +675,7 @@ export function AccountingIntelligence() {
       const response = await fetch("/api/accounting/fnb/upload", { method: "POST", body: formData });
       const data = (await response.json().catch(() => ({}))) as { run?: AccountingStatementRun; error?: string };
       if (!response.ok || !data.run) throw new Error(data.error ?? "Upload failed.");
-      setMessage("FNB statement uploaded and queued for extraction.");
+      setMessage("Bank statement uploaded and queued for extraction.");
       setUploadCollapsed(true);
       await refreshAccountingData(data.run.id, { silent: true, keepLiveState: true });
       return data.run;
@@ -1118,9 +1118,10 @@ export function AccountingIntelligence() {
         <p className="text-sm font-semibold text-slate-500 md:hidden">Upload, process, review, and export statements</p>
       </header>
 
-      {/* Module navigation */}
-      <div className="-mx-4 overflow-x-auto sm:-mx-6 lg:-mx-8">
-        <div className="flex min-w-max gap-1 border-b border-slate-200 px-4 sm:px-5 lg:px-6">
+      {/* Module navigation and statement intake share one application toolbar. */}
+      <div className="-mx-4 border-b border-slate-200 sm:-mx-5 lg:-mx-6">
+        <div className="flex items-end justify-between gap-3 px-4 sm:px-5 lg:px-6">
+          <div className="flex min-w-0 flex-1 gap-1 overflow-x-auto">
           {accountingModules.map((mod) => (
             <button
               key={mod.id}
@@ -1142,6 +1143,29 @@ export function AccountingIntelligence() {
               ) : null}
             </button>
           ))}
+          </div>
+          {activeModule === "bank-statements" ? (
+            <div className="flex shrink-0 items-center gap-1 pb-1.5 sm:gap-2">
+              <button
+                type="button"
+                onClick={() => setUploadCollapsed((collapsed) => !collapsed)}
+                className="hidden h-9 items-center gap-1 rounded-lg px-2.5 text-xs font-semibold text-slate-600 hover:bg-slate-100 hover:text-navy-950 sm:inline-flex"
+              >
+                {uploadCollapsed ? "Show upload options" : "Hide upload options"}
+                <ChevronDown className={`h-3.5 w-3.5 transition ${uploadCollapsed ? "" : "rotate-180"}`} />
+              </button>
+              <button
+                type="button"
+                disabled={busy === "upload"}
+                onClick={() => inputRef.current?.click()}
+                className="inline-flex h-9 items-center justify-center gap-2 rounded-lg bg-royal-600 px-2.5 text-xs font-semibold text-white shadow-sm transition hover:bg-royal-700 disabled:bg-slate-300 sm:px-4"
+              >
+                {busy === "upload" ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <UploadCloud className="h-3.5 w-3.5" />}
+                <span className="hidden sm:inline">Upload Statement</span>
+                <span className="sm:hidden">Upload</span>
+              </button>
+            </div>
+          ) : null}
         </div>
       </div>
 
@@ -1207,7 +1231,7 @@ export function AccountingIntelligence() {
           event.preventDefault();
           void uploadFiles(Array.from(event.dataTransfer.files));
         }}
-        className="rounded-xl border border-slate-200 bg-white px-3 py-2.5 shadow-sm md:px-4"
+        className={`${uploadCollapsed ? "sr-only" : "rounded-xl border border-slate-200 bg-white px-3 py-2.5 shadow-sm md:px-4"}`}
       >
         <input
           ref={inputRef}
@@ -1224,15 +1248,10 @@ export function AccountingIntelligence() {
           <div>
             <div className="flex flex-wrap items-center gap-2">
               <p className="text-sm font-semibold text-navy-950">Bank Statements</p>
-              {uploadCollapsed ? (
-                <button type="button" onClick={() => setUploadCollapsed(false)} className="text-xs font-black text-royal-700">
-                  Show upload options
-                </button>
-              ) : null}
+              <button type="button" onClick={() => setUploadCollapsed(true)} className="text-xs font-black text-royal-700 md:hidden">Hide upload options</button>
             </div>
             <p className="mt-0.5 text-xs font-semibold text-slate-500">Upload, process, review, and export transactions.</p>
           </div>
-          {!uploadCollapsed ? (
           <div className="grid gap-3 sm:grid-cols-[220px_auto] sm:items-end">
             <label className="block">
               <span className="mb-2 block text-xs font-semibold text-slate-500">Select Bank</span>
@@ -1257,18 +1276,6 @@ export function AccountingIntelligence() {
               <p className="mt-1 text-[11px] font-semibold text-slate-500">PDF up to 200MB</p>
             </div>
           </div>
-          ) : (
-            <button
-              type="button"
-              disabled={busy === "upload"}
-              onClick={() => inputRef.current?.click()}
-              className="inline-flex h-9 items-center justify-center gap-2 rounded-lg bg-royal-600 px-4 text-sm font-semibold text-white shadow-sm disabled:bg-slate-300"
-            >
-              <UploadCloud className="h-4 w-4" />
-              Upload Statement
-            </button>
-          )}
-          {!uploadCollapsed ? (
           <div className="xl:col-span-2">
             <div className="flex flex-wrap gap-2">
               {supportedBanks.map((bank) => (
@@ -1297,7 +1304,6 @@ export function AccountingIntelligence() {
               <li>Uploading does not start processing — you choose when to process each statement.</li>
             </ul>
           </div>
-          ) : null}
         </div>
       </section>
 
@@ -1423,6 +1429,19 @@ export function AccountingIntelligence() {
         </div>
       ) : null}
 
+      {liveRefreshBanner ? (
+        <div className="flex items-center gap-2 rounded-lg border border-blue-200 bg-blue-50 px-4 py-2.5 text-xs font-bold text-blue-800">
+          <Loader2 className="h-3.5 w-3.5 animate-spin" />
+          <span>{liveRefreshBanner}</span>
+        </div>
+      ) : null}
+      {visibleMessage ? (
+        <div className="flex items-start justify-between gap-3 rounded-lg border border-emerald-200 bg-emerald-50/80 px-4 py-2.5 text-xs font-bold text-emerald-900" role="status" aria-live="polite">
+          <span>{visibleMessage}</span>
+          <button type="button" onClick={() => setMessage("")} aria-label="Dismiss message" className="shrink-0 rounded px-1 text-emerald-700 hover:bg-emerald-100">×</button>
+        </div>
+      ) : null}
+
       <div className="grid items-start gap-3 xl:grid-cols-[320px_minmax(0,1fr)]">
         <StatementRuns
           runs={runs}
@@ -1457,22 +1476,23 @@ export function AccountingIntelligence() {
         <section className="min-w-0 overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">
           {selectedRun && detail ? (
             <div className="space-y-3 p-3 sm:p-4">
-              <div className="rounded-xl bg-gradient-to-r from-navy-950 to-[#15376a] px-4 py-3 text-white">
+              <div className="overflow-hidden rounded-lg border border-slate-200 bg-white">
+                <div className="flex flex-col gap-2 border-b border-slate-100 px-4 py-3 sm:flex-row sm:items-start sm:justify-between">
                 <div className="min-w-0">
                   <div className="flex flex-wrap items-center gap-2">
-                    <h2 className="truncate text-xl font-semibold text-white">
+                    <h2 className="truncate text-base font-bold text-navy-950">
                       {runDisplayTitle({ ...detail.run, status: selectedEffectiveStatus ?? detail.run.status })}
                     </h2>
-                    <span className={`rounded-full bg-white/95 px-2.5 py-1 text-xs font-semibold ${statusTone(selectedEffectiveStatus ?? detail.run.status)}`}>
+                    <span className={`rounded-full px-2 py-0.5 text-[10px] font-bold ${statusTone(selectedEffectiveStatus ?? detail.run.status)}`}>
                       {statusLabel(selectedEffectiveStatus ?? detail.run.status)}
                     </span>
                   </div>
-                  <p className="mt-1 text-xs font-semibold text-blue-100">
+                  <p className="mt-1 text-xs font-semibold text-slate-500">
                     {[cleanStatementLabel(detail.run.bank), cleanStatementLabel(detail.run.accountNumber) ? `Account ${cleanStatementLabel(detail.run.accountNumber)}` : null, statementPeriodLabel(detail.run)]
                       .filter(Boolean)
                       .join(" · ")}
                   </p>
-                  <p className="mt-1 text-sm font-semibold text-slate-200">
+                  <p className="mt-1 text-xs font-semibold text-slate-500">
                     {isRunAwaitingProcessing(selectedEffectiveStatus)
                       ? "Processing has not started yet."
                       : isRunInFlight(selectedEffectiveStatus) && detail.transactions.length === 0
@@ -1480,34 +1500,17 @@ export function AccountingIntelligence() {
                         : `${detail.run.transactionCount || detail.transactions.length} transactions · ${totals.review} review items`}
                   </p>
                 </div>
+                <Link href={`/accounting/statements/${detail.run.id}`} className="inline-flex h-9 shrink-0 items-center justify-center rounded-lg border border-slate-200 bg-white px-3 text-xs font-bold text-navy-950 hover:bg-slate-50">
+                  Actions
+                </Link>
+                </div>
                 <CompactSummaryBar
                   run={{ ...detail.run, status: selectedEffectiveStatus ?? detail.run.status }}
                   debit={transactions.length && !runQuality.needsFreshExtraction ? totals.debit : null}
                   credit={transactions.length && !runQuality.needsFreshExtraction ? totals.credit : null}
                   reviewCount={totals.review}
-                  inverted
                 />
               </div>
-
-              {liveRefreshBanner ? (
-                <div className="flex items-center gap-2 rounded-lg border border-blue-200 bg-blue-50 px-3 py-2 text-xs font-bold text-blue-800">
-                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                  <span>{liveRefreshBanner}</span>
-                </div>
-              ) : null}
-              {visibleMessage ? (
-                <div className="flex items-start justify-between gap-3 rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs font-bold text-emerald-800" role="status" aria-live="polite">
-                  <span>{visibleMessage}</span>
-                  <button
-                    type="button"
-                    onClick={() => setMessage("")}
-                    aria-label="Dismiss message"
-                    className="shrink-0 rounded px-1 font-black text-emerald-700 hover:bg-emerald-100"
-                  >
-                    ×
-                  </button>
-                </div>
-              ) : null}
 
               {selectedEffectiveStatus === "failed" ? (
                 <FailedRunPanel
@@ -2235,13 +2238,11 @@ function CompactSummaryBar({
   debit,
   credit,
   reviewCount,
-  inverted = false,
 }: {
   run: AccountingStatementRun | null;
   debit: number | null;
   credit: number | null;
   reviewCount: number;
-  inverted?: boolean;
 }) {
   const awaiting = isRunAwaitingProcessing(run?.status);
   const noCalculatedRows = awaiting || (isRunInFlight(run?.status) && debit == null && credit == null);
@@ -2254,12 +2255,12 @@ function CompactSummaryBar({
   ];
 
   return (
-    <section className={`mt-3 overflow-x-auto overflow-y-hidden overscroll-y-none rounded-lg ${inverted ? "border border-white/15 bg-white/10" : "border border-slate-200 bg-white shadow-sm"}`}>
-      <div className={`grid min-w-[620px] grid-cols-5 ${inverted ? "divide-x divide-white/10" : "divide-x divide-slate-100"}`}>
+    <section className="overflow-x-auto overflow-y-hidden overscroll-y-none bg-white">
+      <div className="grid min-w-[620px] grid-cols-5 divide-x divide-slate-100">
         {items.map((item) => (
-          <div key={item.label} className="min-w-0 px-3 py-2.5">
-            <p className={`truncate whitespace-nowrap text-[10px] font-black uppercase tracking-[0.08em] ${inverted ? "text-blue-200" : "text-slate-400"}`}>{item.label}</p>
-            <p className={`mt-1 truncate whitespace-nowrap text-sm font-black ${inverted ? "text-white" : item.tone}`}>{item.value}</p>
+          <div key={item.label} className="min-w-0 px-4 py-3">
+            <p className="truncate whitespace-nowrap text-[10px] font-bold text-slate-500">{item.label}</p>
+            <p className={`mt-1 truncate whitespace-nowrap text-sm font-black ${item.tone}`}>{item.value}</p>
           </div>
         ))}
       </div>
@@ -2463,25 +2464,6 @@ function StatementRuns({
                     )}
                   </div>
                 </div>
-                <Link
-                  href={`/accounting/statements/${run.id}`}
-                  onClick={(event) => event.stopPropagation()}
-                  className="rounded-md px-2 py-1 text-[11px] font-black text-royal-700 opacity-0 transition hover:bg-royal-50 group-hover:opacity-100"
-                  aria-label={`View ${runDisplayTitle(run)}`}
-                >
-                  View
-                </Link>
-                <button
-                  type="button"
-                  onClick={(event) => {
-                    event.stopPropagation();
-                    onSelect(run.id);
-                  }}
-                  className="rounded-md p-1.5 text-slate-400 hover:bg-white hover:text-slate-700"
-                  aria-label={`Preview ${runDisplayTitle(run)}`}
-                >
-                  <MoreVertical className="h-4 w-4" />
-                </button>
               </div>
             </div>
               );
@@ -3068,7 +3050,7 @@ function EmptyWorkspace() {
         <div className="mx-auto flex h-14 w-14 items-center justify-center rounded-lg bg-royal-50 text-royal-600">
           <Banknote className="h-7 w-7" />
         </div>
-        <p className="mt-4 text-lg font-semibold text-navy-950">Select or upload an FNB statement</p>
+        <p className="mt-4 text-lg font-semibold text-navy-950">Select or upload a bank statement</p>
         <p className="mx-auto mt-2 max-w-md text-sm font-medium text-slate-500">The accounting workspace appears once a statement run exists.</p>
       </div>
     </div>
