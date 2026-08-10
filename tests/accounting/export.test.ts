@@ -270,9 +270,9 @@ test("full-pack export blocks only for in-progress or zero-transaction runs", ()
   assert.match(combine, /zero extracted transactions/, "combined export must block only empty statements");
 });
 
-test("accounting UI has a sticky action bar and an export selector modal", () => {
+test("accounting UI has an in-list selection toolbar and an export selector modal", () => {
   const ui = read("components/accounting/accounting-intelligence.tsx");
-  assert.match(ui, /sticky top-2 z-40/, "selected-run action bar must be sticky");
+  assert.match(ui, /selectionActions=\{selectionMode/, "selected-run actions stay inside selection mode");
   assert.match(ui, /function ExportOptionsModal/, "export selector modal must exist");
   assert.match(ui, /Full Accounting Pack/, "modal must offer the full pack");
 });

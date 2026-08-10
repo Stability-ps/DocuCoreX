@@ -54,9 +54,10 @@ test("processing exposes cancel but not retry controls", () => {
 });
 
 test("bulk selection and transaction tools are explicit", () => {
-  assert.doesNotMatch(ui, /Done Selecting|selectionMode/);
+  assert.match(ui, /selectionMode \? "Done Selecting" : "Select"/);
   assert.match(ui, /aria-label="Select visible statements"/);
   assert.match(ui, /aria-label=\{`Select \$\{runDisplayTitle\(run\)\} for combined workbook`\}/);
+  assert.match(ui, /onClick=\{\(\) => selectionMode \? onToggleSelected\(run\.id\) : onSelect\(run\.id\)\}/);
   assert.match(ui, /detail\.transactions\.length \? \(/);
   assert.equal((ui.match(/Upload Statement/g) ?? []).length >= 1, true);
   assert.doesNotMatch(ui, /Upload Statements/);
@@ -68,7 +69,13 @@ test("statement actions live inside the statements box", () => {
   const statementRunsCall = ui.slice(statementRunsStart, statementRunsStart + 5000);
   assert.match(statementRunsCall, /actions=\{/);
   assert.match(statementRunsCall, /Process All/);
-  assert.match(statementRunsCall, /Clear Completed/);
-  assert.match(statementRunsCall, /Delete Selected/);
+  assert.match(statementRunsCall, />Delete</);
   assert.match(statementRunsCall, /disabled=\{!selectedRunIds\.length \|\| busy === "delete"\}/);
+});
+
+test("normal statement mode has no permanent bulk controls", () => {
+  assert.match(ui, /\{selectionMode \? <input[\s\S]*aria-label="Select visible statements"[\s\S]*\/> : null\}/);
+  assert.match(ui, /\{selectionMode \? <input[\s\S]*for combined workbook[\s\S]*\/> : null\}/);
+  assert.match(ui, /\{!selectionMode \? <Link/);
+  assert.match(ui, /if \(!selectionMode\) router\.push/);
 });
