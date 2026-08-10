@@ -533,9 +533,11 @@ async function processStatementInBackground(context: WorkspaceContext, detail: A
         if (error) console.warn("[accounting/process] processing_step not persisted (migration 014 not applied?)", { runId, step: label, error: error.message });
       });
     if (jobId) {
+      // Same reason as above: this reports PROGRESS during pre-extraction and
+      // must not touch status, which is the worker's claim.
       void context.supabase
         .from("processing_jobs")
-        .update({ status: "running", progress, message: label, updated_at: new Date().toISOString() })
+        .update({ progress, message: label, updated_at: new Date().toISOString() })
         .eq("id", jobId)
         .then(() => undefined);
     }
@@ -936,9 +938,20 @@ export async function POST(request: Request) {
     }
 
     if (detail.run.processingJobId) {
+      // Deliberately does NOT set status. The worker claims a job by moving it
+      // queued -> running (#80), and that claim is the only thing preventing two
+      // pipelines on one run. Marking it running here pre-empted the claim: by
+      // dispatch time the job was already running with a fresh heartbeat, so it
+      // was neither claimable nor reclaimable, every dispatch was answered
+      // already_running, and NOTHING was ever scheduled. Production stopped
+      // processing entirely.
+      //
+      // status belongs to the worker. progress and message are progress
+      // reporting and stay here — and the touched updated_at is honest, because
+      // pre-extraction genuinely is work.
       await context.supabase
         .from("processing_jobs")
-        .update({ status: "running", progress: 10, message: "Queued for extraction", updated_at: new Date().toISOString() })
+        .update({ progress: 10, message: "Queued for extraction", updated_at: new Date().toISOString() })
         .eq("id", detail.run.processingJobId);
     }
 
