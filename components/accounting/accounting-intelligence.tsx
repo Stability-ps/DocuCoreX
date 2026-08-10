@@ -73,6 +73,7 @@ import { computeBalanceContinuity } from "@/lib/accounting/balance-continuity";
 import { ProcessingSteps } from "@/components/accounting/processing-steps";
 import { WorkspaceInsights } from "@/components/accounting/workspace-insights";
 import { WorkspaceForecast } from "@/components/accounting/workspace-forecast";
+import { WorkspaceAudit } from "@/components/accounting/workspace-audit";
 import { mergeAccountingRunProgress } from "@/lib/accounting/processing-stage";
 import { FailedRunPanel } from "@/components/accounting/failed-run-panel";
 import type { AiCommentaryResult, AiCommentaryType } from "@/lib/accounting/ai-service";
@@ -1163,11 +1164,15 @@ export function AccountingIntelligence() {
       ) : null}
 
       {activeModule === "audit-tools" ? (
-        detailAnalytics && detail ? (
-          <AuditToolsPanel auditSummary={detailAnalytics.auditSummary} run={detail.run} transactions={transactions} />
-        ) : (
-          <ModuleNoDataMessage label="Audit Tools" onSelect={() => setActiveModule("bank-statements")} />
-        )
+        <div className="space-y-3">
+          {/* Coverage and the audit trail are statements about the whole
+              engagement. A per-run view cannot see what is ABSENT, and a
+              missing month leaves no trace anywhere else in the product. */}
+          <WorkspaceAudit />
+          {detailAnalytics && detail ? (
+            <AuditToolsPanel auditSummary={detailAnalytics.auditSummary} run={detail.run} transactions={transactions} />
+          ) : null}
+        </div>
       ) : null}
 
       {activeModule === "bank-statements" ? (
