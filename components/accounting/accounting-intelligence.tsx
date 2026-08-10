@@ -1332,13 +1332,6 @@ export function AccountingIntelligence() {
         </section>
       ) : null}
 
-      {liveRefreshBanner ? (
-        <div className="flex items-center gap-2 rounded-lg border border-blue-200 bg-blue-50 px-4 py-3 text-sm font-bold text-blue-800">
-          <Loader2 className="h-4 w-4 animate-spin" />
-          <span>{liveRefreshBanner}</span>
-        </div>
-      ) : null}
-      {visibleMessage ? <div className="rounded-lg border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm font-bold text-emerald-800">{visibleMessage}</div> : null}
       {error ? (
         <div className="rounded-lg border border-rose-200 bg-rose-50 px-4 py-3 text-sm font-bold text-rose-800">
           <p>{error}</p>
@@ -1365,15 +1358,7 @@ export function AccountingIntelligence() {
         </div>
       ) : null}
 
-      <CompactSummaryBar
-        run={detail ? { ...detail.run, status: selectedEffectiveStatus ?? detail.run.status } : null}
-        debit={transactions.length && !runQuality.needsFreshExtraction ? totals.debit : null}
-        credit={transactions.length && !runQuality.needsFreshExtraction ? totals.credit : null}
-        reviewCount={totals.review}
-        stale={runQuality.needsFreshExtraction}
-      />
-
-      <div className="grid gap-4 xl:grid-cols-[360px_1fr]">
+      <div className="grid gap-4 xl:grid-cols-[320px_minmax(0,1fr)]">
         <StatementRuns
           runs={runs}
           selectedRunId={selectedRunId}
@@ -1427,6 +1412,24 @@ export function AccountingIntelligence() {
                 </div>
                 <div className="hidden md:block" />
               </div>
+
+              {liveRefreshBanner ? (
+                <div className="flex items-center gap-2 rounded-lg border border-blue-200 bg-blue-50 px-3 py-2 text-xs font-bold text-blue-800">
+                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                  <span>{liveRefreshBanner}</span>
+                </div>
+              ) : null}
+              {visibleMessage ? (
+                <div className="rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs font-bold text-emerald-800">{visibleMessage}</div>
+              ) : null}
+
+              <CompactSummaryBar
+                run={{ ...detail.run, status: selectedEffectiveStatus ?? detail.run.status }}
+                debit={transactions.length && !runQuality.needsFreshExtraction ? totals.debit : null}
+                credit={transactions.length && !runQuality.needsFreshExtraction ? totals.credit : null}
+                reviewCount={totals.review}
+                stale={runQuality.needsFreshExtraction}
+              />
 
               {selectedEffectiveStatus === "failed" ? (
                 <FailedRunPanel

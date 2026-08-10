@@ -48,6 +48,7 @@ export function statementPlaceholderName(run: NamingRun): string {
   if (run.status === "failed") return "Statement (Processing Failed)";
   const companyName = cleanStatementLabel(run.companyName);
   if (companyName) return `${companyName} Statement`;
+  if (run.status === "review" || run.status === "completed" || run.status === "cancelled") return "Statement";
   return "Statement (Awaiting Processing)";
 }
 
