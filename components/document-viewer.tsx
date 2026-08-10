@@ -145,6 +145,8 @@ function PdfCanvasViewer({
   // The loading task owns teardown, not the document proxy it resolves to.
   const loadingTaskRef = useRef<PdfLoadingTask | null>(null);
   const renderTaskRef = useRef<PdfRenderTask | null>(null);
+  const pendingViewportCenterRef = useRef<{ xRatio: number; yRatio: number } | null>(null);
+  const dragPanRef = useRef<{ startX: number; startY: number; startLeft: number; startTop: number } | null>(null);
   // Monotonic render id — only the LATEST render may mutate the canvas/state, so
   // overlapping triggers (zoom, fit-width resize, page change, retry, React
   // StrictMode double-effects) can never race on the one shared <canvas>.
@@ -165,6 +167,35 @@ function PdfCanvasViewer({
   const [matchIdx, setMatchIdx] = useState(0);
   const [searching, setSearching] = useState(false);
   const [rendering, setRendering] = useState(false);
+  const [dragging, setDragging] = useState(false);
+  const [pannable, setPannable] = useState(false);
+
+  const captureViewportCenter = useCallback(() => {
+    const container = containerRef.current;
+    if (!container) return null;
+    const maxLeft = Math.max(0, container.scrollWidth - container.clientWidth);
+    const maxTop = Math.max(0, container.scrollHeight - container.clientHeight);
+    return {
+      xRatio: maxLeft > 0 ? (container.scrollLeft + container.clientWidth / 2) / container.scrollWidth : 0.5,
+      yRatio: maxTop > 0 ? (container.scrollTop + container.clientHeight / 2) / container.scrollHeight : 0.5,
+    };
+  }, []);
+
+  const restoreViewportCenter = useCallback(() => {
+    const pending = pendingViewportCenterRef.current;
+    if (!pending) return;
+    const container = containerRef.current;
+    if (!container) return;
+    const maxLeft = Math.max(0, container.scrollWidth - container.clientWidth);
+    const maxTop = Math.max(0, container.scrollHeight - container.clientHeight);
+    const targetLeft = pending.xRatio * container.scrollWidth - container.clientWidth / 2;
+    const targetTop = pending.yRatio * container.scrollHeight - container.clientHeight / 2;
+    container.scrollTo({
+      left: Math.max(0, Math.min(maxLeft, targetLeft)),
+      top: Math.max(0, Math.min(maxTop, targetTop)),
+    });
+    pendingViewportCenterRef.current = null;
+  }, []);
 
   // ── Load the PDF document ──────────────────────────────────────────────────
   useEffect(() => {
@@ -260,6 +291,11 @@ function PdfCanvasViewer({
       await task.promise;
       if (seq !== renderSeqRef.current) return;
       setZoomPercent(Math.round(renderScale * 100));
+      if (!fitMode) {
+        requestAnimationFrame(restoreViewportCenter);
+      } else {
+        pendingViewportCenterRef.current = null;
+      }
     } catch (error) {
       // Cancelled renders throw a RenderingCancelledException — ignore those, and
       // ignore any error from a render that has since been superseded.
@@ -305,10 +341,12 @@ function PdfCanvasViewer({
     setPage(jumpPage);
   }, [jumpNonce, jumpPage, numPages]);
   function zoomTo(next: number) {
+    pendingViewportCenterRef.current = captureViewportCenter();
     setFitMode(false);
     setScale(Math.min(4, Math.max(0.25, +next.toFixed(2))));
   }
   function fitWidth() {
+    pendingViewportCenterRef.current = null;
     setFitMode(true);
     setRotate(0);
     // Fit returns to a valid baseline viewport; stale scroll offsets from a
@@ -319,8 +357,89 @@ function PdfCanvasViewer({
   // A page switch should never inherit an impossible scroll coordinate from a
   // differently-sized page. Reset to a valid origin for every page change.
   useEffect(() => {
+    dragPanRef.current = null;
+    setDragging(false);
     containerRef.current?.scrollTo({ left: 0, top: 0 });
   }, [page]);
+
+  useEffect(() => {
+    const container = containerRef.current;
+    if (!container || kind !== "pdf" || status !== "ready") {
+      setPannable(false);
+      return;
+    }
+    const updatePannable = () => {
+      const canPan = container.scrollWidth > container.clientWidth + 1 || container.scrollHeight > container.clientHeight + 1;
+      setPannable(canPan);
+    };
+    updatePannable();
+    if (typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver(updatePannable);
+    observer.observe(container);
+    if (canvasRef.current) observer.observe(canvasRef.current);
+    return () => observer.disconnect();
+  }, [kind, status, page, zoomPercent]);
+
+  function handleMouseDown(event: React.MouseEvent<HTMLDivElement>) {
+    if (event.button !== 0) return;
+    const container = containerRef.current;
+    if (!container) return;
+    const maxLeft = container.scrollWidth - container.clientWidth;
+    const maxTop = container.scrollHeight - container.clientHeight;
+    if (maxLeft <= 0 && maxTop <= 0) return;
+    dragPanRef.current = {
+      startX: event.clientX,
+      startY: event.clientY,
+      startLeft: container.scrollLeft,
+      startTop: container.scrollTop,
+    };
+    setDragging(true);
+    event.preventDefault();
+  }
+
+  useEffect(() => {
+    if (!dragging) return;
+    const onMouseMove = (event: MouseEvent) => {
+      const drag = dragPanRef.current;
+      const container = containerRef.current;
+      if (!drag || !container) return;
+      const maxLeft = Math.max(0, container.scrollWidth - container.clientWidth);
+      const maxTop = Math.max(0, container.scrollHeight - container.clientHeight);
+      const nextLeft = Math.max(0, Math.min(maxLeft, drag.startLeft - (event.clientX - drag.startX)));
+      const nextTop = Math.max(0, Math.min(maxTop, drag.startTop - (event.clientY - drag.startY)));
+      container.scrollTo({ left: nextLeft, top: nextTop });
+      event.preventDefault();
+    };
+    const onMouseUp = () => {
+      dragPanRef.current = null;
+      setDragging(false);
+    };
+    window.addEventListener("mousemove", onMouseMove);
+    window.addEventListener("mouseup", onMouseUp);
+    return () => {
+      window.removeEventListener("mousemove", onMouseMove);
+      window.removeEventListener("mouseup", onMouseUp);
+    };
+  }, [dragging]);
+
+  function handlePointerMove(event: React.PointerEvent<HTMLDivElement>) {
+    const drag = dragPanRef.current;
+    const container = containerRef.current;
+    if (!drag || !container) return;
+    const maxLeft = Math.max(0, container.scrollWidth - container.clientWidth);
+    const maxTop = Math.max(0, container.scrollHeight - container.clientHeight);
+    const nextLeft = Math.max(0, Math.min(maxLeft, drag.startLeft - (event.clientX - drag.startX)));
+    const nextTop = Math.max(0, Math.min(maxTop, drag.startTop - (event.clientY - drag.startY)));
+    container.scrollTo({ left: nextLeft, top: nextTop });
+    event.preventDefault();
+  }
+
+  function stopDragPan() {
+    const drag = dragPanRef.current;
+    if (!drag) return;
+    dragPanRef.current = null;
+    setDragging(false);
+  }
 
   // ── Text search: jump to pages that contain the query ─────────────────────
   const runSearch = useCallback(async () => {
@@ -477,7 +596,15 @@ function PdfCanvasViewer({
   return (
     <>
       {toolbar}
-      <div ref={containerRef} className="relative min-h-0 flex-1 overflow-auto bg-slate-50">
+      <div
+        ref={containerRef}
+        data-testid="document-viewer-scroll-container"
+        onMouseDown={handleMouseDown}
+        onPointerMove={handlePointerMove}
+        onPointerUp={() => stopDragPan()}
+        onPointerCancel={() => stopDragPan()}
+        className={`relative min-h-0 flex-1 overflow-auto bg-slate-50 ${pannable ? (dragging ? "cursor-grabbing" : "cursor-grab") : ""}`}
+      >
         {kind === "other" ? (
           errorCard
         ) : kind === "image" ? (
@@ -494,12 +621,11 @@ function PdfCanvasViewer({
                 <Loader2 className="h-5 w-5 animate-spin" /> <span className="ml-2 text-sm font-bold">Loading document…</span>
               </div>
             ) : null}
-            <div className="min-h-full min-w-full p-3">
-              {/* Center when the page fits; when zoomed larger than the viewport,
-                  width-fit content overflows in positive scroll space so both
-                  horizontal directions remain reachable via native scrolling. */}
-              <div className="mx-auto h-fit w-fit">
-                <canvas ref={canvasRef} className="h-fit rounded border border-slate-200 bg-white shadow-sm" />
+            <div data-testid="document-viewer-surface" className="flex h-max min-h-full min-w-full w-max justify-center p-3">
+              {/* The surface is max-content width (with min viewport width), so an
+                  oversized page always occupies positive scroll coordinates. */}
+              <div className="h-fit w-fit">
+                <canvas ref={canvasRef} data-testid="document-viewer-canvas" className="h-fit rounded border border-slate-200 bg-white shadow-sm" />
               </div>
             </div>
           </>
