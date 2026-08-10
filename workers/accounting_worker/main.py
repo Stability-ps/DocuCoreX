@@ -2137,32 +2137,22 @@ def insert_inferred_fnb_service_fees(
         expected_balance = (previous_balance + credit - debit).quantize(CENT)
         missing_debit = (expected_balance - current_balance).quantize(CENT)
 
-        if is_inferable_fnb_bank_charge_gap(transaction, missing_debit):
-            fee_balance = previous_balance
-            fee_balance = (fee_balance - missing_debit).quantize(CENT)
-            inferred = build_transaction(
-                transaction.transaction_date or "",
-                "#Monthly Account Fee / Service Fees - inferred from balance movement",
-                decimal_to_float(missing_debit),
-                None,
-                decimal_to_float(fee_balance),
-                metadata,
-                transaction.source_page,
-                (
-                    "Inferred FNB service fee from running-balance gap. "
-                    f"inferred_service_fee=true reason=running balance gap gap_amount={missing_debit} before: {transaction.raw_text}"
-                ),
-                91,
-            )
-            if inferred:
-                inferred.bank_charge = True
-                inferred.account_category = "Bank Charges"
-                inferred.vat_treatment = "out_of_scope"
-                inferred.review_status = "ready"
-                inferred.notes = f"inferred_service_fee: true; reason: running balance gap; gap_amount: {missing_debit}"
-                enhanced.append(inferred)
-                inferred_count += 1
-        elif missing_debit != 0:
+        # A balance gap is evidence of a PARSING problem. It is not evidence that
+        # a bank fee exists.
+        #
+        # This used to manufacture a "#Monthly Account Fee / Service Fees -
+        # inferred from balance movement" transaction whenever a gap looked
+        # fee-shaped — often only because it fell near month end — and marked it
+        # review_status "ready", so an invented row entered the ledger already
+        # settled. On a real FNB statement that added R14.56 of expenditure the
+        # bank never charged, and simultaneously hid the continuation-line defect
+        # that caused the gap, because the books now balanced.
+        #
+        # Making the books balance by fabrication is worse than not balancing:
+        # an unreconciled statement is a question, and a fabricated one is a
+        # wrong answer that no longer asks it. Every gap is now recorded as the
+        # diagnostic it always was.
+        if missing_debit != 0:
             missing_gaps.append(
                 {
                     "current_transaction": transaction.raw_text,
@@ -3591,8 +3581,29 @@ def validate_statement(metadata: dict[str, Any], transactions: list[ParsedTransa
 
 
 def review_validation_issue(exc: HTTPException) -> dict[str, Any] | None:
+    """Turn a ledger-validation failure into a reviewable run rather than a dead one.
+
+    This used to match on the literal string "FNB parser validation failed.".
+    The raised message was later changed to name the bank that actually
+    validated — "FNB South Africa validation failed." — and this matcher was not
+    updated with it. The two strings stopped being equal, this returned None for
+    every statement, the exception re-raised, and the recovery path below has
+    been unreachable for every bank since.
+
+    A real FNB statement that extracted 57 rows against a declared 55 therefore
+    terminated as "Processing failed" instead of arriving in review with its
+    rows flagged and its evidence intact.
+
+    So the match is now STRUCTURAL. A validation failure is recognisable by what
+    it carries — the checks it ran and the rules that failed — and that shape
+    cannot drift out of step with a display string.
+    """
     detail = exc.detail
-    if not isinstance(detail, dict) or detail.get("message") != "FNB parser validation failed.":
+    if not isinstance(detail, dict):
+        return None
+    if not isinstance(detail.get("checks"), list) or not isinstance(detail.get("failed_rules"), list):
+        return None
+    if not detail.get("failed_rules"):
         return None
     errors = detail.get("errors") if isinstance(detail.get("errors"), list) else []
     summary = detail.get("summary") if isinstance(detail.get("summary"), dict) else {}
