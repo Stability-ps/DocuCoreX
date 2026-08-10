@@ -329,6 +329,43 @@ async function markRunStuckIfNeeded(context: NonNullable<Awaited<ReturnType<type
   if (!reason) return row;
 
   const livenessCutoff = new Date(Date.now() - PROCESSING_HEARTBEAT_STALE_MS).toISOString();
+  if (row.status === "queued" && row.processing_job_id) {
+    const nowIso = new Date().toISOString();
+    const { error: repairError } = await context.supabase
+      .from("accounting_statement_runs")
+      .update({
+        status: "failed",
+        error: reason,
+        processing_step: "Stuck / Needs retry",
+        updated_at: nowIso,
+      })
+      .eq("id", row.id)
+      .eq("workspace_id", row.workspace_id)
+      .eq("status", "queued")
+      .eq("processing_job_id", row.processing_job_id);
+    if (repairError) return row;
+    if (row.processing_job_id) {
+      await context.supabase
+        .from("processing_jobs")
+        .update({
+          status: "failed",
+          progress: 100,
+          message: reason,
+          error: reason,
+          updated_at: nowIso,
+        })
+        .eq("id", row.processing_job_id)
+        .in("status", ["queued", "running"]);
+    }
+    return {
+      ...row,
+      status: "failed",
+      error: reason,
+      processing_step: "Stuck / Needs retry",
+      updated_at: nowIso,
+    };
+  }
+
   const { data: repaired, error: repairError } = await context.supabase.rpc("fail_stale_accounting_run", {
     p_run_id: row.id,
     p_workspace_id: context.workspaceId,
