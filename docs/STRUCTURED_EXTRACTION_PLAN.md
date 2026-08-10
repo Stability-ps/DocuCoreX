@@ -44,8 +44,10 @@ The consequence is larger than shadow mode:
 
 So **§0's decision gate is still open**, and would have stayed shut even with the
 shadow flag on: shadow mode would have recorded `azure_available: false` for
-every run. `AZURE_FORM_RECOGNIZER_ENDPOINT` *is* set and is a different, legacy
-variable — a plausible source of the original confusion.
+every run. At the time this was written `AZURE_FORM_RECOGNIZER_ENDPOINT` *was*
+set — a different, legacy variable, and a plausible source of the original
+confusion. It has since been deleted from all environments (PR #60), so the
+misleading half of the pair is gone; the missing half is still missing.
 
 **Phase 4 now has a producer, and did not before.** Until phase 2 landed, Azure's
 structure was discarded at the door: `toExtractionTables` flattened `cells[]`
@@ -423,10 +425,13 @@ Phases 1 and 2 are done. Phase 4 is unblocked but should still not be next:
    now compare *structure* recovered, not only text.
 
    Staged on **Preview** as of 2026-08-06 (endpoint + flag added there only) so
-   the wiring can be proven before production is touched. Note that Preview
-   currently lacks `ACCOUNTING_WORKER_URL` / `ACCOUNTING_WORKER_TOKEN`, so an
-   accounting run cannot complete there and shadow mode will not fire until those
-   are supplied too.
+   the wiring can be proven before production is touched. Preview has since been
+   given `ACCOUNTING_WORKER_URL` / `ACCOUNTING_WORKER_TOKEN`, so the blocker noted
+   here is cleared and an accounting run can now complete there. The staging is
+   still one-sided in the way that matters: `AZURE_DOCUMENT_INTELLIGENCE_KEY` is
+   set on Preview *and* Production, but `AZURE_DOCUMENT_INTELLIGENCE_ENDPOINT`
+   remains Preview-only — which is precisely why Azure still never runs in
+   production.
 2. **Phase 3**, which turns phase 2's descriptive `StructuredQuality` counts into
    scoring signals. Medium risk, because it changes which candidate wins a merge.
 3. **Phase 4** last, and only with shadow data in hand — it is the phase that
