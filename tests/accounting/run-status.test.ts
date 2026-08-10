@@ -61,7 +61,21 @@ test("the processing banner and pipeline are driven by in-flight, not active", (
     "the processing banner must not treat a queued upload as work in progress",
   );
   assert.match(ui, /type LiveRefreshState = "idle" \| "refreshing"/);
-  assert.match(ui, /isRunInFlight\(selectedEffectiveStatus\) \? \(/, "the Processing in progress panel is gated on effective work");
+  // Gated on effective work, and allowed to ALSO show optimistically while the
+  // user's own Process click is in flight — `busy` is set only inside
+  // processRun, so it cannot make an untouched upload look like work.
+  // Asserting the exact expression shape instead broke the moment a legitimate
+  // second condition was added, while the behaviour it names stayed correct.
+  assert.match(
+    ui,
+    /isRunInFlight\(selectedEffectiveStatus\)[^\n]*\? \(/,
+    "the Processing in progress panel is gated on effective work",
+  );
+  assert.doesNotMatch(
+    ui,
+    /isRunAwaitingProcessing\(selectedEffectiveStatus\)[^\n]*\?\s*\(\s*<section className="rounded-xl border border-blue/,
+    "a queued upload must not render the in-progress panel",
+  );
 });
 
 test("a queued run offers the explicit Process action", () => {
