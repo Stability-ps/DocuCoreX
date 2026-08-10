@@ -3,6 +3,7 @@ import { recordAuditLog } from "@/lib/audit";
 import { bankDetectionHints, detectBankFromText } from "@/lib/accounting/engine/bank-detection";
 import { isNoTransactionsFailure } from "@/lib/accounting/workerFailure";
 import { getAccountingRunDetail } from "@/lib/accounting/server";
+import { isDispatchableJobStatus } from "@/lib/accounting/run-status";
 import { getWorkspaceContext } from "@/lib/server-documents";
 import { runExtractionPipeline } from "@/lib/pdf/runExtractionPipeline";
 import { computeFileHash } from "@/lib/pdf/extractionCache";
@@ -900,8 +901,45 @@ export async function POST(request: Request) {
     // unclaimable; reusing a running job made it return "already running" without
     // scheduling replacement work. Allocate a fresh queued job before changing
     // the run, so the old attempt can be fenced out by a different active_job_id.
+    //
+    // That rule was applied only to Force Reprocess, and the omission made the
+    // Retry button dead on precisely the runs it exists for. Retry re-dispatched
+    // whatever job the run already had; a run reaches the failure panel only
+    // AFTER its attempt has finished, so that job is spent by definition, and the
+    // worker's claim refuses it every time with "Processing job is not queued or
+    // reclaimable. Create a new job before retrying." The error names its own
+    // remedy, and only one of the two buttons was doing it.
+    //
+    // Worse than useless: the refusal arrives after the run has been marked
+    // processing and re-extracted, so pressing Retry replaced the real failure
+    // reason with a message about job claiming, and the reviewer lost the
+    // diagnosis they were looking at.
+    //
+    // So the rule now holds for every re-dispatch: no claimable job, no dispatch
+    // without a replacement. Retry and Force Reprocess still differ in the way
+    // that matters — Force Reprocess bypasses the extraction cache (see the
+    // handoff below), Retry does not.
     let processingJobId = detail.run.processingJobId;
-    if (body.reprocess) {
+    let allocatedReplacementJob = body.reprocess;
+    if (!allocatedReplacementJob) {
+      if (!processingJobId) {
+        // No job at all is the strongest possible form of "not claimable", and
+        // returning 409 here left the run with no route forward at all.
+        allocatedReplacementJob = true;
+      } else {
+        const { data: existingJob, error: existingJobError } = await context.supabase
+          .from("processing_jobs")
+          .select("status")
+          .eq("id", processingJobId)
+          .maybeSingle();
+        // Fails SAFE, not closed: if the job's state cannot be read we keep the
+        // existing id and let the worker's claim — the authority on this — make
+        // the call. Allocating a replacement on a failed read could supersede a
+        // job that is alive and mid-write.
+        allocatedReplacementJob = !existingJobError && !isDispatchableJobStatus(existingJob?.status as string | null | undefined);
+      }
+    }
+    if (allocatedReplacementJob) {
       const { data: replacementJobId, error: replacementJobError } = await context.supabase.rpc(
         "begin_accounting_reprocess",
         {
@@ -962,7 +1000,7 @@ export async function POST(request: Request) {
         processing_job_id: processingJobId,
         active_job_id: processingJobId,
         job_accepted_at: null,
-        job_superseded_at: body.reprocess ? new Date().toISOString() : null,
+        job_superseded_at: allocatedReplacementJob ? new Date().toISOString() : null,
         error: null,
         transaction_count: detail.run.transactionCount,
         workbook_storage_path: detail.run.workbookStoragePath,
@@ -1008,7 +1046,9 @@ export async function POST(request: Request) {
         .or(`active_job_id.is.null,active_job_id.eq.${processingJobId}`)
         .select("id");
       if (fallbackMarkError) {
-        if (body.reprocess) {
+        // Only a job THIS request created may be marked failed here. Retiring a
+        // job we merely inherited would kill an attempt that is still running.
+        if (allocatedReplacementJob) {
           await context.supabase
             .from("processing_jobs")
             .update({
