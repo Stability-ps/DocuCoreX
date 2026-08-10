@@ -1665,3 +1665,53 @@ export async function getWorkspaceForecast(today: string): Promise<CashForecast>
     today,
   });
 }
+
+export type AccountingAuditEntry = {
+  id: string;
+  action: string;
+  entityType: string;
+  entityId: string;
+  previousValue: unknown;
+  newValue: unknown;
+  createdAt: string;
+};
+
+/**
+ * Read the accounting audit trail.
+ *
+ * accounting_action_audit has been written since migration 005 — by transaction
+ * edits, and now by tag changes, transfer decisions, recurring confirmations and
+ * engagement updates — but nothing has ever read it back. A trail that cannot be
+ * inspected is a log file, not an audit trail.
+ */
+export async function getAccountingAuditTrail(options: { entityId?: string; limit?: number } = {}): Promise<AccountingAuditEntry[]> {
+  const context = await getWorkspaceContext();
+  if (!context) return [];
+
+  let query = context.supabase
+    .from("accounting_action_audit")
+    .select("id, action, entity_type, entity_id, previous_value, new_value, created_at")
+    .eq("workspace_id", context.workspaceId)
+    .order("created_at", { ascending: false })
+    .limit(Math.min(options.limit ?? 200, 500));
+
+  if (options.entityId) query = query.eq("entity_id", options.entityId);
+
+  const { data, error } = await query;
+
+  // A missing table must not break the page that shows it.
+  if (error) {
+    if (error.code !== "42P01") console.warn("[accounting] audit trail unreadable", error.message);
+    return [];
+  }
+
+  return (data ?? []).map((row) => ({
+    id: row.id as string,
+    action: row.action as string,
+    entityType: row.entity_type as string,
+    entityId: row.entity_id as string,
+    previousValue: row.previous_value ?? null,
+    newValue: row.new_value ?? null,
+    createdAt: row.created_at as string,
+  }));
+}
