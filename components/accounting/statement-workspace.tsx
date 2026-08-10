@@ -36,6 +36,7 @@ import { cleanStatementLabel, statementDisplayName } from "@/lib/accounting/stat
 import { parserMethodLabel } from "@/lib/pdf/workerHandoff";
 import { pollRunUntilTerminal } from "@/lib/accounting/poll-run";
 import { dedupeTags, isValidTag, sortTags } from "@/lib/accounting/tags";
+import { DEFAULT_STATEMENT_CURRENCY, formatCount, formatMoney, formatStatementDate, formatStatementDateTime, maskAccountNumber } from "@/lib/accounting/format";
 import { DocumentIntegrityPanel } from "@/components/accounting/document-integrity-panel";
 import { detectDuplicates, detectUnusualTransactions, detectDirectorTransactions, summarizeMerchants } from "@/lib/accounting/analytics";
 import { accountingRunQuality, accountingTransactionTotals } from "@/lib/accounting/run-quality";
@@ -47,12 +48,12 @@ import { FailedRunPanel } from "@/components/accounting/failed-run-panel";
 // ── Formatting helpers ───────────────────────────────────────────────────────
 
 const fmtMoney = (value: number | null | undefined) =>
-  `R${(value ?? 0).toLocaleString("en-ZA", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+  formatMoney(value);
 
 const fmtDate = (value: string | null | undefined) => {
   if (!value) return "—";
   const parsed = new Date(value);
-  return Number.isNaN(parsed.getTime()) ? value : parsed.toLocaleDateString("en-ZA", { day: "2-digit", month: "short", year: "numeric" });
+  return Number.isNaN(parsed.getTime()) ? value : formatStatementDate(parsed);
 };
 
 const VAT_LABEL: Record<string, string> = {
@@ -383,11 +384,11 @@ export function StatementWorkspace({ statementId }: { statementId: string }) {
                 already derived — run.transactionCount from the run, and
                 reviewItems from getReviewItems — so this counts nothing new. */}
             <p className="mt-1 text-xs font-bold text-slate-600">
-              {(run.transactionCount || 0).toLocaleString("en-ZA")} transactions
+              {formatCount(run.transactionCount || 0)} transactions
               {reviewItems.length ? (
                 <>
                   <span className="mx-1.5 text-slate-300">·</span>
-                  <span className="text-amber-700">{reviewItems.length.toLocaleString("en-ZA")} review items</span>
+                  <span className="text-amber-700">{formatCount(reviewItems.length)} review items</span>
                 </>
               ) : null}
             </p>
@@ -700,7 +701,14 @@ function StatementSidebar({
           <Row label="Company" value={cleanStatementLabel(run.companyName) || "—"} />
           <Row label="Account Number" value={cleanStatementLabel(run.accountNumber) || "—"} />
           <Row label="Statement Period" value={run.statementPeriodStart || run.statementPeriodEnd ? `${fmtDate(run.statementPeriodStart)} – ${fmtDate(run.statementPeriodEnd)}` : "—"} />
-          <Row label="Currency" value="ZAR" />
+          {/* Not detected from the statement — accounting_statement_runs has no
+              currency column and the worker does not extract one. Showing the
+              display currency and saying it is assumed is honest; printing
+              "ZAR" as though it were read off the document is not. */}
+          <Row
+            label="Currency"
+            value={`${DEFAULT_STATEMENT_CURRENCY} (assumed)`}
+          />
           <Row label="Opening Balance" value={fmtMoney(totals.opening)} />
           <Row label="Money In" value={stale ? "Refreshing…" : fmtMoney(totals.moneyIn)} tone={stale ? "warn" : undefined} />
           <Row label="Money Out" value={stale ? "Refreshing…" : fmtMoney(totals.moneyOut)} tone={stale ? "warn" : undefined} />
@@ -1725,7 +1733,7 @@ function NotesPanel({ statementId }: { statementId: string }) {
           <p className="text-xs font-black uppercase tracking-wide text-slate-400">History</p>
           <ul className="mt-1 space-y-1 text-xs font-semibold text-slate-500">
             {history.map((entry, index) => (
-              <li key={index}>• {new Date(entry.at).toLocaleString("en-ZA")} — {entry.summary}</li>
+              <li key={index}>• {formatStatementDateTime(entry.at)} — {entry.summary}</li>
             ))}
           </ul>
         </div>

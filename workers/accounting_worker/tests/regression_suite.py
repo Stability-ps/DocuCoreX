@@ -3339,6 +3339,51 @@ def test_build_workbook_never_calls_ai_classification() -> None:
     assert_equal(ai_diagnostics.get("workbook_openai_calls"), 0, "workbook makes no OpenAI classification calls")
 
 
+def test_combined_workbook_never_calls_ai_classification() -> None:
+    """Combined workbooks should reuse already-classified rows rather than asking AI again."""
+    import main
+
+    transaction = main.ParsedTransaction(
+        transaction_date="2025-05-02",
+        description="QQQ ZZZ 4471",
+        debit_amount=100.0,
+        credit_amount=None,
+        running_balance=-1000.0,
+        account_category="Motor Vehicle Expenses",
+        vat_treatment="Input VAT if valid invoice",
+        review_status="ready",
+        classification_source="ai",
+        classification_confidence=94.0,
+        normalized_merchant="Acme",
+    )
+    run = {
+        "id": "run-1",
+        "company_name": "ACME (PTY) LTD",
+        "bank": "FNB South Africa",
+        "account_number": "123456789",
+        "statement_period_start": "2025-05-01",
+        "statement_period_end": "2025-05-31",
+        "opening_balance": 0,
+        "closing_balance": -1000.0,
+    }
+
+    real = main.apply_ai_classifications
+
+    def explode(*_args, **_kwargs):
+        raise AssertionError("build_combined_workbook must not call apply_ai_classifications")
+
+    main.apply_ai_classifications = explode
+    try:
+        workbook_bytes, summary = main.build_combined_workbook([run], {"run-1": [transaction]}, workspace_id="workspace-a")
+    finally:
+        main.apply_ai_classifications = real
+
+    if not workbook_bytes:
+        raise AssertionError("combined workbook must still generate a workbook")
+    assert_equal(summary["transaction_count"], 1, "combined workbook preserves transaction count")
+    assert_equal(summary["review_count"], 0, "combined workbook keeps review count aligned")
+
+
 def test_ai_classification_never_raises_an_ai_recovered_extraction_confidence() -> None:
     """PR #36 again, now with a second thing writing to the row."""
     import main
@@ -4331,6 +4376,7 @@ def run() -> None:
     test_ai_classification_reaches_the_stored_transaction()
     test_ai_classification_cannot_touch_the_ledger()
     test_build_workbook_never_calls_ai_classification()
+    test_combined_workbook_never_calls_ai_classification()
     test_ai_classification_never_raises_an_ai_recovered_extraction_confidence()
     test_ai_classification_does_not_revise_a_settled_row()
     test_ai_classification_leaves_vat_to_the_deterministic_rules()

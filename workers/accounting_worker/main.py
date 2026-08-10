@@ -3871,7 +3871,6 @@ OPTIONAL_RUN_COLUMNS = (
     # migration 019 — the confidence split
     "classification_confidence",
     "reconciliation_confidence",
-    "workbook_generation_duration_ms",
 )
 
 
@@ -5519,10 +5518,11 @@ def build_combined_workbook(
         row["source_period"] = run_period_label(run)
         rows.append(row)
 
-    ai_started = time.perf_counter()
-    ai_stats = apply_ai_classifications(rows, workspace_id)
-    ai_duration_ms = round((time.perf_counter() - ai_started) * 1000, 2)
-    ai_stats["ai_classification_duration_ms"] = ai_duration_ms
+    ai_stats = ai_diagnostics(enabled=False)
+    ai_stats["ai_skipped"] = "combined_workbook_no_ai_pass"
+    ai_stats["ai_classification_duration_ms"] = 0.0
+    ai_stats["classification_openai_calls"] = 0
+    ai_stats["workbook_openai_calls"] = 0
     mark_possible_duplicates(rows)
 
     reportable_rows = [row for row in rows if reporting_account(row) != "Review Required Suspense"]
@@ -6511,7 +6511,6 @@ def process_fnb_statement(payload: ProcessRequest, authorization: str | None = H
                 "reconciliation_confidence": reconciliation_confidence(
                     extraction_check, missing_rows
                 ),
-                "workbook_generation_duration_ms": int(workbook_generation_duration_ms),
                 "error": run_error,
                 "updated_at": datetime.utcnow().isoformat(),
             },

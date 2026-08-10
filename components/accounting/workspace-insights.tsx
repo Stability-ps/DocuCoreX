@@ -2,6 +2,8 @@
 
 import { useCallback, useEffect, useState } from "react";
 
+import { formatMoney } from "@/lib/accounting/format";
+
 /**
  * Workspace-scoped insight views.
  *
@@ -36,8 +38,7 @@ type RecurringPattern = {
   occurrences: unknown[];
 };
 
-const money = (value: number) =>
-  `R${value.toLocaleString("en-ZA", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+const money = (value: number) => formatMoney(value);
 
 function Empty({ children }: { children: React.ReactNode }) {
   return <div className="rounded-lg border border-slate-200 bg-slate-50 p-4 text-sm font-semibold text-slate-500">{children}</div>;
