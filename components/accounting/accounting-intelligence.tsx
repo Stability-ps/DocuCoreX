@@ -2344,7 +2344,12 @@ function StatementRuns({
                     <span className={`shrink-0 rounded-full px-2 py-0.5 text-[10px] font-black ${statusTone(effectiveStatus)}`}>{statusLabel(effectiveStatus)}</span>
                   </div>
                   <div className="mt-1 flex items-center justify-between gap-2 text-[11px] font-semibold text-slate-500">
-                    <span className="truncate">{cleanStatementLabel(run.accountNumber) || cleanStatementLabel(run.companyName) || compactDateTime(run.createdAt)}</span>
+                    <span className="truncate">
+                      {[
+                        cleanStatementLabel(run.accountNumber) || cleanStatementLabel(run.companyName),
+                        `Uploaded ${compactDateTime(run.createdAt)}`,
+                      ].filter(Boolean).join(" · ")}
+                    </span>
                     {effectiveStatus === "failed" ? (
                       <button
                         type="button"

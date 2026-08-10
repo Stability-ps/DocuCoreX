@@ -77,3 +77,8 @@ test("statement selection checkboxes remain permanently visible", () => {
   assert.match(ui, /aria-label="Select visible statements"/);
   assert.match(ui, /aria-label=\{`Select \$\{runDisplayTitle\(run\)\} for combined workbook`\}/);
 });
+
+test("every statement row keeps its upload date and time visible", () => {
+  assert.match(ui, /`Uploaded \$\{compactDateTime\(run\.createdAt\)\}`/);
+  assert.match(ui, /cleanStatementLabel\(run\.accountNumber\) \|\| cleanStatementLabel\(run\.companyName\)/);
+});
