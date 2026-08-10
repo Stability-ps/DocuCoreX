@@ -28,23 +28,32 @@ The sampling gate, the comparison table and the skip accounting are all built an
 tested. `extraction_shadow_comparisons` exists — migrations 018 and 020 are
 applied — and holds **0 rows**, verified against the live database on 2026-08-06.
 
-The cause is not the shadow flag. `ACCOUNTING_SHADOW_AZURE` *is* configured on
-Vercel Production. What is missing is **`AZURE_DOCUMENT_INTELLIGENCE_ENDPOINT`,
-which exists in no Vercel environment at all** — only
-`AZURE_DOCUMENT_INTELLIGENCE_KEY` is set, and `isAzureConfigured()` requires
+The cause was not the shadow flag. `ACCOUNTING_SHADOW_AZURE` *is* configured on
+Vercel Production. What was missing is **`AZURE_DOCUMENT_INTELLIGENCE_ENDPOINT`,
+which existed in no Vercel environment at all** — only
+`AZURE_DOCUMENT_INTELLIGENCE_KEY` was set, and `isAzureConfigured()` requires
 both.
+
+> **Resolved 2026-08-10.** `AZURE_DOCUMENT_INTELLIGENCE_ENDPOINT` is now set on
+> Production and Preview, and Production was redeployed to pick it up. Azure is
+> callable in production for the first time. `AZURE_DOCUMENT_INTELLIGENCE_TIMEOUT_MS`
+> was set to `60000` in the same change: Azure runs only when the acceptance gate
+> fails, which is the same slow-document population that was already pressing
+> against `ACCOUNTING_REQUEST_BUDGET_MS` (280s), and the 120s default left too
+> little room. The paragraphs below are kept as the record of the defect.
 
 The consequence is larger than shadow mode:
 
-> **Azure Document Intelligence has never been callable in production.** The
-> escalation rung added as a "first-class extraction provider" in PR #24 has been
-> inert since it shipped, because half its configuration was never deployed. Every
-> statement that failed the acceptance gate fell through to Mistral without Azure
-> ever being tried.
+> **Azure Document Intelligence was never callable in production**, from PR #24
+> until 2026-08-10. The escalation rung added as a "first-class extraction
+> provider" was inert for that entire period, because half its configuration was
+> never deployed. Every statement that failed the acceptance gate fell through to
+> Mistral without Azure ever being tried.
 
-So **§0's decision gate is still open**, and would have stayed shut even with the
-shadow flag on: shadow mode would have recorded `azure_available: false` for
-every run. At the time this was written `AZURE_FORM_RECOGNIZER_ENDPOINT` *was*
+So **§0's decision gate is still open** — the endpoint is deployed now, but no
+run has exercised it yet, so there is still no evidence, only the ability to
+gather it. It would have stayed shut even with the shadow flag on: shadow mode
+would have recorded `azure_available: false` for every run. At the time this was written `AZURE_FORM_RECOGNIZER_ENDPOINT` *was*
 set — a different, legacy variable, and a plausible source of the original
 confusion. It has since been deleted from all environments (PR #60), so the
 misleading half of the pair is gone; the missing half is still missing.
@@ -427,11 +436,23 @@ Phases 1 and 2 are done. Phase 4 is unblocked but should still not be next:
    Staged on **Preview** as of 2026-08-06 (endpoint + flag added there only) so
    the wiring can be proven before production is touched. Preview has since been
    given `ACCOUNTING_WORKER_URL` / `ACCOUNTING_WORKER_TOKEN`, so the blocker noted
-   here is cleared and an accounting run can now complete there. The staging is
-   still one-sided in the way that matters: `AZURE_DOCUMENT_INTELLIGENCE_KEY` is
-   set on Preview *and* Production, but `AZURE_DOCUMENT_INTELLIGENCE_ENDPOINT`
-   remains Preview-only — which is precisely why Azure still never runs in
-   production.
+   here is cleared and an accounting run can now complete there.
+
+   **As of 2026-08-10 the staging step was skipped**: the endpoint was set
+   directly on Production and deployed, so Azure went live in the escalation
+   ladder without a Preview run first. The behaviour and cost change described
+   above therefore takes effect on the next statement that fails the acceptance
+   gate, and the first evidence will come from production rather than from
+   Preview. Two things are worth confirming on that first run — that the
+   `azure_di` stage reports an attempt rather than `not configured`, and what it
+   costs in wall-clock against the 280s request budget.
+
+   > Vercel marks this project's variables **sensitive**, so `vercel env pull`
+   > returns empty strings for all of them. Presence can be checked by name, but
+   > values cannot be read back — including `ACCOUNTING_SHADOW_AZURE`, whose
+   > value determines whether shadow recording is also now live.
+   > `GET /api/system/worker-config` reports both, authenticated, without
+   > exposing any value.
 2. **Phase 3**, which turns phase 2's descriptive `StructuredQuality` counts into
    scoring signals. Medium risk, because it changes which candidate wins a merge.
 3. **Phase 4** last, and only with shadow data in hand — it is the phase that
