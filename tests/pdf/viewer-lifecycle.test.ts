@@ -109,6 +109,20 @@ test("the viewer holds the loading task and destroys that", () => {
   );
 });
 
+test("zoomed pages use native two-axis scrolling without centered-overflow clipping", () => {
+  const viewer = read("components/document-viewer.tsx");
+  assert.match(viewer, /ref=\{containerRef\} className="relative min-h-0 flex-1 overflow-auto bg-slate-50"/);
+  assert.match(viewer, /className="min-h-full min-w-full p-3"/, "scroll surface spans at least the viewport");
+  assert.match(viewer, /className="mx-auto h-fit w-fit"/, "page is centered only while it fits");
+  assert.doesNotMatch(viewer, /className="flex min-h-full justify-center p-3"/, "centered flex overflow makes one side unreachable");
+});
+
+test("fit and page changes reset stale scroll offsets", () => {
+  const viewer = read("components/document-viewer.tsx");
+  assert.match(viewer, /containerRef\.current\?\.scrollTo\(\{ left: 0, top: 0 \}\)/, "fit resets scroll origin");
+  assert.match(viewer, /useEffect\(\(\) => \{\s*containerRef\.current\?\.scrollTo\(\{ left: 0, top: 0 \}\);\s*\}, \[page\]\);/, "page switches clamp to valid scroll coordinates");
+});
+
 test("a refresh does not unmount the statement workspace", () => {
   // loadDetail() sets loading on every poll tick, so a bare `if (loading)`
   // early return unmounted the whole tree — and the PDF viewer with it —
