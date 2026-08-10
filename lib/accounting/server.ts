@@ -11,6 +11,7 @@ import { findRecurringPatterns, type RecurringInput, type RecurringPattern } fro
 import { latestBalancesByAccount, summarizeCashflow, type CashflowInput, type CashflowSummary } from "@/lib/accounting/cashflow";
 import { buildCoverage, type CoverageResult, type CoverageStatement } from "@/lib/accounting/coverage";
 import { buildFlowOfFunds, type FlowInput, type FlowOfFunds } from "@/lib/accounting/flow-of-funds";
+import { buildCashForecast, type CashForecast } from "@/lib/accounting/forecast";
 import { getWorkspaceContext } from "@/lib/server-documents";
 import { createDocumentVersionRecord } from "@/lib/supabase-server-adapter";
 import type {
@@ -1608,4 +1609,59 @@ export async function getWorkspaceFlowOfFunds(): Promise<FlowOfFunds> {
   }));
 
   return buildFlowOfFunds(inputs, { confirmedTransferIds });
+}
+
+/**
+ * Cash forecast for the workspace.
+ *
+ * The join that makes this honest: recurring patterns are recomputed, then
+ * filtered to those a person has CONFIRMED. A detected pattern is a hypothesis
+ * and never reaches buildCashForecast — which is why the confirm store from
+ * migration 033 exists.
+ */
+export async function getWorkspaceForecast(today: string): Promise<CashForecast> {
+  const context = await getWorkspaceContext();
+  if (!context) {
+    return buildCashForecast({
+      openingBalance: null,
+      openingBalanceAsAt: null,
+      confirmedCommitments: [],
+      averageMonthlyInflow: null,
+      monthsObserved: 0,
+      today,
+    });
+  }
+
+  const [{ patterns, confirmed }, cashflow] = await Promise.all([
+    getWorkspaceRecurringPatterns(),
+    getWorkspaceCashflow(),
+  ]);
+
+  const confirmedKeys = new Set(confirmed.map((merchant) => merchant.trim().toLowerCase()));
+  const confirmedCommitments = patterns
+    .filter((pattern) => confirmedKeys.has(pattern.merchant.trim().toLowerCase()))
+    .map((pattern) => ({
+      merchant: pattern.merchant,
+      averageAmount: pattern.averageAmount,
+      medianIntervalDays: pattern.medianIntervalDays,
+      nextExpected: pattern.nextExpected,
+      frequency: pattern.frequency,
+      confidence: pattern.confidence,
+    }));
+
+  // The most recent balance across accounts, with the date it was true. Not a
+  // sum: latestBalancesByAccount deliberately refuses to add balances whose
+  // statements end on different dates.
+  const newest = [...cashflow.balances]
+    .filter((balance) => balance.asAt)
+    .sort((a, b) => (b.asAt ?? "").localeCompare(a.asAt ?? ""))[0];
+
+  return buildCashForecast({
+    openingBalance: newest?.balance ?? null,
+    openingBalanceAsAt: newest?.asAt ?? null,
+    confirmedCommitments,
+    averageMonthlyInflow: cashflow.summary.averageMonthlyInflow || null,
+    monthsObserved: cashflow.summary.monthsObserved,
+    today,
+  });
 }
