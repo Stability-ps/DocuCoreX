@@ -71,6 +71,7 @@ import { accountingRunQuality, accountingTransactionTotals } from "@/lib/account
 import { CATEGORY_OPTIONS, VAT_TREATMENT_OPTIONS, isUnresolvedAccountingCategory } from "@/lib/accounting/review-options";
 import { computeBalanceContinuity } from "@/lib/accounting/balance-continuity";
 import { ProcessingSteps } from "@/components/accounting/processing-steps";
+import { formatCount, formatMoney, formatStatementDate, formatStatementDateTime } from "@/lib/accounting/format";
 import { DocumentViewer } from "@/components/document-viewer";
 import { WorkspaceInsights } from "@/components/accounting/workspace-insights";
 import { WorkspaceForecast } from "@/components/accounting/workspace-forecast";
@@ -120,25 +121,17 @@ const accountingModules: Array<{
   { id: "audit-tools", label: "Audit Tools", status: "live" },
 ];
 
-const supportedBanks = [
-  { name: "FNB", active: true },
-  { name: "ABSA", active: false },
-  { name: "Nedbank", active: false },
-  { name: "Standard Bank", active: false },
-  { name: "Capitec", active: false },
-  { name: "Investec", active: false },
-];
 
 const canShowTechnicalDetails =
   process.env.NODE_ENV !== "production" || process.env.NEXT_PUBLIC_ACCOUNTING_DIAGNOSTICS === "true";
 
 function money(value: number | null) {
   if (value === null) return "-";
-  return new Intl.NumberFormat("en-ZA", { style: "currency", currency: "ZAR" }).format(value);
+  return formatMoney(value);
 }
 
 function plainNumber(value: number) {
-  return new Intl.NumberFormat("en-ZA").format(value);
+  return formatCount(value);
 }
 
 function fileSize(bytes: number) {
@@ -199,13 +192,7 @@ function queueStatusFromRunStatus(status: AccountingStatementRun["status"]): Upl
 }
 
 function compactDateTime(value: string) {
-  return new Intl.DateTimeFormat("en-ZA", {
-    day: "2-digit",
-    month: "short",
-    year: "numeric",
-    hour: "2-digit",
-    minute: "2-digit",
-  }).format(new Date(value));
+  return formatStatementDateTime(value);
 }
 
 function statementPeriodLabel(run: AccountingStatementRun) {
@@ -214,7 +201,7 @@ function statementPeriodLabel(run: AccountingStatementRun) {
     const date = new Date(value);
     return Number.isNaN(date.getTime())
       ? value
-      : new Intl.DateTimeFormat("en-ZA", { day: "numeric", month: "short", year: "numeric" }).format(date);
+      : formatStatementDate(date);
   };
   const start = format(run.statementPeriodStart);
   const end = format(run.statementPeriodEnd);
@@ -739,7 +726,7 @@ export function AccountingIntelligence() {
       const url = URL.createObjectURL(blob);
       const link = document.createElement("a");
       link.href = url;
-      link.download = fileNameFromContentDisposition(response.headers.get("Content-Disposition")) ?? "FNB-combined-accounting-pack.xlsx";
+      link.download = fileNameFromContentDisposition(response.headers.get("Content-Disposition")) ?? "Combined-accounting-pack.xlsx";
       document.body.appendChild(link);
       link.click();
       link.remove();
@@ -1250,19 +1237,10 @@ export function AccountingIntelligence() {
               <p className="text-sm font-semibold text-navy-950">Bank Statements</p>
               <button type="button" onClick={() => setUploadCollapsed(true)} className="text-xs font-black text-royal-700 md:hidden">Hide upload options</button>
             </div>
-            <p className="mt-0.5 text-xs font-semibold text-slate-500">Upload, process, review, and export transactions.</p>
+            <p className="mt-0.5 text-xs font-semibold text-slate-500">Upload, process, review, and export bank statement transactions.</p>
+            <p className="mt-0.5 text-xs font-medium text-slate-500">Bank and account details are detected automatically where possible.</p>
           </div>
-          <div className="grid gap-3 sm:grid-cols-[220px_auto] sm:items-end">
-            <label className="block">
-              <span className="mb-2 block text-xs font-semibold text-slate-500">Select Bank</span>
-              <select
-                value="FNB South Africa"
-                disabled
-                className="h-10 w-full rounded-lg border border-slate-200 bg-slate-50 px-3 text-sm font-semibold text-navy-950"
-              >
-                <option>FNB South Africa</option>
-              </select>
-            </label>
+          <div className="grid gap-3 sm:items-end">
             <div className="rounded-xl bg-royal-50 p-2 text-center">
               <button
                 type="button"
@@ -1277,20 +1255,6 @@ export function AccountingIntelligence() {
             </div>
           </div>
           <div className="xl:col-span-2">
-            <div className="flex flex-wrap gap-2">
-              {supportedBanks.map((bank) => (
-                <span
-                  key={bank.name}
-                  className={`rounded-full border px-2.5 py-1 text-center text-[11px] font-black ${
-                    bank.active ? "border-royal-200 bg-royal-50 text-royal-700" : "border-slate-200 bg-slate-50 text-slate-400"
-                  }`}
-                  title={bank.active ? "Active" : "Coming Soon"}
-                >
-                  {bank.name}
-                  {!bank.active ? <span className="pl-1 text-[10px] font-semibold">Soon</span> : null}
-                </span>
-              ))}
-            </div>
             {/* Sets expectations before processing starts. Deliberately makes no
                 promise about duration: processing time depends on page count,
                 whether the PDF carries a native text layer, and how much needs
@@ -2016,7 +1980,7 @@ function ReviewRequiredPanel({
           </p>
           {run.missingTransactionCount ? (
             <p className="mt-1 text-xs font-bold text-amber-700">
-              Suspected {run.missingTransactionCount} missing transaction(s){run.reconciliationDifference ? ` · difference R${Math.abs(run.reconciliationDifference).toFixed(2)}` : ""}.
+              Suspected {run.missingTransactionCount} missing transaction(s){run.reconciliationDifference ? ` · difference ${formatMoney(run.reconciliationDifference, null, { absolute: true })}` : ""}.
             </p>
           ) : null}
         </div>
@@ -3303,7 +3267,7 @@ function FinancialStatementsPanel({
 }) {
   const [activeTab, setActiveTab] = useState<"pl" | "cashflow" | "ratios">("pl");
   const fmt = (v: number) =>
-    `R${Math.abs(v).toLocaleString("en-ZA", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+    formatMoney(v, null, { absolute: true });
 
   return (
     <div className="space-y-4 rounded-2xl border border-slate-200 bg-white p-4 shadow-sm sm:p-6">
@@ -3516,13 +3480,13 @@ function FinancialStatementsPanel({
               },
               {
                 label: "Avg Monthly Income",
-                value: ratios.avgMonthlyIncome !== null ? `R${ratios.avgMonthlyIncome.toLocaleString("en-ZA", { maximumFractionDigits: 0 })}` : "—",
+                value: ratios.avgMonthlyIncome !== null ? formatMoney(ratios.avgMonthlyIncome, null, { decimals: 0 }) : "—",
                 note: `Over ${ratios.periodMonths} month${ratios.periodMonths > 1 ? "s" : ""}`,
                 color: "text-emerald-700",
               },
               {
                 label: "Avg Monthly Expenses",
-                value: ratios.avgMonthlyExpenses !== null ? `R${ratios.avgMonthlyExpenses.toLocaleString("en-ZA", { maximumFractionDigits: 0 })}` : "—",
+                value: ratios.avgMonthlyExpenses !== null ? formatMoney(ratios.avgMonthlyExpenses, null, { decimals: 0 }) : "—",
                 note: `Over ${ratios.periodMonths} month${ratios.periodMonths > 1 ? "s" : ""}`,
                 color: "text-rose-700",
               },
@@ -3565,7 +3529,7 @@ function TaxVatPanel({
 }) {
   const [activeTab, setActiveTab] = useState<"schedule" | "anomalies" | "risk">("schedule");
   const fmt = (v: number) =>
-    `R${Math.abs(v).toLocaleString("en-ZA", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+    formatMoney(v, null, { absolute: true });
 
   const VAT_RATE = 15 / 115;
   const standardRow = vatRows.find((r) => r.vatTreatment === "standard");
@@ -3769,7 +3733,7 @@ function AiTransactionPanel({
 }) {
   const [activeTab, setActiveTab] = useState<"duplicates" | "unusuals" | "directors">("duplicates");
   const fmt = (v: number) =>
-    `R${Math.abs(v).toLocaleString("en-ZA", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+    formatMoney(v, null, { absolute: true });
 
   return (
     <div className="space-y-4 rounded-2xl border border-slate-200 bg-white p-4 shadow-sm sm:p-6">
@@ -3934,7 +3898,7 @@ function ForecastPanel({
   run: AccountingStatementRun;
 }) {
   const fmt = (v: number) =>
-    `R${Math.abs(v).toLocaleString("en-ZA", { minimumFractionDigits: 0, maximumFractionDigits: 0 })}`;
+    formatMoney(v, null, { absolute: true, decimals: 0 });
   void ratios;
 
   return (

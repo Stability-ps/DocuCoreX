@@ -2,6 +2,8 @@
 
 import { useEffect, useState } from "react";
 
+import { formatMoney } from "@/lib/accounting/format";
+
 /**
  * Cash forecast view.
  *
@@ -34,8 +36,7 @@ type Forecast =
       assumptions: string[];
     };
 
-const money = (value: number) =>
-  `R${value.toLocaleString("en-ZA", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+const money = (value: number) => formatMoney(value);
 
 export function WorkspaceForecast() {
   const [forecast, setForecast] = useState<Forecast | null>(null);
