@@ -72,6 +72,7 @@ import { CATEGORY_OPTIONS, VAT_TREATMENT_OPTIONS, isUnresolvedAccountingCategory
 import { computeBalanceContinuity } from "@/lib/accounting/balance-continuity";
 import { ProcessingSteps } from "@/components/accounting/processing-steps";
 import { WorkspaceInsights } from "@/components/accounting/workspace-insights";
+import { WorkspaceForecast } from "@/components/accounting/workspace-forecast";
 import { mergeAccountingRunProgress } from "@/lib/accounting/processing-stage";
 import { FailedRunPanel } from "@/components/accounting/failed-run-panel";
 import type { AiCommentaryResult, AiCommentaryType } from "@/lib/accounting/ai-service";
@@ -1149,11 +1150,16 @@ export function AccountingIntelligence() {
       ) : null}
 
       {activeModule === "forecasting" ? (
-        detailAnalytics && detail ? (
-          <ForecastPanel forecast={detailAnalytics.forecast} ratios={detailAnalytics.ratios} run={detail.run} />
-        ) : (
-          <ModuleNoDataMessage label="Forecasting" onSelect={() => setActiveModule("bank-statements")} />
-        )
+        <div className="space-y-3">
+          {/* Workspace-scoped, and reads only CONFIRMED recurring commitments.
+              A forecast built from one statement cannot see a monthly rhythm,
+              and one built from unconfirmed patterns would launder a guess into
+              a figure. */}
+          <WorkspaceForecast />
+          {detailAnalytics && detail ? (
+            <ForecastPanel forecast={detailAnalytics.forecast} ratios={detailAnalytics.ratios} run={detail.run} />
+          ) : null}
+        </div>
       ) : null}
 
       {activeModule === "audit-tools" ? (
