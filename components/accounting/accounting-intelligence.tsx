@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import {
@@ -71,6 +71,7 @@ import { accountingRunQuality, accountingTransactionTotals } from "@/lib/account
 import { CATEGORY_OPTIONS, VAT_TREATMENT_OPTIONS, isUnresolvedAccountingCategory } from "@/lib/accounting/review-options";
 import { computeBalanceContinuity } from "@/lib/accounting/balance-continuity";
 import { ProcessingSteps } from "@/components/accounting/processing-steps";
+import { DocumentViewer } from "@/components/document-viewer";
 import { WorkspaceInsights } from "@/components/accounting/workspace-insights";
 import { WorkspaceForecast } from "@/components/accounting/workspace-forecast";
 import { WorkspaceAudit } from "@/components/accounting/workspace-audit";
@@ -205,6 +206,20 @@ function compactDateTime(value: string) {
     hour: "2-digit",
     minute: "2-digit",
   }).format(new Date(value));
+}
+
+function statementPeriodLabel(run: AccountingStatementRun) {
+  const format = (value: string | null | undefined) => {
+    if (!value) return null;
+    const date = new Date(value);
+    return Number.isNaN(date.getTime())
+      ? value
+      : new Intl.DateTimeFormat("en-ZA", { day: "numeric", month: "short", year: "numeric" }).format(date);
+  };
+  const start = format(run.statementPeriodStart);
+  const end = format(run.statementPeriodEnd);
+  if (start && end) return `${start} – ${end}`;
+  return start || end || "Period not detected";
 }
 
 function fileNameFromPath(path: string) {
@@ -379,6 +394,7 @@ export function AccountingIntelligence() {
   const inputRef = useRef<HTMLInputElement>(null);
   const selectedRunIdRef = useRef("");
   const runProgressRef = useRef(new Map<string, AccountingStatementRun>());
+  const previewJumpNonceRef = useRef(0);
   const [runs, setRuns] = useState<AccountingStatementRun[]>([]);
   const [uploadQueue, setUploadQueue] = useState<UploadQueueItem[]>([]);
   const [selectedRunIds, setSelectedRunIds] = useState<string[]>([]);
@@ -401,6 +417,8 @@ export function AccountingIntelligence() {
   const [activeModule, setActiveModule] = useState<AccountingModule>("bank-statements");
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
   const [deleteTargetIds, setDeleteTargetIds] = useState<string[]>([]);
+  const [previewJump, setPreviewJump] = useState<{ page: number; nonce: number } | null>(null);
+  const [mobileWorkspacePane, setMobileWorkspacePane] = useState<"statement" | "transactions">("transactions");
   const selectedRun = useMemo(() => runs.find((run) => run.id === selectedRunId) ?? null, [runs, selectedRunId]);
   const runById = useMemo(() => new Map(runs.map((run) => [run.id, run])), [runs]);
   const selectedEffectiveStatus = detail
@@ -412,6 +430,12 @@ export function AccountingIntelligence() {
       isRunInFlight(selectedEffectiveStatus),
     [runs, selectedEffectiveStatus],
   );
+  const showTransactionInStatement = useCallback((page: number | null) => {
+    if (!page || page < 1) return;
+    previewJumpNonceRef.current += 1;
+    setPreviewJump({ page, nonce: previewJumpNonceRef.current });
+    setMobileWorkspacePane("statement");
+  }, []);
 
   useEffect(() => {
     selectedRunIdRef.current = selectedRunId;
@@ -1073,7 +1097,7 @@ export function AccountingIntelligence() {
        and 12-18px vertical gaps, so accounting data is visible without
        scrolling past empty space. The mobile bottom padding is unchanged — it
        clears the fixed action bar and the safe-area inset. */
-    <div className={`space-y-3 px-5 py-4 sm:px-6 lg:space-y-4 lg:px-7 lg:py-5 ${detail ? "pb-[calc(11rem+env(safe-area-inset-bottom))] md:pb-6 lg:pb-8" : ""}`}>
+    <div className={`space-y-3 bg-slate-50/60 px-4 py-3 sm:px-5 lg:px-6 lg:py-4 ${detail ? "pb-[calc(11rem+env(safe-area-inset-bottom))] md:pb-6 lg:pb-8" : ""}`}>
       {/*
         Compact application hierarchy: one breadcrumb, one title, no duplicated
         headings and no second search.
@@ -1083,11 +1107,11 @@ export function AccountingIntelligence() {
         controls driving one filter, which is confusing rather than convenient.
         The Transactions one is kept, since that is where the results appear.
       */}
-      <header className="flex flex-col gap-1">
+      <header className="flex flex-col gap-0.5">
         <p className="hidden text-xs font-bold uppercase tracking-wide text-slate-500 md:block">
           Accounting Intelligence <span className="mx-1.5 text-slate-300">›</span> Bank Statements
         </p>
-        <h1 className="text-xl font-semibold tracking-tight text-navy-950 sm:text-2xl">
+        <h1 className="text-xl font-semibold tracking-tight text-navy-950 sm:text-[22px]">
           <span className="md:hidden">Accounting</span>
           <span className="hidden md:inline">Bank Statements</span>
         </h1>
@@ -1096,13 +1120,13 @@ export function AccountingIntelligence() {
 
       {/* Module navigation */}
       <div className="-mx-4 overflow-x-auto sm:-mx-6 lg:-mx-8">
-        <div className="flex min-w-max gap-1 border-b border-slate-200 px-4 sm:px-6 lg:px-8">
+        <div className="flex min-w-max gap-1 border-b border-slate-200 px-4 sm:px-5 lg:px-6">
           {accountingModules.map((mod) => (
             <button
               key={mod.id}
               type="button"
               onClick={() => setActiveModule(mod.id)}
-              className={`flex items-center gap-2 whitespace-nowrap border-b-2 px-4 py-3 text-sm font-semibold transition ${
+              className={`flex items-center gap-2 whitespace-nowrap border-b-2 px-3 py-2 text-sm font-semibold transition ${
                 activeModule === mod.id
                   ? "border-royal-600 text-royal-700"
                   : "border-transparent text-slate-500 hover:text-navy-950"
@@ -1183,7 +1207,7 @@ export function AccountingIntelligence() {
           event.preventDefault();
           void uploadFiles(Array.from(event.dataTransfer.files));
         }}
-        className="rounded-xl border border-slate-200 bg-white p-3 shadow-sm md:p-4"
+        className="rounded-xl border border-slate-200 bg-white px-3 py-2.5 shadow-sm md:px-4"
       >
         <input
           ref={inputRef}
@@ -1196,7 +1220,7 @@ export function AccountingIntelligence() {
             event.currentTarget.value = "";
           }}
         />
-        <div className="grid gap-3 xl:grid-cols-[1fr_auto] xl:items-center">
+        <div className="grid gap-2 xl:grid-cols-[1fr_auto] xl:items-center">
           <div>
             <div className="flex flex-wrap items-center gap-2">
               <p className="text-sm font-semibold text-navy-950">Bank Statements</p>
@@ -1206,7 +1230,7 @@ export function AccountingIntelligence() {
                 </button>
               ) : null}
             </div>
-            <p className="mt-1 text-xs font-semibold text-slate-500">Upload, process, review, and export transactions.</p>
+            <p className="mt-0.5 text-xs font-semibold text-slate-500">Upload, process, review, and export transactions.</p>
           </div>
           {!uploadCollapsed ? (
           <div className="grid gap-3 sm:grid-cols-[220px_auto] sm:items-end">
@@ -1238,7 +1262,7 @@ export function AccountingIntelligence() {
               type="button"
               disabled={busy === "upload"}
               onClick={() => inputRef.current?.click()}
-              className="inline-flex h-10 items-center justify-center gap-2 rounded-lg bg-royal-600 px-4 text-sm font-semibold text-white shadow-sm disabled:bg-slate-300"
+              className="inline-flex h-9 items-center justify-center gap-2 rounded-lg bg-royal-600 px-4 text-sm font-semibold text-white shadow-sm disabled:bg-slate-300"
             >
               <UploadCloud className="h-4 w-4" />
               Upload Statement
@@ -1399,7 +1423,7 @@ export function AccountingIntelligence() {
         </div>
       ) : null}
 
-      <div className="grid gap-4 xl:grid-cols-[320px_minmax(0,1fr)]">
+      <div className="grid items-start gap-3 xl:grid-cols-[320px_minmax(0,1fr)]">
         <StatementRuns
           runs={runs}
           selectedRunId={selectedRunId}
@@ -1430,20 +1454,25 @@ export function AccountingIntelligence() {
           }}
         />
 
-        <section className="min-w-0 rounded-xl border border-slate-200 bg-white shadow-sm">
+        <section className="min-w-0 overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">
           {selectedRun && detail ? (
-            <div className="space-y-4 p-4 sm:p-5">
-              <div className="flex flex-col gap-4 xl:flex-row xl:items-start xl:justify-between">
+            <div className="space-y-3 p-3 sm:p-4">
+              <div className="rounded-xl bg-gradient-to-r from-navy-950 to-[#15376a] px-4 py-3 text-white">
                 <div className="min-w-0">
                   <div className="flex flex-wrap items-center gap-2">
-                    <h2 className="truncate text-xl font-semibold text-navy-950">
+                    <h2 className="truncate text-xl font-semibold text-white">
                       {runDisplayTitle({ ...detail.run, status: selectedEffectiveStatus ?? detail.run.status })}
                     </h2>
-                    <span className={`rounded-full px-2.5 py-1 text-xs font-semibold ${statusTone(selectedEffectiveStatus ?? detail.run.status)}`}>
+                    <span className={`rounded-full bg-white/95 px-2.5 py-1 text-xs font-semibold ${statusTone(selectedEffectiveStatus ?? detail.run.status)}`}>
                       {statusLabel(selectedEffectiveStatus ?? detail.run.status)}
                     </span>
                   </div>
-                  <p className="mt-1 text-sm font-semibold text-slate-500">
+                  <p className="mt-1 text-xs font-semibold text-blue-100">
+                    {[cleanStatementLabel(detail.run.bank), cleanStatementLabel(detail.run.accountNumber) ? `Account ${cleanStatementLabel(detail.run.accountNumber)}` : null, statementPeriodLabel(detail.run)]
+                      .filter(Boolean)
+                      .join(" · ")}
+                  </p>
+                  <p className="mt-1 text-sm font-semibold text-slate-200">
                     {isRunAwaitingProcessing(selectedEffectiveStatus)
                       ? "Processing has not started yet."
                       : isRunInFlight(selectedEffectiveStatus) && detail.transactions.length === 0
@@ -1451,7 +1480,13 @@ export function AccountingIntelligence() {
                         : `${detail.run.transactionCount || detail.transactions.length} transactions · ${totals.review} review items`}
                   </p>
                 </div>
-                <div className="hidden md:block" />
+                <CompactSummaryBar
+                  run={{ ...detail.run, status: selectedEffectiveStatus ?? detail.run.status }}
+                  debit={transactions.length && !runQuality.needsFreshExtraction ? totals.debit : null}
+                  credit={transactions.length && !runQuality.needsFreshExtraction ? totals.credit : null}
+                  reviewCount={totals.review}
+                  inverted
+                />
               </div>
 
               {liveRefreshBanner ? (
@@ -1473,14 +1508,6 @@ export function AccountingIntelligence() {
                   </button>
                 </div>
               ) : null}
-
-              <CompactSummaryBar
-                run={{ ...detail.run, status: selectedEffectiveStatus ?? detail.run.status }}
-                debit={transactions.length && !runQuality.needsFreshExtraction ? totals.debit : null}
-                credit={transactions.length && !runQuality.needsFreshExtraction ? totals.credit : null}
-                reviewCount={totals.review}
-                stale={runQuality.needsFreshExtraction}
-              />
 
               {selectedEffectiveStatus === "failed" ? (
                 <FailedRunPanel
@@ -1557,14 +1584,14 @@ export function AccountingIntelligence() {
                 />
               ) : null}
 
-              <div className="-mx-4 overflow-x-auto border-b border-slate-200 px-4 md:mx-0 md:px-0">
+              <div className="-mx-3 overflow-x-auto border-b border-slate-200 px-3 sm:-mx-4 sm:px-4 md:mx-0 md:px-0">
                 <div className="flex min-w-max gap-2">
                   {tabs.map((tab) => (
                     <button
                       key={tab.id}
                       type="button"
                       onClick={() => setActiveTab(tab.id)}
-                      className={`border-b-2 px-3 py-3 text-sm font-semibold transition ${
+                      className={`border-b-2 px-2.5 py-2.5 text-xs font-semibold transition ${
                         activeTab === tab.id ? "border-royal-600 text-royal-700" : "border-transparent text-slate-500 hover:text-navy-950"
                       }`}
                     >
@@ -1577,49 +1604,65 @@ export function AccountingIntelligence() {
 
               {activeTab === "transactions" || activeTab === "review" ? (
                 detail.transactions.length ? (
-                  <>
-                  <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
-                    <label className="relative block w-full max-w-md">
-                      <Search className="pointer-events-none absolute left-4 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
-                      <input
-                        value={query}
-                        onChange={(event) => setQuery(event.target.value)}
-                        placeholder="Search transactions..."
-                        className="h-11 w-full rounded-lg border border-slate-200 bg-white pl-11 pr-4 text-base font-semibold outline-none focus:border-royal-300 md:text-sm"
-                      />
-                    </label>
-                    <div className="flex gap-2">
-                      <button
-                        type="button"
-                        disabled
-                        title="Advanced filters are coming soon."
-                        className="inline-flex h-11 cursor-not-allowed items-center gap-2 rounded-lg border border-slate-200 bg-slate-50 px-4 text-sm font-semibold text-slate-400"
-                      >
-                        <Filter className="h-4 w-4" />
-                        Filter
-                      </button>
-                      <button
-                        type="button"
-                        disabled
-                        title="Column customization is coming soon."
-                        className="inline-flex h-11 cursor-not-allowed items-center gap-2 rounded-lg border border-slate-200 bg-slate-50 px-4 text-sm font-semibold text-slate-400"
-                      >
-                        Columns
-                        <ChevronDown className="h-4 w-4" />
-                      </button>
+                  <div>
+                    <div className="mb-3 flex rounded-lg border border-slate-200 bg-slate-50 p-1 lg:hidden" role="tablist" aria-label="Statement workspace pane">
+                      {(["statement", "transactions"] as const).map((pane) => (
+                        <button
+                          key={pane}
+                          type="button"
+                          role="tab"
+                          aria-selected={mobileWorkspacePane === pane}
+                          onClick={() => setMobileWorkspacePane(pane)}
+                          className={`flex-1 rounded-md px-3 py-2 text-sm font-semibold capitalize ${mobileWorkspacePane === pane ? "bg-royal-600 text-white" : "text-slate-600"}`}
+                        >
+                          {pane}
+                        </button>
+                      ))}
+                    </div>
+                    <div className="grid gap-3 lg:grid-cols-[minmax(0,36fr)_minmax(0,64fr)]">
+                      <div className={mobileWorkspacePane === "statement" ? "min-w-0" : "hidden min-w-0 lg:block"}>
+                        <DocumentViewer
+                          sourceUrl={`/api/accounting/fnb/runs/${detail.run.id}/source`}
+                          downloadUrl={`/api/accounting/fnb/runs/${detail.run.id}/source?download=1`}
+                          fileName={`${runDisplayTitle(detail.run)}.pdf`}
+                          kind="pdf"
+                          jumpToPage={previewJump}
+                        />
+                      </div>
+                      <div className={mobileWorkspacePane === "transactions" ? "min-w-0 space-y-3" : "hidden min-w-0 space-y-3 lg:block"}>
+                        <div className="flex flex-col gap-2 xl:flex-row xl:items-center xl:justify-between">
+                          <label className="relative block w-full max-w-md">
+                            <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
+                            <input
+                              value={query}
+                              onChange={(event) => setQuery(event.target.value)}
+                              placeholder="Search transactions..."
+                              className="h-9 w-full rounded-lg border border-slate-200 bg-white pl-9 pr-3 text-sm font-semibold outline-none focus:border-royal-300"
+                            />
+                          </label>
+                          <div className="flex gap-2">
+                            <button type="button" disabled title="Advanced filters are coming soon." className="inline-flex h-9 cursor-not-allowed items-center gap-2 rounded-lg border border-slate-200 bg-slate-50 px-3 text-xs font-semibold text-slate-400">
+                              <Filter className="h-3.5 w-3.5" /> Filter
+                            </button>
+                            <button type="button" disabled title="Column customization is coming soon." className="inline-flex h-9 cursor-not-allowed items-center gap-2 rounded-lg border border-slate-200 bg-slate-50 px-3 text-xs font-semibold text-slate-400">
+                              Columns <ChevronDown className="h-3.5 w-3.5" />
+                            </button>
+                          </div>
+                        </div>
+                        <div id="accounting-review-table">
+                          <TransactionTable
+                            transactions={filteredRows}
+                            patchTransaction={patchTransaction}
+                            affectedTransactionIds={affectedTransactionIds}
+                            emptyLabel={activeTab === "review" ? "All items reviewed" : undefined}
+                            emptyDescription={activeTab === "review" ? "No transactions are pending review for this statement." : undefined}
+                            emptyVariant={activeTab === "review" ? "success" : "default"}
+                            onShowInStatement={showTransactionInStatement}
+                          />
+                        </div>
+                      </div>
                     </div>
                   </div>
-                  <div id="accounting-review-table">
-                    <TransactionTable
-                      transactions={filteredRows}
-                      patchTransaction={patchTransaction}
-                      affectedTransactionIds={affectedTransactionIds}
-                      emptyLabel={activeTab === "review" ? "All items reviewed" : undefined}
-                      emptyDescription={activeTab === "review" ? "No transactions are pending review for this statement." : undefined}
-                      emptyVariant={activeTab === "review" ? "success" : "default"}
-                    />
-                  </div>
-                  </>
                 ) : (
                   <div className="rounded-xl border border-dashed border-slate-200 bg-slate-50 px-5 py-10 text-center">
                     <p className="text-sm font-bold text-navy-950">
@@ -2192,18 +2235,17 @@ function CompactSummaryBar({
   debit,
   credit,
   reviewCount,
-  stale = false,
+  inverted = false,
 }: {
   run: AccountingStatementRun | null;
   debit: number | null;
   credit: number | null;
   reviewCount: number;
-  stale?: boolean;
+  inverted?: boolean;
 }) {
   const awaiting = isRunAwaitingProcessing(run?.status);
   const noCalculatedRows = awaiting || (isRunInFlight(run?.status) && debit == null && credit == null);
   const items = [
-    { label: "Status", value: awaiting ? "Ready to process" : stale ? "Processing interrupted" : run ? statusLabel(run.status) : "No statement", tone: stale || run?.status === "review" ? "text-amber-700" : run?.status === "failed" ? "text-rose-700" : "text-navy-950" },
     { label: "Opening", value: noCalculatedRows ? "—" : money(run?.openingBalance ?? null), tone: "text-navy-950" },
     { label: "Closing", value: noCalculatedRows ? "—" : money(run?.closingBalance ?? null), tone: "text-navy-950" },
     { label: "Money out", value: noCalculatedRows ? "—" : money(debit), tone: "text-rose-700" },
@@ -2212,17 +2254,12 @@ function CompactSummaryBar({
   ];
 
   return (
-    <section className="h-24 overflow-x-auto overflow-y-hidden overscroll-y-none rounded-xl border border-slate-200 bg-white shadow-sm">
-      <div className="flex h-full min-w-max flex-nowrap divide-x divide-slate-100 overflow-y-hidden">
+    <section className={`mt-3 overflow-x-auto overflow-y-hidden overscroll-y-none rounded-lg ${inverted ? "border border-white/15 bg-white/10" : "border border-slate-200 bg-white shadow-sm"}`}>
+      <div className={`grid min-w-[620px] grid-cols-5 ${inverted ? "divide-x divide-white/10" : "divide-x divide-slate-100"}`}>
         {items.map((item) => (
-          <div key={item.label} className="flex h-full min-w-40 flex-[0_0_auto] flex-col justify-center px-4 py-3">
-            <p className="truncate whitespace-nowrap text-[11px] font-black uppercase tracking-[0.08em] text-slate-400">{item.label}</p>
-            <p className={`mt-1 truncate whitespace-nowrap text-sm font-black ${item.tone}`}>{item.value}</p>
-            {item.label === "Status" && run && !awaiting && !isRunInFlight(run.status) ? (
-              <p className="mt-0.5 truncate whitespace-nowrap text-[11px] font-semibold text-slate-500">
-                {`${Math.round(run.confidences?.classification ?? run.confidence)}% classification`}
-              </p>
-            ) : null}
+          <div key={item.label} className="min-w-0 px-3 py-2.5">
+            <p className={`truncate whitespace-nowrap text-[10px] font-black uppercase tracking-[0.08em] ${inverted ? "text-blue-200" : "text-slate-400"}`}>{item.label}</p>
+            <p className={`mt-1 truncate whitespace-nowrap text-sm font-black ${inverted ? "text-white" : item.tone}`}>{item.value}</p>
           </div>
         ))}
       </div>
@@ -2476,6 +2513,7 @@ function TransactionTable({
   emptyLabel,
   emptyDescription,
   emptyVariant,
+  onShowInStatement,
 }: {
   transactions: AccountingTransaction[];
   patchTransaction: (transaction: AccountingTransaction, patch: AccountingTransactionPatch) => Promise<void>;
@@ -2483,6 +2521,7 @@ function TransactionTable({
   emptyLabel?: string;
   emptyDescription?: string;
   emptyVariant?: "default" | "success";
+  onShowInStatement?: (page: number | null) => void;
 }) {
   const [mobileOffsets, setMobileOffsets] = useState<Record<string, number>>({});
   const [dismissedTransactionIds, setDismissedTransactionIds] = useState<Record<string, true>>({});
@@ -2582,6 +2621,12 @@ function TransactionTable({
             <div
               className="rounded-lg bg-white p-3 transition-transform duration-150"
               style={{ transform: `translateX(${mobileOffsets[transaction.id] ?? 0}px)` }}
+              onClick={(event) => {
+                if ((event.target as HTMLElement).closest("button,select,input,textarea,a,label")) return;
+                onShowInStatement?.(transaction.sourcePage);
+              }}
+              role={transaction.sourcePage ? "button" : undefined}
+              title={transaction.sourcePage ? `Show page ${transaction.sourcePage} of the statement` : undefined}
             >
               {isAffected ? (
                 <div className="mb-2 inline-flex items-center gap-1.5 rounded-full bg-amber-50 px-2 py-1 text-xs font-black text-amber-700">
@@ -2713,7 +2758,12 @@ function TransactionTable({
             <tr
               id={`transaction-${transaction.id}`}
               key={transaction.id}
-              className={`align-middle hover:bg-slate-50/70 ${isAffected ? "bg-amber-50/70 ring-1 ring-inset ring-amber-200" : ""}`}
+              onClick={(event) => {
+                if ((event.target as HTMLElement).closest("button,select,input,textarea,a,label")) return;
+                onShowInStatement?.(transaction.sourcePage);
+              }}
+              title={transaction.sourcePage ? `Show page ${transaction.sourcePage} of the statement` : undefined}
+              className={`align-middle hover:bg-slate-50/70 ${transaction.sourcePage ? "cursor-pointer" : ""} ${isAffected ? "bg-amber-50/70 ring-1 ring-inset ring-amber-200" : ""}`}
             >
               <td className="whitespace-nowrap px-3 py-2 font-bold text-slate-600">{transaction.transactionDate || "-"}</td>
               <td className="max-w-[360px] px-3 py-2">
