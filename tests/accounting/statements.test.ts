@@ -61,6 +61,12 @@ test("statement name is a neutral placeholder before processing", () => {
   assert.equal(statementDisplayName(processed), "March 2026 Statement");
 });
 
+test("a terminal run without extracted naming metadata is never called awaiting processing", () => {
+  const unnamed = { statementPeriodStart: null, statementPeriodEnd: null, statementDate: null, companyName: null };
+  assert.equal(statementDisplayName({ ...unnamed, status: "review" }), "Statement");
+  assert.equal(statementDisplayName({ ...unnamed, status: "completed" }), "Statement");
+});
+
 // The only sheet names allowed in the professional workbook.
 const APPROVED_SHEETS = new Set([
   "Cover",
