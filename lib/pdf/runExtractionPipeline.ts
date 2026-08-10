@@ -178,7 +178,7 @@ export async function runExtractionPipeline(buffer: Uint8Array, fileName = "stat
   // would then narrow `ocr` to `null` for the rest of the function.
   const runPrimaryOcr = async (why: string): Promise<ExtractionResult | null> => {
     pdfLog("route.force_ocr", { pdfjsTextLength: pdfjsChars, pdfplumberTextLength: pdfplumberChars, reason: why });
-    onStage?.("ocr");
+    onStage?.("extracting");
     const t = Date.now();
     const ocrBuf = copyBuffer(original);
     ocrBytes = ocrBuf.byteLength;
@@ -270,7 +270,7 @@ export async function runExtractionPipeline(buffer: Uint8Array, fileName = "stat
     pdfLog("route.azure_decision", { needed: azureDecision.needed, reason: azureDecision.reason, strategy: plan.strategy, expect });
 
     if (azureDecision.needed) {
-      onStage?.("ocr");
+      onStage?.("extracting");
       azureAttempted = true;
       const t = Date.now();
       azure = await extractWithAzureDocumentIntelligence(copyBuffer(original), fileName);
@@ -303,7 +303,7 @@ export async function runExtractionPipeline(buffer: Uint8Array, fileName = "stat
     pdfLog("route.mistral_decision", { needed: mistralDecision.needed, reason: mistralDecision.reason, strategy: plan.strategy, expect });
 
     if (mistralDecision.needed) {
-      onStage?.("ocr");
+      onStage?.("extracting");
       mistralAttempted = true;
       const t = Date.now();
       mistral = await extractWithMistralOcr(copyBuffer(original), fileName);

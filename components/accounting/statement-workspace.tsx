@@ -31,6 +31,7 @@ import { detectDuplicates, detectUnusualTransactions, detectDirectorTransactions
 import { accountingRunQuality, accountingTransactionTotals } from "@/lib/accounting/run-quality";
 import { DocumentViewer } from "@/components/document-viewer";
 import { ProcessingSteps } from "@/components/accounting/processing-steps";
+import { mergeAccountingRunProgress } from "@/lib/accounting/processing-stage";
 import { FailedRunPanel } from "@/components/accounting/failed-run-panel";
 
 // ── Formatting helpers ───────────────────────────────────────────────────────
@@ -115,6 +116,7 @@ export function StatementWorkspace({ statementId }: { statementId: string }) {
   // default Transactions tab; selecting a transaction switches to the statement.
   const [mobilePane, setMobilePane] = useState<"statement" | "transactions">("transactions");
   const jumpNonce = useRef(0);
+  const runProgressRef = useRef<AccountingStatementRun | null>(null);
   const showTransactionInStatement = useCallback((page: number | null) => {
     if (!page || page < 1) return;
     jumpNonce.current += 1;
@@ -135,7 +137,10 @@ export function StatementWorkspace({ statementId }: { statementId: string }) {
         const body = (await response.json().catch(() => ({}))) as { error?: string };
         throw new Error(body.error || "Unable to load statement.");
       }
-      setDetail((await response.json()) as AccountingRunDetail);
+      const incoming = (await response.json()) as AccountingRunDetail;
+      const acceptedRun = mergeAccountingRunProgress(runProgressRef.current, incoming.run);
+      runProgressRef.current = acceptedRun;
+      setDetail({ ...incoming, run: acceptedRun });
     } catch (loadError) {
       setError(loadError instanceof Error ? loadError.message : "Unable to load statement.");
     } finally {
@@ -478,7 +483,7 @@ export function StatementWorkspace({ statementId }: { statementId: string }) {
         </div>
         {banner ? <div className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm font-bold text-amber-900">{banner}</div> : null}
         {detail?.run.status === "processing" || busy === "reprocess" ? (
-          <ProcessingSteps step={detail?.run.processingStep ?? null} startedAt={detail?.run.processingStartedAt ?? null} updatedAt={detail?.run.updatedAt ?? null} />
+          <ProcessingSteps step={detail?.run.processingStep ?? null} startedAt={detail?.run.processingStartedAt ?? null} updatedAt={detail?.run.updatedAt ?? null} ocrUsed={detail?.run.ocrUsed ?? null} />
         ) : null}
         {detail?.run.status === "failed" ? (
           <FailedRunPanel run={detail.run} busy={busy === "reprocess" || busy === "cancel"} onRetryWithoutForce={() => void reprocess()} onRetry={() => void reprocess()} />

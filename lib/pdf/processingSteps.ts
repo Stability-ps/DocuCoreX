@@ -2,24 +2,26 @@
 // processor) and the UI agree on the exact labels shown to the user. The
 // pipeline emits these via its onStage hook; the UI renders them in order with
 // an elapsed timer.
-export type ProcessingStep = "detecting" | "ocr" | "parsing" | "reconciling" | "generatingWorkbook";
+export type ProcessingStep = "detecting" | "extracting" | "parsing" | "classifying" | "reconciling" | "generatingWorkbook";
 
 export const PROCESSING_STEP_LABELS: Record<ProcessingStep, string> = {
-  detecting: "Detecting PDF type",
-  ocr: "Running OCR",
+  detecting: "Detecting document",
+  extracting: "Extracting data",
   parsing: "Parsing transactions",
+  classifying: "Classifying transactions",
   reconciling: "Reconciling",
   generatingWorkbook: "Generating workbook",
 };
 
 // Ordered for the UI stepper and for a coarse progress percentage.
-export const PROCESSING_STEP_ORDER: ProcessingStep[] = ["detecting", "ocr", "parsing", "reconciling", "generatingWorkbook"];
+export const PROCESSING_STEP_ORDER: ProcessingStep[] = ["detecting", "extracting", "parsing", "classifying", "reconciling", "generatingWorkbook"];
 
 // Coarse progress% per step, matching processing_jobs.progress semantics.
 export const PROCESSING_STEP_PROGRESS: Record<ProcessingStep, number> = {
   detecting: 20,
-  ocr: 45,
-  parsing: 70,
+  extracting: 35,
+  parsing: 55,
+  classifying: 75,
   reconciling: 90,
   generatingWorkbook: 97,
 };

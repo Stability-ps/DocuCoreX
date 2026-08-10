@@ -9,6 +9,7 @@ export type AccountingStatementRun = {
   workspaceId: string;
   documentId: string | null;
   processingJobId: string | null;
+  activeJobId?: string | null;
   bank: string;
   statementType: string;
   status: AccountingRunStatus;

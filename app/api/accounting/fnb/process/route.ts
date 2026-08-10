@@ -768,7 +768,7 @@ async function processStatementInBackground(
         status: outcome.status,
         previousStrategy: pipelineDebug?.strategy ?? null,
       });
-      updateStep("ocr");
+      updateStep("extracting");
       const retry = await runPipelineBeforeWorker(context, detail, { force: true, enhancedOcr: true, onStage: updateStep });
       pipelineDebug = retry.debug ?? pipelineDebug;
       if (Object.keys(retry.hints).length > 0) {

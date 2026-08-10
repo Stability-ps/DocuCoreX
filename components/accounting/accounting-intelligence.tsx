@@ -71,6 +71,7 @@ import { accountingRunQuality, accountingTransactionTotals } from "@/lib/account
 import { CATEGORY_OPTIONS, VAT_TREATMENT_OPTIONS, isUnresolvedAccountingCategory } from "@/lib/accounting/review-options";
 import { computeBalanceContinuity } from "@/lib/accounting/balance-continuity";
 import { ProcessingSteps } from "@/components/accounting/processing-steps";
+import { mergeAccountingRunProgress } from "@/lib/accounting/processing-stage";
 import { FailedRunPanel } from "@/components/accounting/failed-run-panel";
 import type { AiCommentaryResult, AiCommentaryType } from "@/lib/accounting/ai-service";
 import { supabase } from "@/lib/supabase";
@@ -374,6 +375,7 @@ type LiveRefreshState = "idle" | "refreshing";
 export function AccountingIntelligence() {
   const inputRef = useRef<HTMLInputElement>(null);
   const selectedRunIdRef = useRef("");
+  const runProgressRef = useRef(new Map<string, AccountingStatementRun>());
   const [runs, setRuns] = useState<AccountingStatementRun[]>([]);
   const [uploadQueue, setUploadQueue] = useState<UploadQueueItem[]>([]);
   const [selectedRunIds, setSelectedRunIds] = useState<string[]>([]);
@@ -433,7 +435,12 @@ export function AccountingIntelligence() {
   ) {
     if (!options?.silent) setLiveRefreshState("refreshing");
     try {
-      const nextRuns = await fetchRunsFromApi();
+      const fetchedRuns = await fetchRunsFromApi();
+      const nextRuns = fetchedRuns.map((incoming) => {
+        const accepted = mergeAccountingRunProgress(runProgressRef.current.get(incoming.id), incoming);
+        runProgressRef.current.set(incoming.id, accepted);
+        return accepted;
+      });
       setRuns(nextRuns);
 
       const preferred = preferredRunId ?? selectedRunIdRef.current ?? "";
@@ -445,7 +452,10 @@ export function AccountingIntelligence() {
         return null;
       }
 
-      const nextDetail = await fetchRunDetailFromApi(nextRunId);
+      const fetchedDetail = await fetchRunDetailFromApi(nextRunId);
+      const acceptedRun = mergeAccountingRunProgress(runProgressRef.current.get(nextRunId), fetchedDetail.run);
+      runProgressRef.current.set(nextRunId, acceptedRun);
+      const nextDetail = { ...fetchedDetail, run: acceptedRun };
       setDetail(nextDetail);
       return nextDetail;
     } finally {
@@ -514,7 +524,10 @@ export function AccountingIntelligence() {
   }
 
   async function loadRunDetail(runId: string) {
-    const nextDetail = await fetchRunDetailFromApi(runId);
+    const fetchedDetail = await fetchRunDetailFromApi(runId);
+    const acceptedRun = mergeAccountingRunProgress(runProgressRef.current.get(runId), fetchedDetail.run);
+    runProgressRef.current.set(runId, acceptedRun);
+    const nextDetail = { ...fetchedDetail, run: acceptedRun };
     setDetail(nextDetail);
     setLiveRefreshState("idle");
   }
@@ -1355,6 +1368,7 @@ export function AccountingIntelligence() {
                     step={item.runId ? runById.get(item.runId)?.processingStep ?? null : null}
                     startedAt={item.runId ? runById.get(item.runId)?.processingStartedAt ?? null : null}
                     updatedAt={item.runId ? runById.get(item.runId)?.updatedAt ?? null : null}
+                    ocrUsed={item.runId ? runById.get(item.runId)?.ocrUsed ?? null : null}
                   />
                 ) : null}
                 {item.status === "Ready" ? <p className="mt-2 break-words text-xs font-semibold text-emerald-700">Ready for review and export.</p> : null}
@@ -1520,7 +1534,7 @@ export function AccountingIntelligence() {
               {isRunInFlight(selectedEffectiveStatus) ? (
                 <section className="rounded-xl border border-blue-200 bg-blue-50/60 p-4">
                   <div className="flex flex-wrap items-center justify-between gap-2">
-                    <p className="text-sm font-bold text-blue-800">Processing in progress</p>
+                    <p className="text-sm font-bold text-blue-800">Processing your statement</p>
                     <div className="flex flex-wrap items-center gap-2">
                       <button
                         type="button"
@@ -1532,7 +1546,7 @@ export function AccountingIntelligence() {
                       </button>
                     </div>
                   </div>
-                  <ProcessingSteps step={detail.run.processingStep ?? null} startedAt={detail.run.processingStartedAt ?? null} updatedAt={detail.run.updatedAt ?? null} />
+                  <ProcessingSteps step={detail.run.processingStep ?? null} startedAt={detail.run.processingStartedAt ?? null} updatedAt={detail.run.updatedAt ?? null} ocrUsed={detail.run.ocrUsed ?? null} />
                 </section>
               ) : null}
 

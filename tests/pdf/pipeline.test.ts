@@ -695,14 +695,15 @@ test("OCR worker runs the fastest mode first and escalates only on failure (Req 
 
 test("UI shows the processing steps, elapsed time, and long-processing notice (Req 5)", () => {
   const steps = read("lib/pdf/processingSteps.ts");
-  for (const label of ["Detecting PDF type", "Running OCR", "Parsing transactions", "Reconciling"]) {
+  for (const label of ["Detecting document", "Extracting data", "Parsing transactions", "Classifying transactions", "Reconciling", "Generating workbook"]) {
     assert.match(steps, new RegExp(label), `step label: ${label}`);
   }
+  assert.doesNotMatch(steps, /Running OCR/, "OCR is extraction detail, not a primary lifecycle stage");
   assert.match(steps, /Still processing — scanned PDFs can take longer/);
   const component = read("components/accounting/processing-steps.tsx");
   assert.match(component, /formatElapsed/, "renders an elapsed timer");
   assert.match(component, /LONG_PROCESSING_NOTICE/, "shows the long-processing notice");
-  assert.match(component, /PROCESSING_STEP_ORDER/, "renders the ordered steps");
+  assert.match(component, /ACCOUNTING_PROCESSING_STAGE_ORDER/, "renders the ordered steps");
 });
 
 // ── OCR reliability (502 handling, controlled timeout, logging, caching) ──────

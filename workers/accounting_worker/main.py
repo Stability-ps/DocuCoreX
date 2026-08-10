@@ -5885,7 +5885,7 @@ def process_fnb_statement(payload: ProcessRequest, authorization: str | None = H
             run_id=payload.run_id,
             workspace_id=payload.workspace_id,
             processing_job_id=payload.processing_job_id,
-            step_label="Detecting PDF type",
+            step_label="Detecting document",
             progress=20,
         )
         pdf_bytes = supabase.storage.from_(bucket).download(payload.storage_path)
@@ -5895,8 +5895,8 @@ def process_fnb_statement(payload: ProcessRequest, authorization: str | None = H
             run_id=payload.run_id,
             workspace_id=payload.workspace_id,
             processing_job_id=payload.processing_job_id,
-            step_label="Running OCR",
-            progress=45,
+            step_label="Extracting data",
+            progress=35,
         )
         pages = extract_statement_text(pdf_bytes) or []
         native_text = "\n".join((page.get("text") or "") for page in pages)
@@ -6085,7 +6085,7 @@ def process_fnb_statement(payload: ProcessRequest, authorization: str | None = H
             workspace_id=payload.workspace_id,
             processing_job_id=payload.processing_job_id,
             step_label="Parsing transactions",
-            progress=70,
+            progress=55,
         )
         selected_transactions, structured_selection = select_transactions_from_sources(
             pages,
@@ -6249,14 +6249,6 @@ def process_fnb_statement(payload: ProcessRequest, authorization: str | None = H
 
         validation: dict[str, Any] | None = None
         review_issue: dict[str, Any] | None = None
-        heartbeat_step(
-            supabase,
-            run_id=payload.run_id,
-            workspace_id=payload.workspace_id,
-            processing_job_id=payload.processing_job_id,
-            step_label="Reconciling",
-            progress=90,
-        )
         try:
             validation_started = time.perf_counter()
             validation = validate_statement(metadata, transactions)
@@ -6315,7 +6307,7 @@ def process_fnb_statement(payload: ProcessRequest, authorization: str | None = H
             workspace_id=payload.workspace_id,
             processing_job_id=payload.processing_job_id,
             step_label="Classifying transactions",
-            progress=88,
+            progress=75,
         )
         ai_classification_stats = classify_transactions_with_ai(
             transactions,
@@ -6328,6 +6320,15 @@ def process_fnb_statement(payload: ProcessRequest, authorization: str | None = H
             run_id=payload.run_id,
             **{key: value for key, value in ai_classification_stats.items() if key != "ai_rejected_after_guardrails"},
             rejected=ai_classification_stats.get("ai_rejected_after_guardrails"),
+        )
+
+        heartbeat_step(
+            supabase,
+            run_id=payload.run_id,
+            workspace_id=payload.workspace_id,
+            processing_job_id=payload.processing_job_id,
+            step_label="Reconciling",
+            progress=90,
         )
 
         # Stamp the canonical sequence. The parser validated the running-balance
