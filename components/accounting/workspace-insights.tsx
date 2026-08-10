@@ -296,16 +296,202 @@ export function RecurringView() {
   );
 }
 
+
+type CashflowResponse = {
+  summary: {
+    months: Array<{ month: string; inflow: number; outflow: number; net: number; bankCharges: number }>;
+    totalInflow: number;
+    totalOutflow: number;
+    netMovement: number;
+    bankChargesTotal: number;
+    monthsObserved: number;
+    monthsSpanned: number;
+    hasGaps: boolean;
+    averageMonthlyInflow: number;
+    averageMonthlyOutflow: number;
+    expenseCategories: Array<{ category: string; amount: number; count: number }>;
+    incomeCategories: Array<{ category: string; amount: number; count: number }>;
+    excludedTransferCount: number;
+  };
+  balances: Array<{ accountLabel: string; asAt: string | null; balance: number }>;
+};
+
+export function CashflowView() {
+  const [data, setData] = useState<CashflowResponse | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    void (async () => {
+      try {
+        const response = await fetch("/api/accounting/cashflow");
+        const body = (await response.json()) as CashflowResponse & { error?: string };
+        if (!response.ok) throw new Error(body.error || "Unable to load cashflow.");
+        setData(body);
+      } catch (loadError) {
+        setError(loadError instanceof Error ? loadError.message : "Unable to load cashflow.");
+      }
+    })();
+  }, []);
+
+  if (error) return <Empty>{error}</Empty>;
+  if (!data) return <Loading />;
+
+  const { summary, balances } = data;
+  if (!summary.monthsObserved) return <Empty>No dated transactions yet.</Empty>;
+
+  const maxBar = Math.max(...summary.months.map((month) => Math.max(month.inflow, month.outflow)), 1);
+
+  return (
+    <div className="space-y-3">
+      {/* Balances are listed per account with the date each was true. They are
+          deliberately not summed: adding closing balances from statements that
+          end on different dates produces a figure that was never true on any
+          single day. */}
+      <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
+        {balances.map((balance) => (
+          <div key={balance.accountLabel} className="rounded-lg border border-slate-200 p-2">
+            <p className="text-[10px] font-black uppercase tracking-wide text-slate-400">{balance.accountLabel}</p>
+            <p className="text-sm font-black text-navy-950">{money(balance.balance)}</p>
+            <p className="text-[10px] font-semibold text-slate-500">as at {balance.asAt ?? "unknown"}</p>
+          </div>
+        ))}
+      </div>
+
+      <div className="grid gap-2 sm:grid-cols-4">
+        {[
+          { label: "Total in", value: money(summary.totalInflow) },
+          { label: "Total out", value: money(summary.totalOutflow) },
+          { label: "Net movement", value: money(summary.netMovement) },
+          { label: "Bank charges", value: money(summary.bankChargesTotal) },
+        ].map((card) => (
+          <div key={card.label} className="rounded-lg border border-slate-100 bg-slate-50 p-2 text-center">
+            <p className="text-sm font-black text-navy-950">{card.value}</p>
+            <p className="text-[10px] font-bold text-slate-500">{card.label}</p>
+          </div>
+        ))}
+      </div>
+
+      {summary.hasGaps ? (
+        <p className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-[11px] font-bold text-amber-800">
+          Averages cover {summary.monthsObserved} of {summary.monthsSpanned} months in the period — a statement is
+          missing. Monthly figures below are drawn from an incomplete picture.
+        </p>
+      ) : null}
+
+      {summary.excludedTransferCount ? (
+        <p className="text-[11px] font-semibold text-slate-500">
+          {summary.excludedTransferCount} transaction{summary.excludedTransferCount === 1 ? "" : "s"} excluded as
+          confirmed internal transfers — money moved between your own accounts is neither income nor expense.
+        </p>
+      ) : null}
+
+      {/* Proportional bars rather than a chart library: the comparison that
+          matters is in vs out per month, and that needs no dependency. */}
+      <div className="space-y-1">
+        {summary.months.map((month) => (
+          <div key={month.month} className="flex items-center gap-2 text-[11px]">
+            <span className="w-16 shrink-0 font-black text-slate-500">{month.month}</span>
+            <span className="flex-1">
+              <span className="block h-2 rounded bg-emerald-500" style={{ width: `${(month.inflow / maxBar) * 100}%` }} />
+              <span className="mt-0.5 block h-2 rounded bg-slate-400" style={{ width: `${(month.outflow / maxBar) * 100}%` }} />
+            </span>
+            <span className="w-28 shrink-0 text-right font-bold text-slate-700">{money(month.net)}</span>
+          </div>
+        ))}
+        <p className="text-[10px] font-semibold text-slate-400">Green is money in, grey is money out. Right column is net.</p>
+      </div>
+    </div>
+  );
+}
+
+type FlowResponse =
+  | { sufficient: false; reason: string; quality: { classifiedValueShare: number } }
+  | {
+      sufficient: true;
+      hubLabel: string;
+      nodes: Array<{ id: string; label: string; kind: "source" | "hub" | "use"; amount: number }>;
+      edges: Array<{ from: string; to: string; amount: number; share: number }>;
+    };
+
+export function FlowOfFundsView() {
+  const [data, setData] = useState<FlowResponse | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    void (async () => {
+      try {
+        const response = await fetch("/api/accounting/flow-of-funds");
+        const body = (await response.json()) as FlowResponse & { error?: string };
+        if (!response.ok) throw new Error((body as { error?: string }).error || "Unable to load flow of funds.");
+        setData(body);
+      } catch (loadError) {
+        setError(loadError instanceof Error ? loadError.message : "Unable to load flow of funds.");
+      }
+    })();
+  }, []);
+
+  if (error) return <Empty>{error}</Empty>;
+  if (!data) return <Loading />;
+
+  // The refusal is rendered as the answer, not as an error. A diagram drawn on
+  // thin classification looks exactly as convincing as one drawn on good data,
+  // which is why the module declines to draw it at all.
+  if (!data.sufficient) {
+    return (
+      <div className="rounded-lg border border-amber-200 bg-amber-50 p-4">
+        <p className="text-sm font-bold text-amber-900">{data.reason}</p>
+        <p className="mt-2 text-[11px] font-semibold text-amber-800">
+          Categorise transactions in the Review tab of a statement. A flow diagram built on unclassified money looks
+          just as convincing as an accurate one, so it is not shown until the classification can support it.
+        </p>
+      </div>
+    );
+  }
+
+  const sources = data.nodes.filter((node) => node.kind === "source");
+  const uses = data.nodes.filter((node) => node.kind === "use");
+
+  return (
+    <div className="grid gap-3 md:grid-cols-[1fr_auto_1fr]">
+      <div className="space-y-1">
+        <p className="text-[10px] font-black uppercase tracking-wide text-slate-400">Money in</p>
+        {sources.map((node) => (
+          <div key={node.id} className="rounded border border-emerald-100 bg-emerald-50/60 px-2 py-1">
+            <p className="text-xs font-bold text-navy-950">{node.label}</p>
+            <p className="text-[11px] font-black text-emerald-700">{money(node.amount)}</p>
+          </div>
+        ))}
+      </div>
+
+      <div className="flex items-center justify-center">
+        <div className="rounded-lg border border-royal-200 bg-royal-50 px-3 py-2 text-center">
+          <p className="text-xs font-black text-royal-800">{data.hubLabel}</p>
+        </div>
+      </div>
+
+      <div className="space-y-1">
+        <p className="text-[10px] font-black uppercase tracking-wide text-slate-400">Money out</p>
+        {uses.map((node) => (
+          <div key={node.id} className="rounded border border-slate-200 bg-slate-50 px-2 py-1">
+            <p className="text-xs font-bold text-navy-950">{node.label}</p>
+            <p className="text-[11px] font-black text-slate-700">{money(node.amount)}</p>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 /** Tabbed shell for the workspace-scoped insight views. */
 export function WorkspaceInsights() {
-  const [tab, setTab] = useState<"transfers" | "recurring">("transfers");
+  const [tab, setTab] = useState<"transfers" | "recurring" | "cashflow" | "flow">("transfers");
 
   return (
     <div className="rounded-xl border border-slate-200 bg-white p-3 shadow-sm md:p-4">
       <div className="mb-3 flex items-center gap-2">
         <h3 className="text-sm font-black text-navy-950">Across all statements</h3>
         <div className="ml-auto flex gap-1">
-          {(["transfers", "recurring"] as const).map((id) => (
+          {(["transfers", "recurring", "cashflow", "flow"] as const).map((id) => (
             <button
               key={id}
               type="button"
@@ -314,12 +500,15 @@ export function WorkspaceInsights() {
                 tab === id ? "bg-royal-600 text-white" : "text-slate-600 hover:bg-slate-100"
               }`}
             >
-              {id === "transfers" ? "Transfers" : "Recurring"}
+              {{ transfers: "Transfers", recurring: "Recurring", cashflow: "Cashflow", flow: "Flow of Funds" }[id]}
             </button>
           ))}
         </div>
       </div>
-      {tab === "transfers" ? <TransfersView /> : <RecurringView />}
+      {tab === "transfers" ? <TransfersView /> : null}
+      {tab === "recurring" ? <RecurringView /> : null}
+      {tab === "cashflow" ? <CashflowView /> : null}
+      {tab === "flow" ? <FlowOfFundsView /> : null}
     </div>
   );
 }
