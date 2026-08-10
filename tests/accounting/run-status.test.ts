@@ -396,3 +396,33 @@ test("only the worker moves a job into running", () => {
   const worker = read("workers/accounting_worker/main.py");
   assert.match(worker, /\.update\(\{"status": "running"/, "the claim is the worker's");
 });
+
+// ── Terminal writes are fenced too ──────────────────────────────────────────
+//
+// The worker's failure writes went straight to the table, bypassing
+// active_job_id. A superseded worker could mark a run failed after Force
+// Reprocess had already handed it to a newer job — overwriting a live attempt
+// with a dead one's verdict. Same gap as the unfenced heartbeat in #83, on a
+// path that only runs when something has already gone wrong.
+
+test("terminal failure writes go through the fenced helper", () => {
+  const worker = read("workers/accounting_worker/main.py");
+  assert.match(worker, /def _write_terminal_run_state/);
+  assert.match(worker, /job_id=payload\.processing_job_id/, "the write identifies its job");
+  // No direct table write for a terminal run state remains.
+  assert.doesNotMatch(
+    worker,
+    /table\("accounting_statement_runs"\)\.update\(\s*\{"status": "failed"/,
+    "a terminal state must not bypass the fence",
+  );
+});
+
+test("a rejected terminal write is logged, not raised", () => {
+  // This is already the failure path; raising would replace the real error with
+  // a fencing error and lose why the run failed.
+  const worker = read("workers/accounting_worker/main.py");
+  const helper = worker.slice(worker.indexOf("def _write_terminal_run_state"), worker.indexOf("def _claim_processing_job"));
+  assert.match(helper, /except StaleJobError/);
+  assert.match(helper, /worker\.terminal_write_rejected_stale_job/);
+  assert.doesNotMatch(helper, /raise/, "must not raise from a failure handler");
+});
