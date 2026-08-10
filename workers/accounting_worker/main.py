@@ -6474,7 +6474,38 @@ def process_fnb_statement(payload: ProcessRequest, authorization: str | None = H
         )
 
         bank_charges_total = float(bank_charges_from_statement(metadata, transactions))
+
+        # The mean of every row's confidence, INCLUDING rows nobody classified.
+        # Retained only for the deprecated `confidence` column, whose existing
+        # readers have always received exactly this number.
         avg_confidence = sum(transaction.confidence for transaction in transactions) / len(transactions)
+
+        # Classification confidence, measured over classified rows ONLY.
+        #
+        # Averaging in unresolved rows does not produce a weaker confidence — it
+        # produces a different quantity entirely, one that falls as the ledger
+        # grows and says nothing about the decisions that were actually made.
+        # None where nothing is classified: absent is honest, 0 reads as
+        # "classified, badly".
+        classified_rows = [
+            transaction
+            for transaction in transactions
+            if (transaction.classification_source or "") in {"deterministic", "learned_rule", "ai", "manual"}
+            and not is_unresolved_category(transaction.account_category)
+        ]
+        classified_scores = [
+            float(transaction.classification_confidence)
+            for transaction in classified_rows
+            if transaction.classification_confidence is not None
+        ]
+        classification_confidence_value = (
+            round(sum(classified_scores) / len(classified_scores), 2) if classified_scores else None
+        )
+        classification_coverage_value = (
+            round((len(classified_rows) / len(transactions)) * 100, 2) if transactions else None
+        )
+        unresolved_rows = [t for t in transactions if t not in classified_rows]
+        unresolved_count_value = len(unresolved_rows)
         # A ledger recovered by AI can never report as completed. Every row is
         # already flagged, so this is belt and braces — but the guarantee is
         # worth stating outright rather than depending on a per-row flag that a
@@ -6545,13 +6576,19 @@ def process_fnb_statement(payload: ProcessRequest, authorization: str | None = H
                 "missing_transaction_count": missing_rows,
                 "requires_review": review_required,
                 "processing_duration_ms": int(processing_duration_ms),
-                "extraction_accuracy": round(avg_confidence, 2),
+                # extraction_accuracy is consumed as an EXTRACTION quality
+                # average (accounting_parser_health.average_extraction_accuracy).
+                # It carried the classification mean, so a perfectly extracted
+                # statement with unclassified rows reported as badly extracted.
+                # It now carries the extraction score its name promises.
+                "extraction_accuracy": extraction_confidence,
                 "extraction_confidence": extraction_confidence,
                 # DEPRECATED: `confidence` has always carried the CLASSIFICATION
-                # score and continues to, so existing readers are unaffected.
-                # New readers should use classification_confidence.
+                # score and continues to. Its VALUE is unchanged so existing
+                # readers see exactly what they saw before.
                 "confidence": round(avg_confidence, 2),
-                "classification_confidence": round(avg_confidence, 2),
+                # Classified rows only — see the derivation above.
+                "classification_confidence": classification_confidence_value,
                 "reconciliation_confidence": reconciliation_confidence(
                     extraction_check, missing_rows
                 ),

@@ -72,6 +72,7 @@ import { CATEGORY_OPTIONS, VAT_TREATMENT_OPTIONS, isUnresolvedAccountingCategory
 import { computeBalanceContinuity } from "@/lib/accounting/balance-continuity";
 import { ProcessingSteps } from "@/components/accounting/processing-steps";
 import { formatCount, formatMoney, formatStatementDate, formatStatementDateTime } from "@/lib/accounting/format";
+import { summarizeAccountingCoverage, summarizeStatementIntegrity } from "@/lib/accounting/integrity";
 import { DocumentViewer } from "@/components/document-viewer";
 import { WorkspaceInsights } from "@/components/accounting/workspace-insights";
 import { WorkspaceForecast } from "@/components/accounting/workspace-forecast";
@@ -1429,6 +1430,15 @@ export function AccountingIntelligence() {
                 />
               </div>
 
+              {/* Counts beside the percentages. Shown for every run, not only
+                  those needing review — "615 read, reconciled, 426 unresolved"
+                  is the finding, and it is invisible in any single score. */}
+              <StatementEvidencePanel
+                transactions={transactions}
+                reconciliationDifference={detail.run.reconciliationDifference ?? null}
+                extractionConfidence={detail.run.confidences?.extraction ?? null}
+              />
+
               {selectedEffectiveStatus === "failed" ? (
                 <FailedRunPanel
                   run={detail.run}
@@ -1965,6 +1975,7 @@ function ReviewRequiredPanel({
       </div>
       {run ? <div className="mt-3"><ConfidenceTrio run={run} compact /></div> : null}
 
+
       <div className="mt-4 flex flex-wrap gap-2">
         <button type="button" onClick={onReview} className="min-h-10 rounded-lg bg-royal-600 px-4 text-sm font-black text-white shadow-sm">
           Review Transactions
@@ -1980,6 +1991,79 @@ function ReviewRequiredPanel({
 
       {canShowTechnicalDetails ? <TechnicalDetails diagnostics={diagnostics} /> : null}
     </section>
+  );
+}
+
+
+// Counts, not percentages. The trio above answers "how confident"; this answers
+// "how much", which is the question an accountant actually acts on — 426 rows
+// awaiting a decision is a workload, 67% is a mood.
+//
+// Statement integrity and accounting coverage are shown as separate blocks
+// because they are separate findings: a statement can be read perfectly and
+// remain entirely unclassified, and the reverse is impossible. Blending them is
+// what made a reconciled 615-row statement report as 67% extracted.
+function StatementEvidencePanel({
+  transactions,
+  reconciliationDifference,
+  extractionConfidence,
+}: {
+  transactions: AccountingTransaction[];
+  reconciliationDifference: number | null;
+  extractionConfidence: number | null;
+}) {
+  const integrity = useMemo(
+    () => summarizeStatementIntegrity({ transactions, reconciliationDifference, extractionConfidence }),
+    [transactions, reconciliationDifference, extractionConfidence],
+  );
+  const coverage = useMemo(() => summarizeAccountingCoverage(transactions), [transactions]);
+
+  if (!transactions.length) return null;
+
+  const tick = (ok: boolean) => (ok ? "✓" : "✕");
+  const tone = (ok: boolean) => (ok ? "text-emerald-700" : "text-amber-700");
+
+  return (
+    <div className="mt-3 grid gap-3 sm:grid-cols-3">
+      <div className="rounded-lg bg-white p-3 shadow-sm ring-1 ring-slate-200">
+        <p className="text-[11px] font-black uppercase tracking-[0.08em] text-slate-400">Statement integrity</p>
+        <ul className="mt-1 space-y-0.5 text-xs font-semibold text-slate-600">
+          <li className={tone(true)}>{tick(true)} {plainNumber(integrity.transactionCount)} transactions read</li>
+          <li className={tone(integrity.sourceRowComplete)}>
+            {tick(integrity.sourceRowComplete)} source rows {plainNumber(integrity.withSourceRow)}/{plainNumber(integrity.transactionCount)}
+          </li>
+          <li className={tone(integrity.reconciled)}>
+            {tick(integrity.reconciled)} {integrity.reconciled ? "Reconciled" : `Difference ${money(integrity.reconciliationDifference)}`}
+          </li>
+        </ul>
+      </div>
+
+      <div className="rounded-lg bg-white p-3 shadow-sm ring-1 ring-slate-200">
+        <p className="text-[11px] font-black uppercase tracking-[0.08em] text-slate-400">Accounting</p>
+        <p className="mt-1 text-lg font-black text-navy-950">
+          {plainNumber(coverage.classified)}<span className="text-sm font-bold text-slate-400"> classified</span>
+        </p>
+        <p className="text-xs font-semibold text-amber-700">{plainNumber(coverage.unresolved)} unresolved</p>
+        {coverage.unresolvedValue > 0 ? (
+          <p className="text-[11px] font-semibold text-slate-500">{money(coverage.unresolvedValue)} awaiting a decision</p>
+        ) : null}
+      </div>
+
+      <div className="rounded-lg bg-white p-3 shadow-sm ring-1 ring-slate-200">
+        <p className="text-[11px] font-black uppercase tracking-[0.08em] text-slate-400">Evidence</p>
+        <ul className="mt-1 space-y-0.5 text-xs font-semibold text-slate-600">
+          <li>Hard rules {plainNumber(coverage.evidence.deterministic)}</li>
+          <li>Learned {plainNumber(coverage.evidence.learned_rule)}</li>
+          <li>Suggested {plainNumber(coverage.evidence.ai)}</li>
+          {coverage.evidence.manual ? <li>Manual {plainNumber(coverage.evidence.manual)}</li> : null}
+        </ul>
+        {coverage.classifiedConfidence != null ? (
+          <p className="mt-1 text-[11px] font-semibold text-slate-500">
+            {coverage.classifiedConfidence}% average on classified rows
+          </p>
+        ) : null}
+      </div>
+    </div>
   );
 }
 
