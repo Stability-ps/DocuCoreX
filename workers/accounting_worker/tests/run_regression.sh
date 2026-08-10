@@ -60,4 +60,9 @@ PY
 # by a signature change, none of which any suite would have reported.
 "$PYTHON_BIN" "$WORKER_DIR/tests/amount_parsing_check.py"
 
+# Deterministic ledger repair: balance-sign recovery and non-posting detection.
+# Bank-neutral by construction, and one of its checks asserts that — a repair
+# that needs an institution name will not travel to the next country.
+"$PYTHON_BIN" "$WORKER_DIR/tests/ledger_repair_check.py"
+
 "$PYTHON_BIN" "$WORKER_DIR/tests/regression_suite.py"
