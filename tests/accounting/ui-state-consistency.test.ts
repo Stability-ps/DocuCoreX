@@ -96,8 +96,14 @@ test("the selected statement keeps real metadata, metrics, and the PDF beside tr
 });
 
 test("the bank statement page follows the approved compact workspace hierarchy", () => {
-  assert.match(ui, /useState\(true\).*uploadCollapsed|uploadCollapsed, setUploadCollapsed\] = useState\(true\)/);
-  assert.match(ui, /Show upload options/);
+  // The two assertions that stood here required the upload panel to default to
+  // COLLAPSED and the "Show upload options" control to exist. Both were removed
+  // deliberately: collapsed rendered the whole panel `sr-only`, so the drop
+  // target, the description and the guidance were invisible to sighted users
+  // unless they found a control that only appeared on wide screens.
+  //
+  // The rest of the hierarchy this test protects is unchanged, and the upload
+  // panel's absence of a toggle is now asserted positively in format.test.ts.
   assert.match(ui, /activeModule === "bank-statements"/);
   assert.match(ui, /grid-cols-5 divide-x divide-slate-100/);
   assert.match(ui, /overflow-hidden rounded-lg border border-slate-200 bg-white/);
