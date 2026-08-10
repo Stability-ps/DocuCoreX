@@ -379,7 +379,6 @@ export function AccountingIntelligence() {
   const [runs, setRuns] = useState<AccountingStatementRun[]>([]);
   const [uploadQueue, setUploadQueue] = useState<UploadQueueItem[]>([]);
   const [selectedRunIds, setSelectedRunIds] = useState<string[]>([]);
-  const [selectionMode, setSelectionMode] = useState(false);
   const [selectedRunId, setSelectedRunId] = useState("");
   const [showExportModal, setShowExportModal] = useState(false);
   const [detail, setDetail] = useState<AccountingRunDetail | null>(null);
@@ -1379,13 +1378,7 @@ export function AccountingIntelligence() {
           runs={runs}
           selectedRunId={selectedRunId}
           selectedRunIds={selectedRunIds}
-          selectionMode={selectionMode}
-          actions={
-            <button type="button" onClick={() => { setSelectionMode((current) => !current); setSelectedRunIds([]); }} className="inline-flex min-h-9 items-center rounded-lg border border-slate-200 bg-white px-3 text-xs font-black text-slate-700">
-              {selectionMode ? "Done Selecting" : "Select"}
-            </button>
-          }
-          selectionActions={selectionMode ? <>
+          selectionActions={selectedRunIds.length ? <>
             <span className="text-xs font-black text-navy-950">{selectedRunLabel}</span>
             <button type="button" disabled={!selectedProcessableRunIds.length || busy === "bulk-process"} onClick={() => void processSelectedRuns()} className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs font-black disabled:text-slate-300">{contextualProcessLabel}</button>
             <button type="button" disabled={!processableRunIds.length || busy === "bulk-process"} onClick={() => void processAllRuns()} className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs font-black disabled:text-slate-300">Process All</button>
@@ -2187,8 +2180,6 @@ function StatementRuns({
   runs,
   selectedRunId,
   selectedRunIds,
-  selectionMode,
-  actions,
   selectionActions,
   search,
   sortBy,
@@ -2202,8 +2193,6 @@ function StatementRuns({
   runs: AccountingStatementRun[];
   selectedRunId: string;
   selectedRunIds: string[];
-  selectionMode: boolean;
-  actions: ReactNode;
   selectionActions: ReactNode;
   search: string;
   sortBy: string;
@@ -2261,7 +2250,6 @@ function StatementRuns({
           <p className="text-xs font-semibold text-slate-500">{runs.length} total</p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
-          {actions}
           <button
             type="button"
             onClick={onRefresh}
@@ -2272,16 +2260,16 @@ function StatementRuns({
           </button>
         </div>
       </div>
-      {selectionMode ? <div className="flex flex-wrap items-center gap-2 border-b border-royal-100 bg-royal-50 px-3 py-2">{selectionActions}</div> : null}
+      {selectionActions ? <div className="flex flex-wrap items-center gap-2 border-b border-royal-100 bg-royal-50 px-3 py-2">{selectionActions}</div> : null}
       <div className="grid gap-2 border-b border-slate-100 p-2">
         <label className="relative block">
           <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
-          {selectionMode ? <input
+          <input
             value={search}
             onChange={(event) => onSearchChange(event.target.value)}
             placeholder="Search statements"
             className="h-9 w-full rounded-lg border border-slate-200 bg-white pl-9 pr-3 text-sm font-medium outline-none focus:border-royal-300"
-          /> : null}
+          />
         </label>
         <div className="flex items-center gap-2">
           <input
@@ -2318,13 +2306,12 @@ function StatementRuns({
               return (
             <div
               key={run.id}
-              onClick={() => selectionMode ? onToggleSelected(run.id) : onSelect(run.id)}
-              onDoubleClick={() => { if (!selectionMode) router.push(`/accounting/statements/${run.id}`); }}
+              onClick={() => onSelect(run.id)}
+              onDoubleClick={() => router.push(`/accounting/statements/${run.id}`)}
               onKeyDown={(event) => {
                 if (event.key === "Enter" || event.key === " ") {
                   event.preventDefault();
-                  if (selectionMode) onToggleSelected(run.id);
-                  else onSelect(run.id);
+                  onSelect(run.id);
                 }
               }}
               role="button"
@@ -2334,7 +2321,7 @@ function StatementRuns({
               }`}
             >
               <div className="flex items-center gap-2">
-                {selectionMode ? <input
+                <input
                   type="checkbox"
                   checked={selectedRunIds.includes(run.id)}
                   onChange={(event) => {
@@ -2344,12 +2331,12 @@ function StatementRuns({
                   onClick={(event) => event.stopPropagation()}
                   className="h-4 w-4 rounded border-slate-300 text-royal-600"
                   aria-label={`Select ${runDisplayTitle(run)} for combined workbook`}
-                /> : null}
+                />
                 <div className="min-w-0 flex-1">
                   <div className="flex items-center justify-between gap-2">
                     <Link
                       href={`/accounting/statements/${run.id}`}
-                      onClick={(event) => { if (selectionMode) event.preventDefault(); event.stopPropagation(); if (selectionMode) onToggleSelected(run.id); }}
+                      onClick={(event) => event.stopPropagation()}
                       className="truncate text-sm font-black text-navy-950 hover:text-royal-700 hover:underline"
                     >
                       {runDisplayTitle({ ...run, status: effectiveStatus })}
@@ -2380,15 +2367,15 @@ function StatementRuns({
                     )}
                   </div>
                 </div>
-                {!selectionMode ? <Link
+                <Link
                   href={`/accounting/statements/${run.id}`}
                   onClick={(event) => event.stopPropagation()}
                   className="rounded-md px-2 py-1 text-[11px] font-black text-royal-700 opacity-0 transition hover:bg-royal-50 group-hover:opacity-100"
                   aria-label={`View ${runDisplayTitle(run)}`}
                 >
                   View
-                </Link> : null}
-                {!selectionMode ? <button
+                </Link>
+                <button
                   type="button"
                   onClick={(event) => {
                     event.stopPropagation();
@@ -2398,7 +2385,7 @@ function StatementRuns({
                   aria-label={`Preview ${runDisplayTitle(run)}`}
                 >
                   <MoreVertical className="h-4 w-4" />
-                </button> : null}
+                </button>
               </div>
             </div>
               );
