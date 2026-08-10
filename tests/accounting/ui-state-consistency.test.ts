@@ -57,16 +57,19 @@ test("processing exposes cancel but not retry controls", () => {
 });
 
 test("bulk selection and transaction tools are explicit", () => {
-  assert.match(ui, /selectionMode \? "Done Selecting" : "Select"/);
-  assert.match(ui, /\{selectionMode \? <input/);
+  assert.doesNotMatch(ui, /Done Selecting|selectionMode/);
+  assert.match(ui, /aria-label="Select visible statements"/);
+  assert.match(ui, /aria-label=\{`Select \$\{runDisplayTitle\(run\)\} for combined workbook`\}/);
   assert.match(ui, /detail\.transactions\.length \? \(/);
   assert.equal((ui.match(/Upload Statement/g) ?? []).length >= 1, true);
   assert.doesNotMatch(ui, /Upload Statements/);
   assert.doesNotMatch(ui, /FNB bank statements/);
 });
 
-test("the whole statement row toggles selection while select mode is active", () => {
-  assert.match(ui, /onClick=\{\(\) => \(selectionMode \? onToggleSelected\(run\.id\) : onSelect\(run\.id\)\)\}/);
-  assert.match(ui, /if \(selectionMode\) onToggleSelected\(run\.id\);[\s\S]*else onSelect\(run\.id\);/);
-  assert.match(ui, /aria-pressed=\{selectionMode \? selectedRunIds\.includes\(run\.id\) : undefined\}/);
+test("statement actions live inside the statements box", () => {
+  const statementRunsStart = ui.indexOf("<StatementRuns");
+  const statementRunsCall = ui.slice(statementRunsStart, statementRunsStart + 5000);
+  assert.match(statementRunsCall, /actions=\{/);
+  assert.match(statementRunsCall, /Process All/);
+  assert.match(statementRunsCall, /Clear Completed/);
 });

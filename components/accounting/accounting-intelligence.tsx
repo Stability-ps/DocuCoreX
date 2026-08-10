@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import {
@@ -379,7 +379,6 @@ export function AccountingIntelligence() {
   const [runs, setRuns] = useState<AccountingStatementRun[]>([]);
   const [uploadQueue, setUploadQueue] = useState<UploadQueueItem[]>([]);
   const [selectedRunIds, setSelectedRunIds] = useState<string[]>([]);
-  const [selectionMode, setSelectionMode] = useState(false);
   const [selectedRunId, setSelectedRunId] = useState("");
   const [showExportModal, setShowExportModal] = useState(false);
   const [detail, setDetail] = useState<AccountingRunDetail | null>(null);
@@ -1241,43 +1240,7 @@ export function AccountingIntelligence() {
         </div>
       </section>
 
-      <section className="rounded-xl border border-slate-200 bg-white p-3 shadow-sm md:p-4">
-        <div className="flex flex-wrap items-center gap-2">
-          <button
-            type="button"
-            onClick={() => {
-              setSelectionMode((current) => {
-                if (current) setSelectedRunIds([]);
-                return !current;
-              });
-            }}
-            className="inline-flex min-h-10 items-center justify-center rounded-lg border border-slate-200 bg-white px-3 text-xs font-black text-slate-700"
-          >
-            {selectionMode ? "Done Selecting" : "Select"}
-          </button>
-          <button
-            type="button"
-            disabled={!processableRunIds.length || busy === "bulk-process"}
-            onClick={() => void processAllRuns()}
-            className="inline-flex min-h-10 items-center justify-center rounded-lg border border-slate-200 bg-white px-3 text-xs font-black text-slate-700 disabled:text-slate-300"
-          >
-            {busy === "bulk-process" ? "Processing..." : "Process All"}
-          </button>
-          <button
-            type="button"
-            disabled={!uploadQueue.some((item) => item.status === "Ready" || item.status === "Review Required")}
-            onClick={() => {
-              setUploadQueue((queue) => queue.filter((item) => item.status !== "Ready" && item.status !== "Review Required"));
-              setMessage("Finished queue items cleared.");
-            }}
-            className="inline-flex min-h-10 items-center justify-center rounded-lg border border-slate-200 bg-white px-3 text-xs font-black text-slate-700 disabled:text-slate-300"
-          >
-            Clear Completed
-          </button>
-        </div>
-      </section>
-
-      {selectionMode && selectedRunIds.length ? (
+      {selectedRunIds.length ? (
         <section className="sticky top-2 z-40 rounded-xl border border-royal-200 bg-royal-50/95 p-3 shadow-md backdrop-blur supports-[backdrop-filter]:bg-royal-50/80 md:p-4">
           <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
             <p className="text-sm font-black text-navy-950">{selectedRunLabel}</p>
@@ -1452,7 +1415,29 @@ export function AccountingIntelligence() {
           runs={runs}
           selectedRunId={selectedRunId}
           selectedRunIds={selectedRunIds}
-          selectionMode={selectionMode}
+          actions={
+            <>
+              <button
+                type="button"
+                disabled={!processableRunIds.length || busy === "bulk-process"}
+                onClick={() => void processAllRuns()}
+                className="inline-flex min-h-9 items-center justify-center rounded-lg border border-slate-200 bg-white px-3 text-xs font-black text-slate-700 disabled:text-slate-300"
+              >
+                {busy === "bulk-process" ? "Processing..." : "Process All"}
+              </button>
+              <button
+                type="button"
+                disabled={!uploadQueue.some((item) => item.status === "Ready" || item.status === "Review Required")}
+                onClick={() => {
+                  setUploadQueue((queue) => queue.filter((item) => item.status !== "Ready" && item.status !== "Review Required"));
+                  setMessage("Finished queue items cleared.");
+                }}
+                className="inline-flex min-h-9 items-center justify-center rounded-lg border border-slate-200 bg-white px-3 text-xs font-black text-slate-700 disabled:text-slate-300"
+              >
+                Clear Completed
+              </button>
+            </>
+          }
           search={runSearch}
           sortBy={runSort}
           onToggleSelected={(runId) =>
@@ -2248,7 +2233,7 @@ function StatementRuns({
   runs,
   selectedRunId,
   selectedRunIds,
-  selectionMode,
+  actions,
   search,
   sortBy,
   onToggleSelected,
@@ -2261,7 +2246,7 @@ function StatementRuns({
   runs: AccountingStatementRun[];
   selectedRunId: string;
   selectedRunIds: string[];
-  selectionMode: boolean;
+  actions: ReactNode;
   search: string;
   sortBy: string;
   onToggleSelected: (runId: string) => void;
@@ -2312,19 +2297,22 @@ function StatementRuns({
 
   return (
     <section className="overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">
-      <div className="flex items-center justify-between gap-3 border-b border-slate-100 px-3 py-2">
+      <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-100 px-3 py-2">
         <div>
           <h2 className="text-sm font-black text-navy-950">Statements</h2>
           <p className="text-xs font-semibold text-slate-500">{runs.length} total</p>
         </div>
-        <button
-          type="button"
-          onClick={onRefresh}
-          className="rounded-lg border border-slate-200 p-2 text-slate-500 hover:text-royal-700"
-          aria-label="Refresh accounting runs"
-        >
-          <RefreshCcw className="h-4 w-4" />
-        </button>
+        <div className="flex flex-wrap items-center gap-2">
+          {actions}
+          <button
+            type="button"
+            onClick={onRefresh}
+            className="rounded-lg border border-slate-200 p-2 text-slate-500 hover:text-royal-700"
+            aria-label="Refresh accounting runs"
+          >
+            <RefreshCcw className="h-4 w-4" />
+          </button>
+        </div>
       </div>
       <div className="grid gap-2 border-b border-slate-100 p-2">
         <label className="relative block">
@@ -2337,7 +2325,6 @@ function StatementRuns({
           />
         </label>
         <div className="flex items-center gap-2">
-          {selectionMode ? (
           <input
             type="checkbox"
             checked={allVisibleSelected}
@@ -2351,7 +2338,6 @@ function StatementRuns({
             className="h-4 w-4 rounded border-slate-300 text-royal-600"
             aria-label="Select visible statements"
           />
-          ) : null}
           <select
             value={sortBy}
             onChange={(event) => onSortChange(event.target.value)}
@@ -2373,26 +2359,22 @@ function StatementRuns({
               return (
             <div
               key={run.id}
-              onClick={() => (selectionMode ? onToggleSelected(run.id) : onSelect(run.id))}
-              onDoubleClick={() => {
-                if (!selectionMode) router.push(`/accounting/statements/${run.id}`);
-              }}
+              onClick={() => onSelect(run.id)}
+              onDoubleClick={() => router.push(`/accounting/statements/${run.id}`)}
               onKeyDown={(event) => {
                 if (event.key === "Enter" || event.key === " ") {
                   event.preventDefault();
-                  if (selectionMode) onToggleSelected(run.id);
-                  else onSelect(run.id);
+                  onSelect(run.id);
                 }
               }}
               role="button"
               tabIndex={0}
-              aria-pressed={selectionMode ? selectedRunIds.includes(run.id) : undefined}
               className={`group border-b border-slate-100 px-2 py-2 text-left transition ${
                 selectedRunId === run.id ? "bg-royal-50" : "hover:bg-slate-50"
               }`}
             >
               <div className="flex items-center gap-2">
-                {selectionMode ? <input
+                <input
                   type="checkbox"
                   checked={selectedRunIds.includes(run.id)}
                   onChange={(event) => {
@@ -2402,20 +2384,12 @@ function StatementRuns({
                   onClick={(event) => event.stopPropagation()}
                   className="h-4 w-4 rounded border-slate-300 text-royal-600"
                   aria-label={`Select ${runDisplayTitle(run)} for combined workbook`}
-                /> : null}
+                />
                 <div className="min-w-0 flex-1">
                   <div className="flex items-center justify-between gap-2">
                     <Link
                       href={`/accounting/statements/${run.id}`}
-                      onClick={(event) => {
-                        if (selectionMode) {
-                          event.preventDefault();
-                          event.stopPropagation();
-                          onToggleSelected(run.id);
-                          return;
-                        }
-                        event.stopPropagation();
-                      }}
+                      onClick={(event) => event.stopPropagation()}
                       className="truncate text-sm font-black text-navy-950 hover:text-royal-700 hover:underline"
                     >
                       {runDisplayTitle({ ...run, status: effectiveStatus })}
@@ -2446,15 +2420,15 @@ function StatementRuns({
                     )}
                   </div>
                 </div>
-                {!selectionMode ? <Link
+                <Link
                   href={`/accounting/statements/${run.id}`}
                   onClick={(event) => event.stopPropagation()}
                   className="rounded-md px-2 py-1 text-[11px] font-black text-royal-700 opacity-0 transition hover:bg-royal-50 group-hover:opacity-100"
                   aria-label={`View ${runDisplayTitle(run)}`}
                 >
                   View
-                </Link> : null}
-                {!selectionMode ? <button
+                </Link>
+                <button
                   type="button"
                   onClick={(event) => {
                     event.stopPropagation();
@@ -2464,7 +2438,7 @@ function StatementRuns({
                   aria-label={`Preview ${runDisplayTitle(run)}`}
                 >
                   <MoreVertical className="h-4 w-4" />
-                </button> : null}
+                </button>
               </div>
             </div>
               );
