@@ -119,6 +119,7 @@ from main import (
     classify_transaction,
     detect_company_name,
     insert_inferred_fnb_service_fees,
+    review_validation_issue,
     looks_like_address,
     parse_hash_fee_lines,
     parse_single_amount_line,
@@ -152,6 +153,7 @@ def make_txn(debit=None, credit=None):
 
 
 def run():
+    check_validation_recovery_is_reachable()
     assert_equal(parse_money_cell("FNB OB Pmt Rmsp 10129 25,000.00Cr"), Decimal("25000.00"), "credit reference")
     assert_equal(parse_money_cell("FNB App Payment To Lancent M22013354 232.20"), Decimal("232.20"), "app payment")
     assert_equal(parse_money_cell("Byc Debit 63012593504 8.74"), Decimal("8.74"), "byc debit")
@@ -490,14 +492,15 @@ def run():
         second_gap_transactions,
         {"statement_period_end": "2026-02-28", "opening_balance": 2896.55},
     )
+    # These fixtures contain one POS purchase each and no fee of any kind. The
+    # balance gap was previously converted into a "#Monthly Account Fee" purely
+    # because the date fell at month end — R695.00 of expenditure the bank never
+    # charged, added to the ledger and marked ready.
+    #
+    # A gap is evidence of a parsing problem, not evidence that a fee exists.
+    # Nothing may be invented to close it.
     inferred_fees = [row for row in [*first_inferred, *second_inferred] if row.description.startswith("#")]
-    assert_equal(len(inferred_fees), 2, "inferred fee count")
-    assert_equal([row.description for row in inferred_fees], [
-        "#Monthly Account Fee / Service Fees - inferred from balance movement",
-        "#Monthly Account Fee / Service Fees - inferred from balance movement",
-    ], "inferred fee descriptions")
-    assert_equal(sum(Decimal(str(row.debit_amount or 0)) for row in inferred_fees), Decimal("695.00"), "inferred fee total")
-    assert_equal([row.running_balance for row in inferred_fees], [58342.32, 2202.99], "inferred fee balances")
+    assert_equal(len(inferred_fees), 0, "no fee may be invented from a balance gap")
 
     march_header_line = (
         "27 Mar POS Purchase Mytheresa.Com Int91 400568*7629 26 Mar 48,276.30 3,490,330.08Cr "
@@ -542,11 +545,15 @@ def run():
         {"statement_period_end": "2026-03-31", "opening_balance": 1667347.51},
     )
     march_inferred_fees = [row for row in march_inferred if row.description.startswith("#")]
-    assert_equal(len(march_inferred_fees), 1, "march inferred fee count")
-    assert_equal([row.description for row in march_inferred_fees], ["#Monthly Account Fee / Service Fees - inferred from balance movement"], "march inferred fee descriptions")
-    assert_equal(sum(Decimal(str(row.debit_amount or 0)) for row in march_inferred_fees), Decimal("689.56"), "march inferred fee total")
-    assert_equal(march_inferred_fees[0].notes, "inferred_service_fee: true; reason: running balance gap; gap_amount: 689.56", "march inferred diagnostics")
-    assert_equal(balance_gap_diagnostics({"opening_balance": 1667347.51}, march_inferred), [], "march inferred rows close balance gap")
+    assert_equal(len(march_inferred_fees), 0, "march: no fee invented from a gap")
+    # The gap must SURVIVE as a finding. Closing it by fabrication removed the
+    # only signal that the statement had not been parsed correctly — the old
+    # assertion here required exactly that, and called it success.
+    assert_equal(
+        len(balance_gap_diagnostics({"opening_balance": 1667347.51}, march_inferred)) > 0,
+        True,
+        "march: the unexplained gap is reported, not closed",
+    )
 
     april_gap_transactions = parse_fnb_section_transactions(
         """
@@ -562,13 +569,68 @@ def run():
         {"statement_period_end": "2026-04-30", "opening_balance": 2017504.13},
     )
     april_inferred_fees = [row for row in april_inferred if row.description.startswith("#")]
-    assert_equal(len(april_inferred_fees), 1, "april inferred fee count")
-    assert_equal(april_inferred_fees[0].description, "#Monthly Account Fee / Service Fees - inferred from balance movement", "april inferred fee description")
-    assert_equal(april_inferred_fees[0].debit_amount, 695.56, "april inferred fee amount")
-    assert_equal(april_inferred_fees[0].transaction_date, "2026-04-25", "april inferred fee date")
-    assert_equal(april_inferred_fees[0].account_category, "Bank Charges", "april inferred fee category")
-    assert_equal(april_inferred_fees[0].notes, "inferred_service_fee: true; reason: running balance gap; gap_amount: 695.56", "april inferred diagnostics")
-    assert_equal(balance_gap_diagnostics({"opening_balance": 2017504.13}, april_inferred), [], "april inferred rows close balance gap")
+    assert_equal(len(april_inferred_fees), 0, "april: no fee invented from a gap")
+    assert_equal(
+        len(balance_gap_diagnostics({"opening_balance": 2017504.13}, april_inferred)) > 0,
+        True,
+        "april: the unexplained gap is reported, not closed",
+    )
+
+    # The real transactions are untouched. Removing fabrication must not remove
+    # anything the statement actually printed.
+    assert_equal(len([r for r in april_inferred if not r.description.startswith("#")]), 2, "april: real rows preserved")
+
+
+def check_validation_recovery_is_reachable() -> None:
+    """A ledger-validation failure must reach review, not terminate the run.
+
+    review_validation_issue used to match on the literal string
+    "FNB parser validation failed.". The raised message was later changed to
+    name the bank that validated — "FNB South Africa validation failed." — and
+    this matcher was not changed with it. It returned None for every statement,
+    the exception re-raised, and a real FNB statement that extracted 57 rows
+    against a declared 55 died as "Processing failed" instead of arriving in
+    review with its evidence intact.
+
+    The match is structural now, so no display-string change can disconnect it
+    again — which is exactly what this test exists to prevent.
+    """
+    from fastapi import HTTPException
+
+    failure = {
+        "message": "FNB South Africa validation failed.",
+        "errors": ["Transaction count: extracted 57 vs declared 55"],
+        "failed_rules": ["reconciliation", "transaction_count"],
+        "checks": [{"name": "reconciliation", "ok": False}],
+        "summary": {"opening_balance": "5499.63"},
+        "balance_gaps": [],
+    }
+
+    assert_equal(
+        review_validation_issue(HTTPException(status_code=422, detail=failure)) is not None,
+        True,
+        "the FNB wording that shipped must reach recovery",
+    )
+    # Bank-neutral: the old string match only ever worked for one wording.
+    assert_equal(
+        review_validation_issue(
+            HTTPException(status_code=422, detail={**failure, "message": "Standard Bank validation failed."})
+        )
+        is not None,
+        True,
+        "any bank's validation failure must reach recovery",
+    )
+    # Recovery must not swallow unrelated errors.
+    assert_equal(
+        review_validation_issue(HTTPException(status_code=422, detail={"message": "Something else"})),
+        None,
+        "an unrelated error still terminates",
+    )
+    assert_equal(
+        review_validation_issue(HTTPException(status_code=422, detail={"checks": [], "failed_rules": []})),
+        None,
+        "a detail with no failed rules is not a validation failure",
+    )
 
 
 if __name__ == "__main__":
