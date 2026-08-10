@@ -1,4 +1,5 @@
 import type { AccountingStatementRun, AccountingTransaction } from "@/lib/accounting/types";
+import { isUnresolvedAccountingCategory } from "@/lib/accounting/review-options";
 
 // ─── Output Types ─────────────────────────────────────────────────────────────
 
@@ -847,4 +848,123 @@ export function buildAuditSummary(
     transactionsNeedingInvoice: noInvoice,
     riskScore,
   };
+}
+
+export type MerchantSummary = {
+  /** The normalized merchant. Only ever a merchant the pipeline identified. */
+  merchant: string;
+  transactionCount: number;
+  moneyOut: number;
+  moneyIn: number;
+  /** ISO date of the most recent transaction, or null if none carried a date. */
+  lastSeen: string | null;
+  /**
+   * The most frequent RESOLVED category, or null when nothing is resolved yet.
+   *
+   * Unresolved buckets ("Uncategorised", "Suspense / Review Required") are
+   * excluded rather than counted. Reporting "Uncategorised" as a merchant's
+   * common category presents a non-answer as an answer, and an accountant
+   * scanning this column would read it as a decision that had been made.
+   */
+  commonCategory: string | null;
+  /**
+   * How many distinct resolved categories this merchant maps to.
+   *
+   * This is the honest counterweight to the whole feature: recognising who was
+   * paid does not decide how it is booked. A spread above 1 is direct evidence
+   * that identity and accounting treatment are separate, and the UI must not
+   * offer to apply a merchant's category everywhere on that basis.
+   */
+  categorySpread: number;
+  reviewRequiredCount: number;
+};
+
+export type MerchantSummaryResult = {
+  merchants: MerchantSummary[];
+  /**
+   * Transactions the pipeline could not attribute to a merchant.
+   *
+   * Deliberately NOT grouped by raw description. Bank wording fragments the
+   * same payee across many spellings, so grouping on it would invent merchant
+   * identities the extraction never established — the opposite of what
+   * normalization is for.
+   */
+  unidentifiedCount: number;
+};
+
+/**
+ * Aggregate transactions by identified merchant.
+ *
+ * Deterministic and pure: no model call, no network. Merchant identity already
+ * exists on the row as `normalizedMerchant`; this only counts it.
+ */
+export function summarizeMerchants(transactions: AccountingTransaction[]): MerchantSummaryResult {
+  const groups = new Map<string, AccountingTransaction[]>();
+  let unidentifiedCount = 0;
+
+  for (const transaction of transactions) {
+    const merchant = transaction.normalizedMerchant?.trim();
+    if (!merchant) {
+      unidentifiedCount += 1;
+      continue;
+    }
+    const existing = groups.get(merchant);
+    if (existing) existing.push(transaction);
+    else groups.set(merchant, [transaction]);
+  }
+
+  const merchants = [...groups.entries()].map(([merchant, rows]) => {
+    let moneyOut = 0;
+    let moneyIn = 0;
+    let lastSeen: string | null = null;
+    let reviewRequiredCount = 0;
+    const categoryCounts = new Map<string, number>();
+
+    for (const row of rows) {
+      moneyOut += row.debitAmount ?? 0;
+      moneyIn += row.creditAmount ?? 0;
+
+      // String compare is safe and cheap for ISO dates; a Date round-trip would
+      // reintroduce timezone drift on a value that is already date-only.
+      if (row.transactionDate && (lastSeen === null || row.transactionDate > lastSeen)) {
+        lastSeen = row.transactionDate;
+      }
+
+      if (row.reviewStatus === "needs_review" || row.reviewStatus === "in_review" || row.vatTreatment === "review" || isUnresolvedAccountingCategory(row.accountCategory)) {
+        reviewRequiredCount += 1;
+      }
+
+      if (!isUnresolvedAccountingCategory(row.accountCategory)) {
+        categoryCounts.set(row.accountCategory, (categoryCounts.get(row.accountCategory) ?? 0) + 1);
+      }
+    }
+
+    let commonCategory: string | null = null;
+    let best = 0;
+    for (const [category, count] of categoryCounts) {
+      // Ties resolve to the alphabetically first category so the same data
+      // always renders the same way.
+      if (count > best || (count === best && commonCategory !== null && category < commonCategory)) {
+        best = count;
+        commonCategory = category;
+      }
+    }
+
+    return {
+      merchant,
+      transactionCount: rows.length,
+      moneyOut,
+      moneyIn,
+      lastSeen,
+      commonCategory,
+      categorySpread: categoryCounts.size,
+      reviewRequiredCount,
+    };
+  });
+
+  // Busiest merchants first — that is the order an accountant works in. Ties
+  // break by name so the table is stable between renders.
+  merchants.sort((a, b) => b.transactionCount - a.transactionCount || a.merchant.localeCompare(b.merchant));
+
+  return { merchants, unidentifiedCount };
 }

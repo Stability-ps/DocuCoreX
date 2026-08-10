@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import {
@@ -35,7 +35,7 @@ import { VAT_TREATMENT_OPTIONS, categoryOptionsFor, isUnresolvedAccountingCatego
 import { cleanStatementLabel, statementDisplayName } from "@/lib/accounting/statement-name";
 import { parserMethodLabel } from "@/lib/pdf/workerHandoff";
 import { pollRunUntilTerminal } from "@/lib/accounting/poll-run";
-import { detectDuplicates, detectUnusualTransactions, detectDirectorTransactions } from "@/lib/accounting/analytics";
+import { detectDuplicates, detectUnusualTransactions, detectDirectorTransactions, summarizeMerchants } from "@/lib/accounting/analytics";
 import { accountingRunQuality, accountingTransactionTotals } from "@/lib/accounting/run-quality";
 import { DocumentViewer } from "@/components/document-viewer";
 import { ProcessingSteps } from "@/components/accounting/processing-steps";
@@ -76,11 +76,12 @@ const EXPORT_OPTIONS: Array<{ label: string; section: string }> = [
   { label: "Transaction Insights Report", section: "transaction-insights" },
 ];
 
-type Tab = "transactions" | "review" | "insights" | "difference" | "summary" | "reconciliation" | "vat" | "ledger" | "trial-balance";
+type Tab = "transactions" | "review" | "merchants" | "insights" | "difference" | "summary" | "reconciliation" | "vat" | "ledger" | "trial-balance";
 
 const TABS: Array<{ id: Tab; label: string }> = [
   { id: "transactions", label: "Transactions" },
   { id: "review", label: "Review" },
+  { id: "merchants", label: "Merchants" },
   { id: "insights", label: "Transaction Insights" },
   { id: "difference", label: "Difference Inspector" },
   { id: "summary", label: "Summary" },
@@ -751,6 +752,7 @@ function RightPanel({
       <div className="min-h-0 flex-1 overflow-auto p-3">
         {activeTab === "transactions" ? <TransactionsTab model={model} onShowInStatement={onShowInStatement} /> : null}
         {activeTab === "review" ? <ReviewTab reviewItems={reviewItems} patchTransaction={patchTransaction} /> : null}
+        {activeTab === "merchants" ? <MerchantsTab transactions={transactions} /> : null}
         {activeTab === "insights" ? <InsightsTab statementId={statementId} transactions={transactions} model={model} totals={totals} /> : null}
         {activeTab === "difference" ? <DifferenceTab totals={totals} model={model} /> : null}
         {activeTab === "summary" ? <SummaryTab run={run} model={model} totals={totals} reviewCount={reviewItems.length} /> : null}
@@ -1086,6 +1088,102 @@ function ReviewTab({ reviewItems, patchTransaction }: { reviewItems: AccountingT
       ) : (
         reviewItems.map(renderItem)
       )}
+    </div>
+  );
+}
+
+function MerchantsTab({ transactions }: { transactions: AccountingTransaction[] }) {
+  const [expanded, setExpanded] = useState<string | null>(null);
+  const { merchants, unidentifiedCount } = useMemo(() => summarizeMerchants(transactions), [transactions]);
+
+  if (!merchants.length) {
+    return (
+      <div className="rounded-lg border border-slate-200 bg-slate-50 p-4 text-sm font-semibold text-slate-500">
+        No merchants have been identified on this statement yet.
+        {unidentifiedCount ? ` ${unidentifiedCount} transaction${unidentifiedCount === 1 ? "" : "s"} could not be attributed to a payee.` : ""}
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-2">
+      <div className="overflow-auto rounded-lg border border-slate-100">
+        <table className="w-full text-left text-xs">
+          <thead className="bg-slate-50 text-[10px] uppercase tracking-wide text-slate-400">
+            <tr>
+              <th className="px-2 py-2 font-black">Merchant</th>
+              <th className="px-2 py-2 text-right font-black">Count</th>
+              <th className="px-2 py-2 text-right font-black">Money Out</th>
+              <th className="px-2 py-2 text-right font-black">Money In</th>
+              <th className="px-2 py-2 font-black">Last Seen</th>
+              <th className="px-2 py-2 font-black">Common Category</th>
+              <th className="px-2 py-2 text-right font-black">Review</th>
+            </tr>
+          </thead>
+          <tbody>
+            {merchants.map((m) => (
+              <Fragment key={m.merchant}>
+                <tr
+                  onClick={() => setExpanded((current) => (current === m.merchant ? null : m.merchant))}
+                  className="cursor-pointer border-t border-slate-100 hover:bg-slate-50"
+                  title="Show this merchant's transactions"
+                >
+                  <td className="px-2 py-1.5 font-black text-navy-950">{m.merchant}</td>
+                  <td className="px-2 py-1.5 text-right font-semibold text-slate-600">{m.transactionCount}</td>
+                  <td className="px-2 py-1.5 text-right font-bold text-slate-700">{m.moneyOut ? fmtMoney(m.moneyOut) : ""}</td>
+                  <td className="px-2 py-1.5 text-right font-bold text-emerald-700">{m.moneyIn ? fmtMoney(m.moneyIn) : ""}</td>
+                  <td className="whitespace-nowrap px-2 py-1.5 font-semibold text-slate-600">{m.lastSeen ? fmtDate(m.lastSeen) : "—"}</td>
+                  <td className="px-2 py-1.5 font-semibold text-slate-600">
+                    {/* No resolved category is "not yet decided", not a category
+                        called Uncategorised. The distinction matters: one is an
+                        absence of evidence, the other looks like a decision. */}
+                    {m.commonCategory ?? <span className="text-slate-400">Not yet categorised</span>}
+                    {m.categorySpread > 1 ? (
+                      <span
+                        className="ml-1 rounded bg-amber-100 px-1 text-[9px] font-black text-amber-800"
+                        title={`This merchant is booked to ${m.categorySpread} different categories on this statement. Recognising a payee does not decide how it is booked.`}
+                      >
+                        {m.categorySpread} CATEGORIES
+                      </span>
+                    ) : null}
+                  </td>
+                  <td className="px-2 py-1.5 text-right">
+                    {m.reviewRequiredCount ? (
+                      <span className="rounded-full bg-amber-100 px-1.5 py-0.5 text-[10px] font-black text-amber-800">{m.reviewRequiredCount}</span>
+                    ) : (
+                      <span className="text-slate-300">—</span>
+                    )}
+                  </td>
+                </tr>
+                {expanded === m.merchant ? (
+                  <tr className="border-t border-slate-100 bg-slate-50/60">
+                    <td colSpan={7} className="px-2 py-2">
+                      <ul className="space-y-1">
+                        {transactions
+                          .filter((t) => t.normalizedMerchant?.trim() === m.merchant)
+                          .map((t) => (
+                            <li key={t.id} className="flex items-baseline justify-between gap-3 text-[11px]">
+                              <span className="min-w-0 truncate font-semibold text-slate-600" title={t.description}>
+                                {fmtDate(t.transactionDate)} · {t.description}
+                              </span>
+                              <span className="shrink-0 font-bold text-slate-700">
+                                {t.debitAmount ? `Out ${fmtMoney(t.debitAmount)}` : t.creditAmount ? `In ${fmtMoney(t.creditAmount)}` : ""}
+                              </span>
+                            </li>
+                          ))}
+                      </ul>
+                    </td>
+                  </tr>
+                ) : null}
+              </Fragment>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      <p className="text-[11px] font-semibold text-slate-400">
+        Merchant identity comes from the extracted description and does not determine accounting category or VAT treatment — those stay separately reviewable.
+        {unidentifiedCount ? ` ${unidentifiedCount} transaction${unidentifiedCount === 1 ? "" : "s"} on this statement could not be attributed to a payee.` : ""}
+      </p>
     </div>
   );
 }
