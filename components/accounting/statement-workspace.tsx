@@ -36,6 +36,7 @@ import { cleanStatementLabel, statementDisplayName } from "@/lib/accounting/stat
 import { parserMethodLabel } from "@/lib/pdf/workerHandoff";
 import { pollRunUntilTerminal } from "@/lib/accounting/poll-run";
 import { dedupeTags, isValidTag, sortTags } from "@/lib/accounting/tags";
+import { DocumentIntegrityPanel } from "@/components/accounting/document-integrity-panel";
 import { detectDuplicates, detectUnusualTransactions, detectDirectorTransactions, summarizeMerchants } from "@/lib/accounting/analytics";
 import { accountingRunQuality, accountingTransactionTotals } from "@/lib/accounting/run-quality";
 import { DocumentViewer } from "@/components/document-viewer";
@@ -795,7 +796,7 @@ function RightPanel({
         {activeTab === "merchants" ? <MerchantsTab transactions={transactions} /> : null}
         {activeTab === "insights" ? <InsightsTab statementId={statementId} transactions={transactions} model={model} totals={totals} /> : null}
         {activeTab === "difference" ? <DifferenceTab totals={totals} model={model} /> : null}
-        {activeTab === "summary" ? <SummaryTab run={run} model={model} totals={totals} reviewCount={reviewItems.length} /> : null}
+        {activeTab === "summary" ? <SummaryTabWithIntegrity statementId={statementId} run={run} model={model} totals={totals} reviewCount={reviewItems.length} /> : null}
         {activeTab === "reconciliation" ? <ReconciliationTab totals={totals} /> : null}
         {activeTab === "vat" ? <VatTab model={model} /> : null}
         {activeTab === "ledger" ? <LedgerTab model={model} opening={totals.opening} /> : null}
@@ -1440,7 +1441,7 @@ function DifferenceTab({ totals, model }: { totals: { opening: number; moneyIn: 
   );
 }
 
-function SummaryTab({ run, model, totals, reviewCount }: { run: AccountingStatementRun; model: Model; totals: { moneyIn: number; moneyOut: number; charges: number; difference: number; reconciled: boolean }; reviewCount: number }) {
+function SummaryTab({ statementId, run, model, totals, reviewCount }: { statementId: string; run: AccountingStatementRun; model: Model; totals: { moneyIn: number; moneyOut: number; charges: number; difference: number; reconciled: boolean }; reviewCount: number }) {
   const transfers = model.transactions.filter((t) => /transfer/i.test(t.category)).reduce((s, t) => s + (t.debit || t.credit), 0);
   return (
     <dl className="space-y-1.5 rounded-lg border border-slate-100 p-3 text-sm">
@@ -1457,6 +1458,18 @@ function SummaryTab({ run, model, totals, reviewCount }: { run: AccountingStatem
       <Row label="Reconciliation" value={totals.reconciled ? "Reconciled" : `Off by ${fmtMoney(totals.difference)}`} tone={totals.reconciled ? "good" : "warn"} />
       <Row label="Export Status" value={reviewCount ? "Review before export" : "Ready to export"} tone={reviewCount ? "warn" : "good"} />
     </dl>
+  );
+}
+
+function SummaryTabWithIntegrity(props: { statementId: string; run: AccountingStatementRun; model: Model; totals: { moneyIn: number; moneyOut: number; charges: number; difference: number; reconciled: boolean }; reviewCount: number }) {
+  return (
+    <div className="space-y-3">
+      <SummaryTab {...props} />
+      {/* Beside the figures rather than in its own tab: a reader forming a view
+          of the statement should see how the file was saved at the same time as
+          what it says, not have to go looking. */}
+      <DocumentIntegrityPanel statementId={props.statementId} />
+    </div>
   );
 }
 
