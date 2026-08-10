@@ -869,15 +869,11 @@ export function AccountingIntelligence() {
         throw new Error(formatApiError(data, "Processing failed."));
       }
 
-      // Processing now runs in the background — poll the run until it is terminal.
-      const acceptedDetail = await refreshAccountingData(runId, { silent: true });
-      const acceptedStatus = acceptedDetail
-        ? deriveEffectiveRunStatus(acceptedDetail.run, acceptedDetail.transactions.length) ?? acceptedDetail.run.status
-        : null;
-      if (!isRunInFlight(acceptedStatus)) {
-        throw new Error("Processing was not accepted by the server. The statement remains ready to process.");
-      }
+      // A successful POST is the acceptance acknowledgement. The immediate GET
+      // can still see the previous queued snapshot, so it must never veto the
+      // accepted request or stop polling.
       setMessage("Processing your statement.");
+      await refreshAccountingData(runId, { silent: true }).catch(() => undefined);
       const outcome = await pollRunUntilTerminal(runId, { onTick: () => void loadRuns(runId).catch(() => undefined) });
       // Final cleanup once polling stops: refresh the list + selected statement +
       // summary cards, then retire the stale upload-queue entry (status-sync Req 5).
