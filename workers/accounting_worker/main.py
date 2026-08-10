@@ -70,7 +70,48 @@ from engine.generic_parser import extract_generic_rows
 from engine.lexicon import LOOSE_DATE, LOOSE_MONEY, MONEY_TOKEN
 
 
-app = FastAPI(title="DocuCoreX Accounting Worker")
+def api_docs_enabled() -> bool:
+    """Whether to serve /docs, /redoc and /openapi.json.
+
+    These are a local-development affordance. In production they publish the
+    exact request schema of every endpoint on a service that holds the Supabase
+    service-role key — including which payload shape gets past validation to the
+    auth check. That is free reconnaissance, so production serves 404 instead.
+
+    ACCOUNTING_WORKER_DOCS forces the answer either way. Without it, docs are
+    enabled ONLY when this is demonstrably not a deployment: presence of a
+    platform marker means production, absence means a developer's machine. Render
+    always sets RENDER_SERVICE_ID — the live /health response reports it — so this
+    needs no configuration on the service to take effect.
+    """
+    override = (os.getenv("ACCOUNTING_WORKER_DOCS") or "").strip().lower()
+    if override:
+        return override in {"1", "true", "yes", "on"}
+
+    platform_markers = (
+        "RENDER",
+        "RENDER_SERVICE_ID",
+        "RENDER_SERVICE_NAME",
+        "VERCEL",
+        "FLY_APP_NAME",
+        "K_SERVICE",
+        "DYNO",
+        "AWS_EXECUTION_ENV",
+    )
+    return not any((os.getenv(marker) or "").strip() for marker in platform_markers)
+
+
+API_DOCS_ENABLED = api_docs_enabled()
+
+# Passing None removes the route entirely, so production 404s rather than
+# answering with an empty schema. /health and /version are unaffected — they are
+# plain routes and Render's health check must keep reaching them.
+app = FastAPI(
+    title="DocuCoreX Accounting Worker",
+    docs_url="/docs" if API_DOCS_ENABLED else None,
+    redoc_url="/redoc" if API_DOCS_ENABLED else None,
+    openapi_url="/openapi.json" if API_DOCS_ENABLED else None,
+)
 logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"))
 logger = logging.getLogger("docucorex.accounting_worker")
 WORKER_PARSER_VERSION = "fnb_business_v1"
@@ -3828,6 +3869,7 @@ OPTIONAL_RUN_COLUMNS = (
     # migration 019 — the confidence split
     "classification_confidence",
     "reconciliation_confidence",
+    "workbook_generation_duration_ms",
 )
 
 
@@ -6441,6 +6483,7 @@ def process_fnb_statement(payload: ProcessRequest, authorization: str | None = H
                 "reconciliation_confidence": reconciliation_confidence(
                     extraction_check, missing_rows
                 ),
+                "workbook_generation_duration_ms": int(workbook_generation_duration_ms),
                 "error": run_error,
                 "updated_at": datetime.utcnow().isoformat(),
             },
@@ -6525,12 +6568,10 @@ def process_fnb_statement(payload: ProcessRequest, authorization: str | None = H
             storage_path=payload.storage_path,
             error=message,
         )
-        update_statement_run(
+        _write_terminal_run_state(
             supabase,
-            payload.run_id,
-            payload.workspace_id,
+            payload,
             {"status": "failed", "error": message, "updated_at": datetime.utcnow().isoformat()},
-            job_id=payload.processing_job_id,
         )
         if payload.processing_job_id:
             supabase.table("processing_jobs").update(
@@ -6549,12 +6590,10 @@ def process_fnb_statement(payload: ProcessRequest, authorization: str | None = H
             storage_path=payload.storage_path,
             error=message,
         )
-        update_statement_run(
+        _write_terminal_run_state(
             supabase,
-            payload.run_id,
-            payload.workspace_id,
+            payload,
             {"status": "failed", "error": message, "updated_at": datetime.utcnow().isoformat()},
-            job_id=payload.processing_job_id,
         )
         if payload.processing_job_id:
             supabase.table("processing_jobs").update(
@@ -6569,6 +6608,43 @@ def process_fnb_statement(payload: ProcessRequest, authorization: str | None = H
 # cannot get a live job stolen, short enough that a deploy does not strand a run
 # for the rest of the day.
 STALE_CLAIM_RECLAIM_SECONDS = 300
+
+
+def _write_terminal_run_state(supabase: Client, payload: ProcessRequest, fields: dict[str, Any]) -> None:
+    """Write a terminal state for a run, but only while this job still owns it.
+
+    These failure writes went straight to the table, bypassing active_job_id
+    entirely. A superseded worker could therefore mark a run failed after an
+    explicit Force Reprocess had already handed it to a newer job — overwriting
+    a live attempt with a dead one's verdict. Same gap as the unfenced heartbeat
+    in #83; it simply lived on a path that only runs when something has already
+    gone wrong, so it was easy to miss.
+
+    allow_unclaimed, for the same reason as the heartbeat: a NULL active_job_id
+    means the run was never claimed — a pre-024 row, or the legacy synchronous
+    endpoint — not that someone else owns it. Blocking those would leave a
+    genuinely failed run stuck in processing with nobody able to say so.
+
+    A rejected write is logged and swallowed. This is already the failure path;
+    raising here would replace the real error with a fencing error and lose the
+    reason the run failed in the first place.
+    """
+    try:
+        update_statement_run(
+            supabase,
+            payload.run_id,
+            payload.workspace_id,
+            fields,
+            job_id=payload.processing_job_id,
+            allow_unclaimed=True,
+        )
+    except StaleJobError:
+        log_event(
+            "worker.terminal_write_rejected_stale_job",
+            run_id=payload.run_id,
+            job_id=payload.processing_job_id,
+            fields=sorted(fields.keys()),
+        )
 
 
 def _claim_processing_job(job_id: str) -> str:
