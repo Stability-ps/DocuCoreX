@@ -30,6 +30,12 @@ test("process lifecycle begins only after the refreshed server state is in fligh
   assert.match(processRun, /finally \{[\s\S]*setBusy\(""\)/);
 });
 
+test("an existing ledger cannot make a newly accepted reprocess look completed", () => {
+  assert.match(ui, /const acceptedStatus = acceptedDetail[\s\S]*deriveEffectiveRunStatus/);
+  const runStatus = readFileSync(join(root, "lib/accounting/run-status.ts"), "utf8");
+  assert.match(runStatus, /if \(status === "processing"\) return "processing"/);
+});
+
 test("refreshing is short lived and clears even when refresh throws", () => {
   const refresh = ui.slice(ui.indexOf("async function refreshAccountingData"), ui.indexOf("// Keep upload-queue"));
   assert.match(refresh, /setLiveRefreshState\("refreshing"\)/);

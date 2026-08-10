@@ -767,12 +767,12 @@ test("successful OCR is cached; unavailable OCR is not (so it can retry) (Req 10
 
 // ── Status synchronization ────────────────────────────────────────────────────
 
-test("deriveEffectiveRunStatus stops showing Processing once a run is really done", () => {
-  assert.equal(deriveEffectiveRunStatus({ status: "processing", transactionCount: 5 }), "completed", "transactions ⇒ completed");
-  assert.equal(deriveEffectiveRunStatus({ status: "processing", requiresReview: true }), "review", "requires_review ⇒ review");
-  assert.equal(deriveEffectiveRunStatus({ status: "processing", validationStatus: "failed" }), "failed");
-  assert.equal(deriveEffectiveRunStatus({ status: "processing", validationStatus: "review" }), "review");
-  assert.equal(deriveEffectiveRunStatus({ status: "processing", validationStatus: "completed" }), "completed");
+test("deriveEffectiveRunStatus keeps an explicitly processing replacement job active", () => {
+  assert.equal(deriveEffectiveRunStatus({ status: "processing", transactionCount: 5 }), "processing", "old transactions do not finish a replacement job");
+  assert.equal(deriveEffectiveRunStatus({ status: "processing", requiresReview: true }), "processing");
+  assert.equal(deriveEffectiveRunStatus({ status: "processing", validationStatus: "failed" }), "processing");
+  assert.equal(deriveEffectiveRunStatus({ status: "processing", validationStatus: "review" }), "processing");
+  assert.equal(deriveEffectiveRunStatus({ status: "processing", validationStatus: "completed" }), "processing");
   assert.equal(deriveEffectiveRunStatus({ status: "processing", transactionCount: 0 }), "processing", "genuinely still processing");
   assert.equal(deriveEffectiveRunStatus({ status: "completed" }), "completed", "terminal passes through");
   assert.equal(isTerminalRunStatus("processing"), false);
