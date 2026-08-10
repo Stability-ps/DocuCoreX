@@ -104,6 +104,29 @@ function tesseractConfidence(pdfPath: string, tempDir: string, timeoutMs: number
  * @param endpoint label recorded in `ocrDebug.ocr_endpoint`: the request path for
  *        an HTTP call, or "in-process" when the worker pipeline calls directly.
  */
+/**
+ * Does this PDF declare encryption in its trailer?
+ *
+ * ocrmypdf refuses an encrypted PDF outright, and the pipeline only discovered
+ * that AFTER attempting it — four flag combinations, roughly ten seconds, on
+ * every single run of an encrypted statement. Reading the declaration first
+ * turns that into a few milliseconds.
+ *
+ * Matches an /Encrypt entry that references an object, e.g. "/Encrypt 12 0 R",
+ * rather than the bare word. The bare string can appear inside a content stream
+ * or a font name; the indirect reference is the trailer's actual encryption
+ * dictionary. A false positive would skip OCR for a file that might have worked,
+ * so the narrower pattern is the safer one.
+ *
+ * Only the trailing region is scanned — the trailer lives at the end, and a
+ * 350KB statement does not need decoding in full to answer this.
+ */
+export function declaresEncryption(fileBytes: Uint8Array): boolean {
+  const tailBytes = fileBytes.subarray(Math.max(0, fileBytes.byteLength - 16_384));
+  const tail = Buffer.from(tailBytes).toString("latin1");
+  return /\/Encrypt\s+\d+\s+\d+\s+R/.test(tail);
+}
+
 export function runOcrText(fileBytes: Uint8Array, fileName = "document.pdf", endpoint = "in-process"): OcrRunResult {
   const { perAttempt: OCR_TIMEOUT_MS, total: OCR_TOTAL_BUDGET_MS } = timeouts();
   console.info("[ocr-text] request received", { endpoint, fileName, fileSize: fileBytes.byteLength });
@@ -114,6 +137,36 @@ export function runOcrText(fileBytes: Uint8Array, fileName = "document.pdf", end
     return {
       status: 501,
       body: { error: "OCR engine (ocrmypdf) is not installed on this worker.", ocrDebug: { ocr_endpoint: endpoint, ocr_status: 501, ocrmypdf: null } },
+    };
+  }
+
+  // Encrypted PDFs cannot be OCR'd, and finding that out by trying costs ~10s
+  // per run. The returned shape is identical to the post-attempt encrypted
+  // failure, so every downstream consumer — acceptance, engine comparison,
+  // parserDebug — behaves exactly as before, just sooner.
+  if (declaresEncryption(fileBytes)) {
+    const reason = "PDF is encrypted / password-protected — cannot OCR.";
+    const ocrDebug = {
+      ocr_endpoint: endpoint,
+      ocr_status: 422,
+      ocr_exit_code: null,
+      ocr_stderr_sample: "",
+      sidecar_exists: false,
+      sidecar_size: 0,
+      ocr_text_length: 0,
+      ocr_confidence: 0,
+      ocr_confidence_source: "heuristic",
+      ocr_low_confidence_word_ratio: null,
+      ocr_confidence_words: 0,
+      // Empty rather than fabricated: no attempt was made, and inventing one
+      // would misreport what the engine actually did.
+      attempts: [] as unknown[],
+      skipped_reason: "encrypted_pdf_detected_before_attempt",
+    };
+    console.info("[ocr-text] skipped", { fileName, ...ocrDebug });
+    return {
+      status: 200,
+      body: { text: "", pages: 0, confidence: 0, confidenceSource: "heuristic", lowConfidenceWordRatio: null, warnings: [reason], reason, ocrDebug },
     };
   }
 

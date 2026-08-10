@@ -192,6 +192,8 @@ def run_synthetic_case(case_id: str, fixture_path: Path) -> None:
         "ai_failures",
         "ai_cache_hits",
         "ai_classification_duration_ms",
+        "classification_openai_calls",
+        "workbook_openai_calls",
     }
     if not required_ai_keys.issubset(ai_diagnostics.keys()):
         missing = sorted(required_ai_keys.difference(ai_diagnostics.keys()))
@@ -3265,6 +3267,73 @@ def test_ai_classification_cannot_touch_the_ledger() -> None:
     assert_equal(after, before, "date, description, amounts, direction, balance and extraction confidence untouched")
 
 
+def test_build_workbook_never_calls_ai_classification() -> None:
+    """Workbook generation must consume persisted classifications, not re-decide them."""
+    import main
+
+    transaction = _unresolved_transaction(main)
+    _with_ai(
+        _ai_classification_transport(),
+        lambda: main.classify_transactions_with_ai([transaction], "workspace-a", "src"),
+    )
+
+    metadata = {
+        "opening_balance": 0,
+        "closing_balance": -1000.0,
+        "statement_period_start": "2025-05-01",
+        "statement_period_end": "2025-05-31",
+        "company_name": "ACME (PTY) LTD",
+        "account_number": "123456789",
+        "source_file": "statement.pdf",
+        "_ai_diagnostics": {
+            "ai_enabled": True,
+            "ai_model": "test-model",
+            "ai_transactions_sent": 1,
+            "ai_transactions_classified": 1,
+            "ai_failures": 0,
+            "ai_cache_hits": 0,
+            "classification_openai_calls": 1,
+            "ai_classification_duration_ms": 12.34,
+        },
+    }
+    before = (
+        transaction.account_category,
+        transaction.vat_treatment,
+        transaction.review_status,
+        transaction.classification_source,
+        transaction.classification_confidence,
+        transaction.normalized_merchant,
+    )
+
+    real = main.apply_ai_classifications
+
+    def explode(*_args, **_kwargs):
+        raise AssertionError("build_workbook must not call apply_ai_classifications")
+
+    main.apply_ai_classifications = explode
+    try:
+        workbook_bytes = main.build_workbook(metadata, [transaction], allow_ai=True, workspace_id="workspace-a")
+    finally:
+        main.apply_ai_classifications = real
+
+    if not workbook_bytes:
+        raise AssertionError("build_workbook must still generate a workbook")
+    after = (
+        transaction.account_category,
+        transaction.vat_treatment,
+        transaction.review_status,
+        transaction.classification_source,
+        transaction.classification_confidence,
+        transaction.normalized_merchant,
+    )
+    assert_equal(after, before, "workbook generation must not change authoritative classified fields")
+    ai_diagnostics = metadata.get("_ai_diagnostics")
+    if not isinstance(ai_diagnostics, dict):
+        raise AssertionError("build_workbook must preserve AI diagnostics metadata")
+    assert_equal(ai_diagnostics.get("classification_openai_calls"), 1, "classification call count is preserved")
+    assert_equal(ai_diagnostics.get("workbook_openai_calls"), 0, "workbook makes no OpenAI classification calls")
+
+
 def test_ai_classification_never_raises_an_ai_recovered_extraction_confidence() -> None:
     """PR #36 again, now with a second thing writing to the row."""
     import main
@@ -4146,6 +4215,7 @@ def run() -> None:
     test_matching_stays_case_insensitive()
     test_ai_classification_reaches_the_stored_transaction()
     test_ai_classification_cannot_touch_the_ledger()
+    test_build_workbook_never_calls_ai_classification()
     test_ai_classification_never_raises_an_ai_recovered_extraction_confidence()
     test_ai_classification_does_not_revise_a_settled_row()
     test_ai_classification_leaves_vat_to_the_deterministic_rules()
