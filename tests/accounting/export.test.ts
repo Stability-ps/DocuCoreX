@@ -272,7 +272,7 @@ test("full-pack export blocks only for in-progress or zero-transaction runs", ()
 
 test("accounting UI has an in-list selection toolbar and an export selector modal", () => {
   const ui = read("components/accounting/accounting-intelligence.tsx");
-  assert.match(ui, /selectionActions=\{selectionMode/, "selected-run actions stay inside selection mode");
+  assert.match(ui, /selectionActions=\{selectedRunIds\.length/, "selected-run actions stay inside the statements list");
   assert.match(ui, /function ExportOptionsModal/, "export selector modal must exist");
   assert.match(ui, /Full Accounting Pack/, "modal must offer the full pack");
 });

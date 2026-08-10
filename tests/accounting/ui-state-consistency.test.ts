@@ -54,10 +54,9 @@ test("processing exposes cancel but not retry controls", () => {
 });
 
 test("bulk selection and transaction tools are explicit", () => {
-  assert.match(ui, /selectionMode \? "Done Selecting" : "Select"/);
+  assert.doesNotMatch(ui, /selectionMode|Done Selecting/);
   assert.match(ui, /aria-label="Select visible statements"/);
   assert.match(ui, /aria-label=\{`Select \$\{runDisplayTitle\(run\)\} for combined workbook`\}/);
-  assert.match(ui, /onClick=\{\(\) => selectionMode \? onToggleSelected\(run\.id\) : onSelect\(run\.id\)\}/);
   assert.match(ui, /detail\.transactions\.length \? \(/);
   assert.equal((ui.match(/Upload Statement/g) ?? []).length >= 1, true);
   assert.doesNotMatch(ui, /Upload Statements/);
@@ -67,15 +66,19 @@ test("bulk selection and transaction tools are explicit", () => {
 test("statement actions live inside the statements box", () => {
   const statementRunsStart = ui.indexOf("<StatementRuns");
   const statementRunsCall = ui.slice(statementRunsStart, statementRunsStart + 5000);
-  assert.match(statementRunsCall, /actions=\{/);
+  assert.match(statementRunsCall, /selectionActions=\{selectedRunIds\.length/);
   assert.match(statementRunsCall, /Process All/);
   assert.match(statementRunsCall, />Delete</);
   assert.match(statementRunsCall, /disabled=\{!selectedRunIds\.length \|\| busy === "delete"\}/);
 });
 
-test("normal statement mode has no permanent bulk controls", () => {
-  assert.match(ui, /\{selectionMode \? <input[\s\S]*aria-label="Select visible statements"[\s\S]*\/> : null\}/);
-  assert.match(ui, /\{selectionMode \? <input[\s\S]*for combined workbook[\s\S]*\/> : null\}/);
-  assert.match(ui, /\{!selectionMode \? <Link/);
-  assert.match(ui, /if \(!selectionMode\) router\.push/);
+test("statement selection checkboxes remain permanently visible", () => {
+  assert.doesNotMatch(ui, /selectionMode/);
+  assert.match(ui, /aria-label="Select visible statements"/);
+  assert.match(ui, /aria-label=\{`Select \$\{runDisplayTitle\(run\)\} for combined workbook`\}/);
+});
+
+test("every statement row keeps its upload date and time visible", () => {
+  assert.match(ui, /`Uploaded \$\{compactDateTime\(run\.createdAt\)\}`/);
+  assert.match(ui, /cleanStatementLabel\(run\.accountNumber\) \|\| cleanStatementLabel\(run\.companyName\)/);
 });
