@@ -59,7 +59,7 @@ const EXPORT_OPTIONS: Array<{ label: string; section: string }> = [
   { label: "Executive Summary", section: "summary" },
   { label: "VAT Working Paper", section: "vat" },
   { label: "General Ledger", section: "general-ledger" },
-  { label: "Trial Balance", section: "trial-balance" },
+  { label: "Provisional Ledger", section: "trial-balance" },
   { label: "Profit & Loss", section: "profit-loss" },
   { label: "Balance Sheet", section: "balance-sheet" },
   { label: "Cash Flow", section: "cash-flow" },
@@ -79,7 +79,7 @@ const TABS: Array<{ id: Tab; label: string }> = [
   { id: "reconciliation", label: "Bank Reconciliation" },
   { id: "vat", label: "VAT" },
   { id: "ledger", label: "General Ledger" },
-  { id: "trial-balance", label: "Trial Balance" },
+  { id: "trial-balance", label: "Provisional Ledger" },
 ];
 
 function runTitle(run: AccountingStatementRun): string {

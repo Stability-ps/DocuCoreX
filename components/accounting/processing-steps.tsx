@@ -20,6 +20,17 @@ function formatElapsed(ms: number): string {
   return `${minutes}:${String(seconds).padStart(2, "0")}`;
 }
 
+// "8 sec ago" reads as liveness; "0:08 ago" reads as a duration and invites
+// comparison with the elapsed clock beside it. They measure different things.
+function formatSince(ms: number): string {
+  const totalSeconds = Math.floor(ms / 1000);
+  if (totalSeconds < 60) return `${totalSeconds} sec ago`;
+  const minutes = Math.floor(totalSeconds / 60);
+  if (minutes < 60) return `${minutes} min ago`;
+  const hours = Math.floor(minutes / 60);
+  return `${hours} hr ago`;
+}
+
 // Live processing stepper shown while a statement is being processed. OCR is
 // extraction detail, not a universal lifecycle stage.
 export function ProcessingSteps({ step, startedAt, updatedAt, ocrUsed }: { step?: string | null; startedAt?: string | null; updatedAt?: string | null; ocrUsed?: boolean | null }) {
@@ -35,8 +46,18 @@ export function ProcessingSteps({ step, startedAt, updatedAt, ocrUsed }: { step?
   const elapsedMs = startMs !== null && now !== null ? Math.max(0, now - startMs) : 0;
   const updatedMs = updatedAt ? new Date(updatedAt).getTime() : null;
   const sinceUpdateMs = updatedMs !== null && now !== null ? Math.max(0, now - updatedMs) : null;
+  // Elapsed runtime and liveness answer different questions, and only one of
+  // them is evidence of a problem. A 15-minute classification run with a
+  // 10-second-old heartbeat is healthy; a 3-minute run whose heartbeat stopped
+  // 11 minutes ago is not. This notice previously fired on elapsed runtime
+  // while its wording claimed the heartbeat had stopped, so every genuinely
+  // long run was told it might be stuck.
+  //
+  // With no heartbeat to read, nothing is claimed: silence is better than
+  // asserting staleness from the only clock that cannot show it. The server
+  // owns real stale detection (markRunStuckIfNeeded) and is not affected.
   const showLongNotice = elapsedMs >= LONG_PROCESSING_THRESHOLD_MS;
-  const showStaleNotice = elapsedMs >= STALE_PROCESSING_THRESHOLD_MS;
+  const showStaleNotice = sinceUpdateMs !== null && sinceUpdateMs >= STALE_PROCESSING_THRESHOLD_MS;
 
   // Current step index; default to the first step until the server reports one.
   const currentStage = normalizeAccountingProcessingStage(step);
@@ -56,7 +77,7 @@ export function ProcessingSteps({ step, startedAt, updatedAt, ocrUsed }: { step?
         ) : null}
       </div>
       {sinceUpdateMs !== null ? (
-        <p className="mt-1 text-[11px] font-semibold text-blue-700">Last update {formatElapsed(sinceUpdateMs)} ago</p>
+        <p className="mt-1 text-[11px] font-semibold text-blue-700">Last update {formatSince(sinceUpdateMs)}</p>
       ) : null}
 
       <ol className="mt-2 flex flex-wrap gap-x-3 gap-y-1">

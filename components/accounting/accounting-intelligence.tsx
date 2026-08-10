@@ -100,7 +100,7 @@ const tabs: Array<{ id: AccountingTab; label: string }> = [
   { id: "bank-rec", label: "Bank Reconciliation" },
   { id: "vat", label: "VAT" },
   { id: "general-ledger", label: "General Ledger" },
-  { id: "trial-balance", label: "Trial Balance" },
+  { id: "trial-balance", label: "Provisional Ledger" },
 ];
 
 const accountingModules: Array<{
@@ -1053,6 +1053,18 @@ export function AccountingIntelligence() {
   const visibleMessage =
     message === "Processing your statement." && !isRunInFlight(selectedEffectiveStatus) ? "" : message;
 
+  // Outcome messages are acknowledgements, not state — they should not persist
+  // and stack above the workspace. Lifecycle state stays where it belongs: the
+  // processing panel inside the selected statement. An in-flight run's message
+  // is left alone so it cannot disappear while the thing it describes is still
+  // happening.
+  const messageIsLifecycle = isRunInFlight(selectedEffectiveStatus);
+  useEffect(() => {
+    if (!message || messageIsLifecycle) return;
+    const timer = setTimeout(() => setMessage(""), 6000);
+    return () => clearTimeout(timer);
+  }, [message, messageIsLifecycle]);
+
   return (
     /* Application density, not marketing spacing: ~20-28px horizontal padding
        and 12-18px vertical gaps, so accounting data is visible without
@@ -1231,6 +1243,18 @@ export function AccountingIntelligence() {
                 </span>
               ))}
             </div>
+            {/* Sets expectations before processing starts. Deliberately makes no
+                promise about duration: processing time depends on page count,
+                whether the PDF carries a native text layer, and how much needs
+                review. A "under a minute" claim would be unbacked by any
+                telemetry this product currently collects. */}
+            <ul className="mt-3 space-y-1 text-[11px] font-medium text-slate-600">
+              <li>Digital and scanned bank statement PDFs are supported.</li>
+              <li>Bank and account details are detected automatically where possible.</li>
+              <li>One statement per file gives the most reliable result.</li>
+              <li>Transactions needing review are identified clearly after processing.</li>
+              <li>Uploading does not start processing — you choose when to process each statement.</li>
+            </ul>
           </div>
           ) : null}
         </div>
@@ -1420,7 +1444,17 @@ export function AccountingIntelligence() {
                 </div>
               ) : null}
               {visibleMessage ? (
-                <div className="rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs font-bold text-emerald-800">{visibleMessage}</div>
+                <div className="flex items-start justify-between gap-3 rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs font-bold text-emerald-800" role="status" aria-live="polite">
+                  <span>{visibleMessage}</span>
+                  <button
+                    type="button"
+                    onClick={() => setMessage("")}
+                    aria-label="Dismiss message"
+                    className="shrink-0 rounded px-1 font-black text-emerald-700 hover:bg-emerald-100"
+                  >
+                    ×
+                  </button>
+                </div>
               ) : null}
 
               <CompactSummaryBar
@@ -1714,7 +1748,7 @@ const EXPORT_OPTIONS: ExportOption[] = [
   { label: "Executive Summary", section: "summary", detail: "Dashboard of the statement" },
   { label: "VAT Working Paper", section: "vat", detail: "VAT per line + VAT201 boxes" },
   { label: "General Ledger", section: "general-ledger", detail: "Running-balance ledger" },
-  { label: "Trial Balance", section: "trial-balance", detail: "Debit and credit balances" },
+  { label: "Provisional Ledger", section: "trial-balance", detail: "Provisional debit and credit balances" },
   { label: "Profit & Loss", section: "profit-loss", detail: "Recognised revenue and expenses" },
   { label: "Balance Sheet", section: "balance-sheet", detail: "Cash and confirmed balances" },
   { label: "Cash Flow", section: "cash-flow", detail: "Cash movements by activity" },
@@ -2898,14 +2932,14 @@ function TrialBalancePanel({ rows }: { rows: Array<{ account: string; debit: num
   return (
     <div className="space-y-3">
       <p className="text-xs font-semibold text-slate-400">
-        Derived from AI-assigned transaction categories. This is not a full double-entry trial balance — the bank account itself is not represented as a contra entry.
+        Derived from classified transactions on this statement. A trial balance requires complete double-entry records; bank statement data supplies only one side of each entry, so this is a provisional summary and is not presented as a trial balance.
       </p>
       {imbalance > 0.01 ? (
         <div className="rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-xs font-semibold text-amber-800">
-          Debit and credit balance totals differ by {money(imbalance)} — the bank account line is excluded as a contra entry. This is expected for bank statement data.
+          Debit and credit balance totals differ by {money(imbalance)}. The contra entries to the bank account are not present in bank statement data, so these totals are not expected to agree — and this difference should not be read as a reconciliation result. Bank Reconciliation is the separate check that the statement itself balances.
         </div>
       ) : null}
-      <SimpleTable title="Trial balance" headers={["Account", "Total Debits", "Total Credits", "Dr Balance", "Cr Balance"]} rows={body} />
+      <SimpleTable title="Provisional ledger summary" headers={["Account", "Total Debits", "Total Credits", "Dr Balance", "Cr Balance"]} rows={body} />
     </div>
   );
 }
@@ -2987,13 +3021,13 @@ const moduleContent: Record<
 > = {
   "financial-statements": {
     summary:
-      "Generate financial statements directly from extracted bank statement data. Trial Balance is live now inside Bank Statements.",
+      "Bank-derived accounting summaries. These are provisional reports built from statement data, not final financial statements.",
     features: [
       {
-        title: "Trial Balance",
-        description: "Debit and credit balances by account category derived from bank data",
+        title: "Provisional Ledger",
+        description: "Debit and credit balances by account category derived from bank data. Not a double-entry trial balance — bank statements carry only one side of each entry.",
         status: "live",
-        liveLabel: "Available in Bank Statements → Trial Balance tab",
+        liveLabel: "Available in Bank Statements → Provisional Ledger tab",
       },
       {
         title: "Profit & Loss Statement",
