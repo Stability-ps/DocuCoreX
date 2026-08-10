@@ -2988,6 +2988,44 @@ def select_transactions_from_sources(
     return text_transactions, diagnostics
 
 
+def is_non_posting_row(
+    transaction: ParsedTransaction, previous_balance: Decimal | None = None
+) -> bool:
+    """True for a row that shows an AMOUNT while the balance does not move.
+
+    The existing informational check requires debit and credit to be zero, so it
+    cannot see this shape at all: a collection attempt, an authorisation hold, a
+    declined instruction or a reversal shown for information prints a real
+    amount and moves no money. On a production statement one such row carried
+    R6,232.30 — the exact difference between the 12 credits extracted and the 11
+    the bank declared, and between R212,662.97 extracted and R206,430.67
+    declared.
+
+    The evidence is arithmetic, not wording. There is deliberately no
+    description pattern here: the same shape appears under different names at
+    every bank and in every country, and a rule keyed to "Edo Collection
+    Attempt" would not survive the next institution, let alone the next country.
+
+    The row is ALWAYS kept — it is printed in the source PDF, and removing
+    printed rows is the class of bug this work exists to prevent. It is excluded
+    from monetary totals and counts, which is what the bank's own summary does.
+    """
+    # Known limit: split_ledger_rows is not given the statement's opening
+    # balance, so the FIRST printed row has no baseline and is never judged
+    # non-posting. In practice the first row follows the opening balance and the
+    # case has not been observed; stating it is better than a silent blind spot.
+    if previous_balance is None or transaction.running_balance is None:
+        return False
+
+    amount = decimal_amount(transaction.credit_amount) - decimal_amount(transaction.debit_amount)
+    if amount == 0:
+        # No money shown, so standing still proves nothing. That case belongs to
+        # is_non_financial_informational_row.
+        return False
+
+    return abs(decimal_amount(transaction.running_balance) - decimal_amount(previous_balance)) <= Decimal("0.05")
+
+
 def split_ledger_rows(transactions: list[ParsedTransaction]) -> tuple[list[ParsedTransaction], list[ParsedTransaction]]:
     """Partition printed rows into (financial, informational).
 
@@ -3000,11 +3038,15 @@ def split_ledger_rows(transactions: list[ParsedTransaction]) -> tuple[list[Parse
     informational: list[ParsedTransaction] = []
     previous_balance: Decimal | None = None
     for transaction in transactions:
-        if is_non_financial_informational_row(transaction, previous_balance):
+        non_posting = is_non_posting_row(transaction, previous_balance)
+        if non_posting or is_non_financial_informational_row(transaction, previous_balance):
             informational.append(transaction)
         else:
             financial.append(transaction)
-        if transaction.running_balance is not None:
+        # A non-posting row moves nothing, so the next row must still be
+        # measured from the balance before it. Advancing here would make the
+        # following row look like it had jumped.
+        if transaction.running_balance is not None and not non_posting:
             previous_balance = decimal_amount(transaction.running_balance)
     return financial, informational
 
@@ -3015,11 +3057,22 @@ def financial_transaction_count(transactions: list[ParsedTransaction]) -> int:
 
 
 def validation_summary(transactions: list[ParsedTransaction]) -> dict[str, Any]:
-    total_debits = sum((decimal_amount(transaction.debit_amount) for transaction in transactions), Decimal("0.00"))
-    total_credits = sum((decimal_amount(transaction.credit_amount) for transaction in transactions), Decimal("0.00"))
-    debit_count = sum(1 for transaction in transactions if decimal_amount(transaction.debit_amount) > 0)
-    credit_count = sum(1 for transaction in transactions if decimal_amount(transaction.credit_amount) > 0)
     financial, informational = split_ledger_rows(transactions)
+    # Totals and counts are taken over FINANCIAL rows only.
+    #
+    # They used to sum every printed row. That was harmless while an
+    # informational row was required to carry no amount, but a non-posting row
+    # carries a real one — and including it put R6,232.30 of credit into the
+    # totals that the bank's own summary excludes, along with a twelfth credit
+    # against a declared eleven.
+    #
+    # The rows themselves are still returned in the ledger; only the arithmetic
+    # compared against the statement's declared figures leaves them out, which
+    # is exactly what the statement does.
+    total_debits = sum((decimal_amount(transaction.debit_amount) for transaction in financial), Decimal("0.00"))
+    total_credits = sum((decimal_amount(transaction.credit_amount) for transaction in financial), Decimal("0.00"))
+    debit_count = sum(1 for transaction in financial if decimal_amount(transaction.debit_amount) > 0)
+    credit_count = sum(1 for transaction in financial if decimal_amount(transaction.credit_amount) > 0)
     return {
         "total_debits": total_debits.quantize(CENT),
         "total_credits": total_credits.quantize(CENT),

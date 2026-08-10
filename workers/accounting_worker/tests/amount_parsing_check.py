@@ -119,6 +119,9 @@ from main import (
     classify_transaction,
     detect_company_name,
     insert_inferred_fnb_service_fees,
+    build_transaction,
+    validation_summary,
+    split_ledger_rows,
     review_validation_issue,
     looks_like_address,
     parse_hash_fee_lines,
@@ -153,6 +156,9 @@ def make_txn(debit=None, credit=None):
 
 
 def run():
+    check_non_posting_row_is_excluded_from_totals()
+    check_a_posting_row_of_the_same_shape_is_untouched()
+    check_non_posting_row_does_not_shift_the_next_row()
     check_validation_recovery_is_reachable()
     assert_equal(parse_money_cell("FNB OB Pmt Rmsp 10129 25,000.00Cr"), Decimal("25000.00"), "credit reference")
     assert_equal(parse_money_cell("FNB App Payment To Lancent M22013354 232.20"), Decimal("232.20"), "app payment")
@@ -579,6 +585,72 @@ def run():
     # The real transactions are untouched. Removing fabrication must not remove
     # anything the statement actually printed.
     assert_equal(len([r for r in april_inferred if not r.description.startswith("#")]), 2, "april: real rows preserved")
+
+
+def check_non_posting_row_is_excluded_from_totals() -> None:
+    """The production defect, end to end.
+
+    A row showing R6,232.30 whose balance does not move was counted as a real
+    credit. That single row is the entire discrepancy between what was extracted
+    and what the bank declared:
+
+        credits   12 -> 11
+        total     212,662.97 -> 206,430.67
+
+    The row stays in the ledger — it is printed in the statement — but leaves the
+    arithmetic, which is what the bank's own summary does.
+    """
+    rows = [
+        build_transaction("2023-07-25", "Instalment", 6232.30, None, 5740.70, {}, 1, "a", 90),
+        build_transaction("2023-07-25", "Instalment", 6232.30, None, -491.60, {}, 1, "b", 90),
+        # Shows an amount, balance unchanged from the row before.
+        build_transaction("2023-07-25", "Collection attempt", None, 6232.30, -491.60, {}, 1, "c", 90),
+        build_transaction("2023-07-25", "Card purchase", 99.95, None, -591.55, {}, 1, "d", 90),
+    ]
+    rows = [r for r in rows if r is not None]
+
+    financial, informational = split_ledger_rows(rows)
+    assert_equal(len(informational), 1, "exactly one row is non-posting")
+    assert_equal(informational[0].description, "Collection attempt", "and it is the one that moved nothing")
+    assert_equal(len(financial), 3, "every other printed row still counts")
+
+    summary = validation_summary(rows)
+    assert_equal(summary["credit_count"], 0, "the non-posting credit leaves the count")
+    assert_equal(summary["total_credits"], Decimal("0.00"), "and leaves the total")
+    assert_equal(summary["ledger_row_count"], 4, "but the row is still in the ledger")
+    assert_equal(summary["transaction_count"], 3, "while the bank-comparable count excludes it")
+
+
+def check_a_posting_row_of_the_same_shape_is_untouched() -> None:
+    """The guard against over-suppression.
+
+    Same amount, same description — but the balance DOES move, so it is a real
+    transaction. If wording drove the rule this row would be wrongly suppressed
+    and the ledger would lose real money.
+    """
+    rows = [r for r in [
+        build_transaction("2023-07-25", "Collection attempt", None, 6232.30, 6232.30, {}, 1, "a", 90),
+    ] if r is not None]
+
+    financial, informational = split_ledger_rows(rows)
+    assert_equal(len(informational), 0, "a row that moves the balance is real")
+    assert_equal(validation_summary(rows)["total_credits"], Decimal("6232.30"), "its money is kept")
+
+
+def check_non_posting_row_does_not_shift_the_next_row() -> None:
+    """A row that moves nothing must not rebase the row after it."""
+    # A preceding row is required to establish the baseline: split_ledger_rows
+    # is not given the statement's opening balance, so it cannot judge the FIRST
+    # row. That limit is stated on is_non_posting_row rather than hidden here.
+    rows = [r for r in [
+        build_transaction("2023-07-24", "Opening activity", None, 1000.00, 1000.00, {}, 1, "a", 90),
+        build_transaction("2023-07-25", "Hold", None, 500.00, 1000.00, {}, 1, "b", 90),
+        build_transaction("2023-07-26", "Purchase", 250.00, None, 750.00, {}, 1, "c", 90),
+    ] if r is not None]
+
+    financial, informational = split_ledger_rows(rows)
+    assert_equal([t.description for t in informational], ["Hold"], "the hold is non-posting")
+    assert_equal(len(financial), 2, "and the purchase after it still reconciles as real")
 
 
 def check_validation_recovery_is_reachable() -> None:
