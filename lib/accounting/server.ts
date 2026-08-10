@@ -5,6 +5,7 @@ import { BASE_MERCHANT_KNOWLEDGE } from "@/lib/accounting/engine/merchant-kb";
 import { canonicaliseCategory } from "@/lib/accounting/categories";
 import { merchantKeyRejection } from "@/lib/accounting/merchant-keys";
 import { isUnresolvedAccountingCategory } from "@/lib/accounting/review-options";
+import { MAX_TAG_LENGTH, dedupeTags, normalizeTag, sameTag, sortTags, tagRejection } from "@/lib/accounting/tags";
 import { getWorkspaceContext } from "@/lib/server-documents";
 import { createDocumentVersionRecord } from "@/lib/supabase-server-adapter";
 import type {
@@ -1034,4 +1035,142 @@ export async function addAccountingReviewComment(transactionId: string, body: st
     createdAt: data.created_at,
     authorId: data.author_id,
   };
+}
+
+/**
+ * Tags for every transaction on a run, keyed by transaction id.
+ *
+ * One query for the whole statement rather than one per row: a 613-transaction
+ * statement would otherwise issue 613 requests to render a column.
+ */
+export async function getRunTransactionTags(runId: string): Promise<Record<string, string[]>> {
+  const context = await getWorkspaceContext();
+  if (!context) return {};
+
+  // Scoped through the run's own transactions so a tag can only be read via a
+  // transaction the caller can already see. RLS enforces the workspace boundary
+  // independently; this keeps the query from relying on that alone.
+  const { data: transactionRows, error: transactionError } = await context.supabase
+    .from("accounting_transactions")
+    .select("id")
+    .eq("run_id", runId)
+    .eq("workspace_id", context.workspaceId);
+
+  if (transactionError || !transactionRows?.length) return {};
+
+  const ids = transactionRows.map((row) => row.id as string);
+  const { data, error } = await context.supabase
+    .from("accounting_transaction_tags")
+    .select("transaction_id, tag")
+    .eq("workspace_id", context.workspaceId)
+    .in("transaction_id", ids);
+
+  // A missing table (migration 031 not applied) must not blank the statement.
+  if (error) {
+    if (error.code !== "42P01") console.warn("[accounting] tag read failed", error.message);
+    return {};
+  }
+
+  const byTransaction: Record<string, string[]> = {};
+  for (const row of data ?? []) {
+    const key = row.transaction_id as string;
+    (byTransaction[key] ??= []).push(row.tag as string);
+  }
+  for (const key of Object.keys(byTransaction)) byTransaction[key] = sortTags(dedupeTags(byTransaction[key]));
+  return byTransaction;
+}
+
+/** Every distinct tag in the workspace — the vocabulary offered when tagging. */
+export async function getWorkspaceTagVocabulary(): Promise<string[]> {
+  const context = await getWorkspaceContext();
+  if (!context) return [];
+  const { data, error } = await context.supabase
+    .from("accounting_transaction_tags")
+    .select("tag")
+    .eq("workspace_id", context.workspaceId)
+    .limit(1000);
+
+  if (error) return [];
+  return sortTags(dedupeTags((data ?? []).map((row: { tag: string }) => row.tag)));
+}
+
+export async function addTransactionTag(transactionId: string, rawTag: string): Promise<string[]> {
+  const context = await getWorkspaceContext();
+  if (!context) throw new Error("Unauthorized");
+  const tag = normalizeTag(rawTag);
+  const rejection = tagRejection(rawTag);
+  if (rejection) throw new Error(rejection === "empty" ? "A tag cannot be empty." : `A tag cannot exceed ${MAX_TAG_LENGTH} characters.`);
+
+  // Confirm the transaction is in this workspace before writing. RLS would
+  // reject a foreign id anyway, but a 404 is a truthful answer and an RLS
+  // rejection surfaced as a 400 is not.
+  const { data: transaction } = await context.supabase
+    .from("accounting_transactions")
+    .select("id")
+    .eq("id", transactionId)
+    .eq("workspace_id", context.workspaceId)
+    .maybeSingle();
+  if (!transaction) throw new Error("Transaction not found.");
+
+  const { error } = await context.supabase.from("accounting_transaction_tags").insert({
+    workspace_id: context.workspaceId,
+    transaction_id: transactionId,
+    tag,
+    created_by: context.userId,
+  });
+
+  // 23505 is the case-insensitive unique index: the tag is already there, which
+  // is the state the caller asked for. Re-adding is not an error.
+  if (error && error.code !== "23505") throw new Error(error.message);
+
+  await recordAccountingActionAudit({
+    action: "transaction_tag_added",
+    entityType: "accounting_transaction",
+    entityId: transactionId,
+    newValue: { tag },
+  });
+
+  return listTagsForTransaction(context, transactionId);
+}
+
+export async function removeTransactionTag(transactionId: string, rawTag: string): Promise<string[]> {
+  const context = await getWorkspaceContext();
+  if (!context) throw new Error("Unauthorized");
+  const tag = normalizeTag(rawTag);
+
+  const { data: existing } = await context.supabase
+    .from("accounting_transaction_tags")
+    .select("id, tag")
+    .eq("workspace_id", context.workspaceId)
+    .eq("transaction_id", transactionId);
+
+  // Matched in JS on the same case-insensitive rule the index uses, so removing
+  // "project alpha" removes the stored "Project Alpha".
+  const match = (existing ?? []).find((row) => sameTag(row.tag as string, tag));
+  if (match) {
+    const { error } = await context.supabase
+      .from("accounting_transaction_tags")
+      .delete()
+      .eq("id", match.id as string)
+      .eq("workspace_id", context.workspaceId);
+    if (error) throw new Error(error.message);
+
+    await recordAccountingActionAudit({
+      action: "transaction_tag_removed",
+      entityType: "accounting_transaction",
+      entityId: transactionId,
+      previousValue: { tag: match.tag },
+    });
+  }
+
+  return listTagsForTransaction(context, transactionId);
+}
+
+async function listTagsForTransaction(context: NonNullable<Awaited<ReturnType<typeof getWorkspaceContext>>>, transactionId: string): Promise<string[]> {
+  const { data } = await context.supabase
+    .from("accounting_transaction_tags")
+    .select("tag")
+    .eq("workspace_id", context.workspaceId)
+    .eq("transaction_id", transactionId);
+  return sortTags(dedupeTags((data ?? []).map((row: { tag: string }) => row.tag)));
 }
