@@ -43,11 +43,17 @@ begin
 
   select coalesce(
            jsonb_agg(
-             case
-               when nullif(transaction_row ->> 'id', '') is null
-                 then jsonb_set(transaction_row, '{id}', to_jsonb(gen_random_uuid()), true)
-               else transaction_row
-             end
+             jsonb_set(
+               jsonb_set(
+                 case
+                   when nullif(transaction_row ->> 'id', '') is null
+                     then jsonb_set(transaction_row, '{id}', to_jsonb(gen_random_uuid()), true)
+                   else transaction_row
+                 end,
+                 '{created_at}', to_jsonb(now()), true
+               ),
+               '{updated_at}', to_jsonb(now()), true
+             )
            ),
            '[]'::jsonb
          )
