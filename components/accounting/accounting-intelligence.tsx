@@ -400,7 +400,6 @@ export function AccountingIntelligence() {
   const [overrideDialogOpen, setOverrideDialogOpen] = useState(false);
   const [overrideType, setOverrideType] = useState<CombineOverrideType>("account");
   const [overrideText, setOverrideText] = useState("");
-  const [uploadCollapsed, setUploadCollapsed] = useState(true);
   const [activeModule, setActiveModule] = useState<AccountingModule>("bank-statements");
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
   const [deleteTargetIds, setDeleteTargetIds] = useState<string[]>([]);
@@ -663,7 +662,6 @@ export function AccountingIntelligence() {
       const data = (await response.json().catch(() => ({}))) as { run?: AccountingStatementRun; error?: string };
       if (!response.ok || !data.run) throw new Error(data.error ?? "Upload failed.");
       setMessage("Bank statement uploaded and queued for extraction.");
-      setUploadCollapsed(true);
       await refreshAccountingData(data.run.id, { silent: true, keepLiveState: true });
       return data.run;
     } catch (uploadError) {
@@ -1135,14 +1133,6 @@ export function AccountingIntelligence() {
             <div className="flex shrink-0 items-center gap-1 pb-1.5 sm:gap-2">
               <button
                 type="button"
-                onClick={() => setUploadCollapsed((collapsed) => !collapsed)}
-                className="hidden h-9 items-center gap-1 rounded-lg px-2.5 text-xs font-semibold text-slate-600 hover:bg-slate-100 hover:text-navy-950 sm:inline-flex"
-              >
-                {uploadCollapsed ? "Show upload options" : "Hide upload options"}
-                <ChevronDown className={`h-3.5 w-3.5 transition ${uploadCollapsed ? "" : "rotate-180"}`} />
-              </button>
-              <button
-                type="button"
                 disabled={busy === "upload"}
                 onClick={() => inputRef.current?.click()}
                 className="inline-flex h-9 items-center justify-center gap-2 rounded-lg bg-royal-600 px-2.5 text-xs font-semibold text-white shadow-sm transition hover:bg-royal-700 disabled:bg-slate-300 sm:px-4"
@@ -1218,7 +1208,7 @@ export function AccountingIntelligence() {
           event.preventDefault();
           void uploadFiles(Array.from(event.dataTransfer.files));
         }}
-        className={`${uploadCollapsed ? "sr-only" : "rounded-xl border border-slate-200 bg-white px-3 py-2.5 shadow-sm md:px-4"}`}
+        className="rounded-xl border border-slate-200 bg-white px-3 py-2.5 shadow-sm md:px-4"
       >
         <input
           ref={inputRef}
@@ -1235,23 +1225,18 @@ export function AccountingIntelligence() {
           <div>
             <div className="flex flex-wrap items-center gap-2">
               <p className="text-sm font-semibold text-navy-950">Bank Statements</p>
-              <button type="button" onClick={() => setUploadCollapsed(true)} className="text-xs font-black text-royal-700 md:hidden">Hide upload options</button>
             </div>
             <p className="mt-0.5 text-xs font-semibold text-slate-500">Upload, process, review, and export bank statement transactions.</p>
             <p className="mt-0.5 text-xs font-medium text-slate-500">Bank and account details are detected automatically where possible.</p>
           </div>
+          {/* The panel is a drop target, and the header already carries the
+              Upload Statement action. With the panel no longer collapsed, a
+              second identical button here would be two CTAs for one job. */}
           <div className="grid gap-3 sm:items-end">
-            <div className="rounded-xl bg-royal-50 p-2 text-center">
-              <button
-                type="button"
-                disabled={busy === "upload"}
-                onClick={() => inputRef.current?.click()}
-                className="inline-flex h-10 w-full min-w-40 items-center justify-center gap-2 rounded-lg bg-royal-600 px-4 text-sm font-semibold text-white shadow-sm transition hover:bg-royal-700 disabled:cursor-not-allowed disabled:bg-slate-300 sm:w-auto"
-              >
-                {busy === "upload" ? <Loader2 className="h-4 w-4 animate-spin" /> : <UploadCloud className="h-4 w-4" />}
-                Upload Statement
-              </button>
-              <p className="mt-1 text-[11px] font-semibold text-slate-500">PDF up to 200MB</p>
+            <div className="rounded-xl border border-dashed border-royal-200 bg-royal-50/60 p-3 text-center">
+              <UploadCloud className="mx-auto h-4 w-4 text-royal-500" />
+              <p className="mt-1 text-[11px] font-semibold text-slate-600">Drop statements here, or use Upload Statement above.</p>
+              <p className="text-[11px] font-semibold text-slate-500">PDF up to 200MB</p>
             </div>
           </div>
           <div className="xl:col-span-2">

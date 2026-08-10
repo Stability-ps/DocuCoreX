@@ -116,3 +116,52 @@ test("internal identifiers are untouched", () => {
   const source = readFileSync("components/accounting/accounting-intelligence.tsx", "utf8");
   assert.ok(/\/api\/accounting\/fnb\//.test(source), "the FNB route is still called");
 });
+
+test("the landing page does not scope the product to one market", () => {
+  // #126 globalised the workspace and left this page untouched, so the first
+  // thing a prospective customer saw was a grid of ten South African banks and
+  // "Optimised for South African banks from day one". A reader whose bank is
+  // absent from a named roster concludes the product is not for them.
+  const source = readFileSync("app/page.tsx", "utf8");
+
+  for (const bank of ["FNB", "Absa", "Capitec", "Investec", "Nedbank", "TymeBank", "Bidvest", "Discovery Bank"]) {
+    assert.ok(!source.includes(bank), `landing page must not name ${bank}`);
+  }
+  assert.ok(!/South African/i.test(source), "must not scope the product to one country");
+
+  // Replaced with capabilities, not a different roster.
+  assert.ok(/statementCapabilities/.test(source), "capabilities replace the bank grid");
+});
+
+test("the landing page does not claim currencies the product cannot detect", () => {
+  // The UI formats per currency code, but no currency is detected from a
+  // statement yet — advertising multi-currency would be a claim the pipeline
+  // cannot honour.
+  const source = readFileSync("app/page.tsx", "utf8");
+  assert.ok(!/multi-currency|any currency|all currencies/i.test(source));
+});
+
+test("the upload options toggle is gone, and the panel is not hidden by default", () => {
+  // The toggle defaulted to collapsed, and collapsed rendered the whole upload
+  // panel `sr-only` — so the drop target, the description and the guidance were
+  // invisible to sighted users unless they found a button that only appeared on
+  // wide screens. Removing the wording alone would have left that hiding.
+  const source = readFileSync("components/accounting/accounting-intelligence.tsx", "utf8");
+
+  assert.ok(!source.includes("Show upload options"), "no Show upload options control");
+  assert.ok(!source.includes("Hide upload options"), "no Hide upload options control");
+  assert.ok(!/uploadCollapsed|setUploadCollapsed/.test(source), "the collapse state is gone");
+  assert.ok(!/sr-only/.test(source), "the upload panel is not hidden from sighted users");
+});
+
+test("upload still works after removing the toggle", () => {
+  // The point was to stop hiding the panel, not to lose the ability to upload.
+  // All three routes in must survive.
+  const source = readFileSync("components/accounting/accounting-intelligence.tsx", "utf8");
+
+  assert.ok(/type="file"/.test(source), "the hidden file input still exists");
+  assert.ok(/ref=\{inputRef\}/.test(source), "it is still reachable by the button");
+  assert.ok(/inputRef\.current\?\.click\(\)/.test(source), "Upload Statement still opens the picker");
+  assert.ok(/onDrop=/.test(source), "drag and drop still works");
+  assert.ok(/\/api\/accounting\/fnb\/upload/.test(source), "the upload endpoint is unchanged");
+});
