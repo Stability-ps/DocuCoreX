@@ -51,7 +51,7 @@ const navItems = [
 ];
 
 const recentUploads = [
-  { name: "FNB Business Statement", type: "Bank PDF", status: "Extracting", pct: 84 },
+  { name: "Business Bank Statement", type: "Bank PDF", status: "Extracting", pct: 84 },
   { name: "VAT invoices Q2", type: "Invoice Pack", status: "OCR Ready", pct: 100 },
   { name: "Supplier receipts", type: "Scans", status: "Review", pct: 68 },
 ];
@@ -107,17 +107,21 @@ const intelligence = [
   "Fees",
 ];
 
-const banks = [
-  "FNB",
-  "Standard Bank",
-  "Absa",
-  "Nedbank",
-  "Capitec",
-  "Investec",
-  "TymeBank",
-  "African Bank",
-  "Bidvest Bank",
-  "Discovery Bank",
+// What the statement engine does, rather than which institutions it knows.
+// A roster of named banks reads as a boundary — a reader whose bank is absent
+// concludes the product is not for them — and it dates the moment support
+// widens. Each of these is something the pipeline demonstrably does.
+const statementCapabilities = [
+  "Digital PDF statements",
+  "Scanned PDF statements",
+  "Automatic bank detection",
+  "Transaction table extraction",
+  "Balance reconciliation",
+  "Opening and closing balances",
+  "Multi-page statements",
+  "Exception review queue",
+  "Excel and CSV export",
+  "Duplicate detection",
 ];
 
 const platformStats = [
@@ -246,7 +250,7 @@ export default function Home() {
               </a>
             </div>
             <div className="mt-9 grid max-w-xl grid-cols-3 gap-4">
-              {["99.9% OCR uptime", "Bank-grade security", "South African banks"].map((item) => (
+              {["99.9% OCR uptime", "Bank-grade security", "Automatic bank detection"].map((item) => (
                 <div key={item} className="rounded-2xl border border-white bg-white/72 p-3 text-sm font-bold text-navy-800 shadow-sm">
                   <Check className="mb-2 h-4 w-4 text-emerald-500" />
                   {item}
@@ -514,16 +518,16 @@ export default function Home() {
           <div>
             <p className="text-sm font-semibold uppercase tracking-[0.18em] text-royal-600">Bank statement engine</p>
             <h2 className="mt-4 text-4xl font-semibold tracking-normal text-navy-950 sm:text-5xl">
-              Optimised for South African banks from day one.
+              Built for bank statements, wherever they come from.
             </h2>
             <p className="mt-5 text-lg leading-8 text-slate-600">
-              Extract transaction tables from local bank formats today, with international bank support designed into the roadmap.
+              Upload a statement and the bank, account and period are detected from the document itself. Formats vary by institution, so new layouts are added as they are seen.
             </p>
           </div>
           <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5">
-            {banks.map((bank) => (
-              <div key={bank} className="flex min-h-24 items-center justify-center rounded-xl border border-slate-200 bg-white p-4 text-center text-sm font-semibold text-navy-950 shadow-sm">
-                {bank}
+            {statementCapabilities.map((capability) => (
+              <div key={capability} className="flex min-h-24 items-center justify-center rounded-xl border border-slate-200 bg-white p-4 text-center text-sm font-semibold text-navy-950 shadow-sm">
+                {capability}
               </div>
             ))}
           </div>

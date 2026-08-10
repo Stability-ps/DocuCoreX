@@ -116,3 +116,27 @@ test("internal identifiers are untouched", () => {
   const source = readFileSync("components/accounting/accounting-intelligence.tsx", "utf8");
   assert.ok(/\/api\/accounting\/fnb\//.test(source), "the FNB route is still called");
 });
+
+test("the landing page does not scope the product to one market", () => {
+  // #126 globalised the workspace and left this page untouched, so the first
+  // thing a prospective customer saw was a grid of ten South African banks and
+  // "Optimised for South African banks from day one". A reader whose bank is
+  // absent from a named roster concludes the product is not for them.
+  const source = readFileSync("app/page.tsx", "utf8");
+
+  for (const bank of ["FNB", "Absa", "Capitec", "Investec", "Nedbank", "TymeBank", "Bidvest", "Discovery Bank"]) {
+    assert.ok(!source.includes(bank), `landing page must not name ${bank}`);
+  }
+  assert.ok(!/South African/i.test(source), "must not scope the product to one country");
+
+  // Replaced with capabilities, not a different roster.
+  assert.ok(/statementCapabilities/.test(source), "capabilities replace the bank grid");
+});
+
+test("the landing page does not claim currencies the product cannot detect", () => {
+  // The UI formats per currency code, but no currency is detected from a
+  // statement yet — advertising multi-currency would be a claim the pipeline
+  // cannot honour.
+  const source = readFileSync("app/page.tsx", "utf8");
+  assert.ok(!/multi-currency|any currency|all currencies/i.test(source));
+});
