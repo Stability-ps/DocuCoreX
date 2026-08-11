@@ -33,3 +33,21 @@ LOOSE_DATE = re.compile(
 
 # A permissive money match used where only the position of an amount matters.
 LOOSE_MONEY = re.compile(r"(?:R\s*)?-?\(?\d[\d,\s]*\.\d{2}\)?-?")
+
+# FNB's transaction-section heading, matched WITHOUT depending on its spacing.
+#
+# Whether a space survives between "in" and "RAND" is an artifact of the PDF
+# text extractor, not of the statement. The same page that yields "Transactions
+# in RAND (ZAR)" at one x_tolerance yields "Transactions inRAND (ZAR)" at
+# another, because the words are laid out as separate positioned runs and the
+# extractor decides whether the gap is wide enough to be a space.
+#
+# The consequence of matching a literal was total: this heading opens the ONLY
+# section the FNB parser reads, so a single missing space put every row outside
+# the section and the statement parsed to zero transactions. The same literal
+# also scored the FNB bank fingerprint, so the extraction that lost the heading
+# lost part of its claim to be an FNB statement at the same time.
+#
+# \s* rather than \s+ because the missing space is the whole point.
+FNB_SECTION_HEADING_PATTERN = r"transactions\s*in\s*rand"
+FNB_SECTION_HEADING = re.compile(FNB_SECTION_HEADING_PATTERN, re.IGNORECASE)

@@ -34,6 +34,8 @@ import re
 from dataclasses import dataclass, field
 from typing import Iterable
 
+from .lexicon import FNB_SECTION_HEADING_PATTERN
+
 UNKNOWN_PROFILE_ID = "unknown"
 UNKNOWN_BANK_NAME = "Unknown"
 
@@ -93,7 +95,7 @@ BANK_FINGERPRINTS: tuple[BankFingerprint, ...] = (
             BankMarker(r"\bfnb\.co\.za\b", 5, "fnb.co.za"),
             BankMarker(r"\bfirstrand bank\b", 4, "firstrand bank"),
             BankMarker(r"\bplatinum business account\b", 3, "platinum business account"),
-            BankMarker(r"\btransactions in rand\b", 3, "fnb transaction section heading"),
+            BankMarker(rf"\b{FNB_SECTION_HEADING_PATTERN}\b", 3, "fnb transaction section heading"),
         ),
     ),
     BankFingerprint(
