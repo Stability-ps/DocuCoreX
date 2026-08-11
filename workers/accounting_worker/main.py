@@ -1579,13 +1579,12 @@ def _ends_with_money_columns(text: str) -> bool:
     A statement row's amount and balance are the last things printed on it. A
     number that appears anywhere else belongs to the description.
     """
-    match = MONEY_TOKEN.search(text)
-    if not match:
-        return False
     last = None
     for last in MONEY_TOKEN.finditer(text):
         pass
-    return bool(last) and not text[last.end():].strip()
+    if last is None:
+        return False
+    return not text[last.end():].strip()
 
 
 def split_compound_candidate_line(line: str) -> list[str]:
