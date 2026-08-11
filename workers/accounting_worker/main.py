@@ -1573,7 +1573,47 @@ def transaction_candidate_lines(full_text: str) -> list[str]:
     return candidates
 
 
+def _ends_with_money_columns(text: str) -> bool:
+    """True when the text FINISHES with its money columns.
+
+    A statement row's amount and balance are the last things printed on it. A
+    number that appears anywhere else belongs to the description.
+    """
+    last = None
+    for last in MONEY_TOKEN.finditer(text):
+        pass
+    if last is None:
+        return False
+    return not text[last.end():].strip()
+
+
 def split_compound_candidate_line(line: str) -> list[str]:
+    """Separate two statement rows printed on one physical line.
+
+    Splitting on "a later date with money on both sides" was too weak, because a
+    date inside a DESCRIPTION satisfies it. Banks print a card-purchase date
+    inside POS descriptions — FNB's "410586*9734 23 Jul" is the posting date
+    followed by the date the card was actually used, and the same shape appears
+    wherever a transaction date and a value date are both shown.
+
+    That alone was survivable: a description ending in a card number has no money
+    token, so no split happened. It became a defect when the description ALSO
+    contained a currency-like number. On the real statement:
+
+        25 Jul POS Purchase 199.00 Netflix.Com 410586*9734 23 Jul 199.00 940.55
+
+    the merchant's own name carries "199.00". The prefix therefore had money, the
+    suffix had money, and one R199.00 purchase was split into two rows — a
+    descriptionless "199.00 940.55" that became an "Unnamed Bank Fee", plus a
+    balance-less R199.00 "POS Purchase". R199.00 was counted twice, and the
+    statement's debits exceeded the bank's own declared total by exactly that.
+
+    The rule is now positional rather than presence-based: a real row ENDS with
+    its money columns, so the left part may only be split off when it finishes
+    with its own. A description that merely mentions an amount does not, and is
+    left whole. A genuinely compound line — two complete rows concatenated —
+    still splits, because its first row does end with its balance.
+    """
     matches = list(LOOSE_DATE.finditer(line))
     if len(matches) <= 1:
         return [line.strip()]
@@ -1583,7 +1623,7 @@ def split_compound_candidate_line(line: str) -> list[str]:
     for match in matches[1:]:
         prefix = line[start:match.start()].strip()
         suffix = line[match.start():].strip()
-        if prefix and MONEY_TOKEN.search(prefix) and MONEY_TOKEN.search(suffix):
+        if prefix and _ends_with_money_columns(prefix) and MONEY_TOKEN.search(suffix):
             parts.append(prefix)
             start = match.start()
 
@@ -1672,9 +1712,28 @@ def parse_amount_balance_line(line: str, metadata: dict[str, Any]) -> ParsedTran
     if not date_match:
         return None
     matches = list(MONEY_TOKEN.finditer(line))
-    if len(matches) != 2:
+    if len(matches) < 2:
         return None
-    amount_match, balance_match = matches[0], matches[1]
+    # The amount and balance are the LAST two money tokens, not the first two.
+    #
+    # Requiring exactly two, and then taking matches[0] and matches[1], assumed
+    # no number could appear inside a description. Banks put them there — a fee
+    # naming the payment it relates to, a merchant whose name contains a figure,
+    # a reference with a decimal. On the real statement:
+    #
+    #     25 Jul #Service Fees #Int Pymt Fee-199.00 Netf 3.98 1,027.00
+    #
+    # three tokens are present ("-199.00" inside the description, then the R3.98
+    # amount and the R1,027.00 balance), so the row was rejected by every parser
+    # and vanished from the ledger entirely — R3.98 of real money silently gone,
+    # and one row short of the bank's declared debit count.
+    #
+    # Reading from the right is what the statement's own layout guarantees: the
+    # columns are the last things on the line. This is strictly a recovery — a
+    # row with exactly two tokens parses identically to before, and rows with
+    # three or more previously produced nothing at all, so no correctly-parsed
+    # row can change.
+    amount_match, balance_match = matches[-2], matches[-1]
     amount = parse_money_cell(amount_match.group(0))
     balance = parse_money_cell(balance_match.group(0))
     if amount is None or balance is None or amount == 0:

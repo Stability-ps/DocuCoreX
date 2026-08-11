@@ -138,6 +138,8 @@ from main import (
     service_fee_candidate_lines,
     strip_fnb_page_artifacts,
     transaction_candidate_lines,
+    split_compound_candidate_line,
+    parse_amount_balance_line,
 )
 
 
@@ -160,6 +162,11 @@ def run():
     check_a_posting_row_of_the_same_shape_is_untouched()
     check_non_posting_row_does_not_shift_the_next_row()
     check_validation_recovery_is_reachable()
+    check_a_number_in_the_description_does_not_split_the_row()
+    check_a_genuinely_compound_line_still_splits()
+    check_a_date_in_the_description_does_not_split_the_row()
+    check_columns_are_read_from_the_right()
+    check_a_two_token_row_is_unchanged()
     assert_equal(parse_money_cell("FNB OB Pmt Rmsp 10129 25,000.00Cr"), Decimal("25000.00"), "credit reference")
     assert_equal(parse_money_cell("FNB App Payment To Lancent M22013354 232.20"), Decimal("232.20"), "app payment")
     assert_equal(parse_money_cell("Byc Debit 63012593504 8.74"), Decimal("8.74"), "byc debit")
@@ -703,6 +710,99 @@ def check_validation_recovery_is_reachable() -> None:
         None,
         "a detail with no failed rules is not a validation failure",
     )
+
+
+# ── Row boundaries and column position ──────────────────────────────────────
+#
+# A statement row ENDS with its money columns. Anything numeric before them —
+# a figure in a merchant's name, a fee naming the payment it relates to, a card
+# date printed inside a POS description — belongs to the DESCRIPTION.
+#
+# Both defects below came from ignoring that and reading left to right. They were
+# found by parsing a real statement whose own declared totals proved the text
+# layer was complete, so every missing cent was the parser's. Identifiers are
+# sanitised here; the shapes are the real ones.
+
+
+def check_a_number_in_the_description_does_not_split_the_row() -> None:
+    """A merchant whose NAME contains an amount is still one transaction.
+
+    Splitting on "a later date with money on both sides" is satisfied by a card
+    date inside a description as soon as that description also mentions a
+    figure. One purchase became two rows — a balance-less amount, plus a
+    descriptionless remainder that was then labelled a bank fee — and the amount
+    was counted twice. On the real statement that inflated the debits by exactly
+    the purchase value.
+    """
+    line = "25 Jul POS Purchase 199.00 Merchant.Com 400000*0000 23 Jul 199.00 940.55"
+    parts = split_compound_candidate_line(line)
+    assert_equal(len(parts), 1, "one printed purchase is one row")
+
+    parsed = parse_amount_balance_line(parts[0], {})
+    assert_equal(parsed is not None, True, "and it still parses")
+    assert_equal(parsed.debit_amount, 199.00, "charged once, not twice")
+    assert_equal(parsed.running_balance, 940.55, "with the balance the statement printed")
+
+
+def check_a_genuinely_compound_line_still_splits() -> None:
+    """The guard must not disable the behaviour it is guarding.
+
+    Two complete rows really can share one physical line. The first one ends
+    with its own balance, which is exactly what a description does not do.
+    """
+    parts = split_compound_candidate_line("25 Jul Desc A 100.00 500.00 26 Jul Desc B 200.00 700.00")
+    assert_equal(len(parts), 2, "two complete rows are still separated")
+    first = parse_amount_balance_line(parts[0], {})
+    second = parse_amount_balance_line(parts[1], {})
+    assert_equal((first.debit_amount, first.running_balance), (100.00, 500.00), "first row intact")
+    assert_equal((second.debit_amount, second.running_balance), (200.00, 700.00), "second row intact")
+
+
+def check_a_date_in_the_description_does_not_split_the_row() -> None:
+    """The ordinary case, which never broke and must stay unbroken.
+
+    A POS description carrying the card-use date has no money before its
+    columns, so it was never split. It is asserted because the new rule must
+    keep that true rather than merely happen to.
+    """
+    line = "18 Jul POS Purchase Some Shop 400000*0000 14 Jul 450.00 135.02"
+    assert_equal(len(split_compound_candidate_line(line)), 1, "still one row")
+    parsed = parse_amount_balance_line(line, {})
+    assert_equal(parsed.debit_amount, 450.00, "amount unchanged")
+    assert_equal(parsed.running_balance, 135.02, "balance unchanged")
+    assert_equal("14 Jul" in parsed.description, True, "the card date stays in the description where it was printed")
+
+
+def check_columns_are_read_from_the_right() -> None:
+    """A row whose description contains a figure must not be DROPPED.
+
+    Requiring exactly two money tokens, then taking the first two, meant a fee
+    that names the payment it relates to matched nothing at all. The row did not
+    arrive misparsed — it vanished, taking real money and one debit out of the
+    ledger with it, which is the failure mode that hides itself.
+    """
+    line = "25 Jul #Service Fees #Int Pymt Fee-199.00 Ref 3.98 1,027.00"
+    parsed = parse_amount_balance_line(line, {})
+    assert_equal(parsed is not None, True, "the row is recovered rather than silently dropped")
+    assert_equal(parsed.debit_amount, 3.98, "the amount is the second-to-last money token")
+    assert_equal(parsed.running_balance, 1027.00, "the balance is the last")
+    assert_equal(
+        "199.00" in parsed.description,
+        True,
+        "the figure the fee refers to stays in the description, where the statement put it",
+    )
+
+
+def check_a_two_token_row_is_unchanged() -> None:
+    """Reading from the right must be a pure recovery.
+
+    An ordinary row has exactly two money tokens, so first-two and last-two are
+    the same tokens and nothing about it can change.
+    """
+    parsed = parse_amount_balance_line("22 Jul Some Debit 000000000 4.14 523.02", {})
+    assert_equal(parsed.debit_amount, 4.14, "amount unchanged")
+    assert_equal(parsed.running_balance, 523.02, "balance unchanged")
+    assert_equal(parsed.credit_amount, None, "direction unchanged")
 
 
 if __name__ == "__main__":
