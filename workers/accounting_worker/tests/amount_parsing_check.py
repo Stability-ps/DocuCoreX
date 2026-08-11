@@ -138,9 +138,11 @@ from main import (
     service_fee_candidate_lines,
     strip_fnb_page_artifacts,
     transaction_candidate_lines,
+    transaction_section_lines,
     split_compound_candidate_line,
     parse_amount_balance_line,
 )
+from engine.detection import detect_bank
 
 
 def assert_equal(actual, expected, label):
@@ -167,6 +169,9 @@ def run():
     check_a_date_in_the_description_does_not_split_the_row()
     check_columns_are_read_from_the_right()
     check_a_two_token_row_is_unchanged()
+    check_the_heading_is_found_whatever_the_extractor_did_to_its_spacing()
+    check_the_heading_still_scores_the_bank_when_the_space_is_lost()
+    check_the_heading_pattern_does_not_open_the_section_on_prose()
     assert_equal(parse_money_cell("FNB OB Pmt Rmsp 10129 25,000.00Cr"), Decimal("25000.00"), "credit reference")
     assert_equal(parse_money_cell("FNB App Payment To Lancent M22013354 232.20"), Decimal("232.20"), "app payment")
     assert_equal(parse_money_cell("Byc Debit 63012593504 8.74"), Decimal("8.74"), "byc debit")
@@ -803,6 +808,76 @@ def check_a_two_token_row_is_unchanged() -> None:
     assert_equal(parsed.debit_amount, 4.14, "amount unchanged")
     assert_equal(parsed.running_balance, 523.02, "balance unchanged")
     assert_equal(parsed.credit_amount, None, "direction unchanged")
+
+
+# ── Heading detection independent of extractor spacing ──────────────────────
+#
+# "Transactions in RAND (ZAR)" opens the ONLY section the FNB parser reads. The
+# space between "in" and "RAND" is the text extractor's opinion about a gap
+# between two positioned runs, not something the statement contains: the same
+# page yields "Transactions inRAND" at a different x_tolerance. Matching the
+# literal therefore staked every row in the statement on an extraction artifact.
+
+
+SPACING_VARIANTS = (
+    ("Transactions in RAND (ZAR)", "the spacing production happens to produce"),
+    ("Transactions inRAND (ZAR)", "the gap the extractor swallowed at x_tolerance=3.0"),
+    ("Transactions  in  RAND (ZAR)", "a wider gap read as two spaces"),
+    ("TransactionsinRAND", "both gaps swallowed"),
+    ("TRANSACTIONS IN RAND (ZAR) : 62905786151", "shouted, with the account number appended"),
+)
+
+STATEMENT_BODY = (
+    "25 Jul POS Purchase Some Shop 400000*0000 23 Jul 199.00 940.55\n"
+    "26 Jul Byc Debit 63012593504 8.74 931.81\n"
+    "Turnover For Statement Period"
+)
+
+
+def check_the_heading_is_found_whatever_the_extractor_did_to_its_spacing() -> None:
+    """Every spacing an extractor can produce must open the same section.
+
+    This is the failure mode that hides itself: a missing space did not misparse
+    a row or lower a confidence score. It put every row outside the section, so
+    the statement parsed to ZERO transactions and reported no error at all —
+    indistinguishable, downstream, from a PDF that genuinely had no rows.
+    """
+    for heading, why in SPACING_VARIANTS:
+        section = transaction_section_lines(heading + "\n" + STATEMENT_BODY)
+        assert_equal(len(section), 2, f"section opens — {why}")
+        candidates = transaction_candidate_lines(heading + "\n" + STATEMENT_BODY)
+        assert_equal(len(candidates), 2, f"and both rows survive — {why}")
+
+
+def check_the_heading_still_scores_the_bank_when_the_space_is_lost() -> None:
+    """The same literal also scored the FNB fingerprint.
+
+    An extraction that lost the space lost part of its claim to be an FNB
+    statement at the same moment it lost its rows, so the two defects could
+    compound: routed away from the FNB parser AND empty if it got there.
+    """
+    for heading, why in SPACING_VARIANTS:
+        detection = detect_bank(f"{heading}\n{STATEMENT_BODY}")
+        # Evidence labels carry a position suffix ("... (header)"), so match the
+        # marker by prefix rather than by the whole rendered string.
+        assert_equal(
+            any(item.startswith("fnb transaction section heading") for item in detection.evidence),
+            True,
+            f"heading counts as FNB evidence — {why}",
+        )
+
+
+def check_the_heading_pattern_does_not_open_the_section_on_prose() -> None:
+    """Loosening the match must not make it match more than a heading.
+
+    \\s* spans a missing space, not arbitrary words. A sentence that merely uses
+    the same words is not the section heading and must not open a section.
+    """
+    for line in (
+        "All transactions are in RAND unless otherwise stated",
+        "Transactions in foreign currency are converted to RAND",
+    ):
+        assert_equal(len(transaction_section_lines(line + "\n" + STATEMENT_BODY)), 0, "prose opens nothing")
 
 
 if __name__ == "__main__":

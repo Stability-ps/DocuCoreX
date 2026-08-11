@@ -68,7 +68,7 @@ from engine.merchant_keys import merchant_key_rejection
 from engine.merchants import identify_merchant, merchant_is_grounded
 from engine.generic_parser import count_candidate_lines as generic_candidate_lines
 from engine.generic_parser import extract_generic_rows
-from engine.lexicon import LOOSE_DATE, LOOSE_MONEY, MONEY_TOKEN
+from engine.lexicon import FNB_SECTION_HEADING, LOOSE_DATE, LOOSE_MONEY, MONEY_TOKEN
 
 
 def api_docs_enabled() -> bool:
@@ -1482,7 +1482,7 @@ def transaction_section_lines(full_text: str) -> list[str]:
             continue
         lowered = line.lower()
         if awaiting_section_reopen:
-            if "transactions in rand" in lowered:
+            if FNB_SECTION_HEADING.search(line):
                 awaiting_section_reopen = False
                 in_section = True
                 continue
@@ -1502,7 +1502,9 @@ def transaction_section_lines(full_text: str) -> list[str]:
         # the account number / colon (e.g. "Transactions in RAND (ZAR) : 62905786151").
         # It repeats on every page — re-entering the section is harmless. "(ZAR)"
         # may wrap onto its own line, so it is not required on the heading line.
-        if "transactions in rand" in lowered:
+        # Matched by pattern, not by literal: the space between "in" and "RAND"
+        # is the extractor's opinion, and losing it emptied the whole section.
+        if FNB_SECTION_HEADING.search(line):
             in_section = True
             awaiting_section_reopen = False
             continue
