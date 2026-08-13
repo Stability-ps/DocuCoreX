@@ -1,15 +1,42 @@
 # Production migration state — accounting schema
 
-**Status: APPLIED. Production is at 001–040.**
+**Status: APPLIED. Production is at 001–042.**
 
 | | |
 |---|---|
-| Live Supabase project | applied through **040** |
-| This repository | contains **035 – 040** |
+| Live Supabase project | applied through **042** |
+| This repository | contains through **042** |
 | Gap | none |
-| Verified | 2026-08-13, read-only probe via PostgREST |
+| Verified | 2026-08-14, read-only probe via PostgREST |
 
-## How this was established
+## How 041–042 were established
+
+Neither table row counts nor `pg_proc` are reachable with the anon key this
+probe uses — RLS returns `*/0` for every table query, since there is no
+authenticated session behind it. What proves 041 and 042 are applied is that
+their **functions execute and behave like themselves**, which requires the
+function body — not just a stub — to be present:
+
+- `accounting_fixed_asset_register(target_company)` returned `[]` (a real,
+  empty result set) rather than PGRST202.
+- `accounting_period_close_readiness(...)` returned a computed row —
+  `{"unposted_journal_count":0,"open_reconciliation_count":0,"vat_period_status":null}`
+  — which only a running function body produces.
+- `accounting_close_period(...)` raised `P0002 company ... not found` — a
+  custom exception from *inside* the PL/pgSQL body (migration 041's own
+  `raise exception 'company % not found'`), not a PostgREST routing error.
+  This is stronger evidence than a bare existence check: it proves the
+  function's internal logic ran, not merely that a row for it exists in
+  `pg_proc`.
+
+(A first pass at this probe called the readiness/close functions with an
+empty body and got PGRST202 for all of them — a false negative. That error
+is what PostgREST returns for a genuine missing function AND for a real
+function called with the wrong argument shape; supplying the actual named
+parameters resolved it. Worth remembering next time this kind of check is
+run with functions that take required arguments.)
+
+## How 035–040 were established
 
 All 035–040 tables present. Columns added by later migrations present
 (`accounting_postings.source_transaction_id` and `.tax_code_id`,
@@ -66,8 +93,22 @@ These are exactly the four defects that only appeared when migration 036 was
 executed against a real PostgreSQL in Stage 4B. All were fixed in 037, but
 whether the fixed versions are what production actually holds is unknown.
 
-`accounting_postings` is empty, so no ledger data is at risk yet. This is the
-cheapest possible moment to check.
+Also unproven, from 041–042, for the same reason:
+
+- the append-only triggers on `accounting_audit_events`
+  (`accounting_audit_events_no_update`, `..._no_delete`)
+- the one-depreciation-per-asset-per-month partial unique index on
+  `accounting_asset_movements`
+- the `accounting_fixed_assets` check constraints (distinct asset/accumulated-
+  depreciation accounts, residual ≤ cost, method-input pairing, disposal-date-
+  implies-proceeds)
+- whether `accounting_close_period` actually refuses to lock a period over
+  unposted journals in production data, as opposed to the fixture
+
+`accounting_postings` was empty when 001–040 were checked; whether it still is
+now that 041–042 have shipped is itself unverified by this probe (RLS blocks
+row counts with the anon key — see above). If it is not, the append-only and
+one-per-month guards are no longer merely theoretical.
 
 **To verify:** `SUPABASE_DB_PASSWORD` or a Management API token, then query
 `pg_constraint`, `pg_trigger` and `pg_proc` directly. A few queries settle it.
