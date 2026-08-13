@@ -116,7 +116,7 @@ const tabs: Array<{ id: AccountingTab; label: string }> = [
 export const ACCOUNTING_MODULE_ROUTES: Record<AccountingModule, string> = {
   "bank-statements": "/accounting/bank-statements",
   "financial-statements": "/accounting/financial-statements",
-  "tax-vat": "/accounting/vat",
+  "tax-vat": "/accounting/vat/statement-estimate",
   "ai-intelligence": "/accounting/insights",
   forecasting: "/accounting/forecasting",
   "audit-tools": "/accounting/audit-tools",
@@ -125,7 +125,7 @@ export const ACCOUNTING_MODULE_ROUTES: Record<AccountingModule, string> = {
 const MODULE_META: Record<AccountingModule, { label: string; summary: string }> = {
   "bank-statements": { label: "Bank Statements", summary: "Upload, process, review, and export statements" },
   "financial-statements": { label: "Financial Statements", summary: "Profit and loss, cash flow, and ratios" },
-  "tax-vat": { label: "VAT", summary: "VAT schedule, anomalies, and SARS risk" },
+  "tax-vat": { label: "VAT estimated from statements", summary: "VAT schedule, anomalies, and SARS risk" },
   "ai-intelligence": { label: "Transaction Insights", summary: "Transfers, recurring commitments, and duplicates" },
   forecasting: { label: "Forecasting", summary: "Cash forecast from confirmed commitments" },
   "audit-tools": { label: "Audit Tools", summary: "Coverage, findings, and the audit trail" },
