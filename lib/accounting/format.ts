@@ -134,3 +134,25 @@ export function maskAccountNumber(accountNumber: string | null | undefined): str
   if (digits.length < 4) return digits || null;
   return `•••• ${digits.slice(-4)}`;
 }
+
+/**
+ * Money for the ledger reports.
+ *
+ * Here rather than in the ledger module because this file already owns money
+ * formatting, and the first version of this function did not — it called
+ * toLocaleString("en-ZA") and produced "R 1 245 821,55", a second money format
+ * inside one product. That is what GROUPING_LOCALE above exists to prevent, for
+ * the hydration reason documented there as well as for consistency.
+ *
+ * What this adds over formatMoney is the one accounting convention it does not
+ * carry: a negative is bracketed rather than signed, because that is how a
+ * ledger prints one.
+ */
+export function formatLedgerMoney(
+  value: number,
+  options: { blankZero?: boolean; currency?: string | null } = {},
+): string {
+  if (options.blankZero && Math.round(value * 100) === 0) return "";
+  const magnitude = formatMoney(Math.abs(value), options.currency ?? DEFAULT_STATEMENT_CURRENCY);
+  return value < 0 ? `(${magnitude})` : magnitude;
+}
