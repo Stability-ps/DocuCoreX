@@ -357,7 +357,7 @@ export function StatementWorkspace({ statementId }: { statementId: string }) {
               <ArrowLeft className="h-4 w-4" /> Back to Statements
             </Link>
             <p className="mt-1 text-[11px] font-bold uppercase tracking-wide text-slate-400">
-              Accounting Intelligence <span className="text-slate-300">›</span> Bank Statements <span className="text-slate-300">›</span>{" "}
+              Accounting &amp; Financial Reporting <span className="text-slate-300">›</span> Bank Statements <span className="text-slate-300">›</span>{" "}
               <span className="text-slate-500">{runTitle(run)}</span>
             </p>
             <div className="mt-1 flex flex-wrap items-center gap-2">

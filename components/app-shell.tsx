@@ -76,9 +76,13 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const [showProfile, setShowProfile] = useState(false);
   const [showMobileNav, setShowMobileNav] = useState(true);
   const [showNewMenu, setShowNewMenu] = useState(false);
-  const [expandedGroups, setExpandedGroups] = useState<Record<string, boolean>>({
-    Documents: false,
-  });
+  // Untouched groups fall back to "expanded when you are inside them" rather
+  // than to a stored false. Seeding Documents:false here made that group
+  // collapsed even while on /documents, and the toggle below falls back to
+  // `active`, so the first click on the group you were already in computed
+  // false — the state it was effectively already in — and appeared to do
+  // nothing. It took two clicks to open.
+  const [expandedGroups, setExpandedGroups] = useState<Record<string, boolean>>({});
   const [shellError, setShellError] = useState("");
   const searchCacheRef = useRef<Map<string, SearchResult[]>>(new Map());
   const notificationSelection = useBulkSelection(notifications);
@@ -339,7 +343,9 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         <nav className="space-y-1 px-4 py-5">
           {appNav.map((item) => {
             const active = isActive(item.href) || Boolean(item.children?.some((child) => isActive(child.href)));
-            const expanded = expandedGroups[item.title] ?? false;
+            // Same fallback as the toggle below (`?? active`). The two must
+            // agree, or the first click on the active group is swallowed.
+            const expanded = expandedGroups[item.title] ?? active;
 
             if (item.children?.length) {
               return (

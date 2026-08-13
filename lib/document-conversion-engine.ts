@@ -127,7 +127,7 @@ export async function convertDocumentContent(source: SourceDocument, target: str
 
   if (!hasReadableContent(extracted)) {
     if (sourceType === "pdf") {
-      throw new ConversionError("No selectable text was found in this PDF. It may be scanned or image-based; configure OCR and retry, or use Accounting Intelligence for supported bank statements.", "PDF_OCR_REQUIRED");
+      throw new ConversionError("No selectable text was found in this PDF. It may be scanned or image-based; configure OCR and retry, or use Accounting & Financial Reporting for supported bank statements.", "PDF_OCR_REQUIRED");
     }
     throw new ConversionError("We could not extract readable content from this document. It may be encrypted, damaged, or an unsupported format.", "NO_READABLE_CONTENT");
   }

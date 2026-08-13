@@ -28,10 +28,13 @@ import {
   History,
   PlugZap,
   KeyRound,
+  Landmark,
   LayoutDashboard,
+  LineChart,
   LockKeyhole,
   MessageSquareText,
   Palette,
+  Percent,
   PencilLine,
   ReceiptText,
   ScanText,
@@ -74,7 +77,26 @@ export const appNav: NavGroup[] = [
       { title: "Trash", href: "/documents/trash", icon: Trash2 },
     ],
   },
-  { title: "Accounting Intelligence", href: "/accounting", icon: ReceiptText },
+  {
+    // Sections are the sidebar's children, following the Documents pattern
+    // above, rather than a horizontal strip inside the page. An accountant's
+    // workspace grows to ~17 sections; a horizontal bar cannot hold them, and a
+    // second in-page sidebar would take another 18rem from tables that need the
+    // width. Only sections that exist are listed — the rest arrive with the
+    // stage that builds them, so no nav entry leads somewhere unfinished.
+    title: "Accounting & Financial Reporting",
+    href: "/accounting",
+    icon: ReceiptText,
+    children: [
+      { title: "Overview", href: "/accounting", icon: LayoutDashboard },
+      { title: "Bank Statements", href: "/accounting/bank-statements", icon: Landmark },
+      { title: "Financial Statements", href: "/accounting/financial-statements", icon: FileSpreadsheet },
+      { title: "VAT", href: "/accounting/vat", icon: Percent },
+      { title: "Transaction Insights", href: "/accounting/insights", icon: WandSparkles },
+      { title: "Forecasting", href: "/accounting/forecasting", icon: LineChart },
+      { title: "Audit Tools", href: "/accounting/audit-tools", icon: ShieldCheck },
+    ],
+  },
   { title: "Invoices", href: "/invoices", icon: FileText },
   { title: "Billing & Subscription", href: "/billing", icon: CreditCard },
   { title: "Team & Collaboration", href: "/team", icon: UsersRound },

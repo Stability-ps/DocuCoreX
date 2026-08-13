@@ -1,6 +1,6 @@
 "use client";
 
-// Error boundary for the entire /accounting segment (the Accounting Intelligence
+// Error boundary for the entire /accounting segment (the Accounting & Financial Reporting
 // dashboard AND the /accounting/statements/[id] workspace). Without this, any
 // throw during render/effect — e.g. re-mounting the dashboard after pressing the
 // browser Back button from a statement — bubbles to Next.js's root handler and
