@@ -101,6 +101,8 @@ export const appNav: NavGroup[] = [
       { title: "Transaction Insights", href: "/accounting/insights", icon: WandSparkles },
       { title: "Forecasting", href: "/accounting/forecasting", icon: LineChart },
       { title: "Audit Tools", href: "/accounting/audit-tools", icon: ShieldCheck },
+      { title: "Period Close", href: "/accounting/period-close", icon: LockKeyhole },
+      { title: "Audit Trail", href: "/accounting/audit-trail", icon: History },
     ],
   },
   { title: "Invoices", href: "/invoices", icon: FileText },

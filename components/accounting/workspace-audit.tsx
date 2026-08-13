@@ -297,7 +297,7 @@ export function WorkspaceAudit() {
               onClick={() => setTab(id)}
               className={`rounded-lg px-3 py-1.5 text-xs font-black ${tab === id ? "bg-royal-600 text-white" : "text-slate-600 hover:bg-slate-100"}`}
             >
-              {id === "coverage" ? "Statement Coverage" : "Audit Trail"}
+              {id === "coverage" ? "Statement Coverage" : "Actions Log"}
             </button>
           ))}
         </div>
