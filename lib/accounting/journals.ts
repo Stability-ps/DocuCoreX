@@ -19,6 +19,7 @@ export type JournalType =
   | "adjustment"
   | "opening_balance"
   | "depreciation"
+  | "disposal"
   | "accrual"
   | "prepayment"
   | "tax"
