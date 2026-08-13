@@ -5,6 +5,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   confidenceLabel,
+  groupMatchStatus,
   isAccountingError,
   reconciliationStatement,
   suggestMatches,
@@ -198,4 +199,39 @@ test("the migration is non-destructive", () => {
   for (const drop of sql.match(/drop (policy|constraint|trigger)[^;]*/gi) ?? []) {
     assert.match(drop, /if exists/i);
   }
+});
+
+// ── Group matching ──────────────────────────────────────────────────────────
+
+test("one bank item may answer to several ledger entries", () => {
+  // A single transfer paying four invoices. Forcing this into pairs would
+  // either lose the relationship or invent three bank lines.
+  const status = groupMatchStatus({ bankAmounts: [10000], ledgerAmounts: [2500, 2500, 2500, 2500] });
+  assert.equal(status.canMatch, true);
+  assert.equal(status.difference, 0);
+  assert.match(status.reason, /1 bank item against 4 ledger entries/);
+});
+
+test("several bank items may answer to one ledger entry", () => {
+  const status = groupMatchStatus({ bankAmounts: [3000, 7000], ledgerAmounts: [10000] });
+  assert.equal(status.canMatch, true);
+});
+
+test("a group that does not agree to the cent is not a match", () => {
+  const status = groupMatchStatus({ bankAmounts: [10000], ledgerAmounts: [2500, 2500, 2500, 2499.99] });
+  assert.equal(status.canMatch, false);
+  assert.equal(status.difference, 0.01);
+  assert.match(status.reason, /agree to the cent/);
+});
+
+test("group totals are summed in cents", () => {
+  const status = groupMatchStatus({ bankAmounts: [0.1, 0.2], ledgerAmounts: [0.3] });
+  assert.equal(status.canMatch, true);
+  assert.equal(status.difference, 0);
+});
+
+test("a one-sided selection cannot be matched", () => {
+  assert.equal(groupMatchStatus({ bankAmounts: [100], ledgerAmounts: [] }).canMatch, false);
+  assert.equal(groupMatchStatus({ bankAmounts: [], ledgerAmounts: [100] }).canMatch, false);
+  assert.match(groupMatchStatus({ bankAmounts: [], ledgerAmounts: [] }).reason, /at least one item on each side/);
 });

@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { toCsv } from "@/lib/accounting/ledger";
 import {
   completeReconciliation,
   createBankAccountMapping,
@@ -6,6 +7,7 @@ import {
   getReconciliationWorkspace,
   listBankAccounts,
   listMappableAccounts,
+  listReconciliationHistory,
   recordReconciliationItems,
   removeReconciliationItem,
   reopenReconciliation,
@@ -38,6 +40,27 @@ export async function GET(request: Request) {
     const companyId = url.searchParams.get("companyId");
     if (!companyId) return NextResponse.json({ error: "companyId is required." }, { status: 400 });
     const asAt = url.searchParams.get("asAt") ?? new Date().toISOString().slice(0, 10);
+
+    if (url.searchParams.get("view") === "history") {
+      const history = await listReconciliationHistory(companyId);
+      if (url.searchParams.get("format") === "csv") {
+        const csv = toCsv(
+          ["Bank account", "Period start", "Period end", "Status", "Per bank statement", "Per general ledger", "Difference", "Completed"],
+          history.map((row) => [
+            row.bankAccountLabel, row.periodStart, row.periodEnd, row.status,
+            row.statementBalance, row.ledgerBalanceAtCompletion, row.difference,
+            row.completedAt ? row.completedAt.slice(0, 10) : null,
+          ]),
+        );
+        return new NextResponse(csv, {
+          headers: {
+            "Content-Type": "text/csv; charset=utf-8",
+            "Content-Disposition": `attachment; filename="reconciliation-history.csv"`,
+          },
+        });
+      }
+      return NextResponse.json({ history });
+    }
 
     const [accounts, mappable] = await Promise.all([
       listBankAccounts(companyId, asAt),

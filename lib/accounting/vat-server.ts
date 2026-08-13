@@ -90,6 +90,7 @@ export async function listTaxCodes(companyId: string) {
     direction: row.direction as TaxDirection,
     isCapital: Boolean(row.is_capital),
     vat201Box: (row.vat201_box as string | null) ?? null,
+    controlAccountId: (row.control_account_id as string | null) ?? null,
     controlAccountMapped: row.control_account_id !== null,
     suggestedForTreatment: (row.suggested_for_treatment as string | null) ?? null,
     isActive: Boolean(row.is_active),

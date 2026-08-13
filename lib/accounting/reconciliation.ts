@@ -237,3 +237,49 @@ export function reconciliationStatement(input: {
     explained: residual === 0,
   };
 }
+
+/**
+ * Whether a selected group of bank items and ledger entries may be matched.
+ *
+ * A match is a GROUP, not a pair: one transfer paying four invoices is one bank
+ * line and four postings, and forcing that into pairs would either lose the
+ * relationship or invent three bank lines that do not exist.
+ *
+ * The rule is the same one that governs a pair — the two sides must agree TO
+ * THE CENT. A group that does not agree is not a match; it is a match plus a
+ * difference, and the difference is exactly what a reconciliation exists to
+ * surface rather than absorb.
+ *
+ * Signs: a bank debit and the ledger credit that answers it both reduce the
+ * account, so the two sides are compared as magnitudes of the same movement.
+ */
+export function groupMatchStatus(input: {
+  bankAmounts: number[];
+  ledgerAmounts: number[];
+}): { bankTotal: number; ledgerTotal: number; difference: number; canMatch: boolean; reason: string } {
+  const cents = (values: number[]) => values.reduce((total, value) => total + Math.round(value * 100), 0);
+  const bank = cents(input.bankAmounts);
+  const ledger = cents(input.ledgerAmounts);
+
+  if (!input.bankAmounts.length || !input.ledgerAmounts.length) {
+    return {
+      bankTotal: bank / 100,
+      ledgerTotal: ledger / 100,
+      difference: (bank - ledger) / 100,
+      canMatch: false,
+      reason: "Select at least one item on each side.",
+    };
+  }
+
+  const difference = bank - ledger;
+  return {
+    bankTotal: bank / 100,
+    ledgerTotal: ledger / 100,
+    difference: difference / 100,
+    canMatch: difference === 0,
+    reason:
+      difference === 0
+        ? `${input.bankAmounts.length} bank ${input.bankAmounts.length === 1 ? "item" : "items"} against ${input.ledgerAmounts.length} ledger ${input.ledgerAmounts.length === 1 ? "entry" : "entries"}`
+        : "The two sides differ; a group only matches when they agree to the cent.",
+  };
+}

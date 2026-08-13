@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { vatPosition, vatReadiness, type VatSummaryRow } from "../../lib/accounting/vat.ts";
+import { splitVat, vatPosition, vatReadiness, type VatSummaryRow } from "../../lib/accounting/vat.ts";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
 const migration = readFileSync(join(root, "supabase/migrations/040_accounting_tax_codes_and_vat.sql"), "utf8");
@@ -199,4 +199,64 @@ test("the migration is non-destructive", () => {
   for (const drop of sql.match(/drop (policy|constraint|trigger)[^;]*/gi) ?? []) {
     assert.match(drop, /if exists/i);
   }
+});
+
+// ── Splitting an amount into taxable value and VAT ──────────────────────────
+
+test("the same amount splits differently depending on the basis", () => {
+  // R1,000 at 15% is 869.57 + 130.43 inclusive, and 1,000 + 150.00 exclusive.
+  // Both are ordinary; nothing in the number says which, so the accountant
+  // states it and the form never guesses.
+  assert.deepEqual(splitVat({ amount: 1000, rate: 15, basis: "inclusive" }), { net: 869.57, vat: 130.43 });
+  assert.deepEqual(splitVat({ amount: 1000, rate: 15, basis: "exclusive" }), { net: 1000, vat: 150 });
+});
+
+test("an inclusive split always adds back to the amount entered", () => {
+  // Derived by subtraction rather than by rounding both halves, which would
+  // produce a pair that does not sum to what was typed — and a journal that
+  // then fails to balance by a cent.
+  for (const amount of [0.01, 0.05, 1, 7.77, 33.33, 99.99, 1000, 1234.56, 99999.99]) {
+    const { net, vat } = splitVat({ amount, rate: 15, basis: "inclusive" });
+    assert.equal(
+      Math.round(net * 100) + Math.round(vat * 100),
+      Math.round(amount * 100),
+      `${amount} split into ${net} + ${vat} does not add back`,
+    );
+  }
+});
+
+test("a zero-rated code splits nothing off", () => {
+  assert.deepEqual(splitVat({ amount: 5000, rate: 0, basis: "inclusive" }), { net: 5000, vat: 0 });
+  assert.deepEqual(splitVat({ amount: 0, rate: 15, basis: "inclusive" }), { net: 0, vat: 0 });
+});
+
+test("a rate other than 15 is honoured", () => {
+  // The rate comes from the tax code, so a historic or future rate works
+  // without a code change.
+  assert.deepEqual(splitVat({ amount: 1140, rate: 14, basis: "inclusive" }), { net: 1000, vat: 140 });
+});
+
+test("a tax code chosen on the journal form reaches the ledger", () => {
+  // The picker was decorative until every link in this chain carried the code:
+  // form line → API body → server insert → posting. A break anywhere would have
+  // produced a VAT page that stayed empty however carefully a journal was
+  // coded, with nothing to say why.
+  const form = readFileSync(join(root, "components/accounting/journals.tsx"), "utf8");
+  const api = readFileSync(join(root, "app/api/accounting/journals/route.ts"), "utf8");
+  const server = readFileSync(join(root, "lib/accounting/journals-server.ts"), "utf8");
+
+  assert.match(form, /taxCodeId: line\.taxCodeId \|\| null/);
+  assert.match(api, /taxCodeId: typeof line\.taxCodeId === "string"/);
+  assert.match(server, /tax_code_id: line\.taxCodeId \?\? null/);
+  // And the posting gate copies it onto the posting.
+  assert.match(sql, /line\.source_transaction_id, line\.tax_code_id/);
+});
+
+test("the VAT split never happens without being asked for", () => {
+  const form = readFileSync(join(root, "components/accounting/journals.tsx"), "utf8");
+  // A basis selector and an explicit action — no useEffect that splits on its
+  // own. A journal is only ever what the accountant can see before posting.
+  assert.match(form, /Line \$\{index \+ 1\} VAT basis/);
+  assert.match(form, /onClick=\{\(\) => splitVatOnLine\(index\)\}/);
+  assert.doesNotMatch(form, /useEffect\([^)]*splitVatOnLine/);
 });

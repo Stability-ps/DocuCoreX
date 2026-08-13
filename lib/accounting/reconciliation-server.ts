@@ -370,3 +370,41 @@ export async function reopenReconciliation(reconciliationId: string) {
     .eq("id", reconciliationId);
   if (error) throw new Error(error.message);
 }
+
+/**
+ * Completed and in-progress reconciliations for an entity.
+ *
+ * History is read from the reconciliation records themselves, including the
+ * balances stored at completion. Those are deliberately NOT re-derived: a
+ * completed reconciliation is a statement of what was agreed on a date, and
+ * recomputing it from today's ledger would quietly rewrite it whenever a later
+ * journal touched the period.
+ */
+export async function listReconciliationHistory(companyId: string) {
+  const context = await requireEntity(companyId);
+  const { data, error } = await context.supabase
+    .from("accounting_reconciliations")
+    .select("id, period_start, period_end, status, statement_balance, ledger_balance_at_completion, completed_at, accounting_bank_accounts(label)")
+    .eq("company_id", companyId)
+    .order("period_end", { ascending: false });
+  if (error) throw new Error(error.message);
+
+  return (data ?? []).map((row) => {
+    const raw = (row as Record<string, unknown>).accounting_bank_accounts;
+    const account = (Array.isArray(raw) ? raw[0] : raw) as { label?: string } | undefined;
+    const statement = row.statement_balance === null ? null : Number(row.statement_balance);
+    const ledger = row.ledger_balance_at_completion === null ? null : Number(row.ledger_balance_at_completion);
+    return {
+      id: String(row.id),
+      bankAccountLabel: account?.label ?? "Bank account",
+      periodStart: String(row.period_start),
+      periodEnd: String(row.period_end),
+      status: String(row.status) as "in_progress" | "completed" | "reopened",
+      statementBalance: statement,
+      ledgerBalanceAtCompletion: ledger,
+      // Recorded, not recomputed. Null while a reconciliation is in progress.
+      difference: statement === null || ledger === null ? null : statement - ledger,
+      completedAt: (row.completed_at as string | null) ?? null,
+    };
+  });
+}

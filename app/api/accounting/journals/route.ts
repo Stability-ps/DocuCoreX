@@ -65,6 +65,7 @@ export async function POST(request: Request) {
         debit: Number(line.debit ?? 0),
         credit: Number(line.credit ?? 0),
         description: typeof line.description === "string" ? line.description : null,
+        taxCodeId: typeof line.taxCodeId === "string" && line.taxCodeId ? line.taxCodeId : null,
       })),
       post: body.post === true,
     });
