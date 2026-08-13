@@ -95,6 +95,7 @@ export const appNav: NavGroup[] = [
       { title: "Journals", href: "/accounting/journals", icon: PencilLine },
       { title: "General Ledger", href: "/accounting/general-ledger", icon: BookOpen },
       { title: "Trial Balance", href: "/accounting/trial-balance", icon: Scale },
+      { title: "Bank Reconciliation", href: "/accounting/reconciliation", icon: Landmark },
       { title: "Financial Statements", href: "/accounting/financial-statements", icon: FileSpreadsheet },
       { title: "VAT", href: "/accounting/vat", icon: Percent },
       { title: "Transaction Insights", href: "/accounting/insights", icon: WandSparkles },
