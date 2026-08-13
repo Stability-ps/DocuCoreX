@@ -110,18 +110,26 @@ const tabs: Array<{ id: AccountingTab; label: string }> = [
   { id: "trial-balance", label: "Provisional Ledger" },
 ];
 
-const accountingModules: Array<{
-  id: AccountingModule;
-  label: string;
-  status: "live" | "in-development" | "planned";
-}> = [
-  { id: "bank-statements", label: "Bank Statements", status: "live" },
-  { id: "financial-statements", label: "Financial Statements", status: "live" },
-  { id: "tax-vat", label: "Tax & VAT", status: "live" },
-  { id: "ai-intelligence", label: "Transaction Insights", status: "live" },
-  { id: "forecasting", label: "Forecasting", status: "live" },
-  { id: "audit-tools", label: "Audit Tools", status: "live" },
-];
+// Each section's own identity, keyed by the module the route selects. The route
+// path lives here too so the "no data yet" states can link to Bank Statements
+// rather than flip a piece of local state that no longer exists.
+export const ACCOUNTING_MODULE_ROUTES: Record<AccountingModule, string> = {
+  "bank-statements": "/accounting/bank-statements",
+  "financial-statements": "/accounting/financial-statements",
+  "tax-vat": "/accounting/vat",
+  "ai-intelligence": "/accounting/insights",
+  forecasting: "/accounting/forecasting",
+  "audit-tools": "/accounting/audit-tools",
+};
+
+const MODULE_META: Record<AccountingModule, { label: string; summary: string }> = {
+  "bank-statements": { label: "Bank Statements", summary: "Upload, process, review, and export statements" },
+  "financial-statements": { label: "Financial Statements", summary: "Profit and loss, cash flow, and ratios" },
+  "tax-vat": { label: "VAT", summary: "VAT schedule, anomalies, and SARS risk" },
+  "ai-intelligence": { label: "Transaction Insights", summary: "Transfers, recurring commitments, and duplicates" },
+  forecasting: { label: "Forecasting", summary: "Cash forecast from confirmed commitments" },
+  "audit-tools": { label: "Audit Tools", summary: "Coverage, findings, and the audit trail" },
+};
 
 
 const canShowTechnicalDetails =
@@ -379,7 +387,19 @@ function fileNameFromContentDisposition(header: string | null) {
 type CombineOverrideType = "account" | "continuity";
 type LiveRefreshState = "idle" | "refreshing";
 
-export function AccountingIntelligence() {
+/**
+ * The section is chosen by the ROUTE, not by component state.
+ *
+ * It used to be `useState<AccountingModule>`, drawn as a horizontal strip of
+ * tabs. That made every section unlinkable: an accountant could not send a
+ * colleague the VAT view, could not bookmark it, and the browser's back button
+ * did not retrace their steps. It also does not scale — an accounting workspace
+ * grows to roughly seventeen sections, and a horizontal strip cannot hold them.
+ *
+ * The route now supplies the section and the app sidebar links to it. Nothing
+ * about what each section RENDERS has changed here; only how it is reached.
+ */
+export function AccountingIntelligence({ module = "bank-statements" }: { module?: AccountingModule } = {}) {
   const inputRef = useRef<HTMLInputElement>(null);
   const selectedRunIdRef = useRef("");
   const runProgressRef = useRef(new Map<string, AccountingStatementRun>());
@@ -402,7 +422,7 @@ export function AccountingIntelligence() {
   const [overrideDialogOpen, setOverrideDialogOpen] = useState(false);
   const [overrideType, setOverrideType] = useState<CombineOverrideType>("account");
   const [overrideText, setOverrideText] = useState("");
-  const [activeModule, setActiveModule] = useState<AccountingModule>("bank-statements");
+  const activeModule = module;
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
   const [deleteTargetIds, setDeleteTargetIds] = useState<string[]>([]);
   const [previewJump, setPreviewJump] = useState<{ page: number; nonce: number } | null>(null);
@@ -551,7 +571,7 @@ export function AccountingIntelligence() {
     // returning here via the browser Back button reloads the same statement
     // instead of losing selection — and so a deep link opens the right one.
     const urlRunId = typeof window !== "undefined" ? new URLSearchParams(window.location.search).get("run") : null;
-    void loadRuns(urlRunId ?? undefined).catch((loadError) => setError(loadError instanceof Error ? loadError.message : "Unable to load Accounting Intelligence."));
+    void loadRuns(urlRunId ?? undefined).catch((loadError) => setError(loadError instanceof Error ? loadError.message : "Unable to load the accounting workspace."));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -1118,65 +1138,35 @@ export function AccountingIntelligence() {
         controls driving one filter, which is confusing rather than convenient.
         The Transactions one is kept, since that is where the results appear.
       */}
-      <header className="flex flex-col gap-0.5">
-        <p className="hidden text-xs font-bold uppercase tracking-wide text-slate-500 md:block">
-          Accounting Intelligence <span className="mx-1.5 text-slate-300">›</span> Bank Statements
-        </p>
-        <h1 className="text-xl font-semibold tracking-tight text-navy-950 sm:text-[22px]">
-          <span className="md:hidden">Accounting</span>
-          <span className="hidden md:inline">Bank Statements</span>
-        </h1>
-        <p className="text-sm font-semibold text-slate-500 md:hidden">Upload, process, review, and export statements</p>
-      </header>
-
-      {/* Module navigation and statement intake share one application toolbar. */}
-      <div className="-mx-4 border-b border-slate-200 sm:-mx-5 lg:-mx-6">
-        <div className="flex items-end justify-between gap-3 px-4 sm:px-5 lg:px-6">
-          <div className="flex min-w-0 flex-1 gap-1 overflow-x-auto">
-          {accountingModules.map((mod) => (
-            <button
-              key={mod.id}
-              type="button"
-              onClick={() => setActiveModule(mod.id)}
-              className={`flex items-center gap-2 whitespace-nowrap border-b-2 px-3 py-2 text-sm font-semibold transition ${
-                activeModule === mod.id
-                  ? "border-royal-600 text-royal-700"
-                  : "border-transparent text-slate-500 hover:text-navy-950"
-              }`}
-            >
-              {mod.label}
-              {mod.status !== "live" ? (
-                <span className={`rounded-full px-1.5 py-0.5 text-[10px] font-black ${
-                  mod.status === "in-development" ? "bg-amber-50 text-amber-700" : "bg-slate-100 text-slate-500"
-                }`}>
-                  {mod.status === "in-development" ? "Dev" : "Soon"}
-                </span>
-              ) : null}
-            </button>
-          ))}
-          </div>
-          {activeModule === "bank-statements" ? (
-            <div className="flex shrink-0 items-center gap-1 pb-1.5 sm:gap-2">
-              <button
-                type="button"
-                disabled={busy === "upload"}
-                onClick={() => inputRef.current?.click()}
-                className="inline-flex h-9 items-center justify-center gap-2 rounded-lg bg-royal-600 px-2.5 text-xs font-semibold text-white shadow-sm transition hover:bg-royal-700 disabled:bg-slate-300 sm:px-4"
-              >
-                {busy === "upload" ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <UploadCloud className="h-3.5 w-3.5" />}
-                <span className="hidden sm:inline">Upload Statement</span>
-                <span className="sm:hidden">Upload</span>
-              </button>
-            </div>
-          ) : null}
+      <header className="flex flex-wrap items-end justify-between gap-3 border-b border-slate-200 pb-3">
+        <div className="flex min-w-0 flex-col gap-0.5">
+          <p className="hidden text-xs font-bold uppercase tracking-wide text-slate-500 md:block">
+            Accounting &amp; Financial Reporting <span className="mx-1.5 text-slate-300">›</span> {MODULE_META[activeModule].label}
+          </p>
+          <h1 className="text-xl font-semibold tracking-tight text-navy-950 sm:text-[22px]">
+            {MODULE_META[activeModule].label}
+          </h1>
+          <p className="text-sm font-semibold text-slate-500 md:hidden">{MODULE_META[activeModule].summary}</p>
         </div>
-      </div>
+        {activeModule === "bank-statements" ? (
+          <button
+            type="button"
+            disabled={busy === "upload"}
+            onClick={() => inputRef.current?.click()}
+            className="inline-flex h-9 shrink-0 items-center justify-center gap-2 rounded-lg bg-royal-600 px-2.5 text-xs font-semibold text-white shadow-sm transition hover:bg-royal-700 disabled:bg-slate-300 sm:px-4"
+          >
+            {busy === "upload" ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <UploadCloud className="h-3.5 w-3.5" />}
+            <span className="hidden sm:inline">Upload Statement</span>
+            <span className="sm:hidden">Upload</span>
+          </button>
+        ) : null}
+      </header>
 
       {activeModule === "financial-statements" ? (
         detailAnalytics ? (
           <FinancialStatementsPanel pl={detailAnalytics.pl} cashFlow={detailAnalytics.cashFlow} ratios={detailAnalytics.ratios} />
         ) : (
-          <ModuleNoDataMessage label="Financial Statements" onSelect={() => setActiveModule("bank-statements")} />
+          <ModuleNoDataMessage label="Financial Statements" />
         )
       ) : null}
 
@@ -1184,7 +1174,7 @@ export function AccountingIntelligence() {
         detailAnalytics ? (
           <TaxVatPanel vatRows={vatRows} vatAnomalies={detailAnalytics.vatAnomalies} riskScore={detailAnalytics.riskScore} />
         ) : (
-          <ModuleNoDataMessage label="Tax & VAT" onSelect={() => setActiveModule("bank-statements")} />
+          <ModuleNoDataMessage label="VAT" />
         )
       ) : null}
 
@@ -3098,179 +3088,9 @@ function EmptyWorkspace() {
   );
 }
 
-type ModuleFeature = {
-  title: string;
-  description: string;
-  status: "live" | "in-development" | "planned";
-  liveLabel?: string;
-};
-
-const moduleContent: Record<
-  Exclude<AccountingModule, "bank-statements">,
-  { summary: string; features: ModuleFeature[] }
-> = {
-  "financial-statements": {
-    summary:
-      "Bank-derived accounting summaries. These are provisional reports built from statement data, not final financial statements.",
-    features: [
-      {
-        title: "Provisional Ledger",
-        description: "Debit and credit balances by account category derived from bank data. Not a double-entry trial balance — bank statements carry only one side of each entry.",
-        status: "live",
-        liveLabel: "Available in Bank Statements → Provisional Ledger tab",
-      },
-      {
-        title: "Profit & Loss Statement",
-        description: "Income vs expense summary for the selected statement period",
-        status: "in-development",
-      },
-      {
-        title: "Balance Sheet",
-        description: "Point-in-time snapshot of assets, liabilities and equity",
-        status: "in-development",
-      },
-      {
-        title: "Cash Flow Statement",
-        description: "Operating, investing and financing cash flow movements",
-        status: "in-development",
-      },
-    ],
-  },
-  "tax-vat": {
-    summary:
-      "Identify VAT anomalies, validate treatment consistency and assess SARS risk exposure from your transaction data.",
-    features: [
-      {
-        title: "VAT Schedule",
-        description: "Full VAT treatment schedule by transaction type",
-        status: "live",
-        liveLabel: "Available in Bank Statements → VAT tab",
-      },
-      {
-        title: "VAT Anomaly Detection",
-        description: "Flag transactions with inconsistent, missing or conflicting VAT treatment",
-        status: "in-development",
-      },
-      {
-        title: "Input / Output VAT Summary",
-        description: "Net VAT position for filing periods with supporting schedules",
-        status: "in-development",
-      },
-      {
-        title: "SARS Risk Scoring",
-        description: "Risk assessment based on transaction patterns and VAT exposure",
-        status: "planned",
-      },
-    ],
-  },
-  "ai-intelligence": {
-    summary:
-      "Transaction insights surface anomalies, duplicates and related-party activity across your bank data.",
-    features: [
-      {
-        title: "Expense Categorisation",
-        description: "Account categories are assigned to every extracted transaction automatically",
-        status: "live",
-        liveLabel: "Active in Bank Statements — edit categories inline",
-      },
-      {
-        title: "Duplicate Payment Detection",
-        description: "Flag transactions with matching amounts and similar descriptions in the same period",
-        status: "in-development",
-      },
-      {
-        title: "Unusual Transaction Alerts",
-        description: "Identify statistical outliers by amount, frequency or counterparty pattern",
-        status: "in-development",
-      },
-      {
-        title: "Director Loan Account Analysis",
-        description: "Track and classify director-linked transactions with running balance",
-        status: "planned",
-      },
-    ],
-  },
-  forecasting: {
-    summary:
-      "Forward-looking financial intelligence built on your historical bank statement and accounting data.",
-    features: [
-      {
-        title: "Cash Flow Forecasting",
-        description: "Project future cash positions from historical inflow and outflow patterns",
-        status: "planned",
-      },
-      {
-        title: "Monthly Management Accounts",
-        description: "Automated draft management accounts generated from processed bank data",
-        status: "planned",
-      },
-      {
-        title: "Financial Ratio Analysis",
-        description: "Liquidity, solvency and profitability ratios with period-on-period comparison",
-        status: "planned",
-      },
-      {
-        title: "Budget vs Actual",
-        description: "Compare extracted actuals against imported budget figures",
-        status: "planned",
-      },
-    ],
-  },
-  "audit-tools": {
-    summary:
-      "Purpose-built tools for auditors, accountants and tax practitioners working with bank statement data.",
-    features: [
-      {
-        title: "Statement Notes",
-        description: "Narrative notes summarising statement activity and anomalies",
-        status: "in-development",
-      },
-      {
-        title: "Audit Trail Insights",
-        description: "Full processing history, confidence scoring log and change tracking",
-        status: "in-development",
-      },
-      {
-        title: "Audit Preparation Pack",
-        description: "Generate an auditor-ready document package with supporting schedules",
-        status: "planned",
-      },
-      {
-        title: "Working Paper Support",
-        description: "Structured working papers exportable to Excel with sign-off fields",
-        status: "planned",
-      },
-    ],
-  },
-};
-
-const featureStatusConfig: Record<
-  "live" | "in-development" | "planned",
-  { label: string; badge: string; card: string; note: string }
-> = {
-  live: {
-    label: "Live",
-    badge: "border-emerald-200 bg-emerald-50 text-emerald-700",
-    card: "border-emerald-200 bg-emerald-50/30",
-    note: "text-emerald-700",
-  },
-  "in-development": {
-    label: "In Development",
-    badge: "border-amber-200 bg-amber-50 text-amber-700",
-    card: "border-amber-100 bg-white",
-    note: "text-amber-700",
-  },
-  planned: {
-    label: "Planned",
-    badge: "border-slate-200 bg-slate-100 text-slate-500",
-    card: "border-slate-200 bg-slate-50",
-    note: "text-slate-400",
-  },
-};
-
 // ─── Module No-Data Message ────────────────────────────────────────────────
 
-function ModuleNoDataMessage({ label, onSelect }: { label: string; onSelect: () => void }) {
+function ModuleNoDataMessage({ label }: { label: string }) {
   return (
     <div className="flex flex-col items-center justify-center gap-4 rounded-2xl border border-slate-200 bg-white px-6 py-16 text-center shadow-sm">
       <FileText className="h-10 w-10 text-slate-300" />
@@ -3280,12 +3100,12 @@ function ModuleNoDataMessage({ label, onSelect }: { label: string; onSelect: () 
           Process a bank statement first to unlock this module.
         </p>
       </div>
-      <button
-        onClick={onSelect}
+      <Link
+        href={ACCOUNTING_MODULE_ROUTES["bank-statements"]}
         className="rounded-xl bg-royal-600 px-5 py-2.5 text-sm font-bold text-white shadow-sm hover:bg-royal-700"
       >
         Go to Bank Statements
-      </button>
+      </Link>
     </div>
   );
 }
@@ -4370,54 +4190,3 @@ function AuditToolsPanel({
   );
 }
 
-// ─── AccountingModulePanel (legacy — no longer used for live modules) ──────
-
-function AccountingModulePanel({
-  moduleId,
-}: {
-  moduleId: Exclude<AccountingModule, "bank-statements">;
-}) {
-  const mod = accountingModules.find((m) => m.id === moduleId)!;
-  const content = moduleContent[moduleId];
-  const modStatus = featureStatusConfig[mod.status];
-
-  return (
-    <div className="space-y-5">
-      <div className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
-        <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
-          <div>
-            <span className={`inline-flex items-center rounded-full border px-3 py-1 text-xs font-black ${modStatus.badge}`}>
-              {modStatus.label}
-            </span>
-            <h2 className="mt-3 text-xl font-semibold text-navy-950">{mod.label}</h2>
-            <p className="mt-1 max-w-2xl text-sm font-semibold leading-6 text-slate-500">{content.summary}</p>
-          </div>
-        </div>
-      </div>
-
-      <div className="grid gap-4 sm:grid-cols-2">
-        {content.features.map((feature) => {
-          const cfg = featureStatusConfig[feature.status];
-          return (
-            <div key={feature.title} className={`rounded-xl border p-4 ${cfg.card}`}>
-              <div className="flex items-start justify-between gap-3">
-                <h3 className="font-semibold text-navy-950">{feature.title}</h3>
-                <span className={`shrink-0 rounded-full border px-2 py-0.5 text-[10px] font-black ${cfg.badge}`}>
-                  {cfg.label}
-                </span>
-              </div>
-              <p className="mt-1 text-sm leading-5 text-slate-500">{feature.description}</p>
-              {feature.liveLabel ? (
-                <p className={`mt-3 text-xs font-semibold ${cfg.note}`}>{feature.liveLabel}</p>
-              ) : feature.status === "in-development" ? (
-                <p className={`mt-3 text-xs font-semibold ${cfg.note}`}>Coming in a future release</p>
-              ) : (
-                <p className={`mt-3 text-xs font-semibold ${cfg.note}`}>On the roadmap</p>
-              )}
-            </div>
-          );
-        })}
-      </div>
-    </div>
-  );
-}
