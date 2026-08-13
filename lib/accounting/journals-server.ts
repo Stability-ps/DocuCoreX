@@ -118,6 +118,7 @@ export async function createJournal(input: {
       debit: line.debit,
       credit: line.credit,
       description: line.description ?? null,
+      tax_code_id: line.taxCodeId ?? null,
     })),
   );
 

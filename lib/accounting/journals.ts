@@ -30,6 +30,8 @@ export type JournalLineInput = {
   debit: number;
   credit: number;
   description?: string | null;
+  /** The tax code the accountant assigned. Null is "no VAT arises here". */
+  taxCodeId?: string | null;
 };
 
 export type JournalSummary = {

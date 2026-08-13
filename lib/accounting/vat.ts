@@ -145,3 +145,33 @@ export const DIRECTION_LABELS: Record<TaxDirection, string> = {
   input: "Input VAT (incurred)",
   none: "No VAT arises",
 };
+
+export type VatBasis = "inclusive" | "exclusive";
+
+/**
+ * Split an amount into its taxable value and its VAT element.
+ *
+ * WHY THE BASIS IS ASKED FOR RATHER THAN GUESSED
+ *
+ * R1,000 at 15% is R869.57 + R130.43 if the amount includes VAT, and
+ * R1,000 + R150.00 if it excludes it. Both are ordinary; nothing in the number
+ * says which. A form that assumed one would silently mis-state one journal in
+ * two, so the accountant states it.
+ *
+ * Computed in CENTS, and the VAT is derived by SUBTRACTION on the inclusive
+ * basis so that net + VAT is exactly the amount entered. Rounding both halves
+ * independently would produce a pair that does not add up to what the
+ * accountant typed, and a journal that then fails to balance by a cent.
+ */
+export function splitVat(input: { amount: number; rate: number; basis: VatBasis }): { net: number; vat: number } {
+  const amountCents = Math.round(input.amount * 100);
+  if (input.rate <= 0 || amountCents === 0) return { net: input.amount, vat: 0 };
+
+  if (input.basis === "inclusive") {
+    const netCents = Math.round((amountCents * 100) / (100 + input.rate));
+    return { net: netCents / 100, vat: (amountCents - netCents) / 100 };
+  }
+
+  const vatCents = Math.round((amountCents * input.rate) / 100);
+  return { net: amountCents / 100, vat: vatCents / 100 };
+}

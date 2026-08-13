@@ -14,9 +14,10 @@
  */
 
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { AlertTriangle, Building2, Loader2, Plus, RefreshCw, Trash2 } from "lucide-react";
+import { AlertTriangle, Building2, Loader2, Plus, RefreshCw, Scissors, Trash2 } from "lucide-react";
 import type { AccountingEntity, LedgerAccount } from "@/lib/accounting/chart";
 import { validateJournalLines, type JournalSummary, type JournalType } from "@/lib/accounting/journals";
+import { splitVat, type VatBasis } from "@/lib/accounting/vat";
 
 const JOURNAL_TYPE_LABELS: Record<JournalType, string> = {
   general: "General Journal",
@@ -30,9 +31,28 @@ const JOURNAL_TYPE_LABELS: Record<JournalType, string> = {
   reversal: "Reversal Journal",
 };
 
-type DraftLine = { accountId: string; debit: string; credit: string; description: string };
+type TaxCode = {
+  id: string;
+  code: string;
+  name: string;
+  rate: number;
+  direction: "output" | "input" | "none";
+  controlAccountId: string | null;
+  controlAccountMapped: boolean;
+  isActive: boolean;
+};
 
-const emptyLine = (): DraftLine => ({ accountId: "", debit: "", credit: "", description: "" });
+type DraftLine = {
+  accountId: string;
+  debit: string;
+  credit: string;
+  description: string;
+  taxCodeId: string;
+  /** Whether the amount on this line already includes VAT. Asked, never guessed. */
+  vatBasis: VatBasis;
+};
+
+const emptyLine = (): DraftLine => ({ accountId: "", debit: "", credit: "", description: "", taxCodeId: "", vatBasis: "inclusive" });
 
 /** Blank means zero; anything unparseable stays 0 rather than becoming NaN. */
 function amount(value: string): number {
@@ -52,6 +72,7 @@ export function Journals() {
   const [entities, setEntities] = useState<AccountingEntity[]>([]);
   const [companyId, setCompanyId] = useState("");
   const [accounts, setAccounts] = useState<LedgerAccount[]>([]);
+  const [taxCodes, setTaxCodes] = useState<TaxCode[]>([]);
   const [journals, setJournals] = useState<JournalSummary[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
@@ -96,6 +117,7 @@ export function Journals() {
       if (!chartResponse.ok) throw new Error(chartData?.error ?? "Unable to load the chart of accounts.");
       if (!journalsResponse.ok) throw new Error(journalsData?.error ?? "Unable to load journals.");
       setAccounts((chartData.accounts ?? []).filter((account: LedgerAccount) => account.isActive));
+      setTaxCodes((chartData.taxCodes ?? []).filter((code: TaxCode) => code.isActive));
       setJournals(journalsData.journals ?? []);
     } catch (loadError) {
       setError(loadError instanceof Error ? loadError.message : "Unable to load journals.");
@@ -113,7 +135,7 @@ export function Journals() {
   }, [companyId, loadForCompany]);
 
   const parsedLines = useMemo(
-    () => lines.map((line) => ({ accountId: line.accountId, debit: amount(line.debit), credit: amount(line.credit), description: line.description })),
+    () => lines.map((line) => ({ accountId: line.accountId, debit: amount(line.debit), credit: amount(line.credit), description: line.description, taxCodeId: line.taxCodeId || null })),
     [lines],
   );
 
@@ -128,6 +150,46 @@ export function Journals() {
 
   const issues = useMemo(() => validateJournalLines(parsedLines), [parsedLines]);
   const canPost = issues.length === 0 && !submitting;
+
+
+  /**
+   * Split a line into its taxable value and its VAT element.
+   *
+   * The VAT goes to the tax code's own control account, carrying the same code,
+   * so it lands where accounting_vat_summary looks for it. On the inclusive
+   * basis the original line is REDUCED to the net — the amount the accountant
+   * typed was the total, and leaving it whole would overstate the expense by
+   * the VAT.
+   *
+   * Nothing happens automatically. A journal is only ever what the accountant
+   * can see on screen before pressing Post.
+   */
+  const splitVatOnLine = (index: number) => {
+    const line = lines[index];
+    const code = taxCodes.find((candidate) => candidate.id === line.taxCodeId);
+    if (!code || !code.controlAccountId || code.rate <= 0) return;
+
+    const side = amount(line.debit) > 0 ? "debit" : "credit";
+    const gross = side === "debit" ? amount(line.debit) : amount(line.credit);
+    const { net, vat } = splitVat({ amount: gross, rate: code.rate, basis: line.vatBasis });
+    if (vat <= 0) return;
+
+    setLines((current) => {
+      const next = [...current];
+      if (line.vatBasis === "inclusive") {
+        next[index] = { ...line, [side]: net.toFixed(2) } as DraftLine;
+      }
+      next.splice(index + 1, 0, {
+        accountId: code.controlAccountId as string,
+        debit: side === "debit" ? vat.toFixed(2) : "",
+        credit: side === "credit" ? vat.toFixed(2) : "",
+        description: `VAT ${code.code}`,
+        taxCodeId: code.id,
+        vatBasis: line.vatBasis,
+      });
+      return next;
+    });
+  };
 
   const submit = async (post: boolean) => {
     setSubmitting(true);
@@ -283,6 +345,7 @@ export function Journals() {
                 <tr className="border-b border-slate-200 text-left">
                   <th scope="col" className="pb-2 text-xs font-bold uppercase tracking-wide text-slate-500">Account</th>
                   <th scope="col" className="pb-2 text-xs font-bold uppercase tracking-wide text-slate-500">Line description</th>
+                  <th scope="col" className="pb-2 text-xs font-bold uppercase tracking-wide text-slate-500">Tax code</th>
                   <th scope="col" className="pb-2 text-right text-xs font-bold uppercase tracking-wide text-slate-500">Debit</th>
                   <th scope="col" className="pb-2 text-right text-xs font-bold uppercase tracking-wide text-slate-500">Credit</th>
                   <th scope="col" className="pb-2"><span className="sr-only">Remove line</span></th>
@@ -317,6 +380,65 @@ export function Journals() {
                         }
                         className="w-full rounded-lg border border-slate-300 px-2 py-1.5 text-sm text-navy-950 focus:border-royal-500 focus:outline-none focus:ring-2 focus:ring-royal-200"
                       />
+                    </td>
+                    <td className="py-2 pr-2 align-top">
+                      <select
+                        aria-label={`Line ${index + 1} tax code`}
+                        value={line.taxCodeId}
+                        onChange={(event) =>
+                          setLines((current) => current.map((item, i) => (i === index ? { ...item, taxCodeId: event.target.value } : item)))
+                        }
+                        className="w-full min-w-[8rem] rounded-lg border border-slate-300 bg-white px-2 py-1.5 text-sm text-navy-950 focus:border-royal-500 focus:outline-none focus:ring-2 focus:ring-royal-200"
+                      >
+                        <option value="">No tax code</option>
+                        {taxCodes.map((code) => (
+                          <option key={code.id} value={code.id}>
+                            {code.code} ({code.rate}%)
+                          </option>
+                        ))}
+                      </select>
+                      {(() => {
+                        const code = taxCodes.find((candidate) => candidate.id === line.taxCodeId);
+                        if (!code || code.rate <= 0) return null;
+                        if (!code.controlAccountId) {
+                          // Honest rather than silent: without a control
+                          // account the VAT has nowhere to be posted.
+                          return (
+                            <p className="mt-1 text-[11px] font-semibold text-amber-700">
+                              {code.code} has no control account, so its VAT cannot be posted.
+                            </p>
+                          );
+                        }
+                        const gross = amount(line.debit) > 0 ? amount(line.debit) : amount(line.credit);
+                        const { vat } = splitVat({ amount: gross, rate: code.rate, basis: line.vatBasis });
+                        return (
+                          <div className="mt-1 flex flex-wrap items-center gap-1">
+                            <select
+                              aria-label={`Line ${index + 1} VAT basis`}
+                              value={line.vatBasis}
+                              onChange={(event) =>
+                                setLines((current) =>
+                                  current.map((item, i) => (i === index ? { ...item, vatBasis: event.target.value as VatBasis } : item)),
+                                )
+                              }
+                              className="rounded border border-slate-300 bg-white px-1 py-0.5 text-[11px] font-semibold text-slate-600"
+                            >
+                              <option value="inclusive">incl. VAT</option>
+                              <option value="exclusive">excl. VAT</option>
+                            </select>
+                            <button
+                              type="button"
+                              onClick={() => splitVatOnLine(index)}
+                              disabled={vat <= 0}
+                              title={`Add a VAT line of ${vat.toFixed(2)} to ${code.code}'s control account`}
+                              className="inline-flex items-center gap-1 rounded border border-slate-300 px-1.5 py-0.5 text-[11px] font-bold text-royal-700 hover:bg-royal-50 disabled:opacity-40"
+                            >
+                              <Scissors className="h-2.5 w-2.5" aria-hidden="true" />
+                              Split VAT {vat > 0 ? vat.toFixed(2) : ""}
+                            </button>
+                          </div>
+                        );
+                      })()}
                     </td>
                     {(["debit", "credit"] as const).map((side) => (
                       <td key={side} className="py-2 pr-2">
@@ -355,13 +477,13 @@ export function Journals() {
               </tbody>
               <tfoot>
                 <tr className="border-t-2 border-slate-300 font-bold">
-                  <td className="pt-2 text-xs uppercase tracking-wide text-slate-500" colSpan={2}>Total</td>
+                  <td className="pt-2 text-xs uppercase tracking-wide text-slate-500" colSpan={3}>Total</td>
                   <td className="pt-2 text-right tabular-nums text-navy-950">{money(totals.debit)}</td>
                   <td className="pt-2 text-right tabular-nums text-navy-950">{money(totals.credit)}</td>
                   <td />
                 </tr>
                 <tr>
-                  <td className="pt-1 text-xs uppercase tracking-wide text-slate-500" colSpan={2}>Difference</td>
+                  <td className="pt-1 text-xs uppercase tracking-wide text-slate-500" colSpan={3}>Difference</td>
                   <td
                     colSpan={2}
                     className={`pt-1 text-right tabular-nums font-bold ${totals.difference === 0 ? "text-emerald-700" : "text-amber-700"}`}

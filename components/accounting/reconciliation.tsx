@@ -18,6 +18,8 @@ import Link from "next/link";
 import {
   AlertTriangle,
   ArrowLeft,
+  Download,
+  History,
   CheckCircle2,
   Landmark,
   Link2,
@@ -33,6 +35,7 @@ import {
   ITEM_TYPE_LABELS,
   confidenceLabel,
   isAccountingError,
+  groupMatchStatus,
   reconciliationStatement,
   suggestMatches,
   type BankAccountSummary,
@@ -62,6 +65,11 @@ export function BankReconciliation() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [mapOpen, setMapOpen] = useState(false);
+  const [history, setHistory] = useState<Array<{
+    id: string; bankAccountLabel: string; periodStart: string; periodEnd: string;
+    status: string; statementBalance: number | null; ledgerBalanceAtCompletion: number | null;
+    difference: number | null; completedAt: string | null;
+  }> | null>(null);
 
   const loadAccounts = useCallback(async (companyId: string, asAt: string) => {
     setLoading(true);
@@ -147,6 +155,21 @@ export function BankReconciliation() {
       <EntityPeriodBar
         {...period}
         right={
+          <div className="flex flex-wrap items-center gap-2">
+          <button
+            type="button"
+            onClick={async () => {
+              if (history) { setHistory(null); return; }
+              const response = await fetch(`/api/accounting/reconciliation?companyId=${encodeURIComponent(period.companyId)}&view=history`);
+              const data = await response.json();
+              if (response.ok) setHistory(data.history ?? []);
+              else setError(data?.error ?? "Unable to load history.");
+            }}
+            className="inline-flex h-9 items-center gap-2 rounded-lg border border-slate-300 px-3 text-sm font-semibold text-navy-950 transition hover:bg-slate-50"
+          >
+            <History className="h-3.5 w-3.5" aria-hidden="true" />
+            {history ? "Hide history" : "View history"}
+          </button>
           <button
             type="button"
             onClick={() => setMapOpen((open) => !open)}
@@ -157,6 +180,7 @@ export function BankReconciliation() {
             <Plus className="h-3.5 w-3.5" aria-hidden="true" />
             Map bank account
           </button>
+          </div>
         }
       />
 
@@ -171,6 +195,69 @@ export function BankReconciliation() {
           }}
           post={post}
         />
+      ) : null}
+
+      {history ? (
+        <section className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
+          <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-200 bg-slate-50 px-4 py-2.5">
+            <h2 className="text-xs font-bold uppercase tracking-wide text-slate-500">Reconciliation history</h2>
+            {history.length ? (
+              <a
+                href={`/api/accounting/reconciliation?companyId=${encodeURIComponent(period.companyId)}&view=history&format=csv`}
+                className="inline-flex items-center gap-1.5 text-xs font-bold text-royal-700 hover:underline"
+              >
+                <Download className="h-3 w-3" aria-hidden="true" />
+                Export CSV
+              </a>
+            ) : null}
+          </div>
+          {!history.length ? (
+            <p className="px-4 py-8 text-center text-sm font-semibold text-slate-500">
+              No reconciliation has been started for this entity yet.
+            </p>
+          ) : (
+            <div className="overflow-x-auto">
+              <table className="w-full min-w-[46rem] border-collapse text-sm">
+                <caption className="sr-only">Past reconciliations</caption>
+                <thead>
+                  <tr className="border-b border-slate-200 text-left">
+                    <th scope="col" className="px-4 py-2 text-xs font-bold uppercase tracking-wide text-slate-500">Account</th>
+                    <th scope="col" className="px-4 py-2 text-xs font-bold uppercase tracking-wide text-slate-500">Period</th>
+                    <th scope="col" className="px-4 py-2 text-right text-xs font-bold uppercase tracking-wide text-slate-500">Per statement</th>
+                    <th scope="col" className="px-4 py-2 text-right text-xs font-bold uppercase tracking-wide text-slate-500">Per ledger</th>
+                    <th scope="col" className="px-4 py-2 text-right text-xs font-bold uppercase tracking-wide text-slate-500">Difference</th>
+                    <th scope="col" className="px-4 py-2 text-xs font-bold uppercase tracking-wide text-slate-500">Status</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {history.map((row) => (
+                    <tr key={row.id} className="border-b border-slate-100 last:border-0">
+                      <td className="px-4 py-2 font-semibold text-navy-950">{row.bankAccountLabel}</td>
+                      <td className="px-4 py-2 text-slate-600">
+                        {formatLedgerDate(row.periodStart)} – {formatLedgerDate(row.periodEnd)}
+                      </td>
+                      {/* Recorded at completion, not recomputed: a later journal
+                          must not silently rewrite a signed-off reconciliation. */}
+                      <td className="px-4 py-2 text-right tabular-nums text-navy-950">
+                        {row.statementBalance === null ? "—" : formatLedgerMoney(row.statementBalance)}
+                      </td>
+                      <td className="px-4 py-2 text-right tabular-nums text-navy-950">
+                        {row.ledgerBalanceAtCompletion === null ? "—" : formatLedgerMoney(row.ledgerBalanceAtCompletion)}
+                      </td>
+                      <td className="px-4 py-2 text-right tabular-nums text-navy-950">
+                        {row.difference === null ? "—" : formatLedgerMoney(row.difference)}
+                      </td>
+                      <td className="px-4 py-2 text-xs font-semibold capitalize text-slate-600">
+                        {row.status.replace("_", " ")}
+                        {row.completedAt ? ` · ${formatLedgerDate(row.completedAt.slice(0, 10))}` : ""}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </section>
       ) : null}
 
       {error ? (
@@ -416,6 +503,31 @@ function ReconciliationWorkspace({
     account?.statementBalance !== null && account?.statementBalance !== undefined ? String(account.statementBalance) : "",
   );
   const [suggestions, setSuggestions] = useState<MatchSuggestion[]>([]);
+  const [selectedBank, setSelectedBank] = useState<string[]>([]);
+  const [selectedLedger, setSelectedLedger] = useState<string[]>([]);
+
+  const groupStatus = groupMatchStatus({
+    bankAmounts: selectedBank.map((id) => unmatchedBank.find((item) => item.transactionId === id)?.amount ?? 0),
+    ledgerAmounts: selectedLedger.map((id) => unmatchedLedger.find((entry) => entry.postingId === id)?.amount ?? 0),
+  });
+
+  const matchSelectedGroup = async () => {
+    // One match_group id shared by every row, so the relationship survives as a
+    // group rather than as unrelated pairs.
+    const matchGroup = crypto.randomUUID();
+    await act({
+      action: "record-items",
+      reconciliationId: reconciliation.id,
+      companyId,
+      entries: [
+        ...selectedBank.map((id) => ({ transactionId: id, itemType: "matched", matchGroup, matchMethod: "manual" })),
+        ...selectedLedger.map((id) => ({ postingId: id, itemType: "matched", matchGroup, matchMethod: "manual" })),
+      ],
+    });
+    setSelectedBank([]);
+    setSelectedLedger([]);
+  };
+
 
   const reconciling = useMemo(() => {
     // Only timing differences and not-yet-on-statement items explain a
@@ -619,11 +731,60 @@ function ReconciliationWorkspace({
         </section>
       ) : null}
 
+      {selectedBank.length || selectedLedger.length ? (
+        <div
+          className={`flex flex-wrap items-center justify-between gap-3 rounded-2xl border p-4 shadow-sm ${
+            groupStatus.canMatch ? "border-emerald-300 bg-emerald-50/60" : "border-slate-200 bg-white"
+          }`}
+          aria-live="polite"
+        >
+          <dl className="flex flex-wrap gap-x-8 gap-y-1 text-sm">
+            <div>
+              <dt className="inline text-xs font-bold uppercase tracking-wide text-slate-500">Bank </dt>
+              <dd className="inline font-semibold tabular-nums text-navy-950">{formatLedgerMoney(groupStatus.bankTotal)}</dd>
+            </div>
+            <div>
+              <dt className="inline text-xs font-bold uppercase tracking-wide text-slate-500">Ledger </dt>
+              <dd className="inline font-semibold tabular-nums text-navy-950">{formatLedgerMoney(groupStatus.ledgerTotal)}</dd>
+            </div>
+            <div>
+              <dt className="inline text-xs font-bold uppercase tracking-wide text-slate-500">Difference </dt>
+              <dd className={`inline font-semibold tabular-nums ${groupStatus.canMatch ? "text-emerald-700" : "text-amber-800"}`}>
+                {formatLedgerMoney(groupStatus.difference)}
+              </dd>
+            </div>
+          </dl>
+          <div className="flex items-center gap-2">
+            <p className="text-xs font-semibold text-slate-600">{groupStatus.reason}</p>
+            <button
+              type="button"
+              disabled={!groupStatus.canMatch || busy || completed}
+              onClick={() => void matchSelectedGroup()}
+              className="inline-flex h-9 items-center gap-2 rounded-lg bg-royal-600 px-4 text-sm font-semibold text-white transition hover:bg-royal-700 disabled:bg-slate-300"
+            >
+              <Link2 className="h-3.5 w-3.5" aria-hidden="true" />
+              Match selected
+            </button>
+            <button
+              type="button"
+              onClick={() => { setSelectedBank([]); setSelectedLedger([]); }}
+              className="text-xs font-bold text-slate-500 hover:text-navy-950"
+            >
+              Clear
+            </button>
+          </div>
+        </div>
+      ) : null}
+
       <div className="grid gap-4 lg:grid-cols-2">
         <UnmatchedPanel
           title="Unmatched bank items"
           caption="On the statement, not yet matched to the ledger"
           empty="Every bank item is accounted for."
+          selected={selectedBank}
+          onToggle={(key) =>
+            setSelectedBank((current) => (current.includes(key) ? current.filter((id) => id !== key) : [...current, key]))
+          }
           rows={unmatchedBank.map((item) => ({
             key: item.transactionId,
             date: item.date,
@@ -643,6 +804,10 @@ function ReconciliationWorkspace({
           title="Unmatched ledger entries"
           caption="Posted to the control account, not yet matched to the statement"
           empty="Every ledger entry is accounted for."
+          selected={selectedLedger}
+          onToggle={(key) =>
+            setSelectedLedger((current) => (current.includes(key) ? current.filter((id) => id !== key) : [...current, key]))
+          }
           rows={unmatchedLedger.map((entry) => ({
             key: entry.postingId,
             date: entry.date,
@@ -716,6 +881,8 @@ function UnmatchedPanel({
   rows,
   disabled,
   ledgerSide = false,
+  selected,
+  onToggle,
 }: {
   title: string;
   caption: string;
@@ -723,6 +890,8 @@ function UnmatchedPanel({
   rows: Array<{ key: string; date: string; text: string; amount: number; onType: (type: ReconciliationItemType) => void }>;
   disabled: boolean;
   ledgerSide?: boolean;
+  selected: string[];
+  onToggle: (key: string) => void;
 }) {
   return (
     <section className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
@@ -737,9 +906,19 @@ function UnmatchedPanel({
           {rows.map((row) => (
             <li key={row.key} className="px-4 py-2.5">
               <div className="flex flex-wrap items-start justify-between gap-2">
-                <div className="min-w-0">
-                  <p className="truncate text-sm font-medium text-navy-950">{row.text}</p>
-                  <p className="text-xs font-semibold text-slate-500">{formatLedgerDate(row.date)}</p>
+                <div className="flex min-w-0 items-start gap-2">
+                  <input
+                    type="checkbox"
+                    checked={selected.includes(row.key)}
+                    onChange={() => onToggle(row.key)}
+                    disabled={disabled}
+                    aria-label={`Select ${row.text}`}
+                    className="mt-0.5 h-4 w-4 shrink-0 rounded border-slate-300"
+                  />
+                  <div className="min-w-0">
+                    <p className="truncate text-sm font-medium text-navy-950">{row.text}</p>
+                    <p className="text-xs font-semibold text-slate-500">{formatLedgerDate(row.date)}</p>
+                  </div>
                 </div>
                 <p className="shrink-0 text-sm font-semibold tabular-nums text-navy-950">{formatLedgerMoney(row.amount)}</p>
               </div>
