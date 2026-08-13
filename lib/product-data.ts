@@ -90,6 +90,7 @@ export const appNav: NavGroup[] = [
     children: [
       { title: "Overview", href: "/accounting", icon: LayoutDashboard },
       { title: "Bank Statements", href: "/accounting/bank-statements", icon: Landmark },
+      { title: "Chart of Accounts", href: "/accounting/chart-of-accounts", icon: BookOpenText },
       { title: "Financial Statements", href: "/accounting/financial-statements", icon: FileSpreadsheet },
       { title: "VAT", href: "/accounting/vat", icon: Percent },
       { title: "Transaction Insights", href: "/accounting/insights", icon: WandSparkles },
