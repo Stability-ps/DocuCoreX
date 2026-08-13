@@ -1,4 +1,4 @@
-# Production migration readiness — accounting schema 035–039
+# Production migration readiness — accounting schema 035–040
 
 **Status: NOT APPLIED. The live Supabase project is at migration 034.**
 
@@ -17,8 +17,8 @@ growing. Update it whenever a migration is added or applied.
 | | |
 |---|---|
 | Live Supabase project | applied through **034** |
-| This repository | contains **035 – 039** |
-| Gap | **5 migrations** |
+| This repository | contains **035 – 040** |
+| Gap | **6 migrations** |
 | Verified against | PostgreSQL 16.14, local, disposable |
 | Verification | `./scripts/verify-ledger.sh` — 88 assertions, 0 failures |
 | Never run against | the live database |
@@ -36,6 +36,7 @@ is the reason the gap exists, and closing it is the first item in §4.
 | 037 | `accounting_entity_isolation` | composite FKs for entity isolation, single posting gate, `FOR UPDATE` lock, source-deletion carve-out | **Medium.** Adds `UNIQUE (id, company_id)` to `accounting_accounts` and `accounting_journals`, and a column to `accounting_journal_lines`. Fails loudly if a cross-entity row exists — there can be none, since no ledger data exists in production yet. |
 | 038 | `accounting_ledger_reporting` | GL / TB / opening-balance functions, one index | **Low.** Read-only functions plus an index on a table that is empty in production. |
 | 039 | `accounting_bank_reconciliation` | bank-account control mapping, reconciliations, reconciliation items | **Low.** Additive. |
+| 040 | `accounting_tax_codes_and_vat` | tax codes, VAT periods, `tax_code_id` on lines and postings, VAT summary/register functions | **Low–medium.** Additive, and seeds tax codes per company. Adds an AFTER INSERT trigger on `companies` that seeds accounting setup for newly created entities — the only pending migration that touches a pre-existing table's behaviour. |
 
 **No pending migration drops, truncates or deletes anything.** Asserted by test
 in each migration's suite. The only `DROP`s are of each migration's own policies,
@@ -45,10 +46,10 @@ constraints and triggers, each guarded with `IF EXISTS`.
 
 Strictly sequential. 037 alters objects created by 035 and 036; 038's functions
 read tables from 035 and 036; 039 references the chart from 035 and postings from
-036.
+036; 040 adds columns to 036's tables and reads 035's chart.
 
 ```
-034 (live) → 035 → 036 → 037 → 038 → 039
+034 (live) → 035 → 036 → 037 → 038 → 039 → 040
 ```
 
 ## 4. Rollout procedure
@@ -136,7 +137,7 @@ features:
 
 `/accounting/chart-of-accounts`, `/accounting/journals`,
 `/accounting/general-ledger`, `/accounting/trial-balance`,
-`/accounting/reconciliation`
+`/accounting/reconciliation`, `/accounting/vat`
 
 They fail safe — an unmigrated database produces a load error, not wrong numbers
 — but they should not be presented to users as finished until the schema is
@@ -151,8 +152,8 @@ unaffected by every one of these migrations.
 - [ ] Application exercised against the rehearsal database (Stage 4B §23)
 - [ ] Production snapshot taken
 - [ ] `btree_gist` available in the production project
-- [ ] 035 – 039 applied in order
+- [ ] 035 – 040 applied in order
 - [ ] Catalog verification queries run and recorded
 - [ ] Backfill counts confirmed
 - [ ] Accounting routes verified in production
-- [ ] This document updated to say "applied through 039"
+- [ ] This document updated to say "applied through 040"
