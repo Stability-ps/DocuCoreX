@@ -24,6 +24,7 @@ const JOURNAL_TYPE_LABELS: Record<JournalType, string> = {
   adjustment: "Adjustment Journal",
   opening_balance: "Opening Balance Journal",
   depreciation: "Depreciation Journal",
+  disposal: "Disposal Journal",
   accrual: "Accrual Journal",
   prepayment: "Prepayment Journal",
   tax: "Tax Journal",
