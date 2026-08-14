@@ -3,12 +3,189 @@
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { useEffect, useRef, useState } from "react";
-import { Bell, ChevronDown, Command, CreditCard, Folder, Home, Landmark, LogOut, Plus, Receipt, Search, Settings, ShieldCheck, UsersRound } from "lucide-react";
+import { Bell, ChevronDown, Command, CreditCard, Folder, Home, Landmark, LogOut, Menu, Plus, Receipt, Search, Settings, UsersRound, X } from "lucide-react";
 import { BrandLogo } from "@/components/brand";
 import { SelectionCheckbox, checkboxShiftKey, useBulkSelection } from "@/components/bulk-selection";
 import { appNav, newActionItems } from "@/lib/product-data";
 import { clearDocucorexClientCache } from "@/lib/client-cache";
+import { useEscapeToClose } from "@/lib/use-escape-to-close";
 import type { NotificationRecord } from "@/lib/types";
+
+const NAV_EXPANDED_STORAGE_KEY = "docucorex.nav-expanded";
+
+// Never let a persisted "collapsed" from a previous session silently close a
+// group/section the user is inside right now — the render/toggle fallback
+// below (`?? active`) means a stored `false` for the active item would
+// otherwise flash-collapse it on load.
+function reconcileActiveFalse(map: Record<string, boolean>, activeKeys: Set<string>) {
+  return Object.fromEntries(Object.entries(map).filter(([key, value]) => !(value === false && activeKeys.has(key))));
+}
+
+function NavList({ onNavigate }: { onNavigate?: () => void }) {
+  const pathname = usePathname();
+  const isActive = (href: string) => pathname === href || (href !== "/" && pathname.startsWith(`${href}/`));
+  const isExactActive = (href: string) => pathname === href;
+
+  // Untouched groups fall back to "expanded when you are inside them" rather
+  // than to a stored false. Seeding a group to false here made it collapsed
+  // even while on its own page, and the toggle below falls back to `active`,
+  // so the first click on the group you were already in computed false — the
+  // state it was effectively already in — and appeared to do nothing. It took
+  // two clicks to open. The same fallback applies to section-level state.
+  const [expandedGroups, setExpandedGroups] = useState<Record<string, boolean>>({});
+  const [expandedSections, setExpandedSections] = useState<Record<string, boolean>>({});
+  const hydratedRef = useRef(false);
+
+  useEffect(() => {
+    const activeGroupKeys = new Set(
+      appNav
+        .filter(
+          (group) =>
+            isActive(group.href) ||
+            Boolean(group.children?.some((child) => isActive(child.href))) ||
+            Boolean(group.sections?.some((section) => section.items.some((item) => isActive(item.href)))),
+        )
+        .map((group) => group.title),
+    );
+    const activeSectionKeys = new Set(
+      appNav.flatMap((group) =>
+        (group.sections ?? [])
+          .filter((section) => section.items.some((item) => isExactActive(item.href)))
+          .map((section) => `${group.title}::${section.title}`),
+      ),
+    );
+
+    try {
+      const raw = window.localStorage.getItem(NAV_EXPANDED_STORAGE_KEY);
+      if (raw) {
+        const parsed = JSON.parse(raw) as { groups?: Record<string, boolean>; sections?: Record<string, boolean> };
+        setExpandedGroups((current) => ({ ...current, ...reconcileActiveFalse(parsed.groups ?? {}, activeGroupKeys) }));
+        setExpandedSections((current) => ({ ...current, ...reconcileActiveFalse(parsed.sections ?? {}, activeSectionKeys) }));
+      }
+    } catch {
+      // Ignore unreadable/corrupt storage — falls back to route-based defaults.
+    }
+    hydratedRef.current = true;
+    // Intentionally read storage once at mount only, not on every navigation.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  useEffect(() => {
+    if (!hydratedRef.current) return;
+    try {
+      window.localStorage.setItem(NAV_EXPANDED_STORAGE_KEY, JSON.stringify({ groups: expandedGroups, sections: expandedSections }));
+    } catch {
+      // Ignore write failures (e.g. private browsing).
+    }
+  }, [expandedGroups, expandedSections]);
+
+  return (
+    <nav className="min-h-0 flex-1 space-y-1 overflow-y-auto px-4 py-5">
+      {appNav.map((group) => {
+        const groupActive =
+          isActive(group.href) ||
+          Boolean(group.children?.some((child) => isActive(child.href))) ||
+          Boolean(group.sections?.some((section) => section.items.some((item) => isActive(item.href))));
+        // Same fallback as the toggle below (`?? active`). The two must
+        // agree, or the first click on the active group is swallowed.
+        const expandedGroup = expandedGroups[group.title] ?? groupActive;
+
+        if (group.children?.length || group.sections?.length) {
+          return (
+            <div key={group.href} className="space-y-1">
+              <button
+                type="button"
+                onClick={() => setExpandedGroups((current) => ({ ...current, [group.title]: !(current[group.title] ?? groupActive) }))}
+                className={`flex w-full items-center gap-3 rounded-lg px-4 py-3 text-sm font-semibold transition ${
+                  groupActive ? "bg-royal-50 text-royal-800" : "text-slate-600 hover:bg-slate-50 hover:text-navy-950"
+                }`}
+              >
+                <group.icon className="h-5 w-5" />
+                <span className="min-w-0 flex-1 text-left">{group.title}</span>
+                <ChevronDown className={`h-4 w-4 transition ${expandedGroup ? "rotate-180" : ""}`} />
+              </button>
+              {expandedGroup ? (
+                <div className="ml-5 space-y-1 border-l border-slate-100 pl-3">
+                  {group.children?.map((child) => {
+                    const childActive = isExactActive(child.href);
+                    return (
+                      <Link
+                        key={child.href}
+                        href={child.href}
+                        onClick={onNavigate}
+                        className={`flex items-center gap-2.5 rounded-xl px-3 py-2 text-sm font-bold transition ${
+                          childActive ? "bg-royal-600 text-white shadow-sm" : "text-slate-500 hover:bg-royal-50 hover:text-royal-700"
+                        }`}
+                      >
+                        <child.icon className="h-4 w-4" />
+                        {child.title}
+                      </Link>
+                    );
+                  })}
+                  {group.sections?.map((section) => {
+                    const sectionKey = `${group.title}::${section.title}`;
+                    const sectionActive = section.items.some((item) => isExactActive(item.href));
+                    const expandedSection = expandedSections[sectionKey] ?? sectionActive;
+                    return (
+                      <div key={sectionKey} className="space-y-1">
+                        <button
+                          type="button"
+                          onClick={() =>
+                            setExpandedSections((current) => ({ ...current, [sectionKey]: !(current[sectionKey] ?? sectionActive) }))
+                          }
+                          className={`flex w-full items-center gap-2 rounded-md px-3 py-1.5 text-left text-xs font-bold uppercase tracking-wide transition ${
+                            sectionActive ? "text-royal-700" : "text-slate-400 hover:text-slate-600"
+                          }`}
+                        >
+                          <span className="min-w-0 flex-1">{section.title}</span>
+                          <ChevronDown className={`h-3.5 w-3.5 shrink-0 transition ${expandedSection ? "rotate-180" : ""}`} />
+                        </button>
+                        {expandedSection ? (
+                          <div className="ml-3 space-y-1 border-l border-slate-100 pl-3">
+                            {section.items.map((item) => {
+                              const itemActive = isExactActive(item.href);
+                              return (
+                                <Link
+                                  key={item.href}
+                                  href={item.href}
+                                  onClick={onNavigate}
+                                  className={`flex items-center gap-2.5 rounded-xl px-3 py-2 text-sm font-bold transition ${
+                                    itemActive ? "bg-royal-600 text-white shadow-sm" : "text-slate-500 hover:bg-royal-50 hover:text-royal-700"
+                                  }`}
+                                >
+                                  <item.icon className="h-4 w-4" />
+                                  {item.title}
+                                </Link>
+                              );
+                            })}
+                          </div>
+                        ) : null}
+                      </div>
+                    );
+                  })}
+                </div>
+              ) : null}
+            </div>
+          );
+        }
+
+        return (
+          <Link
+            key={group.href}
+            href={group.href}
+            onClick={onNavigate}
+            className={`flex items-center gap-3 rounded-lg px-4 py-3 text-sm font-semibold transition ${
+              groupActive ? "bg-royal-600 text-white shadow-sm" : "text-slate-600 hover:bg-royal-50 hover:text-royal-700"
+            }`}
+          >
+            <group.icon className="h-5 w-5" />
+            {group.title}
+          </Link>
+        );
+      })}
+    </nav>
+  );
+}
 
 type ProfileState = { fullName?: string; full_name?: string; email?: string; company?: string; role?: string } | null;
 type SearchResult = { id: string; name: string; type: string; detail: string };
@@ -75,14 +252,8 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const [showNotifications, setShowNotifications] = useState(false);
   const [showProfile, setShowProfile] = useState(false);
   const [showMobileNav, setShowMobileNav] = useState(true);
+  const [showMobileDrawer, setShowMobileDrawer] = useState(false);
   const [showNewMenu, setShowNewMenu] = useState(false);
-  // Untouched groups fall back to "expanded when you are inside them" rather
-  // than to a stored false. Seeding Documents:false here made that group
-  // collapsed even while on /documents, and the toggle below falls back to
-  // `active`, so the first click on the group you were already in computed
-  // false — the state it was effectively already in — and appeared to do
-  // nothing. It took two clicks to open.
-  const [expandedGroups, setExpandedGroups] = useState<Record<string, boolean>>({});
   const [shellError, setShellError] = useState("");
   const searchCacheRef = useRef<Map<string, SearchResult[]>>(new Map());
   const notificationSelection = useBulkSelection(notifications);
@@ -146,6 +317,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     setShowNewMenu(false);
     setShowProfile(false);
     setShowNotifications(false);
+    setShowMobileDrawer(false);
   }, [pathname]);
 
   useEffect(() => {
@@ -184,9 +356,12 @@ export function AppShell({ children }: { children: React.ReactNode }) {
 
     for (const item of appNav) {
       router.prefetch(item.href);
-      if (item.children?.length) {
-        for (const child of item.children) {
-          router.prefetch(child.href);
+      for (const child of item.children ?? []) {
+        router.prefetch(child.href);
+      }
+      for (const section of item.sections ?? []) {
+        for (const sectionItem of section.items) {
+          router.prefetch(sectionItem.href);
         }
       }
     }
@@ -208,6 +383,8 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     window.addEventListener("scroll", handleScroll, { passive: true });
     return () => window.removeEventListener("scroll", handleScroll);
   }, []);
+
+  useEscapeToClose(showMobileDrawer, () => setShowMobileDrawer(false));
 
   async function markNotificationsRead() {
     const response = await fetch("/api/notifications", {
@@ -301,7 +478,12 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const isExactActive = (href: string) => pathname === href;
   const currentPageTitle =
     mobileTabs.find((item) => isActive(item.href))?.title ??
-    appNav.find((item) => isActive(item.href) || item.children?.some((child) => isActive(child.href)))?.title ??
+    appNav.find(
+      (item) =>
+        isActive(item.href) ||
+        item.children?.some((child) => isActive(child.href)) ||
+        item.sections?.some((section) => section.items.some((sectionItem) => isActive(sectionItem.href))),
+    )?.title ??
     "DocuCoreX";
   // Some pages (e.g. Invoices) render their own large page title in the content area to stay
   // usable on mobile — showing the shell's small breadcrumb-style title there too would just
@@ -311,11 +493,11 @@ export function AppShell({ children }: { children: React.ReactNode }) {
 
   return (
     <div className="min-h-screen overflow-x-hidden bg-slate-50 text-navy-950">
-      <aside className="fixed inset-y-0 left-0 z-40 hidden w-72 border-r border-slate-200 bg-white lg:block">
-        <div className="flex h-20 items-center border-b border-slate-100 px-5">
+      <aside className="fixed inset-y-0 left-0 z-40 hidden w-72 border-r border-slate-200 bg-white lg:flex lg:flex-col">
+        <div className="flex h-20 shrink-0 items-center border-b border-slate-100 px-5">
           <BrandLogo compact />
         </div>
-        <div className="relative px-4 pt-4">
+        <div className="relative shrink-0 px-4 pt-4">
           <button
             type="button"
             onClick={() => setShowNewMenu((value) => !value)}
@@ -340,76 +522,33 @@ export function AppShell({ children }: { children: React.ReactNode }) {
             </div>
           ) : null}
         </div>
-        <nav className="space-y-1 px-4 py-5">
-          {appNav.map((item) => {
-            const active = isActive(item.href) || Boolean(item.children?.some((child) => isActive(child.href)));
-            // Same fallback as the toggle below (`?? active`). The two must
-            // agree, or the first click on the active group is swallowed.
-            const expanded = expandedGroups[item.title] ?? active;
-
-            if (item.children?.length) {
-              return (
-                <div key={item.href} className="space-y-1">
-                  <button
-                    type="button"
-                    onClick={() => setExpandedGroups((current) => ({ ...current, [item.title]: !(current[item.title] ?? active) }))}
-                    className={`flex w-full items-center gap-3 rounded-lg px-4 py-3 text-sm font-semibold transition ${
-                      active ? "bg-royal-50 text-royal-800" : "text-slate-600 hover:bg-slate-50 hover:text-navy-950"
-                    }`}
-                  >
-                    <item.icon className="h-5 w-5" />
-                    <span className="min-w-0 flex-1 text-left">{item.title}</span>
-                    <ChevronDown className={`h-4 w-4 transition ${expanded ? "rotate-180" : ""}`} />
-                  </button>
-                  {expanded ? (
-                    <div className="ml-5 space-y-1 border-l border-slate-100 pl-3">
-                      {item.children.map((child) => {
-                        const childActive = isExactActive(child.href);
-                        return (
-                          <Link
-                            key={child.href}
-                            href={child.href}
-                            className={`flex items-center gap-2.5 rounded-xl px-3 py-2 text-sm font-bold transition ${
-                              childActive ? "bg-royal-600 text-white shadow-sm" : "text-slate-500 hover:bg-royal-50 hover:text-royal-700"
-                            }`}
-                          >
-                            <child.icon className="h-4 w-4" />
-                            {child.title}
-                          </Link>
-                        );
-                      })}
-                    </div>
-                  ) : null}
-                </div>
-              );
-            }
-
-            return (
-              <Link
-                key={item.href}
-                href={item.href}
-                className={`flex items-center gap-3 rounded-lg px-4 py-3 text-sm font-semibold transition ${
-                  active ? "bg-royal-600 text-white shadow-sm" : "text-slate-600 hover:bg-royal-50 hover:text-royal-700"
-                }`}
-              >
-                <item.icon className="h-5 w-5" />
-                {item.title}
-              </Link>
-            );
-          })}
-        </nav>
-        <div className="absolute inset-x-4 bottom-4 rounded-xl bg-navy-950 p-4 text-white navy-grid">
-          <div className="flex items-center gap-3">
-            <div className="rounded-lg bg-white/10 p-2">
-              <ShieldCheck className="h-5 w-5 text-sky-300" />
-            </div>
-            <div>
-              <p className="text-sm font-semibold">Enterprise vault</p>
-              <p className="text-xs text-blue-100">Encrypted storage ready</p>
-            </div>
-          </div>
-        </div>
+        <NavList />
       </aside>
+
+      {showMobileDrawer ? (
+        <div className="fixed inset-0 z-50 lg:hidden">
+          <div className="absolute inset-0 bg-black/30" onClick={() => setShowMobileDrawer(false)} aria-hidden="true" />
+          <aside
+            role="dialog"
+            aria-modal="true"
+            aria-label="Navigation"
+            className="absolute inset-y-0 left-0 flex w-[82vw] max-w-xs flex-col bg-white shadow-soft"
+          >
+            <div className="flex h-16 shrink-0 items-center justify-between border-b border-slate-100 px-4">
+              <BrandLogo compact />
+              <button
+                type="button"
+                onClick={() => setShowMobileDrawer(false)}
+                className="flex h-9 w-9 items-center justify-center rounded-lg text-slate-500 hover:bg-slate-100"
+                aria-label="Close navigation"
+              >
+                <X className="h-5 w-5" />
+              </button>
+            </div>
+            <NavList onNavigate={() => setShowMobileDrawer(false)} />
+          </aside>
+        </div>
+      ) : null}
 
       <div className="lg:pl-72">
         <header className="sticky top-0 z-40 border-b border-slate-200 bg-white/88 pt-[env(safe-area-inset-top)] backdrop-blur-xl">
@@ -423,6 +562,15 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           ) : null}
           <div className="flex h-14 items-center justify-between gap-3 px-4 lg:hidden">
             <div className="flex min-w-0 items-center gap-3">
+              <button
+                type="button"
+                onClick={() => setShowMobileDrawer(true)}
+                className="flex min-h-11 min-w-11 items-center justify-center rounded-lg border border-slate-200 bg-white text-slate-600 shadow-sm"
+                title="Open navigation"
+                aria-label="Open navigation"
+              >
+                <Menu className="h-5 w-5" />
+              </button>
               <BrandLogo compact />
               {showMobileTitle ? (
                 <div className="min-w-0">

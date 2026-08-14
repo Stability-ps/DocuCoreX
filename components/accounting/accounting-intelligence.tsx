@@ -577,13 +577,17 @@ export function AccountingIntelligence({ module = "bank-statements" }: { module?
 
   // Keep ?run=<id> in the URL in sync with the selected statement (replaceState,
   // so it never adds history entries — Back still returns to the prior page).
+  // This component is mounted at more than one route (ACCOUNTING_MODULE_ROUTES),
+  // not just /accounting itself — hardcoding /accounting here silently rewrote
+  // the address bar back to the overview on every other module's route.
   useEffect(() => {
     if (typeof window === "undefined") return;
-    const target = selectedRunId ? `/accounting?run=${encodeURIComponent(selectedRunId)}` : "/accounting";
+    const basePath = ACCOUNTING_MODULE_ROUTES[module];
+    const target = selectedRunId ? `${basePath}?run=${encodeURIComponent(selectedRunId)}` : basePath;
     if (`${window.location.pathname}${window.location.search}` !== target) {
       window.history.replaceState(window.history.state, "", target);
     }
-  }, [selectedRunId]);
+  }, [selectedRunId, module]);
 
   useEffect(() => {
     if (!hasActiveRuns) return;

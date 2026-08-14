@@ -54,5 +54,12 @@ export default defineConfig({
       name: "mobile",
       use: { ...devices["iPhone 13"], viewport: { width: 390, height: 844 } },
     },
+    {
+      // A short 13"-laptop-height viewport, e.g. with browser chrome eating into
+      // available height. Regression coverage for sidebar content getting
+      // clipped rather than scrolling when there isn't enough vertical room.
+      name: "laptop-short",
+      use: { ...devices["Desktop Chrome"], viewport: { width: 1440, height: 700 } },
+    },
   ],
 });

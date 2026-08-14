@@ -1088,8 +1088,11 @@ function StorageSection({
         <SettingRow label="Retention policy" description="Automatically archive or delete documents after a set period.">
           <StatusBadge label="Coming soon" variant="inactive" />
         </SettingRow>
-        <SettingRow label="Version history" description="Version history is retained automatically for processed documents." last>
+        <SettingRow label="Version history" description="Version history is retained automatically for processed documents.">
           <StatusBadge label="Automatic" variant="healthy" />
+        </SettingRow>
+        <SettingRow label="Enterprise vault" description="Encrypted storage ready." last>
+          <StatusBadge label="Active" variant="healthy" />
         </SettingRow>
       </div>
     </div>
