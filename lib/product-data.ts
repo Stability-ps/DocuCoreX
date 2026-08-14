@@ -63,8 +63,16 @@ export type NavItem = {
   icon: LucideIcon;
 };
 
+// Deliberately no icon — this is what visually distinguishes a section header
+// (lighter-weight, text-only) from a top-level group or a leaf item.
+export type NavSection = {
+  title: string;
+  items: NavItem[];
+};
+
 export type NavGroup = NavItem & {
   children?: NavItem[];
+  sections?: NavSection[];
 };
 
 export const appNav: NavGroup[] = [
@@ -88,27 +96,57 @@ export const appNav: NavGroup[] = [
     // second in-page sidebar would take another 18rem from tables that need the
     // width. Only sections that exist are listed — the rest arrive with the
     // stage that builds them, so no nav entry leads somewhere unfinished.
+    //
+    // Grouped into named sub-sections (each independently collapsible) rather
+    // than one flat 17-item list — the flat list outgrew what a sidebar can
+    // show at once without clipping on shorter screens. Overview stays a
+    // direct child so it's reachable without opening a sub-section.
     title: "Accounting & Financial Reporting",
     href: "/accounting",
     icon: ReceiptText,
-    children: [
-      { title: "Overview", href: "/accounting", icon: LayoutDashboard },
-      { title: "Bank Statements", href: "/accounting/bank-statements", icon: Landmark },
-      { title: "Chart of Accounts", href: "/accounting/chart-of-accounts", icon: BookOpenText },
-      { title: "Journals", href: "/accounting/journals", icon: PencilLine },
-      { title: "General Ledger", href: "/accounting/general-ledger", icon: BookOpen },
-      { title: "Trial Balance", href: "/accounting/trial-balance", icon: Scale },
-      { title: "Bank Reconciliation", href: "/accounting/reconciliation", icon: Landmark },
-      { title: "Financial Statements", href: "/accounting/financial-statements", icon: FileSpreadsheet },
-      { title: "VAT", href: "/accounting/vat", icon: Percent },
-      { title: "Transaction Insights", href: "/accounting/insights", icon: WandSparkles },
-      { title: "Forecasting", href: "/accounting/forecasting", icon: LineChart },
-      { title: "Audit Tools", href: "/accounting/audit-tools", icon: ShieldCheck },
-      { title: "Period Close", href: "/accounting/period-close", icon: LockKeyhole },
-      { title: "Audit Trail", href: "/accounting/audit-trail", icon: History },
-      { title: "Fixed Assets", href: "/accounting/fixed-assets", icon: Warehouse },
-      { title: "Accounts Receivable", href: "/accounting/receivables", icon: ArrowDownLeft },
-      { title: "Accounts Payable", href: "/accounting/payables", icon: ArrowUpRight },
+    children: [{ title: "Overview", href: "/accounting", icon: LayoutDashboard }],
+    sections: [
+      {
+        title: "Banking",
+        items: [
+          { title: "Bank Statements", href: "/accounting/bank-statements", icon: Landmark },
+          { title: "Bank Reconciliation", href: "/accounting/reconciliation", icon: Landmark },
+          { title: "Transaction Insights", href: "/accounting/insights", icon: WandSparkles },
+        ],
+      },
+      {
+        title: "Accounting",
+        items: [
+          { title: "Chart of Accounts", href: "/accounting/chart-of-accounts", icon: BookOpenText },
+          { title: "Journals", href: "/accounting/journals", icon: PencilLine },
+          { title: "General Ledger", href: "/accounting/general-ledger", icon: BookOpen },
+          { title: "Trial Balance", href: "/accounting/trial-balance", icon: Scale },
+          { title: "Period Close", href: "/accounting/period-close", icon: LockKeyhole },
+        ],
+      },
+      {
+        title: "Sales & Purchases",
+        items: [
+          { title: "Accounts Receivable", href: "/accounting/receivables", icon: ArrowDownLeft },
+          { title: "Accounts Payable", href: "/accounting/payables", icon: ArrowUpRight },
+        ],
+      },
+      {
+        title: "Tax & Assets",
+        items: [
+          { title: "VAT", href: "/accounting/vat", icon: Percent },
+          { title: "Fixed Assets", href: "/accounting/fixed-assets", icon: Warehouse },
+        ],
+      },
+      {
+        title: "Reporting & Controls",
+        items: [
+          { title: "Financial Statements", href: "/accounting/financial-statements", icon: FileSpreadsheet },
+          { title: "Forecasting", href: "/accounting/forecasting", icon: LineChart },
+          { title: "Audit Tools", href: "/accounting/audit-tools", icon: ShieldCheck },
+          { title: "Audit Trail", href: "/accounting/audit-trail", icon: History },
+        ],
+      },
     ],
   },
   { title: "Invoices", href: "/invoices", icon: FileText },
