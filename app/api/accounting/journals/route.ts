@@ -19,7 +19,7 @@ function statusFor(message: string): number {
   if (message === "Unauthorized") return 401;
   if (message === "Entity not found in this workspace.") return 404;
   // A refused post is the caller's request being wrong, not the server failing.
-  if (/does not balance|cannot be posted|already posted|is locked|is soft_closed|reopen it/i.test(message)) return 422;
+  if (/does not balance|cannot be posted|already posted|is locked|is soft_closed|reopen it|must name/i.test(message)) return 422;
   return 500;
 }
 
@@ -66,6 +66,8 @@ export async function POST(request: Request) {
         credit: Number(line.credit ?? 0),
         description: typeof line.description === "string" ? line.description : null,
         taxCodeId: typeof line.taxCodeId === "string" && line.taxCodeId ? line.taxCodeId : null,
+        customerId: typeof line.customerId === "string" && line.customerId ? line.customerId : null,
+        supplierId: typeof line.supplierId === "string" && line.supplierId ? line.supplierId : null,
       })),
       post: body.post === true,
     });

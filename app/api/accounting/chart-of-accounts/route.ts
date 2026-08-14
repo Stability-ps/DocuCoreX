@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { listAccountingEntities, listChartOfAccounts } from "@/lib/accounting/chart-server";
 import { listTaxCodes } from "@/lib/accounting/vat-server";
+import { listCustomers, listSuppliers } from "@/lib/accounting/receivables-payables-server";
 
 /**
  * The chart of accounts for one entity.
@@ -27,14 +28,20 @@ export async function GET(request: Request) {
       // No entity chosen: return the entities so the caller can choose one.
       // Deliberately not "pick the default and return its chart" — that reads as
       // a chart for an entity the user did not select.
-      return NextResponse.json({ entities, accounts: null, taxCodes: null });
+      return NextResponse.json({ entities, accounts: null, taxCodes: null, customers: null, suppliers: null });
     }
 
-    // Tax codes ride along: the journal form needs both to offer a VAT split,
-    // and asking for them separately would be a second round trip for data that
-    // is always wanted together.
-    const [accounts, taxCodes] = await Promise.all([listChartOfAccounts(companyId), listTaxCodes(companyId)]);
-    return NextResponse.json({ entities, accounts, taxCodes });
+    // Tax codes, customers and suppliers all ride along: the journal form
+    // needs all of them to offer a VAT split or an AR/AP party, and asking
+    // separately would be a second and third round trip for data that is
+    // always wanted together.
+    const [accounts, taxCodes, customers, suppliers] = await Promise.all([
+      listChartOfAccounts(companyId),
+      listTaxCodes(companyId),
+      listCustomers(companyId),
+      listSuppliers(companyId),
+    ]);
+    return NextResponse.json({ entities, accounts, taxCodes, customers, suppliers });
   } catch (error) {
     const message = error instanceof Error ? error.message : "Unable to load the chart of accounts.";
     return NextResponse.json({ error: message }, { status: statusFor(message) });

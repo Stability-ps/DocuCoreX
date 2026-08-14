@@ -119,6 +119,8 @@ export async function createJournal(input: {
       credit: line.credit,
       description: line.description ?? null,
       tax_code_id: line.taxCodeId ?? null,
+      customer_id: line.customerId ?? null,
+      supplier_id: line.supplierId ?? null,
     })),
   );
 

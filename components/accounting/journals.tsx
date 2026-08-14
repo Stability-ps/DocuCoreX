@@ -18,6 +18,7 @@ import { AlertTriangle, Building2, Loader2, Plus, RefreshCw, Scissors, Trash2 } 
 import type { AccountingEntity, LedgerAccount } from "@/lib/accounting/chart";
 import { validateJournalLines, type JournalSummary, type JournalType } from "@/lib/accounting/journals";
 import { splitVat, type VatBasis } from "@/lib/accounting/vat";
+import type { Party } from "@/lib/accounting/receivables-payables";
 
 const JOURNAL_TYPE_LABELS: Record<JournalType, string> = {
   general: "General Journal",
@@ -51,9 +52,22 @@ type DraftLine = {
   taxCodeId: string;
   /** Whether the amount on this line already includes VAT. Asked, never guessed. */
   vatBasis: VatBasis;
+  /** Required by the posting gate when accountId is the entity's AR control account. */
+  customerId: string;
+  /** Required by the posting gate when accountId is the entity's AP control account. */
+  supplierId: string;
 };
 
-const emptyLine = (): DraftLine => ({ accountId: "", debit: "", credit: "", description: "", taxCodeId: "", vatBasis: "inclusive" });
+const emptyLine = (): DraftLine => ({
+  accountId: "",
+  debit: "",
+  credit: "",
+  description: "",
+  taxCodeId: "",
+  vatBasis: "inclusive",
+  customerId: "",
+  supplierId: "",
+});
 
 /** Blank means zero; anything unparseable stays 0 rather than becoming NaN. */
 function amount(value: string): number {
@@ -74,6 +88,8 @@ export function Journals() {
   const [companyId, setCompanyId] = useState("");
   const [accounts, setAccounts] = useState<LedgerAccount[]>([]);
   const [taxCodes, setTaxCodes] = useState<TaxCode[]>([]);
+  const [customers, setCustomers] = useState<Party[]>([]);
+  const [suppliers, setSuppliers] = useState<Party[]>([]);
   const [journals, setJournals] = useState<JournalSummary[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
@@ -119,6 +135,8 @@ export function Journals() {
       if (!journalsResponse.ok) throw new Error(journalsData?.error ?? "Unable to load journals.");
       setAccounts((chartData.accounts ?? []).filter((account: LedgerAccount) => account.isActive));
       setTaxCodes((chartData.taxCodes ?? []).filter((code: TaxCode) => code.isActive));
+      setCustomers((chartData.customers ?? []).filter((party: Party) => party.isActive));
+      setSuppliers((chartData.suppliers ?? []).filter((party: Party) => party.isActive));
       setJournals(journalsData.journals ?? []);
     } catch (loadError) {
       setError(loadError instanceof Error ? loadError.message : "Unable to load journals.");
@@ -135,8 +153,19 @@ export function Journals() {
     if (companyId) void loadForCompany(companyId);
   }, [companyId, loadForCompany]);
 
+  const entity = useMemo(() => entities.find((candidate) => candidate.id === companyId) ?? null, [entities, companyId]);
+
   const parsedLines = useMemo(
-    () => lines.map((line) => ({ accountId: line.accountId, debit: amount(line.debit), credit: amount(line.credit), description: line.description, taxCodeId: line.taxCodeId || null })),
+    () =>
+      lines.map((line) => ({
+        accountId: line.accountId,
+        debit: amount(line.debit),
+        credit: amount(line.credit),
+        description: line.description,
+        taxCodeId: line.taxCodeId || null,
+        customerId: line.customerId || null,
+        supplierId: line.supplierId || null,
+      })),
     [lines],
   );
 
@@ -187,6 +216,8 @@ export function Journals() {
         description: `VAT ${code.code}`,
         taxCodeId: code.id,
         vatBasis: line.vatBasis,
+        customerId: "",
+        supplierId: "",
       });
       return next;
     });
@@ -347,6 +378,7 @@ export function Journals() {
                   <th scope="col" className="pb-2 text-xs font-bold uppercase tracking-wide text-slate-500">Account</th>
                   <th scope="col" className="pb-2 text-xs font-bold uppercase tracking-wide text-slate-500">Line description</th>
                   <th scope="col" className="pb-2 text-xs font-bold uppercase tracking-wide text-slate-500">Tax code</th>
+                  <th scope="col" className="pb-2 text-xs font-bold uppercase tracking-wide text-slate-500">Party</th>
                   <th scope="col" className="pb-2 text-right text-xs font-bold uppercase tracking-wide text-slate-500">Debit</th>
                   <th scope="col" className="pb-2 text-right text-xs font-bold uppercase tracking-wide text-slate-500">Credit</th>
                   <th scope="col" className="pb-2"><span className="sr-only">Remove line</span></th>
@@ -440,6 +472,39 @@ export function Journals() {
                           </div>
                         );
                       })()}
+                    </td>
+                    <td className="py-2 pr-2 align-top">
+                      {entity?.arControlAccountId && line.accountId === entity.arControlAccountId ? (
+                        <select
+                          aria-label={`Line ${index + 1} customer`}
+                          value={line.customerId}
+                          onChange={(event) =>
+                            setLines((current) => current.map((item, i) => (i === index ? { ...item, customerId: event.target.value } : item)))
+                          }
+                          className="w-full min-w-[9rem] rounded-lg border border-slate-300 bg-white px-2 py-1.5 text-sm text-navy-950 focus:border-royal-500 focus:outline-none focus:ring-2 focus:ring-royal-200"
+                        >
+                          <option value="">Select a customer</option>
+                          {customers.map((customer) => (
+                            <option key={customer.id} value={customer.id}>{customer.name}</option>
+                          ))}
+                        </select>
+                      ) : entity?.apControlAccountId && line.accountId === entity.apControlAccountId ? (
+                        <select
+                          aria-label={`Line ${index + 1} supplier`}
+                          value={line.supplierId}
+                          onChange={(event) =>
+                            setLines((current) => current.map((item, i) => (i === index ? { ...item, supplierId: event.target.value } : item)))
+                          }
+                          className="w-full min-w-[9rem] rounded-lg border border-slate-300 bg-white px-2 py-1.5 text-sm text-navy-950 focus:border-royal-500 focus:outline-none focus:ring-2 focus:ring-royal-200"
+                        >
+                          <option value="">Select a supplier</option>
+                          {suppliers.map((supplier) => (
+                            <option key={supplier.id} value={supplier.id}>{supplier.name}</option>
+                          ))}
+                        </select>
+                      ) : (
+                        <span className="text-xs text-slate-300">—</span>
+                      )}
                     </td>
                     {(["debit", "credit"] as const).map((side) => (
                       <td key={side} className="py-2 pr-2">

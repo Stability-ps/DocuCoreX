@@ -33,6 +33,10 @@ export type JournalLineInput = {
   description?: string | null;
   /** The tax code the accountant assigned. Null is "no VAT arises here". */
   taxCodeId?: string | null;
+  /** Required by the posting gate when accountId is the entity's AR control account. */
+  customerId?: string | null;
+  /** Required by the posting gate when accountId is the entity's AP control account. */
+  supplierId?: string | null;
 };
 
 export type JournalSummary = {

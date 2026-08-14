@@ -50,6 +50,8 @@ export type AccountingEntity = {
   reportingFramework: string | null;
   financialYearEndMonth: number;
   financialYearEndDay: number;
+  arControlAccountId: string | null;
+  apControlAccountId: string | null;
 };
 
 /** The order accountants expect a chart to be presented in. */
