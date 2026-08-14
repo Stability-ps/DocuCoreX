@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { createJournal, listJournals } from "@/lib/accounting/journals-server";
+import { toCsv } from "@/lib/accounting/ledger";
 import type { JournalLineInput, JournalType } from "@/lib/accounting/journals";
 
 /**
@@ -10,8 +11,12 @@ import type { JournalLineInput, JournalType } from "@/lib/accounting/journals";
  * ledger, so a balance check cannot be skipped by adding another caller.
  */
 
+// Kept as an explicit list, not JournalType's own keys, so a route accepting
+// external input has its own record of what it allows — but that means a new
+// type added to journals.ts (as 'disposal' was, in the fixed-assets stage)
+// must be added here too, or this route silently refuses it. It had been.
 const JOURNAL_TYPES = new Set<JournalType>([
-  "general", "adjustment", "opening_balance", "depreciation",
+  "general", "adjustment", "opening_balance", "depreciation", "disposal",
   "accrual", "prepayment", "tax", "closing", "reversal",
 ]);
 
@@ -24,13 +29,26 @@ function statusFor(message: string): number {
 }
 
 export async function GET(request: Request) {
-  const companyId = new URL(request.url).searchParams.get("companyId");
+  const url = new URL(request.url);
+  const companyId = url.searchParams.get("companyId");
   if (!companyId) {
     return NextResponse.json({ error: "companyId is required." }, { status: 400 });
   }
 
   try {
-    return NextResponse.json({ journals: await listJournals(companyId) });
+    const journals = await listJournals(companyId);
+
+    if (url.searchParams.get("format") === "csv") {
+      const csv = toCsv(
+        ["reference", "date", "type", "status", "description", "debit", "credit", "lines"],
+        journals.map((j) => [j.reference, j.journalDate, j.journalType, j.status, j.description, j.totalDebit, j.totalCredit, j.lineCount]),
+      );
+      return new NextResponse(csv, {
+        headers: { "Content-Type": "text/csv; charset=utf-8", "Content-Disposition": `attachment; filename="journals.csv"` },
+      });
+    }
+
+    return NextResponse.json({ journals });
   } catch (error) {
     const message = error instanceof Error ? error.message : "Unable to load journals.";
     return NextResponse.json({ error: message }, { status: statusFor(message) });

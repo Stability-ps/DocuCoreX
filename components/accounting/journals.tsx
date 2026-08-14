@@ -14,11 +14,12 @@
  */
 
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { AlertTriangle, Building2, Loader2, Plus, RefreshCw, Scissors, Trash2 } from "lucide-react";
+import { AlertTriangle, Building2, Download, Loader2, Plus, RefreshCw, Scissors, Trash2, Upload } from "lucide-react";
 import type { AccountingEntity, LedgerAccount } from "@/lib/accounting/chart";
 import { validateJournalLines, type JournalSummary, type JournalType } from "@/lib/accounting/journals";
 import { splitVat, type VatBasis } from "@/lib/accounting/vat";
 import type { Party } from "@/lib/accounting/receivables-payables";
+import { JournalImportDialog } from "@/components/accounting/journal-import-dialog";
 
 const JOURNAL_TYPE_LABELS: Record<JournalType, string> = {
   general: "General Journal",
@@ -94,6 +95,7 @@ export function Journals() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [formOpen, setFormOpen] = useState(false);
+  const [showImport, setShowImport] = useState(false);
 
   const [journalType, setJournalType] = useState<JournalType>("general");
   const [reference, setReference] = useState("");
@@ -305,18 +307,43 @@ export function Journals() {
           </select>
         </div>
         {!formOpen ? (
-          <button
-            type="button"
-            onClick={() => setFormOpen(true)}
-            disabled={!accounts.length}
-            title={accounts.length ? undefined : "This entity has no accounts to post to."}
-            className="inline-flex h-9 items-center gap-2 rounded-lg bg-royal-600 px-4 text-sm font-semibold text-white shadow-sm transition hover:bg-royal-700 disabled:bg-slate-300"
-          >
-            <Plus className="h-4 w-4" aria-hidden="true" />
-            New Journal
-          </button>
+          <div className="flex flex-wrap items-center gap-2">
+            <a
+              href={`/api/accounting/journals?companyId=${encodeURIComponent(companyId)}&format=csv`}
+              className="inline-flex h-9 items-center gap-1.5 rounded-lg border border-slate-300 px-3 text-sm font-semibold text-navy-950 hover:bg-slate-50"
+            >
+              <Download className="h-3.5 w-3.5" aria-hidden="true" /> Export CSV
+            </a>
+            <button
+              type="button"
+              onClick={() => setShowImport(true)}
+              disabled={!accounts.length}
+              title={accounts.length ? undefined : "This entity has no accounts to post to."}
+              className="inline-flex h-9 items-center gap-1.5 rounded-lg border border-slate-300 px-3 text-sm font-semibold text-navy-950 hover:bg-slate-50 disabled:opacity-50"
+            >
+              <Upload className="h-3.5 w-3.5" aria-hidden="true" /> Import CSV
+            </button>
+            <button
+              type="button"
+              onClick={() => setFormOpen(true)}
+              disabled={!accounts.length}
+              title={accounts.length ? undefined : "This entity has no accounts to post to."}
+              className="inline-flex h-9 items-center gap-2 rounded-lg bg-royal-600 px-4 text-sm font-semibold text-white shadow-sm transition hover:bg-royal-700 disabled:bg-slate-300"
+            >
+              <Plus className="h-4 w-4" aria-hidden="true" />
+              New Journal
+            </button>
+          </div>
         ) : null}
       </div>
+
+      {showImport ? (
+        <JournalImportDialog
+          companyId={companyId}
+          onCancel={() => setShowImport(false)}
+          onDone={() => void loadForCompany(companyId)}
+        />
+      ) : null}
 
       {formOpen ? (
         <form
