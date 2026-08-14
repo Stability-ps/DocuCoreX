@@ -79,6 +79,7 @@ export async function createJournal(input: {
   reference: string | null;
   journalDate: string;
   description: string | null;
+  dueDate?: string | null;
   lines: JournalLineInput[];
   post: boolean;
 }): Promise<{ journalId: string; status: JournalStatus }> {
@@ -100,6 +101,7 @@ export async function createJournal(input: {
       reference: input.reference,
       journal_date: input.journalDate,
       description: input.description,
+      due_date: input.dueDate ?? null,
       status: "draft",
     })
     .select("id")
