@@ -94,9 +94,17 @@ export function AccountingOverview() {
       return;
     }
 
+    // /api/accounting/coverage responds { coverage, engagement } — not the
+    // coverage summary directly. Assigning the whole body here silently made
+    // `coverage` an object without a `missing` array, and every `coverage.missing.length`
+    // read below threw "Cannot read properties of undefined" once this endpoint
+    // actually returned data.
     setState({
       runs: (runsResult.value?.runs ?? []) as AccountingStatementRun[],
-      coverage: coverageResult.status === "fulfilled" ? (coverageResult.value as CoverageSummary) : null,
+      coverage:
+        coverageResult.status === "fulfilled"
+          ? ((coverageResult.value as { coverage?: CoverageSummary })?.coverage ?? null)
+          : null,
       reviewQueueCount:
         reviewResult.status === "fulfilled" && Array.isArray(reviewResult.value?.items) ? reviewResult.value.items.length : 0,
     });
