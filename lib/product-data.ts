@@ -1,6 +1,8 @@
 import {
   Activity,
   Archive,
+  ArrowDownLeft,
+  ArrowUpRight,
   BadgeCheck,
   Bell,
   BookOpen,
@@ -105,6 +107,8 @@ export const appNav: NavGroup[] = [
       { title: "Period Close", href: "/accounting/period-close", icon: LockKeyhole },
       { title: "Audit Trail", href: "/accounting/audit-trail", icon: History },
       { title: "Fixed Assets", href: "/accounting/fixed-assets", icon: Warehouse },
+      { title: "Accounts Receivable", href: "/accounting/receivables", icon: ArrowDownLeft },
+      { title: "Accounts Payable", href: "/accounting/payables", icon: ArrowUpRight },
     ],
   },
   { title: "Invoices", href: "/invoices", icon: FileText },

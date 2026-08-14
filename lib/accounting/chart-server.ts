@@ -53,7 +53,7 @@ export async function listAccountingEntities(): Promise<AccountingEntity[]> {
   const { data, error } = await context.supabase
     .from("companies")
     .select(
-      "id, business_name, registration_number, vat_number, is_default, accounting_entity_settings(base_currency, reporting_framework, financial_year_end_month, financial_year_end_day)",
+      "id, business_name, registration_number, vat_number, is_default, accounting_entity_settings(base_currency, reporting_framework, financial_year_end_month, financial_year_end_day, ar_control_account_id, ap_control_account_id)",
     )
     .eq("workspace_id", context.workspaceId)
     .eq("is_archived", false)
@@ -68,7 +68,14 @@ export async function listAccountingEntities(): Promise<AccountingEntity[]> {
     // are handled rather than assuming one.
     const raw = (row as Record<string, unknown>).accounting_entity_settings;
     const settings = (Array.isArray(raw) ? raw[0] : raw) as
-      | { base_currency?: string; reporting_framework?: string | null; financial_year_end_month?: number; financial_year_end_day?: number }
+      | {
+          base_currency?: string;
+          reporting_framework?: string | null;
+          financial_year_end_month?: number;
+          financial_year_end_day?: number;
+          ar_control_account_id?: string | null;
+          ap_control_account_id?: string | null;
+        }
       | undefined;
 
     return {
@@ -81,6 +88,8 @@ export async function listAccountingEntities(): Promise<AccountingEntity[]> {
       reportingFramework: settings?.reporting_framework ?? null,
       financialYearEndMonth: settings?.financial_year_end_month ?? 2,
       financialYearEndDay: settings?.financial_year_end_day ?? 28,
+      arControlAccountId: settings?.ar_control_account_id ?? null,
+      apControlAccountId: settings?.ap_control_account_id ?? null,
     };
   });
 }
