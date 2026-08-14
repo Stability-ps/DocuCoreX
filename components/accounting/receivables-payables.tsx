@@ -119,11 +119,28 @@ function Subledger({ side }: { side: Side }) {
     }
   };
 
-  if (loading && !loaded) {
+  // Still waiting on something: the entity list itself, or this subledger's own
+  // data once an entity has resolved. Gating only on the local `loading` flag
+  // left this stuck here forever when entity loading failed or the workspace
+  // had no entities — `load()` (which is what turns `loading` off) never runs
+  // without a companyId, so nothing ever cleared it.
+  if (period.loading || (loading && period.companyId)) {
     return (
       <div className="space-y-4">
         <EntityPeriodBar {...period} />
         <p className="rounded-2xl border border-slate-200 bg-white px-4 py-8 text-center text-sm font-semibold text-slate-500">Loading…</p>
+      </div>
+    );
+  }
+
+  if (!period.companyId) {
+    return (
+      <div className="space-y-4">
+        <EntityPeriodBar {...period} />
+        <p className="flex items-center gap-2 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm font-semibold text-red-700">
+          <AlertTriangle className="h-4 w-4 shrink-0" aria-hidden="true" />
+          {period.error || "No accounting entities are set up for this workspace yet."}
+        </p>
       </div>
     );
   }
