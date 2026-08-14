@@ -3,9 +3,10 @@
 /**
  * Chart of Accounts.
  *
- * Read-only in this stage. Editing, import and export are the next PR, and a
- * disabled "Add account" button here would be exactly the dead control the
- * specification rules out — so it is absent rather than present-and-inert.
+ * Editing individual accounts is still out of scope — this stage adds import
+ * and export, not a row-level editor. Import always previews before writing
+ * anything (CoaImportDialog); export reuses the same account list this page
+ * already renders, so what you can see is exactly what you can download.
  *
  * The entity selector is not a convenience. An accountant holding several
  * clients in one workspace must be able to see, at a glance, whose chart is on
@@ -13,7 +14,7 @@
  */
 
 import { useCallback, useEffect, useState } from "react";
-import { AlertTriangle, Building2, Loader2, Lock, RefreshCw } from "lucide-react";
+import { AlertTriangle, Building2, Download, Loader2, Lock, RefreshCw, Upload } from "lucide-react";
 import {
   ACCOUNT_TYPE_LABELS,
   ACCOUNT_TYPE_ORDER,
@@ -21,6 +22,7 @@ import {
   type AccountType,
   type LedgerAccount,
 } from "@/lib/accounting/chart";
+import { CoaImportDialog } from "@/components/accounting/coa-import-dialog";
 
 const VAT_LABELS: Record<string, string> = {
   standard: "Standard-rated",
@@ -36,6 +38,7 @@ export function ChartOfAccounts() {
   const [accounts, setAccounts] = useState<LedgerAccount[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
+  const [showImport, setShowImport] = useState(false);
 
   const load = useCallback(async (targetCompanyId?: string) => {
     setLoading(true);
@@ -141,22 +144,41 @@ export function ChartOfAccounts() {
             ))}
           </select>
         </div>
-        {entity ? (
-          <dl className="flex flex-wrap gap-x-6 gap-y-1 text-xs font-semibold text-slate-500">
-            <div>
-              <dt className="inline">Currency: </dt>
-              <dd className="inline text-navy-950">{entity.baseCurrency}</dd>
+        <div className="flex flex-wrap items-end gap-3">
+          {entity ? (
+            <dl className="flex flex-wrap gap-x-6 gap-y-1 text-xs font-semibold text-slate-500">
+              <div>
+                <dt className="inline">Currency: </dt>
+                <dd className="inline text-navy-950">{entity.baseCurrency}</dd>
+              </div>
+              <div>
+                <dt className="inline">Reporting framework: </dt>
+                <dd className="inline text-navy-950">{entity.reportingFramework ?? "Not set"}</dd>
+              </div>
+              <div>
+                <dt className="inline">Accounts: </dt>
+                <dd className="inline tabular-nums text-navy-950">{accounts.length}</dd>
+              </div>
+            </dl>
+          ) : null}
+          {companyId ? (
+            <div className="flex items-center gap-2">
+              <a
+                href={`/api/accounting/chart-of-accounts?companyId=${encodeURIComponent(companyId)}&format=csv`}
+                className="inline-flex h-8 items-center gap-1.5 rounded-lg border border-slate-300 px-2.5 text-xs font-semibold text-navy-950 hover:bg-slate-50"
+              >
+                <Download className="h-3.5 w-3.5" aria-hidden="true" /> Export CSV
+              </a>
+              <button
+                type="button"
+                onClick={() => setShowImport(true)}
+                className="inline-flex h-8 items-center gap-1.5 rounded-lg bg-navy-950 px-2.5 text-xs font-semibold text-white hover:bg-navy-900"
+              >
+                <Upload className="h-3.5 w-3.5" aria-hidden="true" /> Import CSV
+              </button>
             </div>
-            <div>
-              <dt className="inline">Reporting framework: </dt>
-              <dd className="inline text-navy-950">{entity.reportingFramework ?? "Not set"}</dd>
-            </div>
-            <div>
-              <dt className="inline">Accounts: </dt>
-              <dd className="inline tabular-nums text-navy-950">{accounts.length}</dd>
-            </div>
-          </dl>
-        ) : null}
+          ) : null}
+        </div>
       </div>
 
       {!accounts.length ? (
@@ -228,8 +250,17 @@ export function ChartOfAccounts() {
 
       <p className="text-xs font-semibold text-slate-500">
         The starter chart is the chart this product already reports against, transcribed unchanged so no existing export
-        changes meaning. Editing, import and export follow in the next stage.
+        changes meaning. Per-account editing is still out of scope — use CSV import to change a code's name, VAT default
+        or parent.
       </p>
+
+      {showImport && companyId ? (
+        <CoaImportDialog
+          companyId={companyId}
+          onCancel={() => setShowImport(false)}
+          onDone={() => void load(companyId)}
+        />
+      ) : null}
     </div>
   );
 }
