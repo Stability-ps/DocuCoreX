@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { listAccountingEntities, listChartOfAccounts } from "@/lib/accounting/chart-server";
 import { listTaxCodes } from "@/lib/accounting/vat-server";
 import { listCustomers, listSuppliers } from "@/lib/accounting/receivables-payables-server";
+import { toCsv } from "@/lib/accounting/ledger";
 
 /**
  * The chart of accounts for one entity.
@@ -29,6 +30,18 @@ export async function GET(request: Request) {
       // Deliberately not "pick the default and return its chart" — that reads as
       // a chart for an entity the user did not select.
       return NextResponse.json({ entities, accounts: null, taxCodes: null, customers: null, suppliers: null });
+    }
+
+    if (new URL(request.url).searchParams.get("format") === "csv") {
+      const accounts = await listChartOfAccounts(companyId);
+      const idToCode = new Map(accounts.map((a) => [a.id, a.code]));
+      const csv = toCsv(
+        ["code", "name", "account_type", "normal_balance", "parent_code", "vat_default", "description"],
+        accounts.map((a) => [a.code, a.name, a.accountType, a.normalBalance, a.parentId ? (idToCode.get(a.parentId) ?? "") : "", a.vatDefault, a.description]),
+      );
+      return new NextResponse(csv, {
+        headers: { "Content-Type": "text/csv; charset=utf-8", "Content-Disposition": `attachment; filename="chart-of-accounts.csv"` },
+      });
     }
 
     // Tax codes, customers and suppliers all ride along: the journal form
