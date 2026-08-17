@@ -273,7 +273,10 @@ export async function getReconciliationWorkspace(reconciliationId: string): Prom
   // Ledger side: postings to the mapped control account, in period.
   const { data: postingRows } = await context.supabase
     .from("accounting_postings")
-    .select("id, posting_date, description, debit, credit, accounting_journals(reference)")
+    // accounting_postings has two FKs to accounting_journals (journal_id, plus
+    // the composite same-entity check from migration 037) — hint the plain
+    // journal_id relationship so PostgREST doesn't refuse the embed as ambiguous.
+    .select("id, posting_date, description, debit, credit, accounting_journals!journal_id(reference)")
     .eq("company_id", rec.company_id)
     .eq("account_id", bankAccount?.ledger_account_id)
     .gte("posting_date", rec.period_start)

@@ -37,7 +37,11 @@ export async function listJournals(companyId: string): Promise<JournalSummary[]>
   const { data, error } = await context.supabase
     .from("accounting_journals")
     .select(
-      "id, company_id, journal_type, reference, journal_date, description, status, reverses_journal_id, posted_at, created_at, accounting_journal_lines(debit, credit)",
+      // accounting_journal_lines has two FKs to accounting_journals — the plain
+      // journal_id one and the composite (journal_id, company_id) same-entity
+      // check added in migration 037 — so PostgREST can no longer infer which
+      // relationship to embed through without a hint.
+      "id, company_id, journal_type, reference, journal_date, description, status, reverses_journal_id, posted_at, created_at, accounting_journal_lines!journal_id(debit, credit)",
     )
     .eq("company_id", companyId)
     .order("journal_date", { ascending: false })
