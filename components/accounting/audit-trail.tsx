@@ -91,8 +91,13 @@ export function AuditTrail() {
         }
       />
 
-      {error ? (
-        <p className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm font-semibold text-red-700">{error}</p>
+      {error || (!period.companyId && !period.loading) ? (
+        // The !period.companyId case covers entity loading itself failing (or the
+        // workspace having none) — load() below never runs without a companyId, so
+        // `error` alone would never surface that; period.error would go unread.
+        <p className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm font-semibold text-red-700">
+          {error || period.error || "No accounting entities are set up for this workspace yet."}
+        </p>
       ) : null}
 
       <section className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
@@ -104,10 +109,12 @@ export function AuditTrail() {
           <p className="text-xs font-semibold text-slate-500">{total} event{total === 1 ? "" : "s"}</p>
         </div>
 
-        {loading ? (
+        {period.loading || (loading && period.companyId) ? (
           <p className="flex items-center justify-center gap-2 px-4 py-8 text-sm font-semibold text-slate-500">
             <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" /> Loading…
           </p>
+        ) : !period.companyId ? (
+          <p className="px-4 py-8 text-center text-sm font-semibold text-slate-500">Unable to load — see the error above.</p>
         ) : !events.length ? (
           <p className="px-4 py-8 text-center text-sm font-semibold text-slate-500">
             No accounting events recorded for this entity yet.

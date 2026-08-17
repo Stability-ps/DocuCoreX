@@ -104,10 +104,13 @@ export function FixedAssets() {
         }
       />
 
-      {error ? (
+      {error || (!period.companyId && !period.loading) ? (
+        // The !period.companyId case covers entity loading itself failing (or the
+        // workspace having none) — load() below never runs without a companyId, so
+        // `error` alone would never surface that; period.error would go unread.
         <p className="flex items-center gap-2 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm font-semibold text-red-700">
           <AlertTriangle className="h-4 w-4 shrink-0" aria-hidden="true" />
-          {error}
+          {error || period.error || "No accounting entities are set up for this workspace yet."}
         </p>
       ) : null}
 
@@ -137,8 +140,10 @@ export function FixedAssets() {
         <div className="border-b border-slate-200 bg-slate-50 px-4 py-2.5">
           <h2 className="text-xs font-bold uppercase tracking-wide text-slate-500">Register</h2>
         </div>
-        {loading ? (
+        {period.loading || (loading && period.companyId) ? (
           <p className="px-4 py-8 text-center text-sm font-semibold text-slate-500">Loading…</p>
+        ) : !period.companyId ? (
+          <p className="px-4 py-8 text-center text-sm font-semibold text-slate-500">Unable to load — see the error above.</p>
         ) : !active.length ? (
           <p className="px-4 py-8 text-center text-sm font-semibold text-slate-500">
             No fixed assets recorded for this entity yet.

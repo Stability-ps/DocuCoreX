@@ -260,16 +260,21 @@ export function BankReconciliation() {
         </section>
       ) : null}
 
-      {error ? (
-        <p role="alert" className="rounded-xl border border-red-200 bg-red-50 p-3 text-sm font-semibold text-red-800">{error}</p>
+      {error || (!period.companyId && !period.loading) ? (
+        // The !period.companyId case covers entity loading itself failing (or the
+        // workspace having none) — loadAccounts() below never runs without a
+        // companyId, so `error` alone would never surface that.
+        <p role="alert" className="rounded-xl border border-red-200 bg-red-50 p-3 text-sm font-semibold text-red-800">
+          {error || period.error || "No accounting entities are set up for this workspace yet."}
+        </p>
       ) : null}
 
-      {loading ? (
+      {period.loading || (loading && period.companyId) ? (
         <div className="flex items-center justify-center gap-2 rounded-2xl border border-slate-200 bg-white py-20 text-sm font-semibold text-slate-500">
           <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
           Loading bank accounts…
         </div>
-      ) : !accounts.length ? (
+      ) : !period.companyId ? null : !accounts.length ? (
         <div className="rounded-2xl border border-slate-200 bg-white px-6 py-14 text-center shadow-sm">
           <Landmark className="mx-auto h-10 w-10 text-slate-300" aria-hidden="true" />
           <h2 className="mt-4 text-base font-bold text-navy-950">No bank account is mapped yet</h2>

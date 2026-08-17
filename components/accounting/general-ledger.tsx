@@ -171,10 +171,17 @@ export function GeneralLedger({ initialAccountId }: { initialAccountId?: string 
         </Filter>
       </div>
 
-      {loading ? (
+      {period.loading || (loading && period.companyId) ? (
         <div className="flex items-center justify-center gap-2 rounded-2xl border border-slate-200 bg-white py-20 text-sm font-semibold text-slate-500">
           <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
           Loading general ledger…
+        </div>
+      ) : !period.companyId ? (
+        // period.companyId never resolved: load() returns immediately without
+        // touching `loading` when there is no companyId, so without this branch
+        // `loading` stayed true forever and this stage was unreachable.
+        <div role="alert" className="flex flex-col items-start gap-3 rounded-2xl border border-red-200 bg-red-50 p-5">
+          <p className="text-sm font-semibold text-red-800">{period.error || "No accounting entities are set up for this workspace yet."}</p>
         </div>
       ) : error ? (
         <div role="alert" className="flex flex-col items-start gap-3 rounded-2xl border border-red-200 bg-red-50 p-5">
