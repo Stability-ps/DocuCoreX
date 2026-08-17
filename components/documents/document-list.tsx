@@ -74,7 +74,7 @@ export function DocumentList({
                       />
                     </td>
                   ) : null}
-                  <td className="max-w-0 px-4 py-3">
+                  <td className="min-w-0 px-4 py-3">
                     <button
                       type="button"
                       onClick={() =>
