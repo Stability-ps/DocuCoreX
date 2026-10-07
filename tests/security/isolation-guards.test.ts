@@ -18,6 +18,8 @@ const settingsRoutes = [
   "app/api/user-settings/route.ts",
   "app/api/integrations/route.ts",
   "app/api/automations/route.ts",
+  // Previously answered a signed-out request with 200 [] from the demo store.
+  "app/api/notifications/route.ts",
 ];
 
 for (const route of settingsRoutes) {
