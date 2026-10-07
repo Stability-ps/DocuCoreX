@@ -28,7 +28,7 @@ import {
   Zap,
 } from "lucide-react";
 import type { UserSettingsRecord } from "@/lib/app-state";
-import { supabase, getSiteUrl } from "@/lib/supabase";
+import { supabase } from "@/lib/supabase";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -881,8 +881,10 @@ function SecuritySection({ email }: { email: string }) {
       return;
     }
     setResetState("sending");
+    // Lands on the page that actually sets the new password. It used to point at
+    // /login, which ignores the recovery code, so the link did nothing.
     const { error } = await supabase.auth.resetPasswordForEmail(email, {
-      redirectTo: `${getSiteUrl()}/login?mode=signin`,
+      redirectTo: `${window.location.origin}/auth/callback?next=${encodeURIComponent("/auth/reset-password")}`,
     });
     setResetState(error ? "error" : "sent");
   }

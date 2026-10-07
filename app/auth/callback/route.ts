@@ -5,6 +5,8 @@ import { ensureUserWorkspace } from "@/lib/workspace-bootstrap";
 import { dedupeCookies, setSupabaseAuthCookie } from "@/lib/auth-cookies";
 import { safeNextPath } from "@/lib/safe-redirect";
 
+const RESET_PASSWORD_PATH = "/auth/reset-password";
+
 export async function GET(request: NextRequest) {
   const requestUrl = new URL(request.url);
   const origin = requestUrl.origin;
@@ -12,8 +14,17 @@ export async function GET(request: NextRequest) {
   // Only allow internal, same-origin redirect targets — never an attacker-supplied
   // absolute URL (open-redirect guard).
   const next = safeNextPath(requestUrl.searchParams.get("next"));
+  // A password-recovery link that cannot be exchanged (expired, already used)
+  // goes back to the reset page, which explains it and offers a fresh link,
+  // rather than to a generic "Session exchange failed" on /login.
+  const isRecovery = next.startsWith(RESET_PASSWORD_PATH);
+  const recoveryFailure = () => NextResponse.redirect(new URL(`${RESET_PASSWORD_PATH}?error=link_invalid`, origin));
 
   try {
+    if (isRecovery && isSupabaseConfigured && !code) {
+      return recoveryFailure();
+    }
+
     if (!isSupabaseConfigured || !code) {
       if (process.env.NODE_ENV === "development") {
         console.log("[Auth Callback] Missing config or code", { isSupabaseConfigured, code });
@@ -46,7 +57,7 @@ export async function GET(request: NextRequest) {
       if (process.env.NODE_ENV === "development") {
         console.error("[Auth Callback] Exchange error:", exchangeResult.error);
       }
-      return NextResponse.redirect(new URL("/login?error=exchange_failed", origin));
+      return isRecovery ? recoveryFailure() : NextResponse.redirect(new URL("/login?error=exchange_failed", origin));
     }
 
     const {
