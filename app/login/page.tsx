@@ -138,7 +138,11 @@ function LoginContent() {
         return;
       }
 
-      const result = await supabase.auth.resetPasswordForEmail(email, { redirectTo });
+      // The link must land on the page that sets the new password; sent to the
+      // plain callback it only signed the user in and the password never changed.
+      const result = await supabase.auth.resetPasswordForEmail(email, {
+        redirectTo: `${window.location.origin}/auth/callback?next=${encodeURIComponent("/auth/reset-password")}`,
+      });
 
       if (result.error) {
         setStatus(result.error.message);
