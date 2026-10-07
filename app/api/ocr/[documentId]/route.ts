@@ -1,4 +1,5 @@
 import { NextResponse, after } from "next/server";
+import { withUnauthorized } from "@/lib/api-auth";
 import { recordAuditLog } from "@/lib/audit";
 import { ocrResults } from "@/lib/mock-repository";
 import { createWorkflowAdapters } from "@/lib/workflow-adapters";
@@ -15,7 +16,7 @@ function isEnhanced(url: string): boolean {
   return new URL(url).searchParams.get("enhanced") === "1";
 }
 
-export async function GET(_request: Request, { params }: { params: Promise<{ documentId: string }> }) {
+async function handleGET(_request: Request, { params }: { params: Promise<{ documentId: string }> }) {
   const { documentId } = await params;
   const result = await getOcrForWorkspace(documentId);
 
@@ -34,7 +35,7 @@ export async function GET(_request: Request, { params }: { params: Promise<{ doc
   return NextResponse.json({ documentId, status: "queued", message: "OCR has not started for this document yet." });
 }
 
-export async function POST(request: Request, { params }: { params: Promise<{ documentId: string }> }) {
+async function handlePOST(request: Request, { params }: { params: Promise<{ documentId: string }> }) {
   const { documentId } = await params;
   const enhanced = isEnhanced(request.url);
   // An Enhanced OCR request must re-run rather than reuse a standard result.
@@ -84,3 +85,6 @@ export async function POST(request: Request, { params }: { params: Promise<{ doc
   });
   return NextResponse.json({ documentId, jobId: job.id, status: "processing" }, { status: 202 });
 }
+
+export const GET = withUnauthorized(handleGET);
+export const POST = withUnauthorized(handlePOST);

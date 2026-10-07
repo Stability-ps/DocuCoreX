@@ -1,10 +1,11 @@
 import { NextResponse } from "next/server";
+import { resolveWorkspaceContext } from "@/lib/api-auth";
 import { answerAiPrompt, getAiInsights } from "@/lib/mock-repository";
-import { getWorkspaceContext } from "@/lib/server-documents";
 
 export async function GET(_request: Request, { params }: { params: Promise<{ documentId: string }> }) {
   const { documentId } = await params;
-  const context = await getWorkspaceContext();
+  const context = await resolveWorkspaceContext();
+  if (context instanceof Response) return context;
 
   if (!context) {
     return NextResponse.json({ insights: getAiInsights(documentId), mode: "demo" });
@@ -40,7 +41,8 @@ export async function POST(request: Request, { params }: { params: Promise<{ doc
     return NextResponse.json({ error: "Prompt is required" }, { status: 400 });
   }
 
-  const context = await getWorkspaceContext();
+  const context = await resolveWorkspaceContext();
+  if (context instanceof Response) return context;
 
   if (!context) {
     return NextResponse.json({ insight: answerAiPrompt(documentId, body.prompt.trim()), mode: "demo" });

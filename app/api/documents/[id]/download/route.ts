@@ -1,9 +1,10 @@
 import { NextResponse } from "next/server";
+import { withUnauthorized } from "@/lib/api-auth";
 import { getDocument } from "@/lib/mock-repository";
 import { isDemoAllowed } from "@/lib/supabase";
 import { getWorkspaceContext } from "@/lib/server-documents";
 
-export async function GET(_request: Request, { params }: { params: Promise<{ id: string }> }) {
+async function handleGET(_request: Request, { params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
   const context = await getWorkspaceContext();
 
@@ -60,3 +61,5 @@ export async function GET(_request: Request, { params }: { params: Promise<{ id:
 function sanitizeFileName(value: string) {
   return value.replace(/[^a-zA-Z0-9._-]/g, "_");
 }
+
+export const GET = withUnauthorized(handleGET);

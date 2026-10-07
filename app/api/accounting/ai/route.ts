@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { withUnauthorized } from "@/lib/api-auth";
 import { getWorkspaceContext } from "@/lib/server-documents";
 import { getAccountingRunDetail } from "@/lib/accounting/server";
 import { generateCommentary, type AiCommentaryType } from "@/lib/accounting/ai-service";
@@ -18,7 +19,7 @@ const VALID_TYPES = new Set<AiCommentaryType>([
   "forecast-commentary",
 ]);
 
-export async function POST(request: Request) {
+async function handlePOST(request: Request) {
   const context = await getWorkspaceContext();
   if (!context) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
@@ -73,3 +74,5 @@ export async function POST(request: Request) {
 
   return NextResponse.json(result);
 }
+
+export const POST = withUnauthorized(handlePOST);

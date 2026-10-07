@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
+import { resolveWorkspaceContext } from "@/lib/api-auth";
 import { documentRecords, extractionResults, ocrResults } from "@/lib/mock-repository";
-import { getWorkspaceContext } from "@/lib/server-documents";
 
 type SearchResult = {
   id: string;
@@ -17,7 +17,8 @@ export async function GET(request: Request) {
     return NextResponse.json({ results: [] });
   }
 
-  const context = await getWorkspaceContext();
+  const context = await resolveWorkspaceContext();
+  if (context instanceof Response) return context;
 
   if (!context) {
     const results = documentRecords

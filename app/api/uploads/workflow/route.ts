@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
+import { resolveWorkspaceContext } from "@/lib/api-auth";
 import { recordAuditLog } from "@/lib/audit";
-import { getWorkspaceContext } from "@/lib/server-documents";
 
 type ConversionTarget = "pdf" | "word" | "excel" | "zip";
 
@@ -53,7 +53,8 @@ function stateFromJobs(
 }
 
 export async function GET() {
-  const context = await getWorkspaceContext();
+  const context = await resolveWorkspaceContext();
+  if (context instanceof Response) return context;
 
   if (!context) {
     return NextResponse.json({ items: [], mode: "demo" });
@@ -136,7 +137,8 @@ export async function POST(request: Request) {
   }
   const target = body.target;
 
-  const context = await getWorkspaceContext();
+  const context = await resolveWorkspaceContext();
+  if (context instanceof Response) return context;
 
   if (!context) {
     return NextResponse.json({ error: "Supabase is required for live upload workflows." }, { status: 503 });
@@ -243,7 +245,8 @@ export async function DELETE(request: Request) {
     return NextResponse.json({ error: "documentId is required" }, { status: 400 });
   }
 
-  const context = await getWorkspaceContext();
+  const context = await resolveWorkspaceContext();
+  if (context instanceof Response) return context;
 
   if (!context) {
     return NextResponse.json({ error: "Supabase is required for live upload workflows." }, { status: 503 });

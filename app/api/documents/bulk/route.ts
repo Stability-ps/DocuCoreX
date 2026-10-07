@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { errorResponse } from "@/lib/api-auth";
 import { recordAuditLog } from "@/lib/audit";
 import { bulkDeleteDocuments, patchDocument } from "@/lib/server-documents";
 
@@ -36,7 +37,7 @@ export async function PATCH(request: Request) {
 
     return NextResponse.json({ documents: documents.filter(Boolean) });
   } catch (error) {
-    return NextResponse.json({ error: error instanceof Error ? error.message : "Unable to update selected documents." }, { status: 500 });
+    return errorResponse(error, "Unable to update selected documents.");
   }
 }
 
@@ -60,6 +61,6 @@ export async function DELETE(request: Request) {
 
     return NextResponse.json(result);
   } catch (error) {
-    return NextResponse.json({ error: error instanceof Error ? error.message : "Unable to delete selected documents." }, { status: 500 });
+    return errorResponse(error, "Unable to delete selected documents.");
   }
 }

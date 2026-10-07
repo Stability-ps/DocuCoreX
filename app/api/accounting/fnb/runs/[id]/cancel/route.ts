@@ -1,8 +1,9 @@
 import { NextResponse } from "next/server";
+import { withUnauthorized } from "@/lib/api-auth";
 import { getAccountingRunDetail } from "@/lib/accounting/server";
 import { getWorkspaceContext } from "@/lib/server-documents";
 
-export async function POST(_request: Request, { params }: { params: Promise<{ id: string }> }) {
+async function handlePOST(_request: Request, { params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
   const context = await getWorkspaceContext();
   if (!context) {
@@ -46,3 +47,5 @@ export async function POST(_request: Request, { params }: { params: Promise<{ id
 
   return NextResponse.json({ ok: true, status: "cancelled", runId: id });
 }
+
+export const POST = withUnauthorized(handlePOST);
