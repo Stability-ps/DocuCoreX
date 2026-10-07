@@ -2,7 +2,7 @@ import { createServerClient } from "@supabase/ssr";
 import { NextResponse, type NextRequest } from "next/server";
 import { dedupeCookies } from "@/lib/auth-cookies";
 
-const publicPrefixes = ["/", "/login", "/signup", "/auth/callback", "/auth/signout", "/debug/auth"];
+const publicPrefixes = ["/", "/login", "/signup", "/auth/callback", "/auth/signout"];
 
 const protectedPrefixes = [
   "/dashboard",
@@ -18,6 +18,9 @@ const protectedPrefixes = [
   "/team",
   "/help",
   "/settings",
+  // Auth diagnostics: a signed-in user sees their own session state; an
+  // anonymous visitor is sent to sign in rather than shown configuration.
+  "/debug",
 ];
 
 export async function middleware(request: NextRequest) {
