@@ -688,14 +688,14 @@ function WorkspaceSection({ profile, setProfile, saveProfile, saveStatus, userSe
       <SectionHeader title="Workspace" description="Configure your workspace name, company details, and regional settings." />
       <div className="rounded-xl border border-slate-100">
         <SettingRow label="Company name" description="Displayed in reports and shared documents.">
-          <input
+          <input aria-label="Company name"
             className="w-52 rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-sm outline-none focus:border-blue-400 focus:ring-2 focus:ring-blue-100"
             value={profile.company}
             onChange={(e) => setProfile((p) => ({ ...p, company: e.target.value }))}
           />
         </SettingRow>
         <SettingRow label="Date format" description="Applies to exports and document metadata. Saved automatically.">
-          <select
+          <select aria-label="Date format"
             className="w-52 rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-sm text-slate-700 outline-none focus:border-blue-400"
             value={userSettings.dateFormat}
             onChange={(e) => void saveSettings({ dateFormat: e.target.value })}
@@ -736,14 +736,14 @@ function ProfileSection({ profile, setProfile, saveProfile, saveStatus }: Shared
       <SectionHeader title="Profile" description="Your personal account information visible to your team." />
       <div className="rounded-xl border border-slate-100">
         <SettingRow label="Full name" description="Displayed in comments, assignments, and notifications.">
-          <input
+          <input aria-label="Full name"
             className="w-52 rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-sm outline-none focus:border-blue-400 focus:ring-2 focus:ring-blue-100"
             value={profile.fullName}
             onChange={(e) => setProfile((p) => ({ ...p, fullName: e.target.value }))}
           />
         </SettingRow>
         <SettingRow label="Role" description="Your role within this workspace.">
-          <input
+          <input aria-label="Role"
             className="w-52 rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-sm outline-none focus:border-blue-400 focus:ring-2 focus:ring-blue-100"
             value={profile.role}
             onChange={(e) => setProfile((p) => ({ ...p, role: e.target.value }))}
@@ -808,7 +808,7 @@ function AppearanceSection({ userSettings, saveSettings, applyTheme }: SharedPro
           </div>
         </SettingRow>
         <SettingRow label="Default export format" description="File format used when downloading extracted data." last>
-          <select
+          <select aria-label="Default export format"
             className="rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-sm text-slate-700 outline-none focus:border-blue-400"
             value={userSettings.defaultExport}
             onChange={(e) => void saveSettings({ defaultExport: e.target.value as UserSettingsRecord["defaultExport"] })}
@@ -832,20 +832,20 @@ function NotificationsSection({ userSettings, saveSettings }: SharedProps) {
       <SectionHeader title="Notifications" description="Control when and how DocuCoreX alerts you." />
       <div className="rounded-xl border border-slate-100">
         <SettingRow label="Processing notifications" description="Alerts when documents finish OCR, extraction, or conversion.">
-          <Toggle
+          <Toggle label="Processing notifications"
             on={userSettings.notifications}
             onChange={() => void saveSettings({ notifications: !userSettings.notifications })}
           />
         </SettingRow>
         <SettingRow label="Team activity" description="Alerts when members upload, share, or comment.">
           <div className="flex items-center gap-2">
-            <Toggle on={false} onChange={() => undefined} disabled />
+            <Toggle label="Team activity" on={false} onChange={() => undefined} disabled />
             <StatusBadge label="Coming soon" variant="inactive" />
           </div>
         </SettingRow>
         <SettingRow label="Security alerts" description="Immediate alerts for new sign-ins and permission changes." last>
           <div className="flex items-center gap-2">
-            <Toggle on={false} onChange={() => undefined} disabled />
+            <Toggle label="Security alerts" on={false} onChange={() => undefined} disabled />
             <StatusBadge label="Coming soon" variant="inactive" />
           </div>
         </SettingRow>
@@ -854,10 +854,12 @@ function NotificationsSection({ userSettings, saveSettings }: SharedProps) {
   );
 }
 
-function Toggle({ on, onChange, disabled = false }: { on: boolean; onChange: () => void; disabled?: boolean }) {
+function Toggle({ label, on, onChange, disabled = false }: { label: string; on: boolean; onChange: () => void; disabled?: boolean }) {
   return (
     <button
+      type="button"
       role="switch"
+      aria-label={label}
       aria-checked={on}
       onClick={onChange}
       disabled={disabled}

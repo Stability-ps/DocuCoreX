@@ -136,8 +136,8 @@ export function AutomationsConsole() {
         <section className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
           <h2 className="text-xl font-semibold text-navy-950">Create pipeline</h2>
           <div className="mt-5 grid gap-3">
-            <input className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm font-semibold outline-none" onChange={(event) => setInput(event.target.value)} value={input} />
-            <input className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm font-semibold outline-none" onChange={(event) => setOutput(event.target.value)} value={output} />
+            <input aria-label="Pipeline input" className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm font-semibold outline-none" onChange={(event) => setInput(event.target.value)} value={input} />
+            <input aria-label="Pipeline output" className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm font-semibold outline-none" onChange={(event) => setOutput(event.target.value)} value={output} />
             <button
               type="button"
               onClick={createPipeline}

@@ -66,7 +66,10 @@ const fieldLabel = "text-[11px] font-semibold uppercase tracking-wide text-slate
  * preview in the create form (before anything is saved) and for the saved invoice detail/print
  * view — so both stay pixel-identical.
  */
-export function InvoicePreview({ invoice }: { invoice: InvoicePreviewData }) {
+// headingLevel: the preview is the page heading on the invoice detail page, but
+// sits under the create form's own <h1> on /invoices/new, which then had two.
+export function InvoicePreview({ invoice, headingLevel = "h1" }: { invoice: InvoicePreviewData; headingLevel?: "h1" | "h2" }) {
+  const Heading = headingLevel;
   const subtotal = calculateInvoiceSubtotal(invoice.lineItems);
   const vatAmount = calculateInvoiceVatAmount(invoice.lineItems, invoice.discountAmount);
   const totalAmount = calculateInvoiceFinalTotal(invoice.lineItems, invoice.discountAmount, invoice.shippingAmount, invoice.additionalCharges);
@@ -91,7 +94,7 @@ export function InvoicePreview({ invoice }: { invoice: InvoicePreviewData }) {
           ) : null}
           <div>
             <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-royal-700">Invoice</p>
-            <h1 className="mt-0.5 text-xl font-semibold text-navy-950">{invoice.invoiceNumber || "Assigned when saved"}</h1>
+            <Heading className="mt-0.5 text-xl font-semibold text-navy-950">{invoice.invoiceNumber || "Assigned when saved"}</Heading>
             {invoice.title ? <p className="mt-0.5 text-sm text-slate-600">{invoice.title}</p> : null}
           </div>
         </div>
