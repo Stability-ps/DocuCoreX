@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { DIRECT_UPLOAD_THRESHOLD_BYTES } from "@/lib/direct-upload";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import {
@@ -675,6 +676,16 @@ export function AccountingIntelligence({ module = "bank-statements" }: { module?
   }
 
   async function uploadFile(file: File, queueItemId?: string) {
+    // Statements upload through a Vercel function, which rejects request bodies
+    // over ~4.5 MB with a raw platform error. Say so plainly instead.
+    if (file.size > DIRECT_UPLOAD_THRESHOLD_BYTES) {
+      const message = `${file.name} is larger than 4 MB. Bank statement uploads are limited to 4 MB — export the statement as a text PDF from online banking, which is usually well under 1 MB.`;
+      setError(message);
+      if (queueItemId) {
+        setUploadQueue((queue) => queue.map((item) => (item.id === queueItemId ? { ...item, status: "Failed", error: message, file } : item)));
+      }
+      return null;
+    }
     setBusy("upload");
     setError("");
     setDiagnostics("");
