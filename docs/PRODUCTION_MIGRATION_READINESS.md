@@ -1,117 +1,91 @@
 # Production migration state — accounting schema
 
-**Status: APPLIED. Production is at 001–042.**
+**Status: APPLIED. Production is at 001–047.**
 
 | | |
 |---|---|
-| Live Supabase project | applied through **042** |
-| This repository | contains through **042** |
+| Live Supabase project | `efprtqcpglsawifrsmcc`, applied through **047** |
+| This repository | contains through **047** |
 | Gap | none |
-| Verified | 2026-08-14, read-only probe via PostgREST |
+| Verified | 2026-10-07, direct catalog queries (`pg_class`, `pg_proc`, `pg_trigger`, `pg_constraint`, `pg_indexes`, `pg_policies`, `information_schema.columns`) |
 
-## How 041–042 were established
+Migrations are applied by hand, not by the Supabase CLI, so the
+`supabase_migrations.schema_migrations` table records only one unrelated entry
+and **cannot** be used to read the state. Every check below asks the catalog
+for the objects each migration creates.
 
-Neither table row counts nor `pg_proc` are reachable with the anon key this
-probe uses — RLS returns `*/0` for every table query, since there is no
-authenticated session behind it. What proves 041 and 042 are applied is that
-their **functions execute and behave like themselves**, which requires the
-function body — not just a stub — to be present:
+## How parity was established (2026-10-07)
 
-- `accounting_fixed_asset_register(target_company)` returned `[]` (a real,
-  empty result set) rather than PGRST202.
-- `accounting_period_close_readiness(...)` returned a computed row —
-  `{"unposted_journal_count":0,"open_reconciliation_count":0,"vat_period_status":null}`
-  — which only a running function body produces.
-- `accounting_close_period(...)` raised `P0002 company ... not found` — a
-  custom exception from *inside* the PL/pgSQL body (migration 041's own
-  `raise exception 'company % not found'`), not a PostgREST routing error.
-  This is stronger evidence than a bare existence check: it proves the
-  function's internal logic ran, not merely that a row for it exists in
-  `pg_proc`.
+Every table, function, trigger, named constraint, index, RLS policy and
+`ALTER TABLE … ADD COLUMN` declared across `supabase/migrations/*.sql` was
+extracted and checked for existence in production. Two migrations were missing
+in full and nothing else was:
 
-(A first pass at this probe called the readiness/close functions with an
-empty body and got PGRST202 for all of them — a false negative. That error
-is what PostgREST returns for a genuine missing function AND for a real
-function called with the wrong argument shape; supplying the actual named
-parameters resolved it. Worth remembering next time this kind of check is
-run with functions that take required arguments.)
+| Migration | Production state found | Effect while missing | Fix |
+|---|---|---|---|
+| **010** notifications upgrade | never applied — table still had the legacy `read boolean` and none of `type`, `entity_type`, `entity_id`, `href`, `read_at` or the two indexes | `createNotification` inserts failed (returned `null`), mark-as-read silently matched nothing; the notifications policy still lacked the per-user `user_id` clause | applied 2026-10-07; table held 0 rows, so dropping `read` lost nothing |
+| **034** accounting engagement | `accounting_engagement` absent, despite the previous version of this document saying it had been applied | `saveWorkspaceEngagement` degraded; coverage tolerated it (`42P01` branch) | applied 2026-10-07 |
 
-## How 035–040 were established
+Two further migrations were written during the release audit and applied the
+same day:
 
-All 035–040 tables present. Columns added by later migrations present
-(`accounting_postings.source_transaction_id` and `.tax_code_id`,
-`accounting_journal_lines.source_transaction_id` and `.tax_code_id`,
-`accounting_tax_codes.control_account_id`,
-`accounting_bank_accounts.ledger_account_id`). Reporting functions execute:
-`accounting_trial_balance`, `accounting_general_ledger`,
-`accounting_bank_ledger_balance`, `accounting_vat_summary`,
-`accounting_vat_register` all returned HTTP 200.
+| Migration | What it does | Verified in production |
+|---|---|---|
+| **046** RPC tenant guards | `next_invoice_sequence` / `next_company_invoice_sequence` gain an ownership check (`42501` otherwise) and lose the `anon`/`PUBLIC` grant; `accounting_seed_chart_of_accounts` / `accounting_seed_tax_codes` lose every client grant | over PostgREST: anon → 401 on all four; tenant A on tenant B's workspace/company → 403 `access denied`; tenant A on its own → 200, consecutive numbers; tenant B's counters untouched; a new company is still seeded with 32 accounts and 7 tax codes |
+| **047** pin trigger search_path | `set search_path = public` on the six ledger-integrity trigger functions, the only functions in the schema without one | no unpinned plpgsql/sql function remains in `public`; the advisor's `function_search_path_mutable` findings are gone |
 
-Seed arithmetic is exact, which confirms the backfills ran:
+Before 046, all four functions were callable with nothing but the public anon
+key and trusted the id they were given — anyone could advance another
+tenant's invoice counter (a gap in its tax-invoice numbering) or write chart
+rows under another company. Regression coverage: `tests/sql/35_rpc_tenancy.sql`
+and `tests/sql/36_function_search_path.sql`, run by `scripts/verify-ledger.sh`.
 
-    24 companies → 24 accounting_entity_settings
-                 → 672 accounting_accounts   (24 × 28)
-                 → 168 accounting_tax_codes  (24 × 7)
+## Constraint and trigger behaviour — now verified
 
-Ledger tables (`accounting_journals`, `accounting_journal_lines`,
-`accounting_postings`, `accounting_periods`, reconciliation and VAT period
-tables) all exist and are empty.
+The previous version of this document listed these as unprovable through
+PostgREST. With catalog access they are confirmed present, **enabled**
+(`pg_trigger.tgenabled = 'O'`) and **validated** (`pg_constraint.convalidated`):
 
-Migration 034 was found MISSING while 035–040 were present, and was applied
-separately, out of order. Harmless: nothing in 035–040 references
-`accounting_engagement`, and it references nothing from them. Its absence had
-been degrading `saveWorkspaceEngagement` in production; `getWorkspaceCoverage`
-already tolerated it (see the `42P01` branch in lib/accounting/server.ts).
-
-## Correction to the previous version of this document
-
-An earlier version stated "Production Supabase: applied through 034" with six
-migrations pending. **That was never verified — it was inferred from the
-migrations being new in the repository and written down as fact.** It was wrong
-in both directions: 035–040 were already applied, and 034 was not.
-
-The lesson worth keeping: migration state is a property of the database, not of
-the repository, and the only way to know it is to ask the database.
-
-## What remains UNVERIFIED in production
-
-Table and function **existence** is confirmed. Constraint and trigger
-**behaviour** is not, and cannot be confirmed through PostgREST — it exposes
-rows and functions, not `pg_constraint` or `pg_trigger`.
-
-Specifically unproven in production:
-
-- the append-only triggers on `accounting_postings`
-  (`accounting_postings_no_update`, `accounting_postings_no_delete`)
-- the single posting gate (`accounting_postings_gate` / `docucorex.ledger_gate`)
-- 037's composite entity-isolation foreign keys
-- the `FOR UPDATE` row lock preventing concurrent double-posting
+- append-only triggers on `accounting_postings` (`…_no_update`, `…_no_delete`)
+  and on `accounting_audit_events`, `accounting_import_batches`,
+  `accounting_import_batch_errors`
+- the single posting gate: `accounting_postings_gate` trigger, and
+  `accounting_post_journal` both opens `docucorex.ledger_gate` and takes the
+  `FOR UPDATE` row lock that prevents a concurrent double-post
+- 037's composite same-entity foreign keys
+  (`accounting_postings_{journal,account}_same_entity`,
+  `accounting_journal_lines_{journal,account}_same_entity`)
 - the exclusion constraints on financial years, accounting periods and VAT
   periods
+- `accounting_postings_one_sided` and `accounting_postings_non_negative`
+- 041/042: the journal-line and reconciliation-item freeze triggers, the
+  `accounting_fixed_assets` check constraints and the
+  `accounting_asset_movements_one_depreciation_per_month` partial unique index
 
-These are exactly the four defects that only appeared when migration 036 was
-executed against a real PostgreSQL in Stage 4B. All were fixed in 037, but
-whether the fixed versions are what production actually holds is unknown.
+Their **behaviour** is exercised by the ledger battery against a real
+PostgreSQL 16 built from the same migrations (`scripts/verify-ledger.sh`:
+210 passed, 0 failed, trial balance proof BALANCED).
 
-Also unproven, from 041–042, for the same reason:
+Production itself holds **0 journals and 0 postings** as of 2026-10-07: the
+general ledger has not yet been used there, so these guards have not yet been
+exercised by live data.
 
-- the append-only triggers on `accounting_audit_events`
-  (`accounting_audit_events_no_update`, `..._no_delete`)
-- the one-depreciation-per-asset-per-month partial unique index on
-  `accounting_asset_movements`
-- the `accounting_fixed_assets` check constraints (distinct asset/accumulated-
-  depreciation accounts, residual ≤ cost, method-input pairing, disposal-date-
-  implies-proceeds)
-- whether `accounting_close_period` actually refuses to lock a period over
-  unposted journals in production data, as opposed to the fixture
+## Other drift noted, deliberately left alone
 
-`accounting_postings` was empty when 001–040 were checked; whether it still is
-now that 041–042 have shipped is itself unverified by this probe (RLS blocks
-row counts with the anon key — see above). If it is not, the append-only and
-one-per-month guards are no longer merely theoretical.
+`public.folders` exists in production but is created by no migration — it
+comes from the bootstrap `supabase/schema.sql`. It has RLS enabled with a
+workspace-scoped policy, holds 0 rows and is not referenced by the app.
 
-**To verify:** `SUPABASE_DB_PASSWORD` or a Management API token, then query
-`pg_constraint`, `pg_trigger` and `pg_proc` directly. A few queries settle it.
+## Correction history
+
+- An earlier version said "applied through 034" with six pending; in fact
+  035–040 were applied and 034 was not.
+- The 2026-08-14 version said 034 had since been applied and that production
+  was at 001–042 with no gap. Neither was true: 034 was still missing and 010
+  had never been applied. Both were inferred from indirect PostgREST probes.
+
+The lesson, twice over: migration state is a property of the database, and
+the only reliable way to know it is to ask the database's catalog.
 
 ## Environment risk, unchanged
 
