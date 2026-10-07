@@ -323,9 +323,16 @@ export function InvoiceCreateForm() {
     <div className="space-y-5">
       {/* Header */}
       <div className="flex flex-wrap items-start justify-between gap-4 rounded-2xl border border-slate-200 bg-white px-5 py-4 shadow-sm">
-        {/* The page's PageHeader already carries the eyebrow, title and intro;
-            repeating them here stacked a second "Create invoice" <h1> under it. */}
-        <h2 className="self-center text-sm font-semibold text-slate-900">Invoice details</h2>
+        {/* PageHeader is hidden below md, so on mobile this card is the page's
+            title. From md up PageHeader shows the same eyebrow and title, and
+            repeating them here stacked a second visible "Create invoice" <h1>
+            under it — so the card falls back to a section heading there. */}
+        <div className="md:hidden">
+          <p className="text-xs font-semibold uppercase tracking-wide text-royal-700">Client invoicing</p>
+          <h1 className="mt-0.5 text-xl font-semibold text-slate-900">Create invoice</h1>
+          <p className="mt-0.5 text-xs text-slate-400">Create professional invoices for your clients.</p>
+        </div>
+        <h2 className="hidden self-center text-sm font-semibold text-slate-900 md:block">Invoice details</h2>
         <div className="flex flex-wrap items-center gap-3">
           <div className="text-right">
             <p className={labelClassName}>Invoice number</p>
