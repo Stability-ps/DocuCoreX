@@ -794,7 +794,9 @@ test("status sync: poll stops on effective terminal; UI refreshes list and clear
 test("failed runs surface the real error + diagnostics with retry (not just 'Failed 0%')", () => {
   // parser/OCR debug is persisted on failure so the workspace can show WHY.
   const route = read("app/api/accounting/fnb/process/route.ts");
-  assert.match(route, /parser_debug: parserDebug \?\? null/, "persists parser/OCR debug on failure");
+  // `?? {}`, not `?? null`: production's column is NOT NULL DEFAULT '{}' (see
+  // tests/accounting/run-claim.test.ts).
+  assert.match(route, /parser_debug: parserDebug \?\? \{\}/, "persists parser/OCR debug on failure");
   assert.match(route, /migration 015 not applied/, "falls back if the column is missing");
   assert.match(read("supabase/migrations/015_parser_debug.sql"), /add column if not exists parser_debug jsonb/);
   assert.match(read("lib/accounting/server.ts"), /parserDebug: \(row\.parser_debug/, "run mapping exposes parserDebug");
