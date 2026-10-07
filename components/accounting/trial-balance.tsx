@@ -172,7 +172,7 @@ export function TrialBalance() {
 
           <div className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
             <div className="overflow-x-auto">
-              <table className="w-full min-w-[52rem] border-collapse text-sm">
+              <table className="w-full min-w-[58rem] border-collapse text-sm">
                 <caption className="sr-only">
                   Trial balance for {period.entity?.name ?? "the selected entity"}, {period.from} to {period.to}
                 </caption>
@@ -180,6 +180,7 @@ export function TrialBalance() {
                   <tr className="border-b border-slate-200 text-left">
                     <th scope="col" className="px-4 py-2.5 text-xs font-bold uppercase tracking-wide text-slate-500">Code</th>
                     <th scope="col" className="px-4 py-2.5 text-xs font-bold uppercase tracking-wide text-slate-500">Account</th>
+                    <th scope="col" className="px-4 py-2.5 text-right text-xs font-bold uppercase tracking-wide text-slate-500">Opening</th>
                     <th scope="col" className="px-4 py-2.5 text-right text-xs font-bold uppercase tracking-wide text-slate-500">Debits</th>
                     <th scope="col" className="px-4 py-2.5 text-right text-xs font-bold uppercase tracking-wide text-slate-500">Credits</th>
                     <th scope="col" className="px-4 py-2.5 text-right text-xs font-bold uppercase tracking-wide text-slate-500">Closing</th>
@@ -189,19 +190,29 @@ export function TrialBalance() {
                 </thead>
                 <tbody>
                   {rows.map((row) => (
-                    <tr key={row.accountId} className="border-b border-slate-100 last:border-0 hover:bg-slate-50/60">
-                      <td className="px-4 py-2 font-semibold tabular-nums text-navy-950">{row.code}</td>
+                    <tr key={row.accountId ?? "brought-forward"} className="border-b border-slate-100 last:border-0 hover:bg-slate-50/60">
+                      <td className="px-4 py-2 font-semibold tabular-nums text-navy-950">{row.code ?? "—"}</td>
                       <td className="px-4 py-2">
-                        <Link
-                          href={`/accounting/general-ledger?companyId=${period.companyId}&accountId=${row.accountId}&from=${period.from}&to=${period.to}`}
-                          className="font-medium text-royal-700 hover:underline"
-                        >
-                          {row.name}
-                        </Link>
+                        {row.isBroughtForward ? (
+                          // Not an account: the income and expense postings dated
+                          // before the period that no closing journal has moved
+                          // into equity (migration 048).
+                          <span className="font-medium text-navy-950" title={`Income and expense postings dated before ${period.from} not yet closed to retained earnings`}>
+                            {row.name}
+                          </span>
+                        ) : (
+                          <Link
+                            href={`/accounting/general-ledger?companyId=${period.companyId}&accountId=${row.accountId}&from=${period.from}&to=${period.to}`}
+                            className="font-medium text-royal-700 hover:underline"
+                          >
+                            {row.name}
+                          </Link>
+                        )}
                         <span className="ml-2 text-xs font-semibold text-slate-400">
                           {ACCOUNT_TYPE_LABELS[row.accountType as keyof typeof ACCOUNT_TYPE_LABELS] ?? row.accountType}
                         </span>
                       </td>
+                      <td className="px-4 py-2 text-right tabular-nums text-slate-600">{formatLedgerMoney(row.openingBalance, { blankZero: true })}</td>
                       <td className="px-4 py-2 text-right tabular-nums text-navy-950">{formatLedgerMoney(row.debits, { blankZero: true })}</td>
                       <td className="px-4 py-2 text-right tabular-nums text-navy-950">{formatLedgerMoney(row.credits, { blankZero: true })}</td>
                       <td className="px-4 py-2 text-right font-semibold tabular-nums text-navy-950">{formatLedgerMoney(row.closingBalance)}</td>
@@ -215,7 +226,7 @@ export function TrialBalance() {
                 </tbody>
                 <tfoot>
                   <tr className="border-t-2 border-slate-300 bg-slate-50 font-bold">
-                    <td className="px-4 py-2.5 text-xs uppercase tracking-wide text-slate-500" colSpan={2}>Total</td>
+                    <td className="px-4 py-2.5 text-xs uppercase tracking-wide text-slate-500" colSpan={3}>Total movements</td>
                     <td className="px-4 py-2.5 text-right tabular-nums text-navy-950">{formatLedgerMoney(totals.totalDebits)}</td>
                     <td className="px-4 py-2.5 text-right tabular-nums text-navy-950">{formatLedgerMoney(totals.totalCredits)}</td>
                     <td colSpan={3} />
@@ -226,6 +237,9 @@ export function TrialBalance() {
           </div>
 
           <p className="text-xs font-semibold text-slate-500">
+            Debits and credits are the period&apos;s movements. Balance-sheet accounts open with their balance brought
+            forward from before {period.from}; income and expense accounts show the period only, and any earlier
+            profit or loss not yet closed to retained earnings is shown as one brought-forward equity line.
             Prior year and AFS mapping are shown as not yet available rather than as zero. Comparatives require
             prior-year ledger or imported opening balances; financial-statement mapping arrives with the reporting
             stage.

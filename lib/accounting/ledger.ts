@@ -29,15 +29,26 @@ export type LedgerRow = {
 };
 
 export type TrialBalanceRow = {
-  accountId: string;
-  code: string;
+  /** Null only on the brought-forward row, which is not an account. */
+  accountId: string | null;
+  code: string | null;
   name: string;
   accountType: string;
   normalBalance: "debit" | "credit";
+  /**
+   * Balance brought forward from before the period (migration 048): permanent
+   * accounts only; zero for income and expense accounts, whose earlier activity
+   * is carried in the "Unclosed profit/(loss) brought forward" row instead.
+   */
+  openingBalance: number;
+  /** Period movements. */
   debits: number;
   credits: number;
+  /** Opening plus the period's movement, in the account's normal-balance sign. */
   closingBalance: number;
   postingCount: number;
+  /** The unclosed prior profit/(loss) row rather than a chart account. */
+  isBroughtForward: boolean;
 };
 
 export type TrialBalanceTotals = {

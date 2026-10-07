@@ -121,8 +121,10 @@ begin
   values (ws, '00000000-0000-0000-0000-0000000000a1', 'stmt.pdf', 'x/stmt.pdf', 'application/pdf', 1)
   returning id into doc_id;
 
-  insert into public.accounting_statement_runs (workspace_id, document_id, bank, status)
-  values (ws, doc_id, 'FNB', 'completed') returning id into run_id;
+  -- source_storage_path is NOT NULL; without it this block raised before any
+  -- §12 check ran, and the harness (which then ignored errors) reported green.
+  insert into public.accounting_statement_runs (workspace_id, document_id, bank, status, source_storage_path)
+  values (ws, doc_id, 'FNB', 'completed', 'x/stmt.pdf') returning id into run_id;
 
   insert into public.accounting_transactions (run_id, workspace_id, transaction_date, description, debit_amount)
   values (run_id, ws, '2025-12-01', 'Bank charge', 125.00) returning id into txn_id;
@@ -138,8 +140,14 @@ begin
   -- posting that carries it, through the same append-only table.
   perform set_config('x.noop', '1', true);
 
-  -- Delete the source document; the run and its transactions cascade from it.
+  -- Delete the source document. The run is deliberately NOT cascaded from it
+  -- (accounting_statement_runs.document_id is ON DELETE SET NULL since 003, so
+  -- removing an uploaded file never erases accounting history); deleting the
+  -- run is what removes its transactions, so do both, as a full source removal.
   delete from public.documents where id = doc_id;
+  perform t_report('§12 document deletion keeps the statement run',
+    exists (select 1 from public.accounting_statement_runs where id = run_id and document_id is null));
+  delete from public.accounting_statement_runs where id = run_id;
 
   select count(*) into survived from public.accounting_postings where journal_id = jid;
   select (source_transaction_id is null) into nulled

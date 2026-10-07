@@ -13,7 +13,7 @@ const trialBalanceUi = readFileSync(join(root, "components/accounting/trial-bala
 
 const row = (over: Partial<TrialBalanceRow> = {}): TrialBalanceRow => ({
   accountId: "a", code: "1000", name: "Bank", accountType: "asset", normalBalance: "debit",
-  debits: 0, credits: 0, closingBalance: 0, postingCount: 1, ...over,
+  openingBalance: 0, debits: 0, credits: 0, closingBalance: 0, postingCount: 1, isBroughtForward: false, ...over,
 });
 
 // ── Balance integrity ───────────────────────────────────────────────────────
