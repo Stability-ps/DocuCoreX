@@ -5,7 +5,7 @@ export const metadata: Metadata = { title: "Trial Balance" };
 
 export default function TrialBalancePage() {
   return (
-    <div className="space-y-4">
+    <div className="space-y-4 px-4 py-4 sm:px-6 lg:px-8">
       <header className="flex flex-col gap-0.5 border-b border-slate-200 pb-3">
         <p className="hidden text-xs font-bold uppercase tracking-wide text-slate-500 md:block">
           Accounting &amp; Financial Reporting <span className="mx-1.5 text-slate-300">›</span> Trial Balance
