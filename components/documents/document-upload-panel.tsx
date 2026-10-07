@@ -2,6 +2,7 @@
 
 import { useRef, useState, type DragEvent } from "react";
 import { CheckCircle2, Loader2, UploadCloud, X } from "lucide-react";
+import { DIRECT_UPLOAD_THRESHOLD_BYTES } from "@/lib/direct-upload";
 
 const SUPPORTED_EXTENSIONS = [
   ".pdf", ".doc", ".docx", ".xls", ".xlsx", ".ppt", ".pptx", ".txt", ".csv", ".rtf",
@@ -55,12 +56,12 @@ export function DocumentUploadPanel({ onUploaded }: { onUploaded: () => void }) 
       setUploads((current) => current.map((item) => (item.key === key ? { ...item, progress } : item)));
     };
 
-    xhr.onload = () => {
-      let ok = xhr.status >= 200 && xhr.status < 300;
+    const finish = (status: number, responseText: string) => {
+      let ok = status >= 200 && status < 300;
       let errorMessage = "Upload failed";
       let acceptedIds: string[] = [];
       try {
-        const data = JSON.parse(xhr.responseText || "{}") as { accepted?: Array<{ id?: string }>; error?: string };
+        const data = JSON.parse(responseText || "{}") as { accepted?: Array<{ id?: string }>; error?: string };
         if (!data.accepted?.length) {
           ok = false;
           errorMessage = data.error ?? errorMessage;
@@ -122,16 +123,54 @@ export function DocumentUploadPanel({ onUploaded }: { onUploaded: () => void }) 
       })();
     };
 
-    xhr.onerror = () => {
+    const failUpload = (error: string) => {
       setUploads((current) =>
-        current.map((item) =>
-          item.key === key ? { ...item, status: "failed", progress: 100, error: "Network error" } : item,
-        ),
+        current.map((item) => (item.key === key ? { ...item, status: "failed", progress: 100, error } : item)),
       );
     };
 
-    xhr.open("POST", "/api/uploads");
-    xhr.send(formData);
+    xhr.onload = () => finish(xhr.status, xhr.responseText);
+    xhr.onerror = () => failUpload("Network error");
+
+    if (file.size <= DIRECT_UPLOAD_THRESHOLD_BYTES) {
+      xhr.open("POST", "/api/uploads");
+      xhr.send(formData);
+      return;
+    }
+
+    // Larger than a Vercel function will accept: write straight to storage
+    // through a signed URL, then register the stored object.
+    void (async () => {
+      const signResponse = await fetch("/api/uploads/signed-url", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ fileName: file.name, contentType: file.type, size: file.size }),
+      }).catch(() => null);
+      const signed = (await signResponse?.json().catch(() => null)) as { path?: string; signedUrl?: string; error?: string } | null;
+      if (!signResponse?.ok || !signed?.path || !signed.signedUrl) {
+        failUpload(signed?.error ?? "Upload could not be started.");
+        return;
+      }
+
+      const put = new XMLHttpRequest();
+      put.upload.onprogress = xhr.upload.onprogress;
+      put.onerror = () => failUpload("Network error");
+      put.onload = async () => {
+        if (put.status < 200 || put.status >= 300) {
+          failUpload("Upload failed");
+          return;
+        }
+        const register = await fetch("/api/uploads", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ files: [{ name: file.name, size: file.size, type: file.type, storagePath: signed.path }] }),
+        }).catch(() => null);
+        finish(register?.status ?? 0, register ? await register.text() : "");
+      };
+      put.open("PUT", signed.signedUrl);
+      put.setRequestHeader("Content-Type", file.type || "application/octet-stream");
+      put.send(file);
+    })();
   }
 
   function addFiles(files: FileList | File[]) {

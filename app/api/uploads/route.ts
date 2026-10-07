@@ -3,6 +3,7 @@ import { recordAuditLog } from "@/lib/audit";
 import { getWorkspaceContext, registerUploads, validateUploadFiles } from "@/lib/server-documents";
 import { createWorkspaceBucketPath } from "@/lib/supabase-server-adapter";
 import { checkRateLimit } from "@/lib/rate-limit";
+import { isOwnDocumentsPath } from "@/lib/direct-upload";
 
 const MAX_UPLOAD_SIZE_BYTES = 200 * 1024 * 1024; // 200 MB
 
@@ -79,7 +80,40 @@ export async function POST(request: NextRequest) {
     files?: Array<{ name: string; size: number; type: string; storagePath?: string }>;
   };
 
-  const files = body.files ?? [];
+  let files = body.files ?? [];
+
+  // Registering objects already written to storage through a signed upload URL.
+  // Nothing the client declares is trusted: each path must be in the caller's
+  // own documents folder, and the size and type validated are the stored
+  // object's. A stored object that fails validation is removed again.
+  const context = await getWorkspaceContext().catch(() => null);
+  if (context && files.some((file) => file.storagePath)) {
+    const verified = [];
+    for (const file of files) {
+      if (!isOwnDocumentsPath(file.storagePath, context.workspaceId)) {
+        return NextResponse.json({ error: `${file.name || "File"} was not uploaded to this workspace.` }, { status: 400 });
+      }
+      const folder = file.storagePath.slice(0, file.storagePath.lastIndexOf("/"));
+      const objectName = file.storagePath.slice(folder.length + 1);
+      const { data: listed, error: listError } = await context.supabase.storage
+        .from("documents")
+        .list(folder, { search: objectName, limit: 1 });
+      const stored = listed?.find((entry) => entry.name === objectName);
+      if (listError || !stored) {
+        return NextResponse.json({ error: `${file.name || "File"} was not found in storage. Upload it again.` }, { status: 400 });
+      }
+      const metadata = (stored.metadata ?? {}) as { size?: number; mimetype?: string };
+      const actual = { name: file.name, size: Number(metadata.size ?? 0), type: metadata.mimetype || file.type, storagePath: file.storagePath };
+      try {
+        validateUploadFiles([actual]);
+      } catch (error) {
+        await context.supabase.storage.from("documents").remove([file.storagePath]);
+        return NextResponse.json({ error: error instanceof Error ? error.message : "Unsupported file." }, { status: 400 });
+      }
+      verified.push(actual);
+    }
+    files = verified;
+  }
 
   const oversized = files.find((f) => (f.size ?? 0) > MAX_UPLOAD_SIZE_BYTES);
   if (oversized) {
