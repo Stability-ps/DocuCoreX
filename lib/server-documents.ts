@@ -46,7 +46,7 @@ type DocumentRow = {
   updated_at: string;
 };
 
-type UploadFileInput = {
+export type UploadFileInput = {
   name: string;
   size: number;
   type: string;
@@ -133,7 +133,7 @@ const allowedMimeTypes = new Set([
   "application/x-zip-compressed",
 ]);
 
-function validateUploadFiles(files: UploadFileInput[]) {
+export function validateUploadFiles(files: UploadFileInput[]) {
   if (!files.length) {
     throw new Error("At least one file is required.");
   }

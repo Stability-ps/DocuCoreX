@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { recordAuditLog } from "@/lib/audit";
-import { getWorkspaceContext, registerUploads } from "@/lib/server-documents";
+import { getWorkspaceContext, registerUploads, validateUploadFiles } from "@/lib/server-documents";
 import { createWorkspaceBucketPath } from "@/lib/supabase-server-adapter";
 import { checkRateLimit } from "@/lib/rate-limit";
 
@@ -26,6 +26,12 @@ export async function POST(request: NextRequest) {
       .filter((value): value is File => value instanceof File);
 
     try {
+      // Validate before anything reaches storage. registerUploads validates
+      // again, but only after the loop below had already written every file —
+      // a rejected .html or MIME-spoofed upload was refused with 400 yet left
+      // its bytes in the bucket with no document row, invisible and never
+      // cleaned up.
+      validateUploadFiles(uploadedFiles.map((file) => ({ name: file.name, size: file.size, type: file.type })));
       const context = await getWorkspaceContext();
       const files = [];
 

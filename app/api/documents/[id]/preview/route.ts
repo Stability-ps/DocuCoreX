@@ -34,7 +34,7 @@ async function resolve(id: string) {
   return { context, row } as const;
 }
 
-export async function HEAD(_request: Request, { params }: { params: Promise<{ id: string }> }) {
+async function handleHEAD(_request: Request, { params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
   const resolved = await resolve(id);
   if ("error" in resolved) return new NextResponse(null, { status: resolved.status });
@@ -74,3 +74,4 @@ async function handleGET(_request: Request, { params }: { params: Promise<{ id: 
 }
 
 export const GET = withUnauthorized(handleGET);
+export const HEAD = withUnauthorized(handleHEAD);
