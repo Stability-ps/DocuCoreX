@@ -3,15 +3,28 @@ import { NextResponse } from "next/server";
 import { isDemoAllowed } from "@/lib/supabase";
 import { createSupabaseServerClient } from "@/lib/supabase-server";
 import { ensureUserWorkspace } from "@/lib/workspace-bootstrap";
+import { validateUploadFiles } from "@/lib/server-documents";
 
 export async function POST(request: Request) {
   const body = (await request.json().catch(() => ({}))) as {
     fileName?: string;
     contentType?: string;
+    size?: number;
   };
 
   if (!body.fileName) {
     return NextResponse.json({ error: "fileName is required" }, { status: 400 });
+  }
+
+  // The same type rules as a direct upload. A signed URL hands the write to the
+  // client, so the server can only check what the client declares; the size is
+  // checked when supplied, and the bucket has no limit of its own.
+  try {
+    validateUploadFiles([
+      { name: body.fileName, type: body.contentType ?? "", size: typeof body.size === "number" ? body.size : 1 },
+    ]);
+  } catch (error) {
+    return NextResponse.json({ error: error instanceof Error ? error.message : "Unsupported file." }, { status: 400 });
   }
 
   const safeFileName = body.fileName.replace(/[^a-zA-Z0-9._-]/g, "_");
