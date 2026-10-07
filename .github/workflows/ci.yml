@@ -93,6 +93,27 @@ jobs:
       - name: Regression suite
         run: ./workers/accounting_worker/tests/run_regression.sh
 
+  ledger-sql:
+    # Applies every migration to a throwaway PostgreSQL 16 and runs
+    # tests/sql through scripts/verify-ledger.sh: the ledger controls, the
+    # trial-balance proof, RPC tenancy (046) and pinned search_path (047).
+    # The script never reads .env and never connects to a configured database.
+    name: Ledger & RLS (PostgreSQL)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install PostgreSQL 16
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends postgresql-16 postgresql-contrib-16 || \
+            sudo apt-get install -y --no-install-recommends postgresql-16
+
+      - name: Ledger battery
+        env:
+          PGBIN: /usr/lib/postgresql/16/bin
+        run: ./scripts/verify-ledger.sh
+
   e2e:
     # BLOCKING. It was continue-on-error while the suite carried failures that
     # predated the workflow; those are now fixed (#62, #63) and it has run clean
