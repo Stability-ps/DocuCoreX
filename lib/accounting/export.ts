@@ -863,10 +863,33 @@ export function buildExportSections(detail: AccountingRunDetail, resolvedCompany
   return sections;
 }
 
+// ─── Numeric cell values ────────────────────────────────────────────────────
+// Totals are summed in floating point, so a figure like R97,430.80 arrives as
+// 97430.79999999999 and VAT at 15/115 as 15423.971739130435. Formatting hid
+// that on screen, but the stored value is what Excel compares, sums and pastes
+// — a trial balance whose totals test unequal, a VAT figure with fractional
+// cents. Money is therefore written as the cents it represents. Scaling
+// through toPrecision(15) first drops the binary noise, so 1.005 rounds up to
+// 1.01 rather than down to 1.00.
+function toCentsValue(value: number): number {
+  const cents = Math.round(Number((Math.abs(value) * 100).toPrecision(15)));
+  return cents === 0 ? 0 : (Math.sign(value) * cents) / 100;
+}
+
+function isMoney(cell: Cell): boolean {
+  // Mirrors xfIndex: a numeric cell is money unless it is an int or a percent.
+  return Boolean(cell.num) && cell.fmt !== "int" && cell.fmt !== "percent";
+}
+
+function cellNumber(cell: Cell): number {
+  const value = Number.isFinite(Number(cell.v)) ? Number(cell.v) : 0;
+  return isMoney(cell) ? toCentsValue(value) : value;
+}
+
 // ─── CSV renderer ───────────────────────────────────────────────────────────
 
 function csvCell(cell: Cell): string {
-  const text = cell.num ? String(cell.v) : String(cell.v);
+  const text = !cell.num ? String(cell.v) : isMoney(cell) ? cellNumber(cell).toFixed(2) : String(cellNumber(cell));
   return /[",\n]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
 }
 
@@ -943,8 +966,7 @@ function displayLen(cell: Cell): number {
 function cellXml(cell: Cell, ref: string): string {
   const s = xfIndex(cell);
   if (cell.num) {
-    const v = Number.isFinite(Number(cell.v)) ? Number(cell.v) : 0;
-    return `<c r="${ref}" s="${s}"><v>${v}</v></c>`;
+    return `<c r="${ref}" s="${s}"><v>${cellNumber(cell)}</v></c>`;
   }
   return `<c r="${ref}" s="${s}" t="inlineStr"><is><t xml:space="preserve">${xml(String(cell.v))}</t></is></c>`;
 }
