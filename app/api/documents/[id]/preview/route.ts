@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { withUnauthorized } from "@/lib/api-auth";
 import { getDocument } from "@/lib/mock-repository";
 import { isDemoAllowed } from "@/lib/supabase";
 import { getWorkspaceContext } from "@/lib/server-documents";
@@ -41,7 +42,7 @@ export async function HEAD(_request: Request, { params }: { params: Promise<{ id
   return new NextResponse(null, { status: 200, headers: { "content-type": contentType } });
 }
 
-export async function GET(_request: Request, { params }: { params: Promise<{ id: string }> }) {
+async function handleGET(_request: Request, { params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
   const resolved = await resolve(id);
   if ("error" in resolved) {
@@ -71,3 +72,5 @@ export async function GET(_request: Request, { params }: { params: Promise<{ id:
     },
   });
 }
+
+export const GET = withUnauthorized(handleGET);

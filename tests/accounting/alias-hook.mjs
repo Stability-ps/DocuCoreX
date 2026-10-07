@@ -13,5 +13,10 @@ export function resolve(specifier, context, nextResolve) {
       if (existsSync(candidate)) return { url: candidate.href, shortCircuit: true };
     }
   }
+  // next/server, next/headers etc. are extensionless CommonJS entry points the
+  // bundler resolves; Node's ESM resolver needs the .js spelled out.
+  if (/^next\/[a-z-]+$/.test(specifier)) {
+    return nextResolve(`${specifier}.js`, context);
+  }
   return nextResolve(specifier, context);
 }

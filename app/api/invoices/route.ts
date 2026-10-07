@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { errorResponse } from "@/lib/api-auth";
 import { recordAuditLog } from "@/lib/audit";
 import { createInvoice, listInvoices } from "@/lib/invoices";
 import type { InvoiceLineItemDraft, InvoicePaymentTerms, InvoiceStatus } from "@/lib/types";
@@ -59,7 +60,7 @@ export async function GET() {
   try {
     return NextResponse.json({ invoices: await listInvoices() });
   } catch (error) {
-    return NextResponse.json({ error: error instanceof Error ? error.message : "Unable to load invoices" }, { status: 500 });
+    return errorResponse(error, "Unable to load invoices");
   }
 }
 

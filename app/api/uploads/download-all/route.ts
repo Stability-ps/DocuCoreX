@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
+import { resolveWorkspaceContext } from "@/lib/api-auth";
 import { createZip } from "@/lib/file-output";
-import { getWorkspaceContext } from "@/lib/server-documents";
 
 export async function POST(request: Request) {
   const body = (await request.json().catch(() => ({}))) as { conversionIds?: string[] };
@@ -9,7 +9,8 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "No completed conversions selected." }, { status: 400 });
   }
 
-  const context = await getWorkspaceContext();
+  const context = await resolveWorkspaceContext();
+  if (context instanceof Response) return context;
 
   if (!context) {
     return NextResponse.json({ error: "Supabase is required for download bundles." }, { status: 503 });

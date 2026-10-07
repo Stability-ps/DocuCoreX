@@ -1,10 +1,11 @@
 import { NextResponse } from "next/server";
+import { resolveWorkspaceContext } from "@/lib/api-auth";
 import { createDocumentComment, getDocumentComments } from "@/lib/mock-repository";
-import { getWorkspaceContext } from "@/lib/server-documents";
 
 export async function GET(_request: Request, { params }: { params: Promise<{ documentId: string }> }) {
   const { documentId } = await params;
-  const context = await getWorkspaceContext();
+  const context = await resolveWorkspaceContext();
+  if (context instanceof Response) return context;
 
   if (!context) {
     return NextResponse.json({ comments: getDocumentComments(documentId), mode: "demo" });
@@ -39,7 +40,8 @@ export async function POST(request: Request, { params }: { params: Promise<{ doc
     return NextResponse.json({ error: "Comment body is required" }, { status: 400 });
   }
 
-  const context = await getWorkspaceContext();
+  const context = await resolveWorkspaceContext();
+  if (context instanceof Response) return context;
 
   if (!context) {
     return NextResponse.json({ comment: createDocumentComment(documentId, body.body.trim(), body.authorName), mode: "demo" });

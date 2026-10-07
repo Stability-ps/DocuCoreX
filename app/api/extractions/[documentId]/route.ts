@@ -1,4 +1,5 @@
 import { NextResponse, after } from "next/server";
+import { withUnauthorized } from "@/lib/api-auth";
 import { recordAuditLog } from "@/lib/audit";
 import { extractionResults } from "@/lib/mock-repository";
 import { createWorkflowAdapters } from "@/lib/workflow-adapters";
@@ -9,7 +10,7 @@ function isReprocess(url: string): boolean {
   return new URL(url).searchParams.get("reprocess") === "1";
 }
 
-export async function GET(_request: Request, { params }: { params: Promise<{ documentId: string }> }) {
+async function handleGET(_request: Request, { params }: { params: Promise<{ documentId: string }> }) {
   const { documentId } = await params;
   const result = await getExtractionForWorkspace(documentId);
 
@@ -27,7 +28,7 @@ export async function GET(_request: Request, { params }: { params: Promise<{ doc
   return NextResponse.json({ documentId, status: "queued", message: "Extraction has not started for this document yet." });
 }
 
-export async function POST(request: Request, { params }: { params: Promise<{ documentId: string }> }) {
+async function handlePOST(request: Request, { params }: { params: Promise<{ documentId: string }> }) {
   const { documentId } = await params;
   const force = isReprocess(request.url);
   const workspaceDocument = await getDocumentWithJobs(documentId);
@@ -72,3 +73,6 @@ export async function POST(request: Request, { params }: { params: Promise<{ doc
   });
   return NextResponse.json({ documentId, jobId: job.id, status: "processing" }, { status: 202 });
 }
+
+export const GET = withUnauthorized(handleGET);
+export const POST = withUnauthorized(handlePOST);

@@ -1,10 +1,11 @@
 import { NextResponse } from "next/server";
+import { errorResponse } from "@/lib/api-auth";
 import { listDocuments } from "@/lib/server-documents";
 
 export async function GET() {
   try {
     return NextResponse.json({ documents: await listDocuments() });
   } catch (error) {
-    return NextResponse.json({ error: error instanceof Error ? error.message : "Unable to load documents" }, { status: 500 });
+    return errorResponse(error, "Unable to load documents");
   }
 }

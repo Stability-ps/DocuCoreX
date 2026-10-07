@@ -1,8 +1,9 @@
 import { NextResponse } from "next/server";
+import { resolveWorkspaceContext } from "@/lib/api-auth";
 import { recordAuditLog } from "@/lib/audit";
 import type { ConversionRequest } from "@/lib/types";
 import { createProcessingJob, getDocument, processingJobs } from "@/lib/mock-repository";
-import { getDocumentWithJobs, getWorkspaceContext } from "@/lib/server-documents";
+import { getDocumentWithJobs } from "@/lib/server-documents";
 import { detectSourceType, normalizeConversionTarget } from "@/lib/document-conversion-engine";
 
 export async function POST(request: Request) {
@@ -12,7 +13,8 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "documentId, from and to are required" }, { status: 400 });
   }
 
-  const context = await getWorkspaceContext();
+  const context = await resolveWorkspaceContext();
+  if (context instanceof Response) return context;
 
   if (!context) {
     const document = getDocument(body.documentId);

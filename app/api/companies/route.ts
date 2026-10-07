@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { errorResponse } from "@/lib/api-auth";
 import { recordAuditLog } from "@/lib/audit";
 import { createCompany, listCompanies } from "@/lib/companies";
 import type { CompanyProfileInput } from "@/lib/companies";
@@ -7,7 +8,7 @@ export async function GET() {
   try {
     return NextResponse.json({ companies: await listCompanies() });
   } catch (error) {
-    return NextResponse.json({ error: error instanceof Error ? error.message : "Unable to load company profiles" }, { status: 500 });
+    return errorResponse(error, "Unable to load company profiles");
   }
 }
 
