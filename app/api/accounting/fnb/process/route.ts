@@ -578,18 +578,33 @@ async function processStatementInBackground(
     // show the real reason (not just "Failed 0%"). Best-effort: if migration 015
     // (parser_debug) is not yet applied, retry the essential status/error update
     // without it so the run is still correctly marked failed.
-    const { error: failError } = await context.supabase
-      .from("accounting_statement_runs")
-      .update({ status: "failed", error, parser_debug: parserDebug ?? {}, processing_step: "Stuck / Needs retry", updated_at: nowIso })
-      .eq("workspace_id", context.workspaceId)
-      .eq("id", runId);
+    // FENCED on this attempt's job. A superseded attempt — a Retry or Force
+    // Reprocess that lost the race to a newer one — must not write the run's
+    // terminal state: the run belongs to the newer job, and flipping it to
+    // "failed" also makes the worker's fenced final write (which requires
+    // status 'processing', migration 030) reject that job's finished ledger.
+    // Production, 2026-10-07: two superseded attempts did exactly that, and the
+    // run sat "failed" while its real job finished and was thrown away.
+    const ownedRun = <T extends { eq: (column: string, value: string) => T }>(query: T) =>
+      jobId ? query.eq("active_job_id", jobId) : query;
+    const { data: failedRows, error: failError } = await ownedRun(
+      context.supabase
+        .from("accounting_statement_runs")
+        .update({ status: "failed", error, parser_debug: parserDebug ?? {}, processing_step: "Stuck / Needs retry", updated_at: nowIso })
+        .eq("workspace_id", context.workspaceId)
+        .eq("id", runId),
+    ).select("id");
     if (failError) {
       console.warn("[accounting/process] parser_debug not persisted (migration 015 not applied?)", { runId, error: failError.message });
-      await context.supabase
-        .from("accounting_statement_runs")
-        .update({ status: "failed", error, processing_step: "Stuck / Needs retry", updated_at: nowIso })
-        .eq("workspace_id", context.workspaceId)
-        .eq("id", runId);
+      await ownedRun(
+        context.supabase
+          .from("accounting_statement_runs")
+          .update({ status: "failed", error, processing_step: "Stuck / Needs retry", updated_at: nowIso })
+          .eq("workspace_id", context.workspaceId)
+          .eq("id", runId),
+      );
+    } else if (jobId && (failedRows ?? []).length === 0) {
+      console.info("[accounting/process] superseded attempt failed; run left to its active job", { runId, jobId, error });
     }
     if (jobId) {
       await context.supabase

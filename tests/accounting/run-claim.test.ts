@@ -78,3 +78,17 @@ test("a failed primary claim is logged with its database error", () => {
   const failure = route.slice(route.indexOf("if (markError) {"));
   assert.match(failure.slice(0, 400), /console\.error\([\s\S]*markError\.message/, "log the primary claim error");
 });
+
+test("a superseded attempt cannot mark the run failed", () => {
+  // Release audit, 2026-10-07: a Retry and two Force Reprocesses raced. The two
+  // superseded attempts' failRun wrote status "failed" by run id alone, after a
+  // newer job owned the run — and replace_accounting_transactions_owned (030)
+  // requires status 'processing', so the newer job's finished ledger was
+  // rejected too. Every terminal write in failRun must be fenced on its job.
+  const failRun = route.slice(route.indexOf("const failRun = async"), route.indexOf("const workerEndpoint"));
+  const runUpdates = failRun.split('.from("accounting_statement_runs")').length - 1;
+  const fenced = (failRun.match(/ownedRun\(\s*context\.supabase\s*\.from\("accounting_statement_runs"\)/g) ?? []).length;
+  assert.ok(runUpdates >= 2, "failRun writes the run's failure");
+  assert.equal(fenced, runUpdates, "every run update in failRun goes through the job fence");
+  assert.match(failRun, /query\.eq\("active_job_id", jobId\)/, "the fence is this attempt's job");
+});
