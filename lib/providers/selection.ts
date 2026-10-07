@@ -32,6 +32,20 @@ export type SelectionInput = {
   allowMock: boolean;
 };
 
+/**
+ * Whether Tesseract/ocrmypdf can be used from this runtime.
+ *
+ * Vercel reaches them over HTTP at CONVERSION_WORKER_URL. The Render conversion
+ * worker runs them in-process (lib/pdf/extractWithOcr.ts) and deliberately has
+ * no CONVERSION_WORKER_URL — so keying only on the URL made the one runtime
+ * that has the binaries report OCR as unavailable, and every queued OCR job it
+ * picked up failed with "No OCR provider is configured" (release audit,
+ * 2026-10-07).
+ */
+export function isTesseractReachable(env: { conversionWorkerUrl?: string | null; conversionWorkerMode?: string | null }): boolean {
+  return Boolean(env.conversionWorkerUrl?.trim()) || env.conversionWorkerMode === "true";
+}
+
 export type SelectionResult<T extends string> = { provider: T } | { error: string };
 
 const OCR_PRIORITY: OcrEngine[] = [
