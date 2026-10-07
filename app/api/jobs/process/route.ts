@@ -56,7 +56,25 @@ export async function POST(request: Request) {
     (process.env.CONVERSION_WORKER_MODE === "true" ? await getServiceRoleContextForJob(processRequest).catch(() => null) : null);
   const providers = createWorkflowAdapters();
 
-  const mode = resolveProcessingMode({ hasContext: Boolean(context), isSupabaseConfigured });
+  const isWorker = process.env.CONVERSION_WORKER_MODE === "true";
+  if (isWorker && !isSupabaseConfigured) {
+    // NEXT_PUBLIC_* values are inlined when the image is built, so setting them
+    // on the running service does not help; the image must be rebuilt with
+    // them available (workers/conversion_worker/Dockerfile declares the ARGs).
+    console.error("docucorex.conversion_worker.supabase_not_configured", {
+      jobId: processRequest.jobId ?? null,
+      documentId: processRequest.documentId ?? null,
+    });
+    return NextResponse.json(
+      {
+        error: "Document processing is temporarily unavailable. Please try again shortly.",
+        code: "WORKER_SUPABASE_NOT_CONFIGURED",
+      },
+      { status: 503 },
+    );
+  }
+
+  const mode = resolveProcessingMode({ hasContext: Boolean(context), isSupabaseConfigured, isWorker });
 
   if (mode === "demo") {
     // Only reachable when there is genuinely no Supabase backend (local demo).

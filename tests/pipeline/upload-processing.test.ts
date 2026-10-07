@@ -107,3 +107,36 @@ test("workspace shell poll advances each active document by id (no context-less 
     "the poll must not fire a body-less /api/jobs/process call",
   );
 });
+
+// ── The conversion worker never answers from the demo store ──────────────────
+// Production (release audit, 2026-10-07): a real upload's POST /api/jobs/process
+// was proxied to the worker, which answered mode:"demo" with a mock job from the
+// in-memory store. The worker image had been built without NEXT_PUBLIC_SUPABASE_*,
+// which Next.js inlines at build time, so it believed there was no backend.
+
+test("resolveProcessingMode never returns demo in worker mode", () => {
+  assert.equal(resolveProcessingMode({ hasContext: false, isSupabaseConfigured: false, isWorker: true }), "unresolved");
+  assert.equal(resolveProcessingMode({ hasContext: false, isSupabaseConfigured: true, isWorker: true }), "unresolved");
+  assert.equal(resolveProcessingMode({ hasContext: true, isSupabaseConfigured: true, isWorker: true }), "process");
+  // The genuine local demo is unchanged.
+  assert.equal(resolveProcessingMode({ hasContext: false, isSupabaseConfigured: false, isWorker: false }), "demo");
+});
+
+test("the jobs route refuses with 503 when the worker cannot see its backend", () => {
+  const route = read("app/api/jobs/process/route.ts");
+  const guard = route.indexOf("isWorker && !isSupabaseConfigured");
+  const demo = route.indexOf('if (mode === "demo")');
+  assert.ok(guard > 0 && demo > 0 && guard < demo, "the worker check must precede the demo branch");
+  assert.match(route.slice(guard, guard + 900), /status: 503/);
+  assert.match(route, /resolveProcessingMode\(\{[^}]*isWorker/);
+});
+
+test("the worker image receives the public Supabase config at build time", () => {
+  const dockerfile = read("workers/conversion_worker/Dockerfile");
+  const build = dockerfile.indexOf("RUN pnpm build");
+  for (const name of ["NEXT_PUBLIC_SUPABASE_URL", "NEXT_PUBLIC_SUPABASE_ANON_KEY"]) {
+    const arg = dockerfile.indexOf(`ARG ${name}`);
+    assert.ok(arg > 0 && arg < build, `${name} must be an ARG declared before the build`);
+  }
+  assert.match(dockerfile, /test -n "\$NEXT_PUBLIC_SUPABASE_URL"/, "the build fails when the value is missing");
+});

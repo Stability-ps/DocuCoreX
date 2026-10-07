@@ -13,9 +13,19 @@ export type ProcessingMode = "process" | "demo" | "unresolved";
 export function resolveProcessingMode(input: {
   hasContext: boolean;
   isSupabaseConfigured: boolean;
+  /** Running as the Render conversion worker (CONVERSION_WORKER_MODE=true). */
+  isWorker?: boolean;
 }): ProcessingMode {
   // A resolved workspace context always processes real jobs.
   if (input.hasContext) return "process";
+
+  // The conversion worker only ever serves a real deployment: Vercel forwards
+  // real jobs to it. If it cannot resolve their workspace — including when the
+  // image was built without NEXT_PUBLIC_SUPABASE_* and so believes there is no
+  // backend — it must fail the job, never answer from the demo store. It did:
+  // production returned mode:"demo" and a mock job for real uploads, which
+  // stayed queued forever (release audit, 2026-10-07).
+  if (input.isWorker) return "unresolved";
 
   // No context + no backend → the genuine local/demo experience.
   if (!input.isSupabaseConfigured) return "demo";
