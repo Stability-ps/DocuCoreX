@@ -53,3 +53,28 @@ test("the fence the claim feeds still requires real ownership", () => {
   assert.ok(/current_job_id is distinct from p_job_id/.test(migration));
   assert.ok(/current_status <> 'processing'/.test(migration));
 });
+
+test("the claim never writes null into parser_debug", () => {
+  // Production's parser_debug is NOT NULL DEFAULT '{}'. The claim reset it to
+  // null, so the primary claim failed on every run; the run then hung on
+  // "Reconciling" with nothing persisted (release audit, 2026-10-07).
+  assert.doesNotMatch(route, /parser_debug:\s*null/, "reset parser_debug to {}, never null");
+  assert.doesNotMatch(route, /parser_debug:\s*parserDebug\s*\?\?\s*null/, "failRun must fall back to {}, not null");
+});
+
+test("the fallback claim records ownership, not just status", () => {
+  // The fallback used to set status/processing_job_id only. It matched the row,
+  // so claimLanded was true and the job dispatched — but with active_job_id
+  // still null, replace_accounting_transactions_owned rejected the worker's
+  // final write. A claim without ownership must not count as landed.
+  const fallback = route.slice(route.indexOf("fallbackClaimedRows, error: fallbackMarkError"));
+  const updateBlock = fallback.slice(0, fallback.indexOf(".eq(\"workspace_id\""));
+  assert.match(updateBlock, /active_job_id:\s*processingJobId/, "the fallback claim must set active_job_id");
+});
+
+test("a failed primary claim is logged with its database error", () => {
+  // The constraint violation above was invisible in the app's logs: the error
+  // was consumed by the fallback without a trace.
+  const failure = route.slice(route.indexOf("if (markError) {"));
+  assert.match(failure.slice(0, 400), /console\.error\([\s\S]*markError\.message/, "log the primary claim error");
+});

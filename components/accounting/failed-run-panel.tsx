@@ -5,8 +5,12 @@ import { AlertTriangle, ChevronDown, RefreshCw } from "lucide-react";
 import type { AccountingStatementRun } from "@/lib/accounting/types";
 import { assessDocumentTypeMismatch } from "@/lib/accounting/document-type-mismatch";
 
+// An empty object is "no debug recorded" — every run starts with '{}' — so it
+// must not render an empty debug block.
 function asRecord(value: unknown): Record<string, unknown> | null {
-  return value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : null;
+  return value && typeof value === "object" && !Array.isArray(value) && Object.keys(value).length > 0
+    ? (value as Record<string, unknown>)
+    : null;
 }
 
 function JsonBlock({ value }: { value: unknown }) {

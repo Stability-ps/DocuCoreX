@@ -70,6 +70,25 @@ Production itself holds **0 journals and 0 postings** as of 2026-10-07: the
 general ledger has not yet been used there, so these guards have not yet been
 exercised by live data.
 
+## Column-attribute drift (found 2026-10-07)
+
+Existence parity is not enough. Comparing nullability, defaults and column
+counts against a database built from the migrations found one difference that
+broke production:
+
+- `accounting_statement_runs.parser_debug` is `NOT NULL DEFAULT '{}'` in
+  production but nullable in migration 015. No file in the repository declares
+  the constraint; it was added by hand. The process route's claim reset the
+  column to `null`, so **every** claim failed, the fallback claim landed without
+  `active_job_id`, and the worker's fenced final write was rejected — runs hung
+  on "Reconciling" with nothing persisted. Fixed in code (the claim now resets
+  to `{}`, and the fallback must record ownership), so the route works under
+  either definition; the column was left as production has it.
+
+`accounting_statement_runs` also carries four hand-added columns no migration
+creates — `error_message`, `last_step`, `ocr_debug` (`NOT NULL DEFAULT '{}'`)
+and `selected_parser`. The app never writes them, so they are inert.
+
 ## Other drift noted, deliberately left alone
 
 `public.folders` exists in production but is created by no migration — it
