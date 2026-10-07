@@ -102,15 +102,17 @@ export async function getTrialBalance(input: {
   if (error) throw new Error(error.message);
 
   return ((data ?? []) as Array<Record<string, unknown>>).map((row) => ({
-    accountId: String(row.account_id),
-    code: String(row.code),
+    accountId: row.account_id == null ? null : String(row.account_id),
+    code: row.code == null ? null : String(row.code),
     name: String(row.name),
     accountType: String(row.account_type),
     normalBalance: row.normal_balance as "debit" | "credit",
+    openingBalance: Number(row.opening_balance ?? 0),
     debits: Number(row.debits ?? 0),
     credits: Number(row.credits ?? 0),
     closingBalance: Number(row.closing_balance ?? 0),
     postingCount: Number(row.posting_count ?? 0),
+    isBroughtForward: row.is_brought_forward === true,
   }));
 }
 

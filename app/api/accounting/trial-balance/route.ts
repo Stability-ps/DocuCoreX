@@ -33,12 +33,12 @@ export async function GET(request: Request) {
 
     if (url.searchParams.get("format") === "csv") {
       const csv = toCsv(
-        ["Account code", "Account name", "Type", "Debits", "Credits", "Closing balance"],
+        ["Account code", "Account name", "Type", "Opening balance", "Debits", "Credits", "Closing balance"],
         [
-          ...rows.map((row) => [row.code, row.name, row.accountType, row.debits, row.credits, row.closingBalance]),
+          ...rows.map((row) => [row.code ?? "", row.name, row.accountType, row.openingBalance, row.debits, row.credits, row.closingBalance]),
           [],
-          ["", "Total", "", totals.totalDebits, totals.totalCredits, ""],
-          ["", "Difference", "", totals.difference, "", totals.balanced ? "BALANCED" : "OUT OF BALANCE"],
+          ["", "Total", "", "", totals.totalDebits, totals.totalCredits, ""],
+          ["", "Difference", "", "", totals.difference, "", totals.balanced ? "BALANCED" : "OUT OF BALANCE"],
         ],
       );
       return new NextResponse(csv, {
