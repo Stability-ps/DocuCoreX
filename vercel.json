@@ -3,6 +3,9 @@
   "buildCommand": "pnpm build",
   "installCommand": "pnpm install",
   "outputDirectory": ".next",
+  "regions": [
+    "lhr1"
+  ],
   "crons": [
     {
       "path": "/api/jobs/process",
