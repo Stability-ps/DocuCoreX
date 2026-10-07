@@ -45,6 +45,21 @@ RUN corepack enable \
   && corepack prepare pnpm@10.28.0 --activate \
   && pnpm install --frozen-lockfile --prod=false
 
+# Next.js inlines NEXT_PUBLIC_* into the SERVER bundle as well as the client
+# one, at build time. Without these here the image was built believing there
+# is no Supabase backend, and answered real jobs from the demo store
+# (mode:"demo") whatever the runtime environment said. Render passes a
+# service's environment variables as build args; declaring them is what makes
+# them visible to this stage. Both are public values (URL + anon key).
+ARG NEXT_PUBLIC_SUPABASE_URL
+ARG NEXT_PUBLIC_SUPABASE_ANON_KEY
+ENV NEXT_PUBLIC_SUPABASE_URL=$NEXT_PUBLIC_SUPABASE_URL \
+    NEXT_PUBLIC_SUPABASE_ANON_KEY=$NEXT_PUBLIC_SUPABASE_ANON_KEY
+
+# Fail the build rather than ship an image that silently cannot see its backend.
+RUN test -n "$NEXT_PUBLIC_SUPABASE_URL" && test -n "$NEXT_PUBLIC_SUPABASE_ANON_KEY" \
+  || (echo "NEXT_PUBLIC_SUPABASE_URL and NEXT_PUBLIC_SUPABASE_ANON_KEY must be set on the Render service (they are needed at build time)" && exit 1)
+
 RUN pnpm build
 
 EXPOSE 3000
