@@ -331,7 +331,7 @@ function LoginContent() {
                         type={showPassword ? "text" : "password"}
                         value={password}
                       />
-                      <button type="button" onClick={() => setShowPassword((value) => !value)} className="text-slate-400">
+                      <button type="button" onClick={() => setShowPassword((value) => !value)} className="text-slate-400" aria-label="Show password" aria-pressed={showPassword}>
                         {showPassword ? <EyeOff className="h-5 w-5" /> : <Eye className="h-5 w-5" />}
                       </button>
                     </span>
@@ -350,7 +350,7 @@ function LoginContent() {
                           type={showConfirmPassword ? "text" : "password"}
                           value={confirmPassword}
                         />
-                        <button type="button" onClick={() => setShowConfirmPassword((value) => !value)} className="text-slate-400">
+                        <button type="button" onClick={() => setShowConfirmPassword((value) => !value)} className="text-slate-400" aria-label="Show confirmed password" aria-pressed={showConfirmPassword}>
                           {showConfirmPassword ? <EyeOff className="h-5 w-5" /> : <Eye className="h-5 w-5" />}
                         </button>
                       </span>
