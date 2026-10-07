@@ -1,7 +1,7 @@
 import type { DocumentRecord, DocumentDownload, ExtractionResult, OcrResult } from "@/lib/types";
 import { convertDocumentContent } from "@/lib/document-conversion-engine";
 import { isSupabaseConfigured } from "@/lib/supabase";
-import { selectOcrProvider, selectExtractionProvider, isSelectionError } from "@/lib/providers/selection";
+import { selectOcrProvider, selectExtractionProvider, isSelectionError, isTesseractReachable } from "@/lib/providers/selection";
 import { describeSelections, selectionFlags } from "@/lib/providers/reporting";
 import type { EnvCredentials, ProviderDetection, ProviderName } from "@/lib/providers/reporting";
 import {
@@ -159,7 +159,10 @@ function resolveSelections() {
   // Mock is permissible ONLY when there is genuinely no Supabase backend (local
   // dev / demo). A real production backend NEVER silently uses mock output.
   const allowMock = !isSupabaseConfigured;
-  const tesseractAvailable = Boolean(process.env.CONVERSION_WORKER_URL?.trim());
+  const tesseractAvailable = isTesseractReachable({
+    conversionWorkerUrl: process.env.CONVERSION_WORKER_URL,
+    conversionWorkerMode: process.env.CONVERSION_WORKER_MODE,
+  });
 
   return {
     env,
