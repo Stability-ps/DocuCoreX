@@ -580,7 +580,7 @@ async function processStatementInBackground(
     // without it so the run is still correctly marked failed.
     const { error: failError } = await context.supabase
       .from("accounting_statement_runs")
-      .update({ status: "failed", error, parser_debug: parserDebug ?? null, processing_step: "Stuck / Needs retry", updated_at: nowIso })
+      .update({ status: "failed", error, parser_debug: parserDebug ?? {}, processing_step: "Stuck / Needs retry", updated_at: nowIso })
       .eq("workspace_id", context.workspaceId)
       .eq("id", runId);
     if (failError) {
@@ -1014,7 +1014,10 @@ export async function POST(request: Request) {
         reconciliation_difference: null,
         missing_transaction_count: null,
         requires_review: null,
-        parser_debug: null,
+        // Reset to an empty object, never null. Production's column is
+        // NOT NULL DEFAULT '{}', so a null here failed the whole claim; '{}' is
+        // also what every new run starts with, and the UI treats it as "no debug".
+        parser_debug: {},
         ocr_engine: null,
         extraction_strategy: null,
         acceptance_verdict: null,
@@ -1028,6 +1031,11 @@ export async function POST(request: Request) {
       .or(`active_job_id.is.null,active_job_id.eq.${processingJobId}`)
       .select("id");
     if (markError) {
+      console.error("[accounting/process] primary run claim failed; retrying with the essential columns", {
+        runId,
+        attemptedJobId: processingJobId,
+        error: markError.message,
+      });
       const { data: fallbackClaimedRows, error: fallbackMarkError } = await context.supabase
         .from("accounting_statement_runs")
         .update({
@@ -1036,6 +1044,11 @@ export async function POST(request: Request) {
           // replacement is ready to take its place.
           status: "processing",
           processing_job_id: processingJobId,
+          // Ownership is not optional. Without active_job_id the claim only
+          // LOOKS landed: the run reads "processing", the worker runs for
+          // minutes, and replace_accounting_transactions_owned (migration 026)
+          // then rejects every write — the run hangs on "Reconciling" forever.
+          active_job_id: processingJobId,
           error: null,
           transaction_count: detail.run.transactionCount,
           workbook_storage_path: detail.run.workbookStoragePath,
