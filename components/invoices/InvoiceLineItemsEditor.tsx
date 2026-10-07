@@ -93,6 +93,7 @@ export function InvoiceLineItemsEditor({
                     <input
                       value={item.serviceItem}
                       onChange={(event) => updateItem(index, "serviceItem", event.target.value)}
+                      aria-label={`Line ${index + 1} description`}
                       placeholder="e.g. Bookkeeping services"
                       className={inputClassName}
                     />
@@ -106,6 +107,7 @@ export function InvoiceLineItemsEditor({
                         step="1"
                         value={item.quantity}
                         onChange={(event) => updateItem(index, "quantity", event.target.value)}
+                        aria-label={`Line ${index + 1} quantity`}
                         className={inputClassName}
                       />
                     </div>
@@ -117,6 +119,7 @@ export function InvoiceLineItemsEditor({
                         step="0.01"
                         value={item.unitPrice}
                         onChange={(event) => updateItem(index, "unitPrice", event.target.value)}
+                        aria-label={`Line ${index + 1} unit price`}
                         className={inputClassName}
                       />
                     </div>
@@ -127,6 +130,7 @@ export function InvoiceLineItemsEditor({
                       <select
                         value={item.vatType}
                         onChange={(event) => updateItem(index, "vatType", event.target.value as InvoiceVatType)}
+                        aria-label={`Line ${index + 1} VAT type`}
                         className={inputClassName}
                       >
                         {vatTypeOptions.map((option) => (
@@ -143,6 +147,7 @@ export function InvoiceLineItemsEditor({
                         step="0.01"
                         value={item.vatRate}
                         onChange={(event) => updateItem(index, "vatRate", event.target.value)}
+                        aria-label={`Line ${index + 1} custom VAT rate (%)`}
                         placeholder="%"
                         className={`${inputClassName} w-16 flex-none`}
                       />
