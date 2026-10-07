@@ -8,6 +8,7 @@ export default function NewInvoicePage() {
         eyebrow="Client invoicing"
         title="Create invoice"
         description="Add client details and line items. Subtotal, VAT and the final total are calculated automatically."
+        mobileHeading="none"
       />
       <div className="p-4 sm:p-6 lg:p-8">
         <InvoiceCreateForm />

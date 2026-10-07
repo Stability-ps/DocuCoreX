@@ -6,13 +6,22 @@ export function PageHeader({
   title,
   description,
   action,
+  mobileHeading = "sr-only",
 }: {
   eyebrow: string;
   title: string;
   description: string;
   action?: React.ReactNode;
+  /**
+   * The header is hidden below md by design (the app bar carries a compact
+   * title). "sr-only" keeps the page's <h1> for assistive technology there;
+   * "none" is for a page whose content renders its own visible mobile <h1>.
+   */
+  mobileHeading?: "sr-only" | "none";
 }) {
   return (
+    <>
+    {mobileHeading === "sr-only" ? <h1 className="sr-only md:hidden">{title}</h1> : null}
     <div className="hidden flex-col gap-4 border-b border-slate-200 bg-white px-4 py-5 sm:px-6 md:flex lg:flex-row lg:items-center lg:justify-between lg:px-8">
       <div>
         <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-royal-700">{eyebrow}</p>
@@ -21,6 +30,7 @@ export function PageHeader({
       </div>
       {action}
     </div>
+    </>
   );
 }
 
