@@ -476,6 +476,8 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const unreadCount = notifications.filter((notification) => !notification.readAt).length;
   const isActive = (href: string) => pathname === href || (href !== "/" && pathname.startsWith(`${href}/`));
   const isExactActive = (href: string) => pathname === href;
+  // No fallback: a route outside the navigation (e.g. /automations) used to get
+  // "DocuCoreX" here, so the mobile bar showed the brand twice ("DocuCo… DocuC…").
   const currentPageTitle =
     mobileTabs.find((item) => isActive(item.href))?.title ??
     appNav.find(
@@ -484,12 +486,13 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         item.children?.some((child) => isActive(child.href)) ||
         item.sections?.some((section) => section.items.some((sectionItem) => isActive(sectionItem.href))),
     )?.title ??
-    "DocuCoreX";
+    null;
   // Some pages (e.g. Invoices) render their own large page title in the content area to stay
   // usable on mobile — showing the shell's small breadcrumb-style title there too would just
   // duplicate it, so we suppress it for those routes only.
   const pagesWithOwnMobileTitle = ["/invoices"];
-  const showMobileTitle = !pagesWithOwnMobileTitle.some((prefix) => pathname === prefix || pathname.startsWith(`${prefix}/`));
+  const showMobileTitle =
+    Boolean(currentPageTitle) && !pagesWithOwnMobileTitle.some((prefix) => pathname === prefix || pathname.startsWith(`${prefix}/`));
 
   return (
     <div className="min-h-screen overflow-x-hidden bg-slate-50 text-navy-950">
