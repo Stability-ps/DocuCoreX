@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { resolveWorkspaceContext } from "@/lib/api-auth";
 import { recordAuditLog } from "@/lib/audit";
+import { settleUploadJobs } from "@/lib/jobs/settle-upload";
 import type { ConversionRequest } from "@/lib/types";
 import { createProcessingJob, getDocument, processingJobs } from "@/lib/mock-repository";
 import { getDocumentWithJobs } from "@/lib/server-documents";
@@ -103,6 +104,7 @@ export async function POST(request: Request) {
   if (jobError) {
     return NextResponse.json({ error: jobError.message }, { status: 500 });
   }
+  await settleUploadJobs(context, [body.documentId], "conversion");
 
   await recordAuditLog({
     action: "conversion_started",

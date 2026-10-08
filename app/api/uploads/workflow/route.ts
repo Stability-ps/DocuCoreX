@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { resolveWorkspaceContext } from "@/lib/api-auth";
 import { recordAuditLog } from "@/lib/audit";
+import { settleUploadJobs } from "@/lib/jobs/settle-upload";
 
 type ConversionTarget = "pdf" | "word" | "excel" | "zip";
 
@@ -195,6 +196,7 @@ export async function POST(request: Request) {
   if (jobError) {
     return NextResponse.json({ error: jobError.message }, { status: 500 });
   }
+  await settleUploadJobs(context, documents.map((document) => document.id), "conversion");
 
   await Promise.all(
     (insertedConversions ?? []).map((conversion) =>

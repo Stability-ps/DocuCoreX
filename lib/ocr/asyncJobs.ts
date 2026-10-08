@@ -6,6 +6,7 @@ import type { WorkspaceContext } from "@/lib/server-documents";
 import type { DocumentRecord } from "@/lib/types";
 import { recordAuditLog } from "@/lib/audit";
 import { createWorkflowAdapters } from "@/lib/workflow-adapters";
+import { settleUploadJobs } from "@/lib/jobs/settle-upload";
 
 export type ProcessingType = "ocr" | "extraction";
 
@@ -76,6 +77,9 @@ export async function createRunningJob(context: WorkspaceContext, documentId: st
     throw new Error(error.message);
   }
   if (!data) throw new Error("Unable to create processing job");
+  // This route now starts the document's processing, which is the open upload
+  // job's remaining work.
+  await settleUploadJobs(context, [documentId], type);
   // Reflect processing on the document so the UI shows a live status and keeps polling.
   await context.supabase.from("documents").update({ status: "processing", updated_at: new Date().toISOString() }).eq("id", documentId);
   return data as JobRow;

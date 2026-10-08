@@ -21,3 +21,18 @@ export function isStaleJob(input: { status: string; updatedAt: string | null | u
   if (!Number.isFinite(updated)) return false;
   return input.nowMs - updated > (input.staleMs ?? STALE_JOB_MS);
 }
+
+/**
+ * Whether POST /api/jobs/process may try to claim this job. A queued job is
+ * claimable; a running job belongs to the request already working on it unless
+ * it has gone stale (its worker died). The UI polls /api/jobs/process every
+ * 2.5 s per active document, and re-running "running" jobs is what wrote up to
+ * five OCR results for one document within 0.3 s (release audit, 2026-10-08).
+ * The claim itself is a conditional update, so two callers that both see a job
+ * as claimable cannot both win it.
+ */
+export function isClaimable(job: { status: string; updatedAt: string | null | undefined }, nowMs: number): boolean {
+  if (job.status === "queued") return true;
+  if (job.status === "running") return isStaleJob({ status: job.status, updatedAt: job.updatedAt, nowMs });
+  return false;
+}

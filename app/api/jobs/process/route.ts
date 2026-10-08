@@ -13,6 +13,9 @@ import { isSupabaseConfigured } from "@/lib/supabase";
 import type { DocumentRecord, ProcessingJob } from "@/lib/types";
 import { createWorkflowAdapters } from "@/lib/workflow-adapters";
 import { documentStatusAfterJob, documentStatusOnJobFailure, resolveProcessingMode } from "@/lib/jobs/processing-mode";
+import { pipelineJobsToQueue } from "@/lib/jobs/upload-job";
+import { isClaimable } from "@/lib/ocr/jobAction";
+import { finalizeDocumentStatus } from "@/lib/ocr/asyncJobs";
 
 type ProcessJobRequest = {
   conversionId?: string;
@@ -103,7 +106,7 @@ export async function POST(request: Request) {
 
   let jobsQuery = context.supabase
     .from("processing_jobs")
-    .select("id, document_id, type, status, progress, message, documents!inner(*)")
+    .select("id, document_id, type, status, progress, message, updated_at, documents!inner(*)")
     .in("status", ["queued", "running"])
     .order("created_at", { ascending: true });
 
@@ -150,17 +153,36 @@ export async function POST(request: Request) {
       continue;
     }
 
+    // Claim the job before doing any work. The conditional update only matches
+    // while the row is exactly as this request read it, so concurrent calls (the
+    // upload panel, the 2.5 s poller, a second tab) cannot both run the same job.
+    if (!isClaimable({ status: job.status, updatedAt: job.updated_at }, Date.now())) {
+      results.push({ jobId: job.id, type: job.type, status: "skipped", reason: "Already running" });
+      continue;
+    }
+    const currentConversionId = getConversionIdFromMessage(job.message);
+    const { data: claimed, error: claimError } = await context.supabase
+      .from("processing_jobs")
+      .update({
+        status: "running",
+        progress: 35,
+        message: internalJobMessage(getRunningMessage(job.type), currentConversionId),
+        updated_at: new Date().toISOString(),
+      })
+      .eq("id", job.id)
+      .eq("status", job.status)
+      .eq("updated_at", job.updated_at)
+      .select("id");
+    if (claimError) {
+      results.push({ jobId: job.id, type: job.type, status: "skipped", reason: claimError.message });
+      continue;
+    }
+    if (!claimed?.length) {
+      results.push({ jobId: job.id, type: job.type, status: "skipped", reason: "Claimed by another request" });
+      continue;
+    }
+
     try {
-      const currentConversionId = getConversionIdFromMessage(job.message);
-      await context.supabase
-        .from("processing_jobs")
-        .update({
-          status: "running",
-          progress: 35,
-          message: internalJobMessage(getRunningMessage(job.type), currentConversionId),
-          updated_at: new Date().toISOString(),
-        })
-        .eq("id", job.id);
       console.info("docucorex.conversion_worker.job_processing", {
         processorMode: process.env.CONVERSION_WORKER_MODE === "true" ? "worker" : "app",
         jobId: job.id,
@@ -170,19 +192,41 @@ export async function POST(request: Request) {
       });
 
       if (job.type === "upload") {
+        // Start only the stages that have not already run or started elsewhere
+        // (the extraction route, a previous attempt of this job).
+        const toQueue = pipelineJobsToQueue(await readPipelineState(context, document.id));
+        if (toQueue.length) {
+          const { error: queueError } = await context.supabase.from("processing_jobs").insert(
+            toQueue.map((type) => ({
+              document_id: document.id,
+              type,
+              status: "queued",
+              progress: 0,
+              message: type === "ocr" ? "OCR queued" : "Extraction queued",
+            })),
+          );
+          // A unique violation means a concurrent request queued the same stage
+          // first; the pipeline is started either way.
+          if (queueError && (queueError as { code?: string }).code !== "23505") {
+            throw new Error(`Processing could not be queued: ${queueError.message}`);
+          }
+          await context.supabase.from("documents").update({ status: documentStatusAfterJob("upload"), updated_at: new Date().toISOString() }).eq("id", document.id);
+        } else {
+          // Everything already ran: settle the document from its real results.
+          await finalizeDocumentStatus(context, document.id);
+        }
+
         await context.supabase
           .from("processing_jobs")
-          .update({ status: "completed", progress: 100, message: "Upload registered", updated_at: new Date().toISOString() })
+          .update({
+            status: "completed",
+            progress: 100,
+            message: toQueue.length ? "Upload registered" : "Upload registered; processing had already run",
+            updated_at: new Date().toISOString(),
+          })
           .eq("id", job.id);
 
-        await context.supabase.from("documents").update({ status: documentStatusAfterJob("upload"), updated_at: new Date().toISOString() }).eq("id", document.id);
-
-        await context.supabase.from("processing_jobs").insert([
-          { document_id: document.id, type: "ocr", status: "queued", progress: 0, message: "OCR queued" },
-          { document_id: document.id, type: "extraction", status: "queued", progress: 0, message: "Extraction queued" },
-        ]);
-
-        results.push({ jobId: job.id, type: job.type, status: "completed" });
+        results.push({ jobId: job.id, type: job.type, status: "completed", queued: toQueue });
         continue;
       }
 
@@ -429,6 +473,23 @@ export async function POST(request: Request) {
   }
 
   return NextResponse.json({ processed: results.length, results, providers: providers.detection });
+}
+
+async function readPipelineState(context: NonNullable<Awaited<ReturnType<typeof getWorkspaceContext>>>, documentId: string) {
+  const [ocrResult, extractionResult, activeJobs] = await Promise.all([
+    context.supabase.from("ocr_results").select("id").eq("document_id", documentId).limit(1),
+    context.supabase.from("extraction_results").select("id").eq("document_id", documentId).limit(1),
+    context.supabase.from("processing_jobs").select("type").eq("document_id", documentId).in("type", ["ocr", "extraction"]).in("status", ["queued", "running"]),
+  ]);
+  const failed = [ocrResult, extractionResult, activeJobs].find((result) => result.error);
+  if (failed?.error) throw new Error(`Processing state could not be read: ${failed.error.message}`);
+  const active = new Set((activeJobs.data ?? []).map((row: { type: string }) => row.type));
+  return {
+    hasOcrResult: Boolean(ocrResult.data?.length),
+    hasActiveOcrJob: active.has("ocr"),
+    hasExtractionResult: Boolean(extractionResult.data?.length),
+    hasActiveExtractionJob: active.has("extraction"),
+  };
 }
 
 export async function GET() {
