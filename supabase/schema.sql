@@ -655,6 +655,14 @@ create policy "Users can update workspace document objects" on storage.objects
     )
   );
 
+create policy "Users can delete workspace document objects" on storage.objects
+  for delete using (
+    bucket_id = 'documents'
+    and split_part(name, '/', 1) in (
+      select workspace_id::text from public.profiles where id = auth.uid()
+    )
+  );
+
 create or replace function public.handle_new_user()
 returns trigger
 language plpgsql

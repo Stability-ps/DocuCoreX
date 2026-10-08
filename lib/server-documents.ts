@@ -381,7 +381,19 @@ export async function bulkDeleteDocuments(ids: string[]) {
   ].filter((path): path is string => Boolean(path));
 
   if (storagePaths.length) {
-    await context.supabase.storage.from("documents").remove(Array.from(new Set(storagePaths)));
+    // Never silent: before migration 049 there was no storage DELETE policy, so
+    // this removed nothing and still reported success, leaving every
+    // "permanently deleted" document's files in storage.
+    const requested = Array.from(new Set(storagePaths));
+    const { data: removed, error: removeError } = await context.supabase.storage.from("documents").remove(requested);
+    if (removeError || (removed?.length ?? 0) < requested.length) {
+      console.error("docucorex.documents.storage_remove_incomplete", {
+        workspaceId: context.workspaceId,
+        requested: requested.length,
+        removed: removed?.length ?? 0,
+        message: removeError?.message ?? null,
+      });
+    }
   }
 
   await context.supabase.from("processing_jobs").delete().in("document_id", foundIds);

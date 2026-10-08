@@ -733,6 +733,22 @@ export async function deleteAccountingRuns(runIds: string[]) {
   await context.supabase.from("accounting_transactions").delete().eq("workspace_id", context.workspaceId).in("run_id", foundIds);
   await context.supabase.from("accounting_statement_runs").delete().eq("workspace_id", context.workspaceId).in("id", foundIds);
 
+  // The generated workbook belongs to the run and is unreachable once the run
+  // is gone. (The source statement stays: its document goes to the trash and
+  // can be restored or permanently deleted from there.)
+  const workbookPaths = foundRuns.map((run) => run.workbook_storage_path).filter((path): path is string => Boolean(path));
+  if (workbookPaths.length) {
+    const { data: removed, error: removeError } = await context.supabase.storage.from("documents").remove(workbookPaths);
+    if (removeError || (removed?.length ?? 0) < workbookPaths.length) {
+      console.error("docucorex.accounting.workbook_remove_incomplete", {
+        workspaceId: context.workspaceId,
+        requested: workbookPaths.length,
+        removed: removed?.length ?? 0,
+        message: removeError?.message ?? null,
+      });
+    }
+  }
+
   const documentIds = foundRuns.map((run) => run.document_id).filter(Boolean) as string[];
   if (documentIds.length) {
     await context.supabase
