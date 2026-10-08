@@ -13,9 +13,11 @@ import { runExtractionPipeline } from "@/lib/pdf/runExtractionPipeline";
 import type { OcrEngineId } from "@/lib/pdf/types";
 import { rasterizePdfToImages } from "@/lib/pdf/rasterizePdf";
 import { runVisionOcr } from "@/lib/providers/openai/vision-ocr";
-import { runStructuredExtraction, type StructuredExtraction } from "@/lib/providers/openai/extraction";
+import { runStructuredExtraction, type StructuredExtraction, type StructuredLineItem } from "@/lib/providers/openai/extraction";
 import { validateExtraction, type ValidationStatus } from "@/lib/ocr/validate";
 import { resolveDetectedType } from "@/lib/ocr/detectedType";
+import { classifyDocumentText } from "@/lib/ocr/classifyDocument";
+import { COMMERCIAL_TYPES, validateCommercialDocument, validateUncheckedDocument } from "@/lib/ocr/validateDocument";
 import type { ExtractionMethod } from "@/lib/ocr/method";
 import {
   classifyOpenAiError,
@@ -39,7 +41,7 @@ export type DocumentExtraction = {
   strategy: string;
   detectedType: DocumentType;
   fields: Record<string, string | number | boolean | null>;
-  lineItems: Array<{ date: string | null; description: string | null; debit: number | null; credit: number | null; balance: number | null }>;
+  lineItems: StructuredLineItem[];
   validationStatus: ValidationStatus;
   requiresReview: boolean;
   openaiCostUsd: number;
@@ -145,7 +147,7 @@ export async function extractDocument(
     }
   }
 
-  const lineItems = structured
+  const lineItems: StructuredLineItem[] = structured
     ? structured.lineItems
     : pipeline.merged.transactions.map((t) => ({
         date: t.date ?? null,
@@ -158,35 +160,72 @@ export async function extractDocument(
   const openingBalance = structured?.openingBalance ?? (pipeline.merged.metadata.openingBalance as number | null | undefined) ?? null;
   const closingBalance = structured?.closingBalance ?? (pipeline.merged.metadata.closingBalance as number | null | undefined) ?? null;
 
-  // Deterministic validation — never trust LLM/OCR totals as-is.
+  // Classify before validating: what counts as a correct extraction depends on
+  // what the document is.
+  const textClassification = classifyDocumentText(text);
+  const detectedType = resolveDetectedType(document.detectedType, lineItems.length, openingBalance, closingBalance, {
+    aiType: structured?.documentType ?? null,
+    textType: textClassification.type,
+  });
+
+  // Deterministic validation — never trust LLM/OCR totals as-is. A statement is
+  // reconciled from its balances; an invoice, receipt or purchase order from
+  // its own arithmetic; anything else has no automatic check.
   const validation = validateExtraction({ openingBalance, closingBalance, lineItems });
-  // Combine with the pipeline's own accounting validation (either flagging review wins).
-  const requiresReview = pipeline.requiresReview || validation.status !== "Ready";
-  const validationStatus: ValidationStatus = validation.status === "Failed" ? "Failed" : requiresReview ? "Review Required" : "Ready";
+  const documentValidation =
+    detectedType === "bank_statement"
+      ? null
+      : COMMERCIAL_TYPES.has(detectedType)
+        ? validateCommercialDocument({
+            documentNumber: structured?.documentNumber,
+            documentDate: structured?.documentDate,
+            issuerName: structured?.issuerName ?? structured?.companyName,
+            subtotal: structured?.subtotal,
+            taxAmount: structured?.taxAmount,
+            totalAmount: structured?.totalAmount,
+            lineAmounts: lineItems.map((item) => item.amount),
+          })
+        : validateUncheckedDocument(detectedType, {
+            issuerName: structured?.issuerName ?? structured?.companyName,
+            documentDate: structured?.documentDate ?? structured?.statementPeriodEnd,
+            documentNumber: structured?.documentNumber ?? structured?.accountNumber,
+          });
+  const typeStatus = documentValidation ? documentValidation.status : validation.status;
+  // Combine with the pipeline's own acceptance (either flagging review wins).
+  const requiresReview = pipeline.requiresReview || typeStatus !== "Ready";
+  const validationStatus: ValidationStatus = typeStatus === "Failed" ? "Failed" : requiresReview ? "Review Required" : "Ready";
 
   const fields: DocumentExtraction["fields"] = structured
-    ? structuredExtractionFields(structured)
-    : deterministicExtractionFields({
-        openingBalance,
-        closingBalance,
-        totalDebits: validation.totalDebits,
-        totalCredits: validation.totalCredits,
-        lineItemCount: lineItems.length,
-        aiWarning,
-      });
+    ? {
+        ...structuredExtractionFields(structured),
+        textClassification: textClassification.type,
+        validationReasons: documentValidation?.reasons.join(" ") || null,
+      }
+    : {
+        ...deterministicExtractionFields({
+          openingBalance,
+          closingBalance,
+          totalDebits: validation.totalDebits,
+          totalCredits: validation.totalCredits,
+          lineItemCount: lineItems.length,
+          aiWarning,
+        }),
+        textClassification: textClassification.type,
+      };
 
   const result: DocumentExtraction = {
     text,
     method,
     ocrUsed,
-    // The acceptance engine's extraction-quality confidence — NOT
-    // pipeline.analysis.confidence, which only describes how digital the PDF
-    // looked and says nothing about whether the extraction is correct.
-    confidence: Math.round(pipeline.selection.confidence),
+    // For a statement, the acceptance engine's extraction-quality confidence —
+    // NOT pipeline.analysis.confidence, which only describes how digital the PDF
+    // looked. That score is transaction-weighted, so any other document is
+    // scored by its own checks instead (an invoice read perfectly scored 11).
+    confidence: documentValidation ? documentValidation.confidence : Math.round(pipeline.selection.confidence),
     ocrConfidence: pipeline.merged.confidence ?? null,
     ocrEngine: pipeline.ocrEngine,
     strategy: pipeline.strategy,
-    detectedType: resolveDetectedType(document.detectedType, lineItems.length, openingBalance, closingBalance),
+    detectedType,
     fields,
     lineItems,
     validationStatus,

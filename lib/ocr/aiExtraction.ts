@@ -50,7 +50,24 @@ export function structuredExtractionFields(s: StructuredExtraction): Fields {
     openingBalance: s.openingBalance,
     closingBalance: s.closingBalance,
     lineItemCount: s.lineItems.length,
+    // Classification and the fields an invoice, receipt or purchase order
+    // carries. Absent ones are left out rather than shown as empty rows.
+    ...presentFields({
+      aiDocumentType: s.documentType ?? null,
+      documentNumber: s.documentNumber ?? null,
+      documentDate: s.documentDate ?? null,
+      issuerName: s.issuerName ?? null,
+      recipientName: s.recipientName ?? null,
+      currency: s.currency ?? null,
+      subtotal: s.subtotal ?? null,
+      taxAmount: s.taxAmount ?? null,
+      totalAmount: s.totalAmount ?? null,
+    }),
   };
+}
+
+function presentFields(fields: Fields): Fields {
+  return Object.fromEntries(Object.entries(fields).filter(([, value]) => value !== null));
 }
 
 // Fields for the deterministic fallback. Carries a safe warning when AI was

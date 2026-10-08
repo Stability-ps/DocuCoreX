@@ -2,27 +2,38 @@
 // unit tested without pulling in next/headers via the Supabase server client.
 import type { DocumentType } from "@/lib/types";
 
+export type TypeEvidence = {
+  /** The model's classification, when AI extraction ran. */
+  aiType?: DocumentType | null;
+  /** classifyDocumentText's verdict over the extracted text. */
+  textType?: DocumentType | null;
+};
+
 /**
  * Resolve the document type WITHOUT fabricating one.
  *
- * This previously defaulted every unclassified document to "bank_statement",
- * and that value was written straight back to `documents.detected_type`. It
- * mislabelled every invoice/contract/ID and — once the acceptance policy became
- * type-aware — flipped them onto the statement policy on the next run,
- * escalating a clean digital document through both OCR engines for nothing.
+ * This once defaulted every unclassified document to "bank_statement", which
+ * mislabelled every invoice and contract. Then, until 2026-10-08, it could only
+ * ever answer "bank_statement" or "unknown": the AI extraction schema asked for
+ * statement fields only and nothing classified anything else, so a document
+ * headed TAX INVOICE came back "unknown".
  *
- * An already-known type is always preserved. An unknown one is only called a
- * bank statement when the extraction produced real statement evidence:
- * transaction rows AND at least one balance. Otherwise it stays "unknown",
- * which is honest and keeps the generic acceptance policy.
+ * Order: an already-known type is preserved; then the model's classification;
+ * then real statement evidence (transaction rows AND a balance); then the
+ * text classifier, which answers only when one type clearly leads. Otherwise
+ * "unknown", which keeps the generic acceptance policy.
  */
 export function resolveDetectedType(
   current: DocumentType | undefined,
   lineItemCount: number,
   openingBalance: number | null,
   closingBalance: number | null,
+  evidence: TypeEvidence = {},
 ): DocumentType {
   if (current && current !== "unknown") return current;
+  if (evidence.aiType && evidence.aiType !== "unknown") return evidence.aiType;
   const hasStatementEvidence = lineItemCount > 0 && (openingBalance != null || closingBalance != null);
-  return hasStatementEvidence ? "bank_statement" : "unknown";
+  if (hasStatementEvidence) return "bank_statement";
+  if (evidence.textType && evidence.textType !== "unknown") return evidence.textType;
+  return "unknown";
 }
