@@ -4,6 +4,10 @@
 import type { DocumentRecord, ExtractionResult, OcrResult } from "@/lib/types";
 import type { OCRProvider, ExtractionProvider, ProviderName } from "@/lib/workflow-adapters";
 import { extractDocument } from "@/lib/ocr/extractDocument";
+import type { DocumentType } from "@/lib/types";
+
+// Documents whose line items are ledger rows rather than billed lines.
+const LEDGER_TYPES: ReadonlySet<DocumentType> = new Set(["bank_statement", "unknown"]);
 
 // OCR provider: OpenAI vision when useOpenAI (with Tesseract fallback inside the
 // orchestration); Tesseract/pipeline-only otherwise.
@@ -66,13 +70,13 @@ export class PipelineExtractionProvider implements ExtractionProvider {
         validationStatus: extraction.validationStatus,
         requiresReview: extraction.requiresReview,
       },
-      lineItems: extraction.lineItems.map((item) => ({
-        date: item.date,
-        description: item.description,
-        debit: item.debit,
-        credit: item.credit,
-        balance: item.balance,
-      })),
+      // The UI renders the first row's keys as columns: a statement keeps its
+      // ledger columns, a billed document its quantity/price/amount columns.
+      lineItems: extraction.lineItems.map((item): Record<string, string | number | null> =>
+        LEDGER_TYPES.has(extraction.detectedType)
+          ? { date: item.date, description: item.description, debit: item.debit, credit: item.credit, balance: item.balance }
+          : { description: item.description, quantity: item.quantity ?? null, unitPrice: item.unitPrice ?? null, amount: item.amount ?? null },
+      ),
       createdAt: new Date().toISOString(),
     };
   }
