@@ -1,18 +1,65 @@
 # Production migration state — accounting schema
 
-**Status: APPLIED. Production is at 001–047.**
+**Status: APPLIED. Production is at 001–048, and its migration history now records exactly 001–048.**
 
 | | |
 |---|---|
-| Live Supabase project | `efprtqcpglsawifrsmcc`, applied through **047** |
-| This repository | contains through **047** |
+| Live Supabase project | `efprtqcpglsawifrsmcc`, applied through **048** |
+| This repository | contains through **048** |
 | Gap | none |
 | Verified | 2026-10-07, direct catalog queries (`pg_class`, `pg_proc`, `pg_trigger`, `pg_constraint`, `pg_indexes`, `pg_policies`, `information_schema.columns`) |
 
-Migrations are applied by hand, not by the Supabase CLI, so the
-`supabase_migrations.schema_migrations` table records only one unrelated entry
-and **cannot** be used to read the state. Every check below asks the catalog
-for the objects each migration creates.
+Migrations were applied by hand, not by the Supabase CLI, so until
+2026-10-08 the `supabase_migrations.schema_migrations` table recorded only six
+timestamp-versioned entries and could not be used to read the state. It has
+since been reconciled (see "Migration history" below). Parity is still
+established by asking the catalog for the objects each migration creates.
+
+## Migration history (reconciled 2026-10-08)
+
+The history table held six rows under timestamp versions (`20260704125124`
+for 011, and five `20261007…` rows for 010, 034, 046, 047, 048) that the CLI
+cannot match to this repository's files. Supabase CLI 2.117.0 reads a file's
+version with `^([0-9]+)_(.*)\.sql$`, so `001_initial_schema.sql` is version
+`001`, and it compares remote versions as strings. With the old rows,
+`supabase db push` refuses ("Remote migration versions not found in local
+migrations directory"). Repairing that the wrong way would replay 48
+hand-applied migrations.
+
+Done, in this order:
+
+1. **Parity re-verified** against the catalog: every table (63), added column
+   (105), function (46), trigger (24), index (72) and policy (68) that
+   001–048 create, replayed in file order so drop-then-create resolves to the
+   final state. **0 missing.**
+2. **Rehearsed** on a local PostgreSQL 16 copy: backup identical, apply gives
+   48 rows `001`..`048`, rollback restores the original byte-for-byte, an
+   application table is untouched.
+3. **Backup:** `supabase_migrations.schema_migrations_backup_20261008`, a copy
+   of the six original rows. Each row's full-row md5 and stored-SQL md5 were
+   checked identical to the originals before anything changed.
+4. **Applied** in one transaction: the six rows deleted, `001`–`048`
+   inserted with `name` = the file name and
+   `created_by = 'release-audit-2026-10-08'`, and no `statements`. Nothing was
+   executed: no DDL, no application table touched.
+5. **Verified:** 48 rows, `001`..`048`, no timestamp versions. The
+   `version name` list's md5 equals the repository file list's
+   (`f791138ded4e344d122cc8aacc502edc`).
+
+Rollback (rehearsed):
+
+```sql
+begin;
+delete from supabase_migrations.schema_migrations where created_by = 'release-audit-2026-10-08';
+insert into supabase_migrations.schema_migrations
+  select * from supabase_migrations.schema_migrations_backup_20261008
+  on conflict (version) do nothing;
+commit;
+```
+
+From now on, apply new migrations with the CLI (`supabase db push`), or, if
+applied by hand, record them as `<NNN>` / `<file name>` so the history keeps
+matching the files.
 
 ## How parity was established (2026-10-07)
 
@@ -27,7 +74,7 @@ in full and nothing else was:
 | **034** accounting engagement | `accounting_engagement` absent, despite the previous version of this document saying it had been applied | `saveWorkspaceEngagement` degraded; coverage tolerated it (`42P01` branch) | applied 2026-10-07 |
 
 Two further migrations were written during the release audit and applied the
-same day:
+same day (048, trial balance brought forward, followed later that evening):
 
 | Migration | What it does | Verified in production |
 |---|---|---|
