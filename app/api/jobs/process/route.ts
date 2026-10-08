@@ -449,6 +449,14 @@ export async function POST(request: Request) {
         .from("processing_jobs")
         .update({ status: "completed", progress: 100, message: getCompletedMessage(job.type), updated_at: new Date().toISOString() })
         .eq("id", job.id);
+      // Re-derive the document's status from its real jobs and results now that
+      // this job is no longer active. The OCR branch only moves a document that
+      // has no extraction yet, so an OCR that finished after the extraction left
+      // the document "queued" for good, with the poller driving it forever
+      // (production, 2026-10-08).
+      if (job.type === "ocr" || job.type === "extraction") {
+        await finalizeDocumentStatus(context, document.id);
+      }
 
       results.push({ jobId: job.id, type: job.type, status: "completed" });
     } catch (error) {

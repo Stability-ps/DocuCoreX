@@ -115,3 +115,11 @@ test("the worker fails closed when its shared secret is not configured", () => {
   assert.ok(route.includes("WORKER_SECRET_NOT_CONFIGURED"));
   assert.ok(!route.includes("if (configuredSecret && providedSecret !== configuredSecret)"), "a missing secret no longer disables the check");
 });
+
+test("a finished OCR or extraction job re-derives the document status", () => {
+  // An OCR that completed after the extraction left its document "queued".
+  const route = read("app/api/jobs/process/route.ts");
+  const completed = route.indexOf("message: getCompletedMessage(job.type)");
+  const finalize = route.indexOf("await finalizeDocumentStatus(context, document.id);", completed);
+  assert.ok(completed > 0 && finalize > completed, "status is finalised after the job is marked completed");
+});
