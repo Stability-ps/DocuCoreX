@@ -1,6 +1,6 @@
 # Production migration state — accounting schema
 
-**Status: APPLIED. Production is at 001–048, and its migration history now records exactly 001–048.**
+**Status: Production is at 001–048 and its history records exactly 001–048. 049 (storage DELETE policy) is applied on merge of its PR; see "049" below.**
 
 | | |
 |---|---|
@@ -60,6 +60,14 @@ commit;
 From now on, apply new migrations with the CLI (`supabase db push`), or, if
 applied by hand, record them as `<NNN>` / `<file name>` so the history keeps
 matching the files.
+
+## 049 storage DELETE policy (2026-10-08)
+
+`storage.objects` had no DELETE policy, so every app-side file removal
+(permanent document delete, run delete, invalid-upload cleanup) silently
+removed nothing under RLS. 049 adds the workspace-scoped policy. Apply it
+by hand, then record it as version `049`, name `storage_delete_policy`, so
+the history keeps matching the files.
 
 ## How parity was established (2026-10-07)
 
