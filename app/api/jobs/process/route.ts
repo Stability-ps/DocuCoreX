@@ -14,17 +14,16 @@ import type { DocumentRecord, ProcessingJob } from "@/lib/types";
 import { createWorkflowAdapters } from "@/lib/workflow-adapters";
 import { documentStatusAfterJob, documentStatusOnJobFailure, resolveProcessingMode } from "@/lib/jobs/processing-mode";
 import { pipelineJobsToQueue } from "@/lib/jobs/upload-job";
+import { validateProcessRequest, type ProcessJobRequest } from "@/lib/jobs/process-request";
 import { isClaimable } from "@/lib/ocr/jobAction";
 import { finalizeDocumentStatus } from "@/lib/ocr/asyncJobs";
 
-type ProcessJobRequest = {
-  conversionId?: string;
-  jobId?: string;
-  documentId?: string;
-};
-
 export async function POST(request: Request) {
-  const processRequest = (await request.clone().json().catch(() => ({}))) as ProcessJobRequest;
+  const validated = validateProcessRequest(await request.clone().json().catch(() => ({})));
+  if (!validated.ok) {
+    return NextResponse.json({ error: validated.error, code: "INVALID_REQUEST" }, { status: 400 });
+  }
+  const processRequest = validated.request;
   console.info("docucorex.conversion_worker.process_called", {
     processorMode: process.env.CONVERSION_WORKER_MODE === "true" ? "worker" : "app",
     conversionId: processRequest.conversionId ?? null,
@@ -32,6 +31,21 @@ export async function POST(request: Request) {
     documentId: processRequest.documentId ?? null,
     hasWorkerSecret: Boolean(process.env.CONVERSION_WORKER_SECRET?.trim()),
   });
+  // The frontend authorises the caller before anything reaches the worker. The
+  // worker trusts the shared secret this route adds and, without a session in
+  // the forwarded cookies, resolves the document's workspace with the service
+  // role, so an unchecked proxy let an anonymous request process any document
+  // whose id it knew (release audit, 2026-10-08).
+  if (process.env.CONVERSION_WORKER_MODE !== "true" && isSupabaseConfigured) {
+    const caller = await getWorkspaceContext().catch(() => null);
+    if (!caller) {
+      return NextResponse.json({ error: "Sign in to process documents.", code: "UNAUTHENTICATED" }, { status: 401 });
+    }
+    if (!(await requestTargetsWorkspace(caller, processRequest))) {
+      return NextResponse.json({ error: "Document not found.", code: "NOT_FOUND" }, { status: 404 });
+    }
+  }
+
   const proxied = await proxyToConversionWorker(request, processRequest);
   if (proxied) return proxied;
 
@@ -49,7 +63,13 @@ export async function POST(request: Request) {
   if (process.env.CONVERSION_WORKER_MODE === "true") {
     const configuredSecret = process.env.CONVERSION_WORKER_SECRET?.trim();
     const providedSecret = request.headers.get("x-docucorex-worker-secret")?.trim();
-    if (configuredSecret && providedSecret !== configuredSecret) {
+    // Fail closed: without a configured secret the worker cannot tell the
+    // frontend from anyone else, and it would fall back to the service role.
+    if (!configuredSecret) {
+      console.error("docucorex.conversion_worker.secret_not_configured");
+      return NextResponse.json({ error: "Document processing is temporarily unavailable.", code: "WORKER_SECRET_NOT_CONFIGURED" }, { status: 503 });
+    }
+    if (providedSecret !== configuredSecret) {
       return NextResponse.json({ error: "Unauthorized worker request" }, { status: 401 });
     }
   }
@@ -473,6 +493,27 @@ export async function POST(request: Request) {
   }
 
   return NextResponse.json({ processed: results.length, results, providers: providers.detection });
+}
+
+// Every id the caller names must belong to the caller's workspace. Read through
+// the caller's own (RLS-scoped) client, so another tenant's rows are invisible.
+async function requestTargetsWorkspace(context: NonNullable<Awaited<ReturnType<typeof getWorkspaceContext>>>, processRequest: ProcessJobRequest) {
+  const checks: Array<PromiseLike<{ data: unknown; error: unknown }>> = [];
+  if (processRequest.documentId) {
+    checks.push(context.supabase.from("documents").select("id").eq("id", processRequest.documentId).eq("workspace_id", context.workspaceId).maybeSingle());
+  }
+  if (processRequest.jobId) {
+    checks.push(
+      context.supabase.from("processing_jobs").select("id, documents!inner(workspace_id)").eq("id", processRequest.jobId).eq("documents.workspace_id", context.workspaceId).maybeSingle(),
+    );
+  }
+  if (processRequest.conversionId) {
+    checks.push(
+      context.supabase.from("conversions").select("id, documents!inner(workspace_id)").eq("id", processRequest.conversionId).eq("documents.workspace_id", context.workspaceId).maybeSingle(),
+    );
+  }
+  const results = await Promise.all(checks);
+  return results.every((result) => !result.error && Boolean(result.data));
 }
 
 async function readPipelineState(context: NonNullable<Awaited<ReturnType<typeof getWorkspaceContext>>>, documentId: string) {
