@@ -485,7 +485,11 @@ export async function registerUploads(files: UploadFileInput[]) {
     mime_type: getMimeType(file),
     size_bytes: file.size,
     page_count: 0,
-    status: "uploaded" as const,
+    // Queued, not "uploaded": the upload job created below is pending work, and
+    // the documents view keeps driving queued documents through
+    // /api/jobs/process. As "uploaded" a document whose post-upload process call
+    // was lost (tab closed, network drop) was never picked up again.
+    status: "queued" as const,
     detected_type: "unknown" as const,
     storage_path: file.storagePath ?? getStoragePath(context.workspaceId, file.name),
     tags: ["Upload Queue"],
