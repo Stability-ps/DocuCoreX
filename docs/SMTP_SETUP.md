@@ -9,9 +9,11 @@ organisation and is rate-limited to a handful of messages an hour. So:
   new sign-up, because the confirmation email would never arrive.
 
 Everything below that needs no credentials or DNS access is already in this
-repository: the templates in `supabase/templates/`, and the Site URL and
-redirect allowlist already set in Auth (`https://www.docucorex.com`,
-`https://www.docucorex.com/**`, `http://localhost:3000/**`).
+repository: the templates in `supabase/templates/`. The Auth Site URL and
+redirect allowlist were set and verified during the 2026-10-07 release
+audit (`https://www.docucorex.com`; `https://www.docucorex.com/**`,
+`http://localhost:3000/**`). Re-check them in the dashboard before going
+live, since they are not readable from this repository.
 
 ## 1. Choose a provider
 
