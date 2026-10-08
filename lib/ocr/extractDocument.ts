@@ -49,6 +49,39 @@ export type DocumentExtraction = {
 };
 
 const cache = new Map<string, DocumentExtraction>();
+
+const VISION_IMAGE_TYPES = new Set(["image/png", "image/jpeg", "image/webp", "image/gif"]);
+
+// Text from an uploaded image: OpenAI vision when available (the same
+// transcription prompt as scanned PDF pages), else Tesseract where it is
+// installed (the conversion worker). Neither available is a clear failure.
+async function transcribeImage(
+  documentId: string,
+  bytes: Uint8Array,
+  mimeType: string,
+  fileName: string,
+  useVision: boolean,
+): Promise<{ text: string; method: ExtractionMethod; costUsd: number; warnings: string[] }> {
+  const warnings: string[] = [];
+  if (useVision && VISION_IMAGE_TYPES.has(mimeType)) {
+    try {
+      const vision = await runVisionOcr([`data:${mimeType};base64,${Buffer.from(bytes).toString("base64")}`]);
+      if (vision.text.trim()) return { text: vision.text, method: "openai_vision", costUsd: vision.estimatedCostUsd, warnings };
+      warnings.push("AI vision OCR returned no text; Tesseract fallback used.");
+    } catch (error) {
+      const cls = classifyOpenAiError(error);
+      console.error("docucorex.openai.vision_failed", buildAiFailureLog("vision_ocr_image", documentId, cls));
+      warnings.push(cls.configuration ? "AI vision OCR unavailable due to configuration; Tesseract fallback used." : "AI vision OCR failed; Tesseract fallback used.");
+    }
+  }
+  const { runTesseractOnImage } = await import("@/lib/pdf/ocrEngine");
+  const extension = fileName.includes(".") ? fileName.slice(fileName.lastIndexOf(".") + 1) : mimeType.split("/")[1] ?? "png";
+  const tesseract = runTesseractOnImage(bytes, extension);
+  if (!tesseract) {
+    throw new Error("Image text recognition is unavailable here: AI vision is not configured and Tesseract is not installed.");
+  }
+  return { text: tesseract.text, method: "tesseract", costUsd: 0, warnings };
+}
 const CACHE_MAX = 50;
 
 function openAiConfigured(): boolean {
@@ -85,24 +118,34 @@ export async function extractDocument(
   if (cached) return cached;
 
   const fileName = document.name || "document.pdf";
-  // REUSE the existing pipeline (analyse → strategy → extract → accept → escalate).
-  const pipeline = await runExtractionPipeline(bytes, fileName, { documentId: document.id, fileHash, enhancedOcr: enhanced, expect });
+  const isImage = (document.mimeType ?? "").startsWith("image/");
+  // Images never enter the PDF pipeline: it cannot parse them, and every PNG
+  // or JPEG upload came back with no text at all (production, 2026-10-08).
+  const pipeline = isImage ? null : await runExtractionPipeline(bytes, fileName, { documentId: document.id, fileHash, enhancedOcr: enhanced, expect });
 
-  const warnings = [...pipeline.warnings];
-  let text = pipeline.merged.combinedText;
+  const warnings = [...(pipeline?.warnings ?? [])];
+  let text = pipeline?.merged.combinedText ?? "";
   let method: ExtractionMethod =
-    pipeline.parserMethod === "ocr"
+    !pipeline || pipeline.parserMethod === "ocr"
       ? "tesseract"
       : pipeline.parserMethod === "mistral_ocr"
         ? "mistral_ocr"
         : pipeline.parserMethod === "pdfplumber"
           ? "pdfplumber"
           : "pdfjs";
-  let ocrUsed = pipeline.ocrUsed;
+  let ocrUsed = pipeline ? pipeline.ocrUsed : true;
   let openaiCostUsd = 0;
 
+  if (isImage) {
+    const image = await transcribeImage(document.id, bytes, document.mimeType, fileName, options.useOpenAI && openAiConfigured());
+    text = image.text;
+    method = image.method;
+    openaiCostUsd += image.costUsd;
+    warnings.push(...image.warnings);
+  }
+
   // Scanned path: OpenAI vision, with Tesseract (already in `text`) as the fallback.
-  if (options.useOpenAI && openAiConfigured() && pipeline.analysis.kind === "scanned") {
+  if (pipeline && options.useOpenAI && openAiConfigured() && pipeline.analysis.kind === "scanned") {
     try {
       const images = rasterizePdfToImages(bytes, { dpi: 150, maxPages: 10 });
       if (images.length) {
@@ -128,6 +171,12 @@ export async function extractDocument(
     }
   }
 
+  // Nothing readable at all is a failed job with a reason, not an empty
+  // extraction on a document shown as "ready".
+  if (!text.trim()) {
+    throw new Error("No text could be read from this document.");
+  }
+
   // Structured extraction: OpenAI when available, else the pipeline's deterministic transactions.
   let structured: StructuredExtraction | null = null;
   let aiWarning: string | null = null;
@@ -149,7 +198,7 @@ export async function extractDocument(
 
   const lineItems: StructuredLineItem[] = structured
     ? structured.lineItems
-    : pipeline.merged.transactions.map((t) => ({
+    : (pipeline?.merged.transactions ?? []).map((t) => ({
         date: t.date ?? null,
         description: t.description ?? null,
         debit: t.debit ?? null,
@@ -157,8 +206,8 @@ export async function extractDocument(
         balance: t.balance ?? null,
       }));
 
-  const openingBalance = structured?.openingBalance ?? (pipeline.merged.metadata.openingBalance as number | null | undefined) ?? null;
-  const closingBalance = structured?.closingBalance ?? (pipeline.merged.metadata.closingBalance as number | null | undefined) ?? null;
+  const openingBalance = structured?.openingBalance ?? (pipeline?.merged.metadata.openingBalance as number | null | undefined) ?? null;
+  const closingBalance = structured?.closingBalance ?? (pipeline?.merged.metadata.closingBalance as number | null | undefined) ?? null;
 
   // Classify before validating: what counts as a correct extraction depends on
   // what the document is.
@@ -192,7 +241,7 @@ export async function extractDocument(
           });
   const typeStatus = documentValidation ? documentValidation.status : validation.status;
   // Combine with the pipeline's own acceptance (either flagging review wins).
-  const requiresReview = pipeline.requiresReview || typeStatus !== "Ready";
+  const requiresReview = Boolean(pipeline?.requiresReview) || typeStatus !== "Ready";
   const validationStatus: ValidationStatus = typeStatus === "Failed" ? "Failed" : requiresReview ? "Review Required" : "Ready";
 
   const fields: DocumentExtraction["fields"] = structured
@@ -221,10 +270,10 @@ export async function extractDocument(
     // NOT pipeline.analysis.confidence, which only describes how digital the PDF
     // looked. That score is transaction-weighted, so any other document is
     // scored by its own checks instead (an invoice read perfectly scored 11).
-    confidence: documentValidation ? documentValidation.confidence : Math.round(pipeline.selection.confidence),
-    ocrConfidence: pipeline.merged.confidence ?? null,
-    ocrEngine: pipeline.ocrEngine,
-    strategy: pipeline.strategy,
+    confidence: documentValidation ? documentValidation.confidence : Math.round(pipeline?.selection.confidence ?? 0),
+    ocrConfidence: pipeline?.merged.confidence ?? null,
+    ocrEngine: pipeline?.ocrEngine ?? null,
+    strategy: pipeline?.strategy ?? "image",
     detectedType,
     fields,
     lineItems,

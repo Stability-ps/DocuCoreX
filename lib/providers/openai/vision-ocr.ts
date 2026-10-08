@@ -39,6 +39,13 @@ export function buildVisionBody(model: string, imageDataUrls: string[], detail: 
   };
 }
 
+// Pure: models sometimes wrap a "plain text" transcription in a markdown code
+// fence; the fence is not on the page and must not reach the stored OCR text.
+export function stripCodeFence(text: string): string {
+  const match = text.trim().match(/^```[a-z]*\n([\s\S]*?)\n?```$/i);
+  return match ? match[1] : text;
+}
+
 export type VisionOcrResult = { text: string; usage: OpenAiUsage; estimatedCostUsd: number; model: string };
 
 // LIVE. Requires OPENAI_API_KEY + a vision-capable model.
@@ -57,5 +64,5 @@ export async function runVisionOcr(
     completion_tokens: completion.usage.completionTokens,
     total_tokens: completion.usage.totalTokens,
   });
-  return { text: completion.content, usage, estimatedCostUsd, model: completion.model };
+  return { text: stripCodeFence(completion.content), usage, estimatedCostUsd, model: completion.model };
 }
