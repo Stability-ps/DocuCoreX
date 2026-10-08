@@ -1,0 +1,14 @@
+<!-- Supabase Auth → Email Templates → Confirm signup. Subject: Confirm your DocuCoreX account -->
+<div style="font-family: -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif; max-width: 520px; margin: 0 auto; padding: 32px 24px; color: #0f172a;">
+  <p style="font-size: 20px; font-weight: 700; margin: 0 0 24px;">DocuCoreX</p>
+  <h1 style="font-size: 18px; margin: 0 0 12px;">Confirm your email</h1>
+  <p style="font-size: 15px; line-height: 1.6; margin: 0 0 24px;">
+    Welcome to DocuCoreX. Confirm that {{ .Email }} is your address to finish creating your account:
+  </p>
+  <p style="margin: 0 0 24px;">
+    <a href="{{ .ConfirmationURL }}" style="display: inline-block; background: #1d4ed8; color: #ffffff; text-decoration: none; font-weight: 600; padding: 12px 20px; border-radius: 8px;">Confirm email</a>
+  </p>
+  <p style="font-size: 13px; line-height: 1.6; color: #475569; margin: 0;">
+    If you did not create a DocuCoreX account, ignore this email.
+  </p>
+</div>

@@ -1,0 +1,15 @@
+<!-- Supabase Auth → Email Templates → Reset Password. Subject: Reset your DocuCoreX password -->
+<div style="font-family: -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif; max-width: 520px; margin: 0 auto; padding: 32px 24px; color: #0f172a;">
+  <p style="font-size: 20px; font-weight: 700; margin: 0 0 24px;">DocuCoreX</p>
+  <h1 style="font-size: 18px; margin: 0 0 12px;">Reset your password</h1>
+  <p style="font-size: 15px; line-height: 1.6; margin: 0 0 24px;">
+    Someone asked to reset the password for the DocuCoreX account linked to {{ .Email }}.
+    If that was you, choose a new password:
+  </p>
+  <p style="margin: 0 0 24px;">
+    <a href="{{ .ConfirmationURL }}" style="display: inline-block; background: #1d4ed8; color: #ffffff; text-decoration: none; font-weight: 600; padding: 12px 20px; border-radius: 8px;">Choose a new password</a>
+  </p>
+  <p style="font-size: 13px; line-height: 1.6; color: #475569; margin: 0;">
+    This link expires after one use. If you did not ask for a reset, ignore this email; your password has not changed.
+  </p>
+</div>
