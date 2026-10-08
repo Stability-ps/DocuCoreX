@@ -88,3 +88,30 @@ test("settled upload jobs say why they closed", () => {
   assert.equal(uploadSettledMessage("extraction"), "Upload registered; extraction started directly");
   assert.equal(uploadSettledMessage("ocr"), "Upload registered; OCR started directly");
 });
+
+// ── Authorisation of /api/jobs/process (release audit, 2026-10-08) ──────────
+
+test("process request ids must be UUIDs (no ILIKE wildcards)", async () => {
+  const { validateProcessRequest } = await import("../../lib/jobs/process-request.ts");
+  assert.equal(validateProcessRequest({ conversionId: "%" }).ok, false);
+  assert.equal(validateProcessRequest({ documentId: "1 or 1=1" }).ok, false);
+  assert.equal(validateProcessRequest({ jobId: 42 }).ok, false);
+  const ok = validateProcessRequest({ documentId: "cf4f8033-c872-48d2-bf30-31da4a154fab", other: "ignored" });
+  assert.deepEqual(ok, { ok: true, request: { documentId: "cf4f8033-c872-48d2-bf30-31da4a154fab" } });
+  assert.deepEqual(validateProcessRequest(null), { ok: true, request: {} });
+});
+
+test("the frontend authorises the caller and the target before proxying to the worker", () => {
+  const route = read("app/api/jobs/process/route.ts");
+  const auth = route.indexOf('code: "UNAUTHENTICATED"');
+  const ownership = route.indexOf("requestTargetsWorkspace(caller, processRequest)");
+  const proxy = route.indexOf("await proxyToConversionWorker(request, processRequest)");
+  assert.ok(auth > 0 && ownership > 0 && proxy > 0);
+  assert.ok(auth < proxy && ownership < proxy, "no request reaches the worker unauthorised");
+});
+
+test("the worker fails closed when its shared secret is not configured", () => {
+  const route = read("app/api/jobs/process/route.ts");
+  assert.ok(route.includes("WORKER_SECRET_NOT_CONFIGURED"));
+  assert.ok(!route.includes("if (configuredSecret && providedSecret !== configuredSecret)"), "a missing secret no longer disables the check");
+});
