@@ -123,3 +123,16 @@ test("a finished OCR or extraction job re-derives the document status", () => {
   const finalize = route.indexOf("await finalizeDocumentStatus(context, document.id);", completed);
   assert.ok(completed > 0 && finalize > completed, "status is finalised after the job is marked completed");
 });
+
+test("the generic processor leaves accounting statement jobs to their pipeline", () => {
+  const route = read("app/api/jobs/process/route.ts");
+  const skip = route.indexOf("if (accountingJobIds.has(job.id))");
+  const claim = route.indexOf('.eq("updated_at", job.updated_at)');
+  assert.ok(skip > 0 && skip < claim, "accounting jobs are skipped before any claim");
+  assert.ok(route.includes("if (error) return new Set(jobIds);"), "ownership read failures fail closed");
+});
+
+test("the worker's OCR endpoint fails closed without its secret", () => {
+  const route = read("app/api/ocr-text/route.ts");
+  assert.ok(route.includes("if (!configured) return false;"));
+});

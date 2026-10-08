@@ -155,9 +155,20 @@ export async function POST(request: Request) {
   });
 
   const results = [];
+  const accountingJobIds = await readAccountingJobIds(context, (jobs ?? []).map((job) => job.id));
 
   for (const job of jobs ?? []) {
     const document = mapSupabaseDocument(job.documents);
+
+    // A bank statement's job belongs to the accounting pipeline, which the
+    // user starts with Process on the statement. Statements are listed among
+    // the documents too, and the documents view drives every queued document
+    // through here — which would have run the generic extraction on a
+    // statement still waiting for its owner, and completed its accounting job.
+    if (accountingJobIds.has(job.id)) {
+      results.push({ jobId: job.id, type: job.type, status: "skipped", reason: "Accounting statement job" });
+      continue;
+    }
 
     if (!document || document.workspaceId !== context.workspaceId) {
       results.push({ jobId: job.id, status: "skipped", reason: "Document not found" });
@@ -522,6 +533,25 @@ async function requestTargetsWorkspace(context: NonNullable<Awaited<ReturnType<t
   }
   const results = await Promise.all(checks);
   return results.every((result) => !result.error && Boolean(result.data));
+}
+
+// Jobs that an accounting statement run owns (its dispatch job or its active
+// attempt). Read failures fail closed: no job is processed here when ownership
+// cannot be established.
+async function readAccountingJobIds(context: NonNullable<Awaited<ReturnType<typeof getWorkspaceContext>>>, jobIds: string[]): Promise<Set<string>> {
+  if (!jobIds.length) return new Set();
+  const list = jobIds.join(",");
+  const { data, error } = await context.supabase
+    .from("accounting_statement_runs")
+    .select("processing_job_id, active_job_id")
+    .or(`processing_job_id.in.(${list}),active_job_id.in.(${list})`);
+  if (error) return new Set(jobIds);
+  const owned = new Set<string>();
+  for (const row of (data ?? []) as Array<{ processing_job_id: string | null; active_job_id: string | null }>) {
+    if (row.processing_job_id) owned.add(row.processing_job_id);
+    if (row.active_job_id) owned.add(row.active_job_id);
+  }
+  return owned;
 }
 
 async function readPipelineState(context: NonNullable<Awaited<ReturnType<typeof getWorkspaceContext>>>, documentId: string) {

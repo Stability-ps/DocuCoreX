@@ -19,7 +19,9 @@ export const dynamic = "force-dynamic";
 function authorized(request: Request): boolean {
   if (process.env.CONVERSION_WORKER_MODE !== "true") return true;
   const configured = process.env.CONVERSION_WORKER_SECRET?.trim();
-  if (!configured) return true;
+  // Fail closed, as /api/jobs/process does: a worker without its secret cannot
+  // tell the frontend from anyone else.
+  if (!configured) return false;
   const provided = request.headers.get("x-docucorex-worker-secret")?.trim();
   return provided === configured;
 }
