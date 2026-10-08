@@ -165,3 +165,26 @@ test("a type outside the schema enum is not trusted", () => {
   assert.equal(parsed.documentType, "unknown");
   assert.equal(parseStructuredContent(JSON.stringify({ documentType: "invoice", lineItems: [] })).documentType, "invoice");
 });
+
+// ── Images and unreadable documents (production, 2026-10-08) ─────────────────
+
+const { stripCodeFence } = await import("@/lib/providers/openai/vision-ocr.ts");
+const { readFileSync } = await import("node:fs");
+
+test("a vision transcription loses the markdown fence the model wrapped it in", () => {
+  assert.equal(stripCodeFence("```\nTAX INVOICE\nTotal 10.00\n```"), "TAX INVOICE\nTotal 10.00");
+  assert.equal(stripCodeFence("```text\nRECEIPT\n```"), "RECEIPT");
+  assert.equal(stripCodeFence("Plain text with ``` inside"), "Plain text with ``` inside");
+});
+
+test("images are transcribed directly instead of entering the PDF pipeline", () => {
+  const source = readFileSync(new URL("../../lib/ocr/extractDocument.ts", import.meta.url), "utf8");
+  assert.ok(source.includes('const pipeline = isImage ? null : await runExtractionPipeline('));
+  assert.ok(source.includes("transcribeImage("));
+  assert.ok(source.includes('runTesseractOnImage(bytes, extension)'), "Tesseract fallback for images");
+});
+
+test("a document with no readable text fails with a reason instead of showing ready", () => {
+  const source = readFileSync(new URL("../../lib/ocr/extractDocument.ts", import.meta.url), "utf8");
+  assert.ok(source.includes('throw new Error("No text could be read from this document.")'));
+});

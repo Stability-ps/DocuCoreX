@@ -322,3 +322,25 @@ export function runOcrText(fileBytes: Uint8Array, fileName = "document.pdf", end
     rmSync(tempDir, { recursive: true, force: true });
   }
 }
+
+/**
+ * Tesseract on a single image (PNG, JPEG, TIFF…). ocrmypdf only takes PDFs, so
+ * uploaded images need the engine directly. Returns null when Tesseract is
+ * not installed in this runtime (it is on the conversion worker, not Vercel).
+ */
+export function runTesseractOnImage(imageBytes: Uint8Array, extension: string): { text: string } | null {
+  const tesseract = bin("TESSERACT_PATH", "tesseract");
+  if (!which(tesseract)) return null;
+  const tempDir = mkdtempSync(join(tmpdir(), "docucorex-imgocr-"));
+  try {
+    const inputPath = join(tempDir, `input.${extension.replace(/[^a-z0-9]/gi, "") || "png"}`);
+    writeFileSync(inputPath, imageBytes);
+    const result = spawnSync(tesseract, [inputPath, "stdout", "-l", "eng"], { encoding: "utf8", timeout: timeouts().perAttempt });
+    if (result.status !== 0) {
+      throw new Error(`Tesseract could not read the image (exit ${result.status ?? "timeout"}).`);
+    }
+    return { text: result.stdout ?? "" };
+  } finally {
+    rmSync(tempDir, { recursive: true, force: true });
+  }
+}
