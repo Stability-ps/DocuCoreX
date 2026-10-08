@@ -423,16 +423,18 @@ function workbookRows(content: ExtractedContent) {
   return [["Extracted Text"], ...contentLines(content).map((line) => [line])];
 }
 
-function textRows(text: string) {
+// Rows from text extracted out of a PDF, Word document or image. Tabs mark
+// real table cells (Word tables are read as tab-separated). Commas do not:
+// they are punctuation and thousands separators. Splitting on them turned an
+// invoice's "Subtotal 1,090.00" into two cells, "1" and "090.00", in the Excel
+// export and dropped the comma from the Word export (production, 2026-10-08).
+// CSV sources are parsed as CSV separately (parseCsv).
+export function textRows(text: string) {
   return text
     .split(/\r?\n/)
     .map((line) => line.trim())
     .filter(Boolean)
-    .map((line) => {
-      if (line.includes("\t")) return line.split("\t").map((cell) => cell.trim());
-      if (line.includes(",")) return parseCsvLine(line);
-      return [line];
-    });
+    .map((line) => (line.includes("\t") ? line.split("\t").map((cell) => cell.trim()) : [line]));
 }
 
 function normalizeText(value: string) {
