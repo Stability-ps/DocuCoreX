@@ -93,6 +93,66 @@ jobs:
       - name: Regression suite
         run: ./workers/accounting_worker/tests/run_regression.sh
 
+  malware-scanner:
+    # The scanner's own checks (fake clamd), then the real thing: build the
+    # image, start ClamAV, and prove it refuses unauthenticated requests, passes
+    # a clean file and catches the EICAR test file. EICAR is the industry's
+    # harmless test signature; it is assembled here from two halves so the full
+    # string never sits in the repository.
+    name: Malware scanner (ClamAV)
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.11'
+          cache: pip
+          cache-dependency-path: services/malware-scanner/requirements-dev.txt
+
+      - name: Service checks (fake clamd)
+        working-directory: services/malware-scanner
+        run: |
+          python -m pip install -r requirements-dev.txt
+          python tests/check_scanner.py
+
+      - name: Build the image
+        run: docker build -t docucorex-malware-scanner services/malware-scanner
+
+      - name: Scan real files with ClamAV
+        run: |
+          set -euo pipefail
+          # The image ships with signatures; skip the update daemon so CI does
+          # not hammer ClamAV's mirrors.
+          docker run -d --name scanner -p 8080:8080 \
+            -e MALWARE_SCANNER_TOKEN=ci-token -e CLAMAV_NO_FRESHCLAMD=true \
+            docucorex-malware-scanner
+          for i in $(seq 1 90); do
+            curl -sf http://localhost:8080/health >/dev/null && break
+            sleep 4
+          done
+          curl -sf http://localhost:8080/health
+
+          code=$(curl -s -o /dev/null -w "%{http_code}" -X POST --data-binary "x" http://localhost:8080/scan)
+          test "$code" = "401" || { echo "unauthenticated scan returned $code"; exit 1; }
+
+          printf '%%PDF-1.4\nordinary synthetic statement\n%%%%EOF\n' > clean.pdf
+          clean=$(curl -s -X POST -H "Authorization: Bearer ci-token" --data-binary @clean.pdf http://localhost:8080/scan)
+          echo "clean: $clean"
+          echo "$clean" | grep -q '"verdict":"clean"'
+
+          left='X5O!P%@AP[4\PZX54(P^)7CC)7}$'
+          right='EICAR-STANDARD-ANTIVIRUS-TEST-FILE!$H+H*'
+          printf '%s%s' "$left" "$right" > eicar.txt
+          infected=$(curl -s -X POST -H "Authorization: Bearer ci-token" --data-binary @eicar.txt http://localhost:8080/scan)
+          echo "eicar: $infected"
+          echo "$infected" | grep -q '"verdict":"infected"'
+
+      - name: Scanner logs
+        if: failure()
+        run: docker logs scanner 2>&1 | tail -80
+
   ledger-sql:
     # Applies every migration to a throwaway PostgreSQL 16 and runs
     # tests/sql through scripts/verify-ledger.sh: the ledger controls, the

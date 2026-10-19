@@ -5,8 +5,12 @@ import { createWorkspaceBucketPath } from "@/lib/supabase-server-adapter";
 import { enforceRateLimit } from "@/lib/shared-rate-limit";
 import { isOwnDocumentsPath } from "@/lib/direct-upload";
 import { SIGNATURE_HEAD_BYTES, checkFileSignature, readResponseHead } from "@/lib/file-signature";
+import { scanBytes, scanStoredObject, scanningMode, uploadScanDecision, type UploadScanDecision } from "@/lib/malware-scan";
 
 const MAX_UPLOAD_SIZE_BYTES = 200 * 1024 * 1024; // 200 MB
+
+// A signed upload of up to 200 MB may be scanned before it is registered.
+export const maxDuration = 300;
 
 export async function POST(request: NextRequest) {
   const limited = await enforceRateLimit("upload", { request }, "Upload rate limit exceeded. Try again in a moment.");
@@ -34,6 +38,18 @@ export async function POST(request: NextRequest) {
         const head = new Uint8Array(await file.slice(0, SIGNATURE_HEAD_BYTES).arrayBuffer());
         const signature = checkFileSignature(file.name, head);
         if (!signature.ok) throw new Error(signature.reason);
+      }
+      // Malware: scanned before anything is written, so an infected file is
+      // never stored (lib/malware-scan.ts; off unless MALWARE_SCANNING=required).
+      const scanMode = scanningMode();
+      if (scanMode === "required") {
+        for (const file of uploadedFiles) {
+          const decision = uploadScanDecision(scanMode, file.name, await scanBytes(new Uint8Array(await file.arrayBuffer())));
+          if (decision.action === "reject") {
+            await recordScanRejection(file.name, decision);
+            return NextResponse.json({ error: decision.message, code: decision.infected ? "MALWARE_DETECTED" : "SCAN_UNAVAILABLE" }, { status: decision.status });
+          }
+        }
       }
       const context = await getWorkspaceContext();
       const files = [];
@@ -123,6 +139,20 @@ export async function POST(request: NextRequest) {
         await context.supabase.storage.from("documents").remove([file.storagePath]);
         return NextResponse.json({ error: signature.reason }, { status: 400 });
       }
+      // Malware: the object is already in storage (a signed upload), so the
+      // scanner fetches it itself through a 60 s signed URL rather than this
+      // function streaming up to 200 MB. Anything but "clean" removes it.
+      const scanMode = scanningMode();
+      if (scanMode === "required") {
+        const { data: signed } = await context.supabase.storage.from("documents").createSignedUrl(file.storagePath, 60);
+        const result = signed?.signedUrl ? await scanStoredObject(signed.signedUrl) : null;
+        const decision = uploadScanDecision(scanMode, file.name || "File", result);
+        if (decision.action === "reject") {
+          await context.supabase.storage.from("documents").remove([file.storagePath]);
+          await recordScanRejection(file.name || "File", decision);
+          return NextResponse.json({ error: decision.message, code: decision.infected ? "MALWARE_DETECTED" : "SCAN_UNAVAILABLE" }, { status: decision.status });
+        }
+      }
       verified.push(actual);
     }
     files = verified;
@@ -172,4 +202,15 @@ async function readStoredHead(supabase: WorkspaceSupabase, storagePath: string):
   } catch {
     return null;
   }
+}
+
+// An infected file is recorded (name and signature only, never content) so the
+// workspace's audit log shows what was blocked; an unavailable scanner is not.
+async function recordScanRejection(fileName: string, decision: Extract<UploadScanDecision, { action: "reject" }>) {
+  if (!decision.infected) {
+    console.error("docucorex.malware_scan.unavailable", { status: decision.status });
+    return;
+  }
+  console.warn("docucorex.malware_scan.blocked", { fileName, signature: decision.signature ?? null });
+  await recordAuditLog({ action: "upload_blocked_malware", entityType: "upload", metadata: { fileName, signature: decision.signature ?? null } }).catch(() => undefined);
 }
