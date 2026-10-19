@@ -26,7 +26,19 @@ export async function ensureUserWorkspace(user: User): Promise<WorkspaceBootstra
     .maybeSingle();
 
   if (existingProfile?.workspace_id) {
-    await ensureTeamMember(existingProfile.workspace_id, user.id, user.email, "Owner");
+    // Only the workspace's real owner is (re)recorded as Owner on sign-in. This
+    // used to upsert "Owner" for whoever signed in, which would have promoted
+    // every invited member on their next login and undone migration 054's role
+    // checks (2026-10-19 audit). Anyone else's membership row is left exactly as
+    // the owner or an Admin set it.
+    const { data: workspace } = await admin
+      .from("workspaces")
+      .select("owner_id")
+      .eq("id", existingProfile.workspace_id)
+      .maybeSingle();
+    if (workspace?.owner_id === user.id) {
+      await ensureTeamMember(existingProfile.workspace_id, user.id, user.email, "Owner");
+    }
     return { profile: existingProfile, created: false };
   }
 
