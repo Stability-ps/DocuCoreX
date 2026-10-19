@@ -1,5 +1,7 @@
 import { NextResponse } from "next/server";
 import { ocrBinaryHealth, runOcrText } from "@/lib/pdf/ocrEngine";
+import { isSupabaseConfigured } from "@/lib/supabase";
+import { requestCarriesWorkerSecret } from "@/lib/worker-secret";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -16,14 +18,21 @@ export const dynamic = "force-dynamic";
 //     https://<conversion-worker-url>/api/ocr-text
 //   GET the same URL to check the OCR binaries.
 
+// Who may run OCR here:
+//   • On the worker: only a caller with the shared secret. With no secret
+//     configured, nobody — fail closed, as /api/jobs/process does.
+//   • Anywhere else with a secret configured (e.g. Vercel, which holds it to call
+//     the worker): only a caller with that secret. This route used to answer
+//     everyone outside worker mode, so the frontend's own copy was open to the
+//     internet, parsing whatever was uploaded to it.
+//   • Outside worker mode with no secret AND no Supabase backend: allowed. That
+//     is a local developer pointing CONVERSION_WORKER_URL at their own dev
+//     server; there is no customer data to protect and nothing to authenticate.
+//   • Outside worker mode with no secret but a real backend: refused.
 function authorized(request: Request): boolean {
-  if (process.env.CONVERSION_WORKER_MODE !== "true") return true;
-  const configured = process.env.CONVERSION_WORKER_SECRET?.trim();
-  // Fail closed, as /api/jobs/process does: a worker without its secret cannot
-  // tell the frontend from anyone else.
-  if (!configured) return false;
-  const provided = request.headers.get("x-docucorex-worker-secret")?.trim();
-  return provided === configured;
+  if (process.env.CONVERSION_WORKER_SECRET?.trim()) return requestCarriesWorkerSecret(request);
+  if (process.env.CONVERSION_WORKER_MODE === "true") return false;
+  return !isSupabaseConfigured;
 }
 
 // GET → OCR binary health check.

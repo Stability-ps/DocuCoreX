@@ -57,16 +57,27 @@ The repository includes `vercel.json` to pin build, install, output, and cron se
 
 ## Vercel Cron
 
-Recommended schedule:
+`vercel.json` schedules `GET /api/jobs/process` daily at 02:00 UTC. It is a
+backstop: documents are normally processed while the documents page polls, so
+one whose uploader closed the tab would otherwise wait until someone returned.
 
-```json
-{
-  "path": "/api/jobs/process",
-  "schedule": "*/5 * * * *"
-}
-```
+The sweep (`lib/jobs/cron-sweep.ts`) finds documents with queued or running
+generic jobs and hands each to the conversion worker, one at a time, within a
+240 s budget (at most 25 documents per run). The worker decides which jobs are
+claimable, exactly as for a browser-triggered request.
 
-This processes queued upload, OCR, extraction, and conversion jobs every five minutes. For high-volume production traffic, move processing to a dedicated queue/worker.
+Required on **Vercel** (Production):
+
+| Variable | Why |
+|---|---|
+| `CRON_SECRET` | Vercel sends it as `Authorization: Bearer …` on cron requests. Without it the endpoint answers 503 (fails closed); with a wrong value, 401. |
+| `CONVERSION_WORKER_URL`, `CONVERSION_WORKER_SECRET` | The sweep calls the worker exactly as the browser-triggered path does. |
+| `SUPABASE_SERVICE_ROLE_KEY` | To find documents with pending jobs across workspaces (ids only). |
+
+Before 2026-10-19 the cron called the processor with no session, which a real
+backend answers 401: it never processed anything. A daily schedule is what the
+current plan allows; a shorter interval (e.g. every 15 minutes) needs a plan
+that supports it.
 
 ## Deployment Commands
 
