@@ -22,7 +22,7 @@ export class PipelineOcrProvider implements OCRProvider {
     this.name = useOpenAI ? "openai" : "tesseract";
   }
 
-  async run(document: Pick<DocumentRecord, "id" | "name" | "storagePath" | "mimeType">): Promise<OcrResult> {
+  async run(document: Pick<DocumentRecord, "id" | "workspaceId" | "name" | "storagePath" | "mimeType">): Promise<OcrResult> {
     const extraction = await extractDocument(document, { useOpenAI: this.useOpenAI, enhanced: this.enhanced });
     return {
       id: `ocr_${document.id}`,

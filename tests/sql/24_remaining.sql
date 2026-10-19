@@ -118,13 +118,13 @@ begin
   select workspace_id into ws from public.companies where id = '22222222-0000-0000-0000-00000000000a';
 
   insert into public.documents (workspace_id, owner_id, name, storage_path, mime_type, size_bytes)
-  values (ws, '00000000-0000-0000-0000-0000000000a1', 'stmt.pdf', 'x/stmt.pdf', 'application/pdf', 1)
+  values (ws, '00000000-0000-0000-0000-0000000000a1', 'stmt.pdf', ws::text || '/documents/stmt.pdf', 'application/pdf', 1)
   returning id into doc_id;
 
   -- source_storage_path is NOT NULL; without it this block raised before any
   -- §12 check ran, and the harness (which then ignored errors) reported green.
   insert into public.accounting_statement_runs (workspace_id, document_id, bank, status, source_storage_path)
-  values (ws, doc_id, 'FNB', 'completed', 'x/stmt.pdf') returning id into run_id;
+  values (ws, doc_id, 'FNB', 'completed', ws::text || '/documents/stmt.pdf') returning id into run_id;
 
   insert into public.accounting_transactions (run_id, workspace_id, transaction_date, description, debit_amount)
   values (run_id, ws, '2025-12-01', 'Bank charge', 125.00) returning id into txn_id;
