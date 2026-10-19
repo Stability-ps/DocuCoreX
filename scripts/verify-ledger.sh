@@ -68,7 +68,7 @@ psql -q -d "$DB" -c "grant usage on schema public to service_role; grant all on 
 
 echo "==> running the ledger battery"
 results=$(mktemp)
-for f in 21_core 22_guards 23_integrity 24_remaining 26_gate 27_reporting 28_reconciliation 29_vat 30_period_close 31_fixed_assets 32_receivables_payables 33_coa_import 34_journal_import 35_rpc_tenancy 36_function_search_path 37_trial_balance_brought_forward 38_storage_delete 39_shared_rate_limits 41_profile_workspace_pinned 42_storage_paths_stay_in_workspace; do
+for f in 21_core 22_guards 23_integrity 24_remaining 26_gate 27_reporting 28_reconciliation 29_vat 30_period_close 31_fixed_assets 32_receivables_payables 33_coa_import 34_journal_import 35_rpc_tenancy 36_function_search_path 37_trial_balance_brought_forward 38_storage_delete 39_shared_rate_limits 40_workspace_privacy_settings 41_profile_workspace_pinned 42_storage_paths_stay_in_workspace; do
   # An uncaught ERROR means a test file stopped part-way — its remaining checks
   # never ran. Counted as a failure, or a broken file would read as green.
   psql -d "$DB" -f "$ROOT/tests/sql/$f.sql" 2>&1 \

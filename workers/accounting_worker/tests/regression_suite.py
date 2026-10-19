@@ -1325,6 +1325,66 @@ def test_worker_token_check_raises_on_unconfigured_secret() -> None:
             os.environ["ACCOUNTING_WORKER_TOKEN"] = previous
 
 
+def test_workspace_privacy_setting_blocks_every_openai_call() -> None:
+    """allow_external_ai=False must mean no OpenAI request at all for the run,
+    even with OPENAI_API_KEY set: classification, counterparty reasoning and
+    AI recovery each stop before building a request."""
+    import urllib.request
+
+    import main
+
+    assert main.external_ai_allowed(main.ProcessRequest(run_id="r", workspace_id="w", storage_path="w/x.pdf")) is True
+    assert main.external_ai_allowed(main.ProcessRequest(run_id="r", workspace_id="w", storage_path="w/x.pdf", allow_external_ai=True)) is True
+    assert main.external_ai_allowed(main.ProcessRequest(run_id="r", workspace_id="w", storage_path="w/x.pdf", allow_external_ai=False)) is False
+
+    calls: list[object] = []
+
+    def refuse(*args: object, **kwargs: object) -> object:
+        calls.append(args)
+        raise AssertionError("an OpenAI request was attempted for a workspace that blocked external AI")
+
+    previous_key = os.environ.get("OPENAI_API_KEY")
+    original = urllib.request.urlopen
+    os.environ["OPENAI_API_KEY"] = "sk-test-not-real"
+    urllib.request.urlopen = refuse  # type: ignore[assignment]
+    try:
+        transaction = main.ParsedTransaction(
+            transaction_date="2026-01-02",
+            description="UNKNOWN MERCHANT 123",
+            debit_amount=100.0,
+            running_balance=900.0,
+        )
+
+        stats = main.classify_transactions_with_ai([transaction], "w", "x.pdf", enabled=False)
+        assert stats.get("ai_skipped") == main.WORKSPACE_BLOCKED_REASON, stats
+
+        report = main.apply_ai_counterparty_reasoning([transaction], None, enabled=False)
+        assert report.get("reason") == main.WORKSPACE_BLOCKED_REASON, report
+
+        rows, diagnostics = main.attempt_ai_recovery(
+            full_text="02 Jan SOMETHING 100.00 900.00",
+            structured_rows=None,
+            metadata={},
+            bank_name="Unknown",
+            run_id="r",
+            enabled=False,
+        )
+        assert rows == [] and diagnostics.get("reason") == main.WORKSPACE_BLOCKED_REASON, diagnostics
+    finally:
+        urllib.request.urlopen = original  # type: ignore[assignment]
+        if previous_key is None:
+            os.environ.pop("OPENAI_API_KEY", None)
+        else:
+            os.environ["OPENAI_API_KEY"] = previous_key
+    assert calls == [], "no request may be made"
+
+
+def test_every_openai_entry_point_receives_the_workspace_choice() -> None:
+    source = (ROOT / "workers" / "accounting_worker" / "main.py").read_text()
+    assert "ai_counterparty = apply_ai_counterparty_reasoning(transactions, bank_profile, enabled=external_ai_allowed(payload))" in source
+    assert source.count("enabled=external_ai_allowed(payload)") == 3, "classification, counterparty and recovery must all be gated"
+
+
 def test_storage_path_must_belong_to_the_runs_workspace() -> None:
     """The worker downloads with the service role, which bypasses storage RLS, so
     a run's source path must be proved to be its own workspace's first."""
@@ -4604,6 +4664,8 @@ def run() -> None:
     test_worker_auth_fails_closed()
     test_worker_auth_matches_pdf_plumber_contract()
     test_worker_token_check_raises_on_unconfigured_secret()
+    test_workspace_privacy_setting_blocks_every_openai_call()
+    test_every_openai_entry_point_receives_the_workspace_choice()
     test_storage_path_must_belong_to_the_runs_workspace()
     test_statement_download_is_checked_first()
     test_mutating_endpoints_are_all_authenticated()
