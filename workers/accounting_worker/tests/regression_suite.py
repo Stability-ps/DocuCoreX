@@ -1291,6 +1291,29 @@ def test_worker_auth_matches_pdf_plumber_contract() -> None:
         )
 
 
+def test_worker_auth_matches_malware_scanner_contract() -> None:
+    """The malware scanner carries a copy of the same fail-closed bearer check."""
+    import importlib.util
+
+    peer = ROOT / "services" / "malware-scanner" / "auth.py"
+    assert peer.exists(), "services/malware-scanner/auth.py is missing"
+    spec = importlib.util.spec_from_file_location("malware_scanner_auth", peer)
+    assert spec and spec.loader
+    peer_auth = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(peer_auth)
+
+    import auth
+
+    for header, expected in [
+        (None, None), ("Bearer tok", None), ("Bearer tok", ""), (None, "tok"), ("", "tok"), ("Bearer", "tok"),
+        ("Bearer tok", "tok"), ("bearer tok", "tok"), ("Basic tok", "tok"), ("Bearer nope", "tok"), ("tok", "tok"),
+        ("Bearer tok\u200b", "tok"),
+    ]:
+        assert auth.check_bearer(header, expected) == peer_auth.check_bearer(header, expected), (
+            f"accounting and malware scanner disagree on {header!r}/{expected!r}"
+        )
+
+
 def test_worker_token_check_raises_on_unconfigured_secret() -> None:
     """End-to-end through main.verify_worker_token, which is what the endpoints
     call. Asserts the HTTP status the caller actually receives.
@@ -4663,6 +4686,7 @@ def run() -> None:
     test_bank_detection_survives_broken_letterhead_whitespace()
     test_worker_auth_fails_closed()
     test_worker_auth_matches_pdf_plumber_contract()
+    test_worker_auth_matches_malware_scanner_contract()
     test_worker_token_check_raises_on_unconfigured_secret()
     test_workspace_privacy_setting_blocks_every_openai_call()
     test_every_openai_entry_point_receives_the_workspace_choice()
