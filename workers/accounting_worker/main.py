@@ -588,6 +588,9 @@ def verify_worker_token(authorization: str | None) -> None:
     raise HTTPException(status_code=status, detail=detail)
 
 
+SAFE_STORAGE_SEGMENT = re.compile(r"[A-Za-z0-9._-]+")
+
+
 def storage_path_belongs_to_workspace(path: str | None, workspace_id: str | None) -> bool:
     """Whether `path` is an object inside `workspace_id`'s storage folder.
 
@@ -599,12 +602,12 @@ def storage_path_belongs_to_workspace(path: str | None, workspace_id: str | None
     """
     if not isinstance(path, str) or not workspace_id:
         return False
-    if "\\" in path or "\x00" in path:
-        return False
     segments = path.split("/")
     if len(segments) < 2 or segments[0] != workspace_id:
         return False
-    return all(segment not in {"", ".", ".."} for segment in segments)
+    # An allow-list per segment, not a deny-list: "%2e%2e" or other encoded
+    # characters would be decoded after this check (found 2026-10-19).
+    return all(SAFE_STORAGE_SEGMENT.fullmatch(segment) and segment not in {".", ".."} for segment in segments)
 
 
 def parse_money(value: str | None) -> float | None:

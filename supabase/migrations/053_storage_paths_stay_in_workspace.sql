@@ -14,11 +14,14 @@
 -- database refuse to store such a path in the first place.
 --
 -- Rule (same as the application's): the first segment is the row's workspace
--- id, and no segment is empty, "." or "..", and there is no backslash.
+-- id, and every segment is made only of letters, digits, ".", "_" and "-" and
+-- is not "." or "..". An allow-list, not a deny-list: the storage client puts
+-- the path into a URL unencoded, so "%2e%2e" passed a deny-list and was then
+-- decoded into ".." (found by the 2026-10-19 audit, before this was applied).
 -- Checked on INSERT and whenever a path column changes, for every role:
 -- every path the server itself writes already satisfies it. Verified in
--- production on 2026-10-19 before writing this: all 735 existing paths conform,
--- so no existing row is affected.
+-- production on 2026-10-19: all existing paths conform to the allow-list (694
+-- rows across the six columns), so no existing row is affected.
 --
 -- Covered by tests/sql/42_storage_paths_stay_in_workspace.sql.
 
@@ -30,12 +33,11 @@ set search_path = public
 as $$
   select p_path is not null
      and p_workspace_id is not null
-     and position(chr(92) in p_path) = 0
      and split_part(p_path, '/', 1) = p_workspace_id::text
      and array_length(string_to_array(p_path, '/'), 1) >= 2
      and not exists (
        select 1 from unnest(string_to_array(p_path, '/')) as segment
-       where segment in ('', '.', '..')
+       where segment !~ '^[A-Za-z0-9._-]+$' or segment in ('.', '..')
      );
 $$;
 

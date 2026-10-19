@@ -22,6 +22,11 @@ select t_report('§53 the rule refuses another workspace, traversal, empty segme
   and not public.storage_path_in_workspace('11111111-0000-0000-0000-000000000001', '11111111-0000-0000-0000-000000000001')
   and not public.storage_path_in_workspace('/11111111-0000-0000-0000-000000000001/a.pdf', '11111111-0000-0000-0000-000000000001')
   and not public.storage_path_in_workspace('11111111-0000-0000-0000-000000000001' || chr(92) || 'a.pdf', '11111111-0000-0000-0000-000000000001'));
+select t_report('§53 the rule refuses encoded traversal and other characters outside the allow-list',
+  not public.storage_path_in_workspace('11111111-0000-0000-0000-000000000001/%2e%2e/11111111-0000-0000-0000-0000000000e2/documents/theirs.pdf', '11111111-0000-0000-0000-000000000001')
+  and not public.storage_path_in_workspace('11111111-0000-0000-0000-000000000001/documents/a.pdf?x=1', '11111111-0000-0000-0000-000000000001')
+  and not public.storage_path_in_workspace('11111111-0000-0000-0000-000000000001/documents/a file.pdf', '11111111-0000-0000-0000-000000000001')
+  and public.storage_path_in_workspace('11111111-0000-0000-0000-000000000001/documents/0b6f-Bank_Statement.March-2026.pdf', '11111111-0000-0000-0000-000000000001'));
 
 -- The attack, as the user, on each table the server later reads with the service role.
 do $$
@@ -34,6 +39,12 @@ begin
     update public.documents set storage_path = '11111111-0000-0000-0000-0000000000e2/documents/theirs.pdf' where id = 'dddddddd-0000-0000-0000-0000000000e1';
     attempt := 'documents.update allowed';
   exception when insufficient_privilege then ok := ok + 1; end;
+
+  -- The audit's exact bypass: encoded ".." inside the attacker's own folder.
+  begin
+    update public.documents set storage_path = '11111111-0000-0000-0000-000000000001/%2e%2e/11111111-0000-0000-0000-0000000000e2/documents/theirs.pdf' where id = 'dddddddd-0000-0000-0000-0000000000e1';
+    refused := refused || ' encoded-traversal:ACCEPTED';
+  exception when insufficient_privilege then null; end;
 
   begin
     insert into public.documents (workspace_id, owner_id, name, mime_type, storage_path)
@@ -61,7 +72,7 @@ begin
   exception when insufficient_privilege then ok := ok + 1; when others then refused := refused || ' uploads:' || sqlstate; end;
 
   reset role;
-  perform t_report('§53 every path column refuses another workspace''s object', ok = 6,
+  perform t_report('§53 every path column refuses another workspace''s object', ok = 6 and refused = '',
     format('%s of 6 refused%s', ok, coalesce(nullif(refused, ''), '')));
 end $$;
 

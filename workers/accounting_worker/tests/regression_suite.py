@@ -1346,6 +1346,10 @@ def test_storage_path_must_belong_to_the_runs_workspace() -> None:
         f"{ws}\\documents\\x.pdf",  # backslash
         f"{ws}/documents/x\x00.pdf",  # NUL
         f"{ws}x/documents/x.pdf",  # prefix of a different id
+        f"{ws}/%2e%2e/{other}/documents/x.pdf",  # encoded traversal (2026-10-19 audit)
+        f"{ws}/documents%2f..%2f{other}/x.pdf",
+        f"{ws}/documents/x.pdf?y=../{other}",
+        f"{ws}/documents/a file.pdf",
         "",
         None,
     ):
