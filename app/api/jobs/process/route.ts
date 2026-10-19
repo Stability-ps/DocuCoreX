@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { enforceRateLimit } from "@/lib/shared-rate-limit";
 import { assertWorkspaceStoragePath } from "@/lib/storage-paths";
 import { recordAuditLog } from "@/lib/audit";
 import {
@@ -45,6 +46,10 @@ export async function POST(request: Request) {
     if (!(await requestTargetsWorkspace(caller, processRequest))) {
       return NextResponse.json({ error: "Document not found.", code: "NOT_FOUND" }, { status: 404 });
     }
+    // Callers only, never the worker: the worker receives jobs this branch has
+    // already counted, and limiting it would fail work the user was allowed.
+    const limited = await enforceRateLimit("processJobs", { workspaceId: caller.workspaceId, request });
+    if (limited) return limited;
   }
 
   const proxied = await proxyToConversionWorker(request, processRequest);
