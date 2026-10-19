@@ -19,8 +19,7 @@ import { buildWorkerInput, extractionProcessingMetadata } from "@/lib/pdf/worker
 import { buildWorkerEndpoint, createWorkerRequestId, getWorkerConfig, logWorkerStartupCheck } from "@/lib/system-worker-config";
 import type { WorkspaceContext } from "@/lib/server-documents";
 import type { AccountingRunDetail } from "@/lib/accounting/types";
-// TEMPORARY (2026-08-06) — remove with the worker-side auth_compare logging.
-import { buildOutboundDiagnostics, diagnosticsEnabled, WorkerTokenMissingError } from "@/lib/accounting/workerAuthDiagnostics";
+import { WorkerTokenMissingError } from "@/lib/accounting/workerToken";
 
 // Auto-run the multi-parser extraction pipeline before the worker: analyse the
 // PDF, choose the best source, persist the summary, and hand the worker the best
@@ -675,21 +674,12 @@ async function processStatementInBackground(
       declaredBank: detail.run.bank,
     });
 
-    // TEMPORARY (2026-08-06) — outbound half of the shared-secret comparison.
-    // Digest/length/presence only; never the token or the header. Remove with
-    // the worker-side counterpart. Disable without a deploy:
-    // WORKER_AUTH_DIAGNOSTICS=false.
-    const rawWorkerToken = process.env.ACCOUNTING_WORKER_TOKEN;
-    if (diagnosticsEnabled()) {
-      console.info(JSON.stringify(buildOutboundDiagnostics({ rawToken: rawWorkerToken, workerEndpoint })));
-    }
-
     // Fail loudly rather than sending an unauthenticated request. Previously the
     // header was spread in conditionally, so an unset token produced a request
     // with NO Authorization at all — which the worker answers 401 "Missing
     // Authorization header.", and which normalizeWorkerFailure then reports as
     // "rejected our credentials", i.e. indistinguishable from a wrong value.
-    const workerToken = (rawWorkerToken ?? "").trim();
+    const workerToken = (process.env.ACCOUNTING_WORKER_TOKEN ?? "").trim();
     if (!workerToken) {
       const message = new WorkerTokenMissingError().message;
       console.error("[accounting/process] refusing to call the worker unauthenticated", { requestId, runId });

@@ -85,50 +85,6 @@ def check_bearer(authorization: str | None, expected: str | None) -> str:
     return OK if constant_time_equal(token, expected.strip()) else INVALID
 
 
-def auth_compare_diagnostics(authorization: str | None, expected: str | None) -> dict:
-    """TEMPORARY (2026-08-06) — inbound half of a two-sided secret comparison.
-
-    Both dashboards show a token with SHA-256 prefix 75e596d1b6be, yet this
-    service answers 401 to that value. A dashboard shows what was STORED; this
-    shows what the process actually HOLDS, which differs when a value carries an
-    invisible character or when the process has not restarted since the variable
-    changed.
-
-    SECRET SAFETY: emits full SHA-256, length and presence ONLY. Never the token,
-    never a prefix or substring of it, never the header. A full unsalted digest
-    is an offline verification oracle, acceptable only because this secret is
-    ~256 bits of randomness.
-
-    Hashes the SAME bytes the comparison uses: expected.strip(), and the token as
-    parse_bearer extracts it.
-    """
-    import hashlib
-
-    def digest(value):
-        return hashlib.sha256(value.encode("utf-8")).hexdigest() if value else None
-
-    raw_expected = expected or ""
-    conf = raw_expected.strip()
-    received = parse_bearer(authorization)
-
-    return {
-        "configured_present": bool(conf),
-        "configured_length": len(conf),
-        "configured_sha256": digest(conf),
-        # Raw vs stripped length exposes a trailing newline in the dashboard.
-        "configured_raw_length": len(raw_expected),
-        "configured_had_surrounding_whitespace": len(raw_expected) != len(conf),
-        "configured_is_ascii": conf.isascii(),
-        "received_present": received is not None,
-        "received_length": len(received) if received else 0,
-        "received_sha256": digest(received),
-        "received_is_ascii": received.isascii() if received else None,
-        "bearer_prefix_valid": received is not None,
-        "compare_digest_result": bool(conf and received and constant_time_equal(received, conf)),
-        "digests_match": bool(conf and received and digest(conf) == digest(received)),
-    }
-
-
 # Verdict -> (HTTP status, client-safe message). The message never reveals
 # whether a secret is configured beyond the coarse 503/401 distinction.
 STATUS_FOR_VERDICT: dict[str, tuple[int, str]] = {
