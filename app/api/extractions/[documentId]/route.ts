@@ -1,4 +1,5 @@
 import { NextResponse, after } from "next/server";
+import { EXTERNAL_PROCESSING_DEMO } from "@/lib/privacy/external-processing";
 import { enforceRateLimit } from "@/lib/shared-rate-limit";
 import { withUnauthorized } from "@/lib/api-auth";
 import { recordAuditLog } from "@/lib/audit";
@@ -45,7 +46,7 @@ async function handlePOST(request: Request, { params }: { params: Promise<{ docu
 
   // Demo mode (no Supabase backend): keep the fast in-memory synchronous path.
   if (!context) {
-    const adapters = createWorkflowAdapters();
+    const adapters = createWorkflowAdapters({ externalProcessing: EXTERNAL_PROCESSING_DEMO });
     const extraction = await adapters.extraction.run(workspaceDocument.document);
     extractionResults.unshift(extraction);
     await recordAuditLog({ action: "extraction_completed", entityType: "document", entityId: documentId, metadata: { provider: adapters.extraction.name, confidence: extraction.confidence } });

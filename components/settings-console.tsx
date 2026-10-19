@@ -1105,20 +1105,76 @@ function StorageSection({
 
 // ─── OCR & Processing ─────────────────────────────────────────────────────────
 
+type ExternalAiState = { externalAiProcessing: "allowed" | "blocked"; canChange: boolean } | null;
+
 function OcrAiSection() {
+  const [externalAi, setExternalAi] = useState<ExternalAiState>(null);
+  const [externalAiStatus, setExternalAiStatus] = useState<"idle" | "saving" | "error">("idle");
+
+  useEffect(() => {
+    let cancelled = false;
+    fetch("/api/workspace-privacy", { cache: "no-store" })
+      .then((response) => (response.ok ? response.json() : null))
+      .then((data: ExternalAiState) => {
+        if (!cancelled && data) setExternalAi({ externalAiProcessing: data.externalAiProcessing, canChange: data.canChange });
+      })
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  async function toggleExternalAi() {
+    if (!externalAi?.canChange) return;
+    const next = externalAi.externalAiProcessing === "allowed" ? "blocked" : "allowed";
+    setExternalAiStatus("saving");
+    const response = await fetch("/api/workspace-privacy", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ externalAiProcessing: next }),
+    }).catch(() => null);
+    if (response?.ok) {
+      setExternalAi({ ...externalAi, externalAiProcessing: next });
+      setExternalAiStatus("idle");
+    } else {
+      setExternalAiStatus("error");
+    }
+  }
+
+  const externalAllowed = externalAi?.externalAiProcessing !== "blocked";
+
   return (
     <div className="space-y-8">
       <SectionHeader title="OCR & Processing" description="Configure OCR, document processing and extraction readiness." />
       <div className="rounded-xl border border-slate-100">
+        <SettingRow
+          label="External AI processing"
+          description={
+            externalAllowed
+              ? "Hard-to-read documents may be sent to Azure AI Document Intelligence, Mistral OCR and OpenAI for OCR, extraction and classification. Turn this off to process documents only on DocuCoreX's own services."
+              : "Off: documents are processed only on DocuCoreX's own services (text extraction and Tesseract OCR). Scans and unusual layouts may extract less accurately."
+          }
+        >
+          <div className="flex items-center gap-3">
+            {externalAiStatus === "error" ? <span className="text-xs text-rose-600">Not saved</span> : null}
+            {externalAi && !externalAi.canChange ? <span className="text-xs text-slate-500">Owner only</span> : null}
+            <Toggle
+              label="External AI processing"
+              on={externalAllowed}
+              onChange={toggleExternalAi}
+              disabled={!externalAi?.canChange || externalAiStatus === "saving"}
+            />
+          </div>
+        </SettingRow>
         <SettingRow label="OCR engine" description="OCR runs on the conversion worker (ocrmypdf / Tesseract). Provider keys are managed server-side.">
           <div className="flex items-center gap-2">
             <span className="text-sm text-slate-600">Conversion worker</span>
             <StatusBadge label="Server-managed" variant="info" />
           </div>
         </SettingRow>
-        <SettingRow label="Document intelligence provider" description="AI summaries and extraction use the server's configured provider (requires OPENAI_API_KEY on the worker).">
+        <SettingRow label="Document intelligence provider" description="When external AI processing is on, extraction and summaries use the server's configured provider.">
           <div className="flex items-center gap-2">
-            <span className="text-sm text-slate-600">OpenAI</span>
+            <span className="text-sm text-slate-600">{externalAllowed ? "OpenAI" : "DocuCoreX only"}</span>
             <StatusBadge label="Server-managed" variant="info" />
           </div>
         </SettingRow>
