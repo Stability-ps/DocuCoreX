@@ -94,12 +94,12 @@ function openAiConfigured(): boolean {
  * documentId+fileHash so the OCR and extraction providers don't double-call.
  */
 export async function extractDocument(
-  document: Pick<DocumentRecord, "id" | "name" | "storagePath" | "mimeType"> & { detectedType?: DocumentType },
+  document: Pick<DocumentRecord, "id" | "workspaceId" | "name" | "storagePath" | "mimeType"> & { detectedType?: DocumentType },
   // allowExternalProviders is the workspace's choice (lib/privacy/external-processing.ts).
   // When false, nothing leaves DocuCoreX: no OpenAI, and no Azure or Mistral in the pipeline.
   options: { useOpenAI: boolean; enhanced?: boolean; allowExternalProviders: boolean },
 ): Promise<DocumentExtraction> {
-  const bytes = await loadDocumentBytes(document.storagePath);
+  const bytes = await loadDocumentBytes(document.storagePath, document.workspaceId);
   if (!bytes || !bytes.length) {
     throw new Error("Original document bytes are unavailable for extraction.");
   }

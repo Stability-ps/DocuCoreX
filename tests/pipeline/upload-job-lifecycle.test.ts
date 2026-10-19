@@ -134,5 +134,5 @@ test("the generic processor leaves accounting statement jobs to their pipeline",
 
 test("the worker's OCR endpoint fails closed without its secret", () => {
   const route = read("app/api/ocr-text/route.ts");
-  assert.ok(route.includes("if (!configured) return false;"));
+  assert.ok(route.includes('if (process.env.CONVERSION_WORKER_MODE === "true") return false;'));
 });

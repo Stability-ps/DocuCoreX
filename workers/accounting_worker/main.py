@@ -600,6 +600,25 @@ def external_ai_allowed(payload: "ProcessRequest") -> bool:
 WORKSPACE_BLOCKED_REASON = "disabled_by_workspace_privacy_setting"
 
 
+def storage_path_belongs_to_workspace(path: str | None, workspace_id: str | None) -> bool:
+    """Whether `path` is an object inside `workspace_id`'s storage folder.
+
+    This service downloads with the service-role key, which bypasses storage RLS,
+    so it reads whatever path it is handed. The path comes from
+    accounting_statement_runs.source_storage_path, a row the user can edit; a user
+    who pointed it at another workspace's statement would have had that statement
+    parsed into their own run. Mirrors lib/storage-paths.ts and migration 053.
+    """
+    if not isinstance(path, str) or not workspace_id:
+        return False
+    if "\\" in path or "\x00" in path:
+        return False
+    segments = path.split("/")
+    if len(segments) < 2 or segments[0] != workspace_id:
+        return False
+    return all(segment not in {"", ".", ".."} for segment in segments)
+
+
 def parse_money(value: str | None) -> float | None:
     return decimal_to_float(parse_money_cell(value))
 
@@ -6063,6 +6082,8 @@ def process_fnb_statement(payload: ProcessRequest, authorization: str | None = H
             step_label="Detecting document",
             progress=20,
         )
+        if not storage_path_belongs_to_workspace(payload.storage_path, payload.workspace_id):
+            raise HTTPException(status_code=400, detail="The statement's stored file does not belong to this workspace.")
         pdf_bytes = supabase.storage.from_(bucket).download(payload.storage_path)
         log_event("worker.storage_downloaded", run_id=payload.run_id, bytes=len(pdf_bytes or b""))
         heartbeat_step(

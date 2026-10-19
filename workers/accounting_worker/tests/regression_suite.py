@@ -1385,6 +1385,43 @@ def test_every_openai_entry_point_receives_the_workspace_choice() -> None:
     assert source.count("enabled=external_ai_allowed(payload)") == 3, "classification, counterparty and recovery must all be gated"
 
 
+def test_storage_path_must_belong_to_the_runs_workspace() -> None:
+    """The worker downloads with the service role, which bypasses storage RLS, so
+    a run's source path must be proved to be its own workspace's first."""
+    import main
+
+    ws = "11111111-0000-0000-0000-000000000001"
+    other = "11111111-0000-0000-0000-0000000000f2"
+    ok = main.storage_path_belongs_to_workspace
+    assert ok(f"{ws}/documents/statement.pdf", ws)
+    assert ok(f"{ws}/accounting/run/statement.pdf", ws)
+    for bad in (
+        f"{other}/documents/statement.pdf",  # another tenant
+        f"{ws}",  # the folder itself
+        f"{ws}/",  # empty object name
+        f"{ws}/../{other}/documents/x.pdf",  # traversal
+        f"{ws}/./x.pdf",
+        f"{ws}//x.pdf",
+        f"/{ws}/documents/x.pdf",  # leading slash
+        f"{ws}\\documents\\x.pdf",  # backslash
+        f"{ws}/documents/x\x00.pdf",  # NUL
+        f"{ws}x/documents/x.pdf",  # prefix of a different id
+        "",
+        None,
+    ):
+        assert not ok(bad, ws), f"{bad!r} must be refused"
+    assert not ok(f"{ws}/documents/x.pdf", ""), "no workspace, no access"
+    assert not ok(f"{ws}/documents/x.pdf", None)
+
+
+def test_statement_download_is_checked_first() -> None:
+    source = (ROOT / "workers" / "accounting_worker" / "main.py").read_text()
+    check = source.index("if not storage_path_belongs_to_workspace(payload.storage_path, payload.workspace_id):")
+    download = source.index("pdf_bytes = supabase.storage.from_(bucket).download(payload.storage_path)")
+    assert 0 < check < download, "the ownership check must precede the privileged download"
+    assert source.count(".download(payload.storage_path)") == 1, "a second, unchecked download path appeared"
+
+
 def test_mutating_endpoints_are_all_authenticated() -> None:
     """Every @app.post handler must call verify_worker_token in its own body.
 
@@ -4629,6 +4666,10 @@ def run() -> None:
     test_worker_token_check_raises_on_unconfigured_secret()
     test_workspace_privacy_setting_blocks_every_openai_call()
     test_every_openai_entry_point_receives_the_workspace_choice()
+
+
+    test_storage_path_must_belong_to_the_runs_workspace()
+    test_statement_download_is_checked_first()
     test_mutating_endpoints_are_all_authenticated()
     test_non_ascii_credential_is_invalid_not_a_500()
     test_auth_diagnostics_never_leak_the_secret()
