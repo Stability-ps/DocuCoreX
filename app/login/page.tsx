@@ -252,7 +252,7 @@ function LoginContent() {
               <p className="mt-2 text-sm leading-6 text-slate-500">
                 {mode === "forgot"
                   ? "Enter your email and DocuCoreX will send a secure recovery link."
-                  : "Use email and password, Google, or Microsoft. Email verification and two-factor controls are built into the account flow."}
+                  : "Use email and password, Google, or Microsoft. Email verification is built into the account flow."}
               </p>
             </div>
 
@@ -408,7 +408,7 @@ function LoginContent() {
               <div className="flex items-start gap-3">
                 <LockKeyhole className="mt-0.5 h-5 w-5 text-royal-600" />
                 <p className="text-sm leading-6 text-slate-600">
-                  Two-factor authentication is future-ready in the security model and surfaced in profile settings for rollout.
+                  Two-factor authentication is coming soon. Until then, use a strong, unique password.
                 </p>
               </div>
             </div>

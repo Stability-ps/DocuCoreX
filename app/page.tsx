@@ -160,7 +160,7 @@ const features = [
   {
     title: "Enterprise Security",
     icon: ShieldCheck,
-    body: "Role permissions, two-factor authentication, virus scanning, secure downloads and audit controls.",
+    body: "Workspace isolation, role permissions, time-limited secure downloads and audit logs.",
   },
 ];
 
@@ -250,7 +250,7 @@ export default function Home() {
               </a>
             </div>
             <div className="mt-9 grid max-w-xl grid-cols-3 gap-4">
-              {["99.9% OCR uptime", "Bank-grade security", "Automatic bank detection"].map((item) => (
+              {["Scanned-PDF OCR", "Workspace-isolated data", "Automatic bank detection"].map((item) => (
                 <div key={item} className="rounded-2xl border border-white bg-white/72 p-3 text-sm font-bold text-navy-800 shadow-sm">
                   <Check className="mb-2 h-4 w-4 text-emerald-500" />
                   {item}
