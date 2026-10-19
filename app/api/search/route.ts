@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { enforceRateLimit } from "@/lib/shared-rate-limit";
 import { resolveWorkspaceContext } from "@/lib/api-auth";
 import { documentRecords, extractionResults, ocrResults } from "@/lib/mock-repository";
 
@@ -19,6 +20,8 @@ export async function GET(request: Request) {
 
   const context = await resolveWorkspaceContext();
   if (context instanceof Response) return context;
+  const limited = await enforceRateLimit("search", { workspaceId: context?.workspaceId, request });
+  if (limited) return limited;
 
   if (!context) {
     const results = documentRecords

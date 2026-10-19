@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { enforceRateLimit } from "@/lib/shared-rate-limit";
 import { NextResponse } from "next/server";
 import { isDemoAllowed } from "@/lib/supabase";
 import { createSupabaseServerClient } from "@/lib/supabase-server";
@@ -97,6 +98,9 @@ export async function POST(request: Request) {
 
     return NextResponse.json({ error: "Your workspace is not ready yet. Please refresh or contact support if this continues." }, { status: 500 });
   }
+
+  const limited = await enforceRateLimit("signedUpload", { workspaceId: profile.workspace_id, request }, "Upload rate limit exceeded. Try again in a moment.");
+  if (limited) return limited;
 
   const path = `${profile.workspace_id}/documents/${randomUUID()}-${safeFileName}`;
   const { data, error } = await supabase.storage.from("documents").createSignedUploadUrl(path);

@@ -1,4 +1,5 @@
 import { createHash, randomBytes } from "node:crypto";
+import { enforceRateLimit } from "@/lib/shared-rate-limit";
 import { NextResponse } from "next/server";
 import { recordAuditLog } from "@/lib/audit";
 import { apiKeys } from "@/lib/mock-repository";
@@ -110,6 +111,9 @@ export async function POST(request: Request) {
 
     return NextResponse.json({ error: profileError?.message ?? "Profile workspace not found" }, { status: 500 });
   }
+
+  const limited = await enforceRateLimit("apiKeyCreate", { workspaceId: profile.workspace_id, request }, "Too many API keys created. Try again later.");
+  if (limited) return limited;
 
   const { data, error } = await supabase
     .from("api_keys")

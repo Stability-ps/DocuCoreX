@@ -2,21 +2,15 @@ import { NextRequest, NextResponse } from "next/server";
 import { recordAuditLog } from "@/lib/audit";
 import { getWorkspaceContext, registerUploads, validateUploadFiles } from "@/lib/server-documents";
 import { createWorkspaceBucketPath } from "@/lib/supabase-server-adapter";
-import { checkRateLimit } from "@/lib/rate-limit";
+import { enforceRateLimit } from "@/lib/shared-rate-limit";
 import { isOwnDocumentsPath } from "@/lib/direct-upload";
 import { SIGNATURE_HEAD_BYTES, checkFileSignature, readResponseHead } from "@/lib/file-signature";
 
 const MAX_UPLOAD_SIZE_BYTES = 200 * 1024 * 1024; // 200 MB
 
 export async function POST(request: NextRequest) {
-  const ip = request.headers.get("x-forwarded-for")?.split(",")[0]?.trim() ?? "unknown";
-  const rate = checkRateLimit(`upload:${ip}`, { limit: 30, windowMs: 60 * 1000 });
-  if (!rate.ok) {
-    return NextResponse.json(
-      { error: "Upload rate limit exceeded. Try again in a moment." },
-      { status: 429, headers: { "Retry-After": String(Math.ceil(rate.retryAfterMs / 1000)) } },
-    );
-  }
+  const limited = await enforceRateLimit("upload", { request }, "Upload rate limit exceeded. Try again in a moment.");
+  if (limited) return limited;
 
   const contentType = request.headers.get("content-type") ?? "";
 
