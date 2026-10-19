@@ -1,4 +1,5 @@
 import { NextResponse, after } from "next/server";
+import { enforceRateLimit } from "@/lib/shared-rate-limit";
 import { withUnauthorized } from "@/lib/api-auth";
 import { recordAuditLog } from "@/lib/audit";
 import { ocrResults } from "@/lib/mock-repository";
@@ -47,6 +48,9 @@ async function handlePOST(request: Request, { params }: { params: Promise<{ docu
   }
 
   const context = await getWorkspaceContext();
+  // OCR can escalate to paid engines on every call.
+  const limited = await enforceRateLimit("ocr", { workspaceId: context?.workspaceId, request });
+  if (limited) return limited;
 
   // Demo mode (no Supabase backend): keep the fast in-memory synchronous path.
   if (!context) {

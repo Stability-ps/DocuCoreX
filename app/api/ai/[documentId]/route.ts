@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { enforceRateLimit } from "@/lib/shared-rate-limit";
 import { resolveWorkspaceContext } from "@/lib/api-auth";
 import { answerAiPrompt, getAiInsights } from "@/lib/mock-repository";
 
@@ -43,6 +44,8 @@ export async function POST(request: Request, { params }: { params: Promise<{ doc
 
   const context = await resolveWorkspaceContext();
   if (context instanceof Response) return context;
+  const limited = await enforceRateLimit("ai", { workspaceId: context?.workspaceId, request });
+  if (limited) return limited;
 
   if (!context) {
     return NextResponse.json({ insight: answerAiPrompt(documentId, body.prompt.trim()), mode: "demo" });

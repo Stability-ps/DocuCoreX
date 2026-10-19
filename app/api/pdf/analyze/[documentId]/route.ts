@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { enforceRateLimit } from "@/lib/shared-rate-limit";
 import { getWorkspaceContext } from "@/lib/server-documents";
 import { runExtractionPipeline } from "@/lib/pdf/runExtractionPipeline";
 
@@ -16,6 +17,9 @@ export async function GET(request: Request, { params }: { params: Promise<{ docu
     if (!context) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
+    // Runs the full pipeline, which can escalate to Azure and Mistral.
+    const limited = await enforceRateLimit("pdfAnalyze", { workspaceId: context.workspaceId, request });
+    if (limited) return limited;
 
     const { data: row, error } = await context.supabase
       .from("documents")
