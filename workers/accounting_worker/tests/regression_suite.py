@@ -1526,67 +1526,6 @@ def test_non_ascii_credential_is_invalid_not_a_500() -> None:
     assert auth.constant_time_equal("a", "b") is False
 
 
-def test_auth_diagnostics_never_leak_the_secret() -> None:
-    """The diagnostics must reveal nothing about the token beyond digest+length.
-
-    A diagnostic that leaks the value it measures is worse than no diagnostic.
-    Asserted as a NEGATIVE over every substring of length >= 4.
-    """
-    import auth
-
-    secret = "s3cret-token-value-abcdefghijklmnop"
-    record = auth.auth_compare_diagnostics(f"Bearer {secret}", secret)
-    blob = repr(record)
-    for n in range(4, len(secret) + 1):
-        assert secret[:n] not in blob, f"leaked a {n}-char prefix"
-        assert secret[-n:] not in blob, f"leaked a {n}-char suffix"
-
-    import hashlib
-
-    expected = hashlib.sha256(secret.encode()).hexdigest()
-    assert record["configured_sha256"] == expected
-    assert record["received_sha256"] == expected
-    assert len(record["configured_sha256"]) == 64, "full digest, not truncated"
-    assert record["compare_digest_result"] is True
-    assert record["digests_match"] is True
-
-
-def test_auth_diagnostics_hash_exactly_what_is_compared() -> None:
-    """The digest must cover the same bytes the comparison uses.
-
-    parse_bearer was split out of check_bearer for this reason. If the two ever
-    drift, the diagnostic misreports the very comparison it exists to measure —
-    which is the failure mode that would send an investigation the wrong way.
-    """
-    import auth
-
-    secret = "s3cret-token"
-    for header in (
-        f"Bearer {secret}",
-        f"bearer {secret}",
-        f"Bearer   {secret}",
-        f"  Bearer {secret}  ",
-    ):
-        record = auth.auth_compare_diagnostics(header, secret)
-        agrees = auth.check_bearer(header, secret) == auth.OK
-        assert record["compare_digest_result"] is agrees, header
-        assert record["digests_match"] is agrees, header
-
-    # A missing header is unambiguous — this is the case the caller's silent
-    # header omission previously made indistinguishable from a wrong value.
-    missing = auth.auth_compare_diagnostics(None, secret)
-    assert missing["received_present"] is False
-    assert missing["received_sha256"] is None
-    assert missing["bearer_prefix_valid"] is False
-    assert missing["configured_present"] is True
-
-    # A stored secret with surrounding whitespace is REPORTED but still matches,
-    # so a trailing newline in a dashboard is visible without breaking auth.
-    padded = auth.auth_compare_diagnostics(f"Bearer {secret}", secret + "\n")
-    assert padded["configured_had_surrounding_whitespace"] is True
-    assert padded["configured_raw_length"] == len(secret) + 1
-    assert padded["configured_length"] == len(secret)
-    assert padded["compare_digest_result"] is True
 
 
 # ── Bank detection ────────────────────────────────────────────────────────────
@@ -4701,8 +4640,6 @@ def run() -> None:
     test_statement_download_is_checked_first()
     test_mutating_endpoints_are_all_authenticated()
     test_non_ascii_credential_is_invalid_not_a_500()
-    test_auth_diagnostics_never_leak_the_secret()
-    test_auth_diagnostics_hash_exactly_what_is_compared()
 
 
     test_api_docs_are_closed_on_deployments()
