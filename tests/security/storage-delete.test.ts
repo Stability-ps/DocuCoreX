@@ -26,3 +26,16 @@ test("deleting a statement run removes its generated workbook", () => {
   assert.ok(fn.includes("run.workbook_storage_path"));
   assert.ok(fn.includes(".remove(workbookPaths)"));
 });
+
+test("deleting ONE document takes the same path as a bulk delete", () => {
+  // DELETE /api/documents/[id] used to remove only the row, leaving the file and
+  // conversion outputs in storage, and returned success for a row it never found.
+  const source = read("lib/server-documents.ts");
+  const fn = source.slice(source.indexOf("export async function deleteDocument("), source.indexOf("export async function bulkDeleteDocuments"));
+  assert.ok(fn.includes("bulkDeleteDocuments([id])"), "single delete must reuse the bulk path that removes stored files");
+  assert.ok(fn.includes("deletedIds.includes(id)"), "success means the row was actually deleted");
+  assert.ok(!fn.includes('.from("documents")'), "no second, row-only delete path");
+
+  const route = read("app/api/documents/[id]/route.ts");
+  assert.match(route, /const deleted = await deleteDocument\(id\);\s+if \(!deleted\) \{\s+return NextResponse\.json\(\{ error: "Document not found" \}, \{ status: 404 \}\)/);
+});
