@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { errorResponse } from "@/lib/api-auth";
 import { getAccountingRunDetail } from "@/lib/accounting/server";
 import { getWorkspaceContext } from "@/lib/server-documents";
 import {
@@ -85,9 +86,6 @@ export async function GET(request: Request, { params }: { params: Promise<{ runI
       },
     });
   } catch (error) {
-    return NextResponse.json(
-      { error: error instanceof Error ? error.message : "Unable to export workbook." },
-      { status: 500 },
-    );
+    return errorResponse(error, "Unable to export workbook.");
   }
 }
