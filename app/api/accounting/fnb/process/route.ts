@@ -1,4 +1,5 @@
 import { NextResponse, after } from "next/server";
+import { enforceRateLimit } from "@/lib/shared-rate-limit";
 import { recordAuditLog } from "@/lib/audit";
 import { bankDetectionHints, detectBankFromText } from "@/lib/accounting/engine/bank-detection";
 import { isNoTransactionsFailure } from "@/lib/accounting/workerFailure";
@@ -886,6 +887,9 @@ export async function POST(request: Request) {
     if (!context) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
+    // A statement run can call Azure, Mistral and OpenAI.
+    const limited = await enforceRateLimit("accountingProcess", { workspaceId: context.workspaceId, request });
+    if (limited) return limited;
 
     const detail = await getAccountingRunDetail(runId);
     if (!detail) {
