@@ -132,6 +132,7 @@ const ROUTES: Array<[string, string]> = [
   ["app/api/pdf/analyze/[documentId]/route.ts", "pdfAnalyze"],
   ["app/api/accounting/fnb/process/route.ts", "accountingProcess"],
   ["app/api/ai/[documentId]/route.ts", "ai"],
+  ["app/api/accounting/ai/route.ts", "ai"],
   ["app/api/search/route.ts", "search"],
   ["app/api/api-keys/route.ts", "apiKeyCreate"],
 ];
