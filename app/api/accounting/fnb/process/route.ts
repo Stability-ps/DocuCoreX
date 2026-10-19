@@ -1,4 +1,5 @@
 import { NextResponse, after } from "next/server";
+import { getExternalProcessing, type ExternalProcessing } from "@/lib/privacy/external-processing";
 import { enforceRateLimit } from "@/lib/shared-rate-limit";
 import { recordAuditLog } from "@/lib/audit";
 import { bankDetectionHints, detectBankFromText } from "@/lib/accounting/engine/bank-detection";
@@ -54,7 +55,7 @@ type PipelineDebug = {
 async function runPipelineBeforeWorker(
   context: WorkspaceContext,
   detail: AccountingRunDetail,
-  options: { force: boolean; enhancedOcr?: boolean; onStage: (step: ProcessingStep) => void },
+  options: { force: boolean; enhancedOcr?: boolean; onStage: (step: ProcessingStep) => void; allowExternalProviders: boolean },
 ): Promise<{ hints: Record<string, unknown>; warning: string | null; debug: PipelineDebug | null }> {
   const runId = detail.run.id;
   try {
@@ -75,6 +76,7 @@ async function runPipelineBeforeWorker(
       // so completeness and reconciliation must gate acceptance.
       expect: "bank_statement",
       onStage: options.onStage,
+      allowExternalProviders: options.allowExternalProviders,
     });
     const meta = extractionProcessingMetadata(pipeline);
     const workerInput = buildWorkerInput(pipeline);
@@ -232,8 +234,16 @@ const SHADOW_AZURE_ENABLED = process.env.ACCOUNTING_SHADOW_AZURE === "true";
  * failure — Azure down, comparison bug, missing migration — is logged and
  * discarded. It returns nothing and mutates no run field.
  */
-async function runShadowComparison(context: WorkspaceContext, detail: AccountingRunDetail, pipelineDebug: PipelineDebug | null): Promise<void> {
+async function runShadowComparison(
+  context: WorkspaceContext,
+  detail: AccountingRunDetail,
+  pipelineDebug: PipelineDebug | null,
+  externalProcessing: ExternalProcessing,
+): Promise<void> {
   if (!SHADOW_AZURE_ENABLED) return;
+  // Shadow mode sends the statement to Azure purely to measure; a workspace that
+  // has blocked external processing is never measured.
+  if (!externalProcessing.allowed) return;
   const runId = detail.run.id;
   try {
     // Only meaningful when the pipeline actually ran and produced a winner. If
@@ -254,6 +264,7 @@ async function runShadowComparison(context: WorkspaceContext, detail: Accounting
       documentId: detail.run.documentId,
       fileHash: computeFileHash(buffer),
       expect: "bank_statement",
+      allowExternalProviders: externalProcessing.allowed,
     });
 
     // Sampling gate — only spend an Azure call where it could realistically help.
@@ -533,6 +544,11 @@ async function processStatementInBackground(
   const deadlineAt = Date.now() + ACCOUNTING_REQUEST_BUDGET_MS;
   const remainingBudgetMs = () => deadlineAt - Date.now();
 
+  // The workspace's choice about external AI, read once for the whole run: the
+  // Node pipeline (Azure, Mistral), the accounting worker (OpenAI) and shadow
+  // mode all honour it.
+  const externalProcessing = await getExternalProcessing(context.supabase, context.workspaceId);
+
   // Report the current processing step so the UI can show it with an elapsed
   // timer. Writes the human label to the run (processing_step) and mirrors it to
   // the processing job's message/progress. Best-effort: a missing column (Req:
@@ -643,6 +659,8 @@ async function processStatementInBackground(
       document_id: detail.run.documentId,
       processing_job_id: jobId,
       storage_path: detail.run.sourceStoragePath,
+      // The worker skips every OpenAI call when this is false.
+      allow_external_ai: externalProcessing.allowed,
       ...hints,
     };
     const requestId = createWorkerRequestId("acct_process");
@@ -761,7 +779,7 @@ async function processStatementInBackground(
     // much work follows — a genuine digital statement takes the native path and
     // never calls OCR. ACCOUNTING_PRE_EXTRACT=false is the emergency bypass.
     const { hints, debug } = ACCOUNTING_PRE_EXTRACT_ENABLED
-      ? await runPipelineBeforeWorker(context, detail, { force, onStage: updateStep })
+      ? await runPipelineBeforeWorker(context, detail, { force, onStage: updateStep, allowExternalProviders: externalProcessing.allowed })
       : { hints: {}, debug: null };
     pipelineDebug = debug;
     updateStep("parsing");
@@ -786,7 +804,7 @@ async function processStatementInBackground(
         previousStrategy: pipelineDebug?.strategy ?? null,
       });
       updateStep("extracting");
-      const retry = await runPipelineBeforeWorker(context, detail, { force: true, enhancedOcr: true, onStage: updateStep });
+      const retry = await runPipelineBeforeWorker(context, detail, { force: true, enhancedOcr: true, onStage: updateStep, allowExternalProviders: externalProcessing.allowed });
       pipelineDebug = retry.debug ?? pipelineDebug;
       if (Object.keys(retry.hints).length > 0) {
         updateStep("parsing");
@@ -857,7 +875,7 @@ async function processStatementInBackground(
     // so it can never influence the exported output, the acceptance verdict or
     // the transactions. Fully swallowed: a shadow failure must never fail a run
     // that has already succeeded.
-    await runShadowComparison(context, detail, pipelineDebug);
+    await runShadowComparison(context, detail, pipelineDebug, externalProcessing);
   } catch (error) {
     const message = error instanceof Error ? error.message : "Unable to process accounting statement.";
     console.error("[accounting/process] background failure", { runId, message });

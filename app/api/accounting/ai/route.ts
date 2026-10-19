@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { getExternalProcessing } from "@/lib/privacy/external-processing";
 import { enforceRateLimit } from "@/lib/shared-rate-limit";
 import { withUnauthorized } from "@/lib/api-auth";
 import { getWorkspaceContext } from "@/lib/server-documents";
@@ -74,7 +75,7 @@ async function handlePOST(request: Request) {
     unusualCount: unusuals.length,
     openingBalance: run.openingBalance,
     closingBalance: run.closingBalance,
-  });
+  }, (await getExternalProcessing(context.supabase, context.workspaceId)).allowed);
 
   return NextResponse.json(result);
 }

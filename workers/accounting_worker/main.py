@@ -316,6 +316,10 @@ class ProcessRequest(BaseModel):
     # came from a deploy that predates bank detection. The two are not the same,
     # and neither changes routing yet — this worker re-detects independently.
     detected_bank: str | None = None
+    # The workspace's choice about external AI (lib/privacy/external-processing.ts).
+    # False: no OpenAI call of any kind for this run. None: a caller that predates
+    # the setting, treated as allowed, which is the behaviour it always had.
+    allow_external_ai: bool | None = None
     detected_bank_name: str | None = None
     detected_bank_confidence: float | None = None
     detected_bank_reason: str | None = None
@@ -586,6 +590,14 @@ def verify_worker_token(authorization: str | None) -> None:
         return
     status, detail = STATUS_FOR_VERDICT[verdict]
     raise HTTPException(status_code=status, detail=detail)
+
+
+def external_ai_allowed(payload: "ProcessRequest") -> bool:
+    """Whether this run may call OpenAI. Only an explicit False blocks it."""
+    return payload.allow_external_ai is not False
+
+
+WORKSPACE_BLOCKED_REASON = "disabled_by_workspace_privacy_setting"
 
 
 def parse_money(value: str | None) -> float | None:
@@ -2690,6 +2702,7 @@ def attempt_ai_recovery(
     metadata: dict[str, Any],
     bank_name: str,
     run_id: str,
+    enabled: bool = True,
 ) -> tuple[list[ParsedTransaction], dict[str, Any]]:
     """Last recovery step: ask a model to LOCATE rows, then verify every one.
 
@@ -2714,6 +2727,10 @@ def attempt_ai_recovery(
     # only a description and an amount. That is a wider disclosure than the
     # feature it reuses, so it gets its own kill switch — no redeploy or key
     # rotation needed to stop it.
+    if not enabled:
+        diagnostics["reason"] = WORKSPACE_BLOCKED_REASON
+        return [], diagnostics
+
     if os.getenv("ACCOUNTING_AI_RECOVERY", "true").strip().lower() in {"false", "0", "off", "no"}:
         diagnostics["reason"] = "disabled_by_ACCOUNTING_AI_RECOVERY"
         return [], diagnostics
@@ -4785,6 +4802,7 @@ def apply_ai_counterparty_reasoning(
     transactions: list[ParsedTransaction],
     bank_profile: str | None,
     diagnostics: dict[str, Any] | None = None,
+    enabled: bool = True,
 ) -> dict[str, Any]:
     """Ask the model about counterparties, then apply the answers to their rows.
 
@@ -4805,6 +4823,9 @@ def apply_ai_counterparty_reasoning(
         "counterparty_rejected": {},
         "openai_calls": 0,
     }
+    if not enabled:
+        report["reason"] = WORKSPACE_BLOCKED_REASON
+        return report
     api_key = os.getenv("OPENAI_API_KEY")
     if not api_key or not transactions:
         return report
@@ -5335,6 +5356,7 @@ def classify_transactions_with_ai(
     transactions: list[ParsedTransaction],
     workspace_id: str,
     source_file: str,
+    enabled: bool = True,
 ) -> dict[str, Any]:
     """Ask a model about the rows the deterministic rules could not settle.
 
@@ -5356,6 +5378,10 @@ def classify_transactions_with_ai(
     valid tax invoice exists, or whether the purpose was business, and this is
     the one place where being wrong costs money rather than time.
     """
+    if not enabled:
+        skipped = ai_diagnostics(enabled=False)
+        skipped["ai_skipped"] = WORKSPACE_BLOCKED_REASON
+        return skipped
     if not transactions:
         return ai_diagnostics(enabled=False)
 
@@ -6255,7 +6281,7 @@ def process_fnb_statement(payload: ProcessRequest, authorization: str | None = H
         # unresolved rows become 37 questions covering 327 of them. What it does
         # not cover — counterparties seen once — still reaches the row-by-row
         # classifier further down, unchanged.
-        ai_counterparty = apply_ai_counterparty_reasoning(transactions, bank_profile)
+        ai_counterparty = apply_ai_counterparty_reasoning(transactions, bank_profile, enabled=external_ai_allowed(payload))
         ai_recovery: dict[str, Any] = {"enabled": False, "attempted": False, "accepted_rows": 0}
         # Accounting-parser diagnostics (null-safe).
         _summary = validation_summary(transactions)
@@ -6351,6 +6377,7 @@ def process_fnb_statement(payload: ProcessRequest, authorization: str | None = H
                     metadata=metadata,
                     bank_name=bank_name,
                     run_id=payload.run_id,
+                    enabled=external_ai_allowed(payload),
                 )
                 log_event(
                     "worker.ai_recovery",
@@ -6462,6 +6489,7 @@ def process_fnb_statement(payload: ProcessRequest, authorization: str | None = H
             transactions,
             payload.workspace_id,
             str(metadata.get("source_file") or ""),
+            enabled=external_ai_allowed(payload),
         )
         metadata["_ai_diagnostics"] = ai_classification_stats
         log_event(

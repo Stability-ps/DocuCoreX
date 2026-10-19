@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { EXTERNAL_PROCESSING_DEMO, getExternalProcessing } from "@/lib/privacy/external-processing";
 import { enforceRateLimit } from "@/lib/shared-rate-limit";
 import { recordAuditLog } from "@/lib/audit";
 import {
@@ -82,7 +83,11 @@ export async function POST(request: Request) {
   const context =
     (await getWorkspaceContext().catch(() => null)) ??
     (process.env.CONVERSION_WORKER_MODE === "true" ? await getServiceRoleContextForJob(processRequest).catch(() => null) : null);
-  const providers = createWorkflowAdapters();
+  // One workspace per request, so one decision: the workspace's own choice, or
+  // demo when there is no backend at all.
+  const providers = createWorkflowAdapters({
+    externalProcessing: context ? await getExternalProcessing(context.supabase, context.workspaceId) : EXTERNAL_PROCESSING_DEMO,
+  });
 
   const isWorker = process.env.CONVERSION_WORKER_MODE === "true";
   if (isWorker && !isSupabaseConfigured) {

@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { getExternalProcessing } from "@/lib/privacy/external-processing";
 import { enforceRateLimit } from "@/lib/shared-rate-limit";
 import { getWorkspaceContext } from "@/lib/server-documents";
 import { runExtractionPipeline } from "@/lib/pdf/runExtractionPipeline";
@@ -46,7 +47,13 @@ export async function GET(request: Request, { params }: { params: Promise<{ docu
     // Statement checks only for actual statements — otherwise a clean invoice is
     // rejected and escalated through both OCR engines for nothing.
     const expect = row.detected_type === "bank_statement" ? "bank_statement" : "document";
-    const result = await runExtractionPipeline(buffer, row.name || "document.pdf", { enhancedOcr: enhanced, force: enhanced, expect });
+    const externalProcessing = await getExternalProcessing(context.supabase, context.workspaceId);
+    const result = await runExtractionPipeline(buffer, row.name || "document.pdf", {
+      enhancedOcr: enhanced,
+      force: enhanced,
+      expect,
+      allowExternalProviders: externalProcessing.allowed,
+    });
 
     // Trim the heavy page/word payload — the UI only needs the summary.
     return NextResponse.json({

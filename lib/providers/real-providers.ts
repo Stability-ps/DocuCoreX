@@ -15,15 +15,17 @@ export class PipelineOcrProvider implements OCRProvider {
   name: ProviderName;
   private useOpenAI: boolean;
   private enhanced: boolean;
+  private allowExternalProviders: boolean;
 
-  constructor(useOpenAI: boolean, enhanced = false) {
-    this.useOpenAI = useOpenAI;
+  constructor(useOpenAI: boolean, enhanced: boolean, allowExternalProviders: boolean) {
+    this.useOpenAI = useOpenAI && allowExternalProviders;
     this.enhanced = enhanced;
-    this.name = useOpenAI ? "openai" : "tesseract";
+    this.allowExternalProviders = allowExternalProviders;
+    this.name = this.useOpenAI ? "openai" : "tesseract";
   }
 
   async run(document: Pick<DocumentRecord, "id" | "name" | "storagePath" | "mimeType">): Promise<OcrResult> {
-    const extraction = await extractDocument(document, { useOpenAI: this.useOpenAI, enhanced: this.enhanced });
+    const extraction = await extractDocument(document, { useOpenAI: this.useOpenAI, enhanced: this.enhanced, allowExternalProviders: this.allowExternalProviders });
     return {
       id: `ocr_${document.id}`,
       documentId: document.id,
@@ -42,8 +44,8 @@ export class PipelineOcrProvider implements OCRProvider {
 }
 
 export class OpenAIVisionOcrProvider extends PipelineOcrProvider {
-  constructor(enhanced = false) {
-    super(true, enhanced);
+  constructor(enhanced: boolean, allowExternalProviders: boolean) {
+    super(true, enhanced, allowExternalProviders);
   }
 }
 
@@ -52,14 +54,16 @@ export class OpenAIVisionOcrProvider extends PipelineOcrProvider {
 export class PipelineExtractionProvider implements ExtractionProvider {
   name: ProviderName;
   private useOpenAI: boolean;
+  private allowExternalProviders: boolean;
 
-  constructor(useOpenAI: boolean) {
-    this.useOpenAI = useOpenAI;
-    this.name = useOpenAI ? "openai" : "tesseract";
+  constructor(useOpenAI: boolean, allowExternalProviders: boolean) {
+    this.useOpenAI = useOpenAI && allowExternalProviders;
+    this.allowExternalProviders = allowExternalProviders;
+    this.name = this.useOpenAI ? "openai" : "tesseract";
   }
 
   async run(document: DocumentRecord): Promise<ExtractionResult> {
-    const extraction = await extractDocument(document, { useOpenAI: this.useOpenAI });
+    const extraction = await extractDocument(document, { useOpenAI: this.useOpenAI, allowExternalProviders: this.allowExternalProviders });
     return {
       id: `extraction_${document.id}`,
       documentId: document.id,
@@ -83,8 +87,8 @@ export class PipelineExtractionProvider implements ExtractionProvider {
 }
 
 export class OpenAIExtractionProvider extends PipelineExtractionProvider {
-  constructor() {
-    super(true);
+  constructor(allowExternalProviders: boolean) {
+    super(true, allowExternalProviders);
   }
 }
 
