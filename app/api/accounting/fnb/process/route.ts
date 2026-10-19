@@ -1,4 +1,5 @@
 import { NextResponse, after } from "next/server";
+import { errorResponse } from "@/lib/api-auth";
 import { enforceRateLimit } from "@/lib/shared-rate-limit";
 import { recordAuditLog } from "@/lib/audit";
 import { bankDetectionHints, detectBankFromText } from "@/lib/accounting/engine/bank-detection";
@@ -1164,9 +1165,6 @@ export async function POST(request: Request) {
     // Return immediately (well under the 25s initial-response limit).
     return NextResponse.json({ ok: true, status: "processing", runId, jobId: processingJobId });
   } catch (error) {
-    return NextResponse.json(
-      { error: error instanceof Error ? error.message : "Unable to process accounting statement." },
-      { status: 500 },
-    );
+    return errorResponse(error, "Unable to process accounting statement.");
   }
 }
