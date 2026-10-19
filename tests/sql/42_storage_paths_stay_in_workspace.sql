@@ -26,6 +26,8 @@ select t_report('§53 the rule refuses encoded traversal and other characters ou
   not public.storage_path_in_workspace('11111111-0000-0000-0000-000000000001/%2e%2e/11111111-0000-0000-0000-0000000000e2/documents/theirs.pdf', '11111111-0000-0000-0000-000000000001')
   and not public.storage_path_in_workspace('11111111-0000-0000-0000-000000000001/documents/a.pdf?x=1', '11111111-0000-0000-0000-000000000001')
   and not public.storage_path_in_workspace('11111111-0000-0000-0000-000000000001/documents/a file.pdf', '11111111-0000-0000-0000-000000000001')
+  and not public.storage_path_in_workspace('11111111-0000-0000-0000-000000000001/%252e%252e/11111111-0000-0000-0000-0000000000e2/documents/theirs.pdf', '11111111-0000-0000-0000-000000000001')
+  and not public.storage_path_in_workspace('11111111-0000-0000-0000-000000000001/' || chr(65294) || chr(65294) || '/11111111-0000-0000-0000-0000000000e2/documents/theirs.pdf', '11111111-0000-0000-0000-000000000001')
   and public.storage_path_in_workspace('11111111-0000-0000-0000-000000000001/documents/0b6f-Bank_Statement.March-2026.pdf', '11111111-0000-0000-0000-000000000001'));
 
 -- The attack, as the user, on each table the server later reads with the service role.

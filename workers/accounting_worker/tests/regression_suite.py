@@ -1410,6 +1410,9 @@ def test_storage_path_must_belong_to_the_runs_workspace() -> None:
         f"{ws}/documents%2f..%2f{other}/x.pdf",
         f"{ws}/documents/x.pdf?y=../{other}",
         f"{ws}/documents/a file.pdf",
+        f"{ws}/%252e%252e/{other}/documents/x.pdf",  # double-encoded
+        f"{ws}/..%2f{other}/documents/x.pdf",
+        f"{ws}/\uff0e\uff0e/{other}/documents/x.pdf",  # full-width dots
         "",
         None,
     ):

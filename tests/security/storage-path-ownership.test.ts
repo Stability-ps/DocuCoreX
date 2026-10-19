@@ -53,6 +53,14 @@ test("encoded or unusual characters are refused, so nothing is decoded into anot
     `${WS}/documents/a.pdf#../${OTHER}`,
     `${WS}/documents/a file.pdf`,
     `${WS}/documents/naïve.pdf`,
+    // Double encoding, mixed encodings and look-alike dots.
+    `${WS}/%252e%252e/${OTHER}/documents/a.pdf`,
+    `${WS}/..%2f${OTHER}/documents/a.pdf`,
+    `${WS}/%2e./${OTHER}/documents/a.pdf`,
+    `${WS}/.%2e/${OTHER}/documents/a.pdf`,
+    `${WS}/\uff0e\uff0e/${OTHER}/documents/a.pdf`,
+    `${WS}/documents/a.pdf%00.png`,
+    `${WS}/documents/a.pdf\n`,
   ]) {
     assert.equal(isWorkspaceStoragePath(path, WS), false, path);
   }
