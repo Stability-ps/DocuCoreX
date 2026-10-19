@@ -1,4 +1,5 @@
 import { isSupabaseConfigured } from "@/lib/supabase";
+import { asTeamRole, type TeamRole } from "@/lib/team-permissions";
 import { getWorkspaceContext } from "@/lib/server-documents";
 
 export type TeamMemberRecord = {
@@ -155,6 +156,40 @@ function mapTeamRow(row: TeamRow): TeamMemberRecord {
     role,
     status: row.status === "Invited" ? "Invited" : "Active",
   };
+}
+
+/**
+ * The caller's own role in their workspace, from the same database function the
+ * team_members policies use (migration 054). Null for someone with no role.
+ * Before 054 is applied the function does not exist; the caller is then judged
+ * as the workspace owner only if workspaces.owner_id says so.
+ */
+export async function getCallerTeamRole(access: SettingsAccess): Promise<TeamRole | null> {
+  if (access.mode === "demo") return "Owner";
+  const { data, error } = await access.supabase.rpc("workspace_team_role", { p_workspace_id: access.workspaceId });
+  if (!error) return asTeamRole(data);
+  const { data: workspace } = await access.supabase
+    .from("workspaces")
+    .select("owner_id")
+    .eq("id", access.workspaceId)
+    .maybeSingle();
+  return (workspace as { owner_id?: string } | null)?.owner_id === access.userId ? "Owner" : null;
+}
+
+/** A member's role and account, for permission decisions. Null when not in this workspace. */
+export async function getTeamMemberSubject(access: SettingsAccess, id: string): Promise<{ role: TeamRole; userId: string | null } | null> {
+  if (access.mode === "demo") {
+    const member = demoStore().teamMembers.find((item) => item.id === id);
+    return member ? { role: member.role, userId: null } : null;
+  }
+  const { data } = await access.supabase
+    .from("team_members")
+    .select("role, user_id")
+    .eq("workspace_id", access.workspaceId)
+    .eq("id", id)
+    .maybeSingle();
+  const row = data as { role?: string; user_id?: string | null } | null;
+  return row ? { role: asTeamRole(row.role) ?? "Viewer", userId: row.user_id ?? null } : null;
 }
 
 export async function getTeamMembers(access: SettingsAccess): Promise<TeamMemberRecord[]> {
