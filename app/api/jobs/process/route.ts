@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { enforceRateLimit } from "@/lib/shared-rate-limit";
+import { assertWorkspaceStoragePath } from "@/lib/storage-paths";
 import { workerSecretMatches } from "@/lib/worker-secret";
 import { recordAuditLog } from "@/lib/audit";
 import {
@@ -346,6 +347,9 @@ export async function POST(request: Request) {
           .from("conversions")
           .update({ status: "running", updated_at: new Date().toISOString() })
           .eq("id", conversion.id);
+        // On the worker this client is the service role, which bypasses storage
+        // RLS: prove the path is this workspace's before reading it.
+        assertWorkspaceStoragePath(document.storagePath, context.workspaceId, { reader: "conversion", conversionId: conversion.id });
         const { data: sourceFile, error: sourceError } = await context.supabase.storage.from("documents").download(document.storagePath);
         if (sourceError || !sourceFile) {
           throw new Error(sourceError?.message ?? "Original file could not be downloaded for conversion.");
