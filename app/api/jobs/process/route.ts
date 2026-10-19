@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { enforceRateLimit } from "@/lib/shared-rate-limit";
 import { assertWorkspaceStoragePath } from "@/lib/storage-paths";
+import { workerSecretMatches } from "@/lib/worker-secret";
 import { recordAuditLog } from "@/lib/audit";
 import {
   documentDownloads,
@@ -75,7 +76,7 @@ export async function POST(request: Request) {
       console.error("docucorex.conversion_worker.secret_not_configured");
       return NextResponse.json({ error: "Document processing is temporarily unavailable.", code: "WORKER_SECRET_NOT_CONFIGURED" }, { status: 503 });
     }
-    if (providedSecret !== configuredSecret) {
+    if (!workerSecretMatches(providedSecret, configuredSecret)) {
       return NextResponse.json({ error: "Unauthorized worker request" }, { status: 401 });
     }
   }
