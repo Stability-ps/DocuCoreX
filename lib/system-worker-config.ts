@@ -63,6 +63,8 @@ export function getExtractionConfig() {
   const present = (value: string | undefined) => Boolean(value?.trim());
   const azureEndpoint = present(process.env.AZURE_DOCUMENT_INTELLIGENCE_ENDPOINT);
   const azureKey = present(process.env.AZURE_DOCUMENT_INTELLIGENCE_KEY);
+  const pdfPlumberUrl = present(process.env.PDF_PLUMBER_URL);
+  const pdfPlumberToken = present(process.env.PDF_PLUMBER_TOKEN);
   return {
     // Named for the product, not the vendor shorthand: AZURE_FORM_RECOGNIZER_*
     // also exists in this project and is a DIFFERENT, legacy credential. A bare
@@ -73,6 +75,13 @@ export function getExtractionConfig() {
       configured: azureEndpoint && azureKey,
       endpointPresent: azureEndpoint,
       keyPresent: azureKey,
+    },
+    // Two halves for the same reason as Azure: the service refuses every request
+    // without its token, so a URL alone is a provider that silently does nothing.
+    pdfPlumber: {
+      configured: pdfPlumberUrl && pdfPlumberToken,
+      urlPresent: pdfPlumberUrl,
+      tokenPresent: pdfPlumberToken,
     },
     mistral: { configured: present(process.env.MISTRAL_API_KEY) },
     openai: { configured: present(process.env.OPENAI_API_KEY) },

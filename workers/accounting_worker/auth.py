@@ -11,7 +11,7 @@ Supabase installed; `main.py` maps the verdict onto an HTTP status.
 
 This intentionally mirrors `services/pdf-plumber/auth.py`. The two cannot share a
 module: each is a separate Render service with its own `rootDir`, so neither can
-import across the repo. `test_auth_matches_pdf_plumber_contract` in the
+import across the repo. `test_worker_auth_matches_pdf_plumber_contract` in the
 regression suite pins the two to the same truth table instead.
 """
 

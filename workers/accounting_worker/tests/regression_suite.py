@@ -1257,13 +1257,16 @@ def test_worker_auth_fails_closed() -> None:
 def test_worker_auth_matches_pdf_plumber_contract() -> None:
     """The two services duplicate this logic because they have separate rootDirs
     and cannot import across the repo. Pin them to one truth table so they cannot
-    drift apart silently. Skipped when the pdfplumber module is not present.
+    drift apart silently.
+
+    This used to return early when the pdfplumber module was absent, and it was
+    always absent: the service shipped with no auth at all, so the test passed
+    while comparing nothing. A missing peer is now a failure.
     """
     import importlib.util
 
     peer = ROOT / "services" / "pdf-plumber" / "auth.py"
-    if not peer.exists():
-        return
+    assert peer.exists(), "services/pdf-plumber/auth.py is missing; the pdfplumber service would be unauthenticated"
 
     spec = importlib.util.spec_from_file_location("pdf_plumber_auth", peer)
     assert spec and spec.loader

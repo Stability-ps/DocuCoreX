@@ -121,6 +121,7 @@ extractors it cannot perform itself.
 | Variable | Required on the conversion worker? | Why |
 |---|---|---|
 | `PDF_PLUMBER_URL` | ✅ **Yes** | pdfplumber is a **separate Python service**; there is no in-process path. Without it `extractWithPdfplumber` returns `null` and the worker loses table-based transaction extraction. |
+| `PDF_PLUMBER_TOKEN` | ✅ **Yes** | The pdfplumber service fails closed without its bearer token. With the URL but not the token, `extractWithPdfplumber` skips the call and records a warning, and the worker loses table-based extraction the same way. |
 | `CONVERSION_WORKER_URL` | ❌ **No** | The OCR binaries are already on this service. `extractWithOcr` detects `CONVERSION_WORKER_MODE=true` and calls the engine **in-process**, so no URL is needed and no HTTP request is made. |
 
 **OCR transport by runtime** (`lib/pdf/extractWithOcr.ts`):
@@ -159,7 +160,7 @@ Selection order (first present wins):
 | Conversion worker endpoint | `CONVERSION_WORKER_URL` |
 | Conversion worker shared secret | `CONVERSION_WORKER_SECRET` |
 | Conversion worker-mode flag | `CONVERSION_WORKER_MODE` (`"true"` on the worker only) |
-| pdfplumber service | `PDF_PLUMBER_URL` |
+| pdfplumber service | `PDF_PLUMBER_URL`, `PDF_PLUMBER_TOKEN` |
 | Accounting worker | `ACCOUNTING_WORKER_URL`, `ACCOUNTING_WORKER_TOKEN` |
 | Supabase | `NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_ANON_KEY`, `SUPABASE_SERVICE_ROLE_KEY` |
 
@@ -188,6 +189,7 @@ decided separately).
 | `CONVERSION_WORKER_SECRET` | prod only | **required** | **required** | **required** (must match Vercel) |
 | `CONVERSION_WORKER_MODE` | ❌ | must be unset/false | must be unset/false | **must be `"true"`** |
 | `PDF_PLUMBER_URL` | ❌ (named `WORKER_plumber`) | **required** | **required** | **required** (pdfplumber is a separate service) |
+| `PDF_PLUMBER_TOKEN` | needed to call a local service | **required** | **required** | **required** (and on the pdfplumber service itself) |
 | `MISTRAL_API_KEY` | — | **required** | **required** | **required** (path 1 runs the pipeline here) |
 | `MISTRAL_OCR_MODEL` | — | optional | optional | optional (pin the same value in both) |
 

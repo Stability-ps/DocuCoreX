@@ -14,6 +14,15 @@ export async function extractWithPdfplumber(buffer: Uint8Array, fileName = "stat
     return null;
   }
 
+  // The service fails closed without its bearer token (services/pdf-plumber/auth.py),
+  // so a runtime that has the URL but not the token would upload the whole PDF only
+  // to be refused. Refuse here instead, and say which half is missing.
+  const token = process.env.PDF_PLUMBER_TOKEN?.trim();
+  if (!token) {
+    pdfLog("pdfplumber.skipped", { reason: "PDF_PLUMBER_TOKEN not configured" });
+    return failedResult("pdfplumber skipped: PDF_PLUMBER_TOKEN is not configured in this runtime");
+  }
+
   const started = Date.now();
   // Fresh copy for the multipart body — never a previously-consumed / detached view.
   const plumberBytes = new Uint8Array(buffer);
@@ -23,18 +32,15 @@ export async function extractWithPdfplumber(buffer: Uint8Array, fileName = "stat
   try {
     const form = new FormData();
     form.append("file", new Blob([plumberBytes], { type: "application/pdf" }), fileName);
-    const response = await fetch(`${baseUrl.replace(/\/$/, "")}/extract`, { method: "POST", body: form, signal: controller.signal });
+    const response = await fetch(`${baseUrl.replace(/\/$/, "")}/extract`, {
+      method: "POST",
+      body: form,
+      headers: { Authorization: `Bearer ${token}` },
+      signal: controller.signal,
+    });
     if (!response.ok) {
       pdfLog("pdfplumber_finished", { ok: false, status: response.status, ms: Date.now() - started });
-      return {
-        parser: "pdfplumber",
-        pageCount: 0,
-        pages: [],
-        combinedText: "",
-        transactions: [],
-        metadata: {},
-        warnings: [`pdfplumber service returned HTTP ${response.status}`],
-      };
+      return failedResult(`pdfplumber service returned HTTP ${response.status}`);
     }
     const data = (await response.json()) as {
       pageCount?: number;
@@ -65,16 +71,20 @@ export async function extractWithPdfplumber(buffer: Uint8Array, fileName = "stat
     const aborted = error instanceof Error && error.name === "AbortError";
     const message = aborted ? `timed out after ${PDFPLUMBER_TIMEOUT_MS}ms` : error instanceof Error ? error.message : String(error);
     pdfLog("pdfplumber_finished", { ok: false, error: message, ms: Date.now() - started });
-    return {
-      parser: "pdfplumber",
-      pageCount: 0,
-      pages: [],
-      combinedText: "",
-      transactions: [],
-      metadata: {},
-      warnings: [aborted ? "pdfplumber timed out" : `pdfplumber unreachable: ${message}`],
-    };
+    return failedResult(aborted ? "pdfplumber timed out" : `pdfplumber unreachable: ${message}`);
   } finally {
     clearTimeout(timeout);
   }
+}
+
+function failedResult(warning: string): ExtractionResult {
+  return {
+    parser: "pdfplumber",
+    pageCount: 0,
+    pages: [],
+    combinedText: "",
+    transactions: [],
+    metadata: {},
+    warnings: [warning],
+  };
 }
