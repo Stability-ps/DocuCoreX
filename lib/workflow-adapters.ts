@@ -1,4 +1,5 @@
 import type { DocumentRecord, DocumentDownload, ExtractionResult, OcrResult } from "@/lib/types";
+import type { ExternalProcessing } from "@/lib/privacy/external-processing";
 import { convertDocumentContent } from "@/lib/document-conversion-engine";
 import { isSupabaseConfigured } from "@/lib/supabase";
 import { selectOcrProvider, selectExtractionProvider, isSelectionError, isTesseractReachable } from "@/lib/providers/selection";
@@ -184,26 +185,38 @@ export function detectProviderConfig(): ProviderDetection {
   return describeSelections(resolveSelections());
 }
 
-export function createWorkflowAdapters(options: { enhanced?: boolean } = {}) {
+// `externalProcessing` is the workspace's choice, read by whoever starts the job
+// (lib/privacy/external-processing.ts). Required, so no call site can forget it.
+export function createWorkflowAdapters(options: { enhanced?: boolean; externalProcessing: ExternalProcessing }) {
   const resolved = resolveSelections();
+  const allowExternal = options.externalProcessing.allowed;
+  const ocr = buildOcrProvider(resolved.ocr, options.enhanced === true, allowExternal);
+  const extraction = buildExtractionProvider(resolved.extraction, allowExternal);
 
   return {
     // Built from the same selection results as the adapters below, so the
     // reported engine is always the engine that actually runs.
-    detection: describeSelections(resolved),
-    ocr: buildOcrProvider(resolved.ocr, options.enhanced === true),
-    extraction: buildExtractionProvider(resolved.extraction),
+    detection: {
+      ...describeSelections(resolved),
+      // What actually runs once the workspace's choice is applied.
+      ocr: ocr.name,
+      extraction: extraction.name,
+      externalProcessing: allowExternal ? ("allowed" as const) : ("blocked" as const),
+    },
+    ocr,
+    extraction,
     conversion: new MockConversionProvider(),
   };
 }
 
-function buildOcrProvider(selection: ReturnType<typeof selectOcrProvider>, enhanced = false): OCRProvider {
+function buildOcrProvider(selection: ReturnType<typeof selectOcrProvider>, enhanced: boolean, allowExternal: boolean): OCRProvider {
   if (isSelectionError(selection)) return new UnavailableOcrProvider(selection.error);
   switch (selection.provider) {
     case "openai_vision":
-      return new OpenAIVisionOcrProvider(enhanced);
+      // Blocked: the same pipeline, first-party engines only.
+      return allowExternal ? new OpenAIVisionOcrProvider(enhanced, true) : new PipelineOcrProvider(false, enhanced, false);
     case "tesseract":
-      return new PipelineOcrProvider(false, enhanced);
+      return new PipelineOcrProvider(false, enhanced, allowExternal);
     case "mock":
       return new MockOCRProvider();
     default:
@@ -211,11 +224,12 @@ function buildOcrProvider(selection: ReturnType<typeof selectOcrProvider>, enhan
   }
 }
 
-function buildExtractionProvider(selection: ReturnType<typeof selectExtractionProvider>): ExtractionProvider {
+function buildExtractionProvider(selection: ReturnType<typeof selectExtractionProvider>, allowExternal: boolean): ExtractionProvider {
   if (isSelectionError(selection)) return new UnavailableExtractionProvider(selection.error);
   switch (selection.provider) {
     case "openai":
-      return new OpenAIExtractionProvider();
+      // Blocked: deterministic extraction from the first-party pipeline.
+      return allowExternal ? new OpenAIExtractionProvider(true) : new PipelineExtractionProvider(false, false);
     case "mock":
       return new MockExtractionProvider();
     default:

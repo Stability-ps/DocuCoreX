@@ -1,4 +1,5 @@
 import type { ExtractionDebug, ExtractionPipelineResult, ExtractionResult, ExtractionStageDiag, OcrEngineId, ParserMethod, PdfAnalysis } from "@/lib/pdf/types";
+import { BLOCKED_BY_WORKSPACE } from "@/lib/privacy/external-processing";
 import { analyzeExtraction } from "@/lib/pdf/analyzePdf";
 import { decideOcrNeed } from "@/lib/pdf/ocrDecision";
 import { selectExtractionStrategy } from "@/lib/pdf/extractionStrategy";
@@ -20,6 +21,11 @@ import { pdfLog } from "@/lib/pdf/log";
 const PDFJS_BUDGET_MS = 10_000;
 
 export type ExtractionPipelineOptions = {
+  // Whether this document may be sent to external providers (Azure Document
+  // Intelligence, Mistral OCR). Required, so no caller can forget the
+  // workspace's choice (lib/privacy/external-processing.ts). When false the
+  // ladder is native extraction, pdfplumber and Tesseract only: all first-party.
+  allowExternalProviders: boolean;
   // Cache identity — when both are present the result is reused for the same
   // document+bytes unless `force` is set (Force reprocess).
   documentId?: string | null;
@@ -97,9 +103,9 @@ function copyBuffer(src: Uint8Array): Uint8Array {
  * others. The pipeline only "fails" after all available extractors have been
  * attempted, and always returns per-stage diagnostics.
  */
-export async function runExtractionPipeline(buffer: Uint8Array, fileName = "statement.pdf", options: ExtractionPipelineOptions = {}): Promise<ExtractionPipelineResult> {
+export async function runExtractionPipeline(buffer: Uint8Array, fileName: string, options: ExtractionPipelineOptions): Promise<ExtractionPipelineResult> {
   const pipelineStart = Date.now();
-  const { documentId = null, fileHash = null, force = false, enhancedOcr = false, expect = "bank_statement", onStage } = options;
+  const { documentId = null, fileHash = null, force = false, enhancedOcr = false, expect = "bank_statement", onStage, allowExternalProviders } = options;
 
   // Reuse a prior extraction for the identical document+bytes (Req 3): never OCR
   // or re-parse the same file twice. Force reprocess bypasses the cache.
@@ -254,7 +260,7 @@ export async function runExtractionPipeline(buffer: Uint8Array, fileName = "stat
     // 5a. Azure Document Intelligence — the structured-extraction escalation.
     const nativeChars = Math.max(pdfjsChars, pdfplumberChars);
     const azureDecision = decideAzureExtraction({
-      configured: isAzureConfigured(),
+      configured: allowExternalProviders && isAzureConfigured(),
       enhanced: enhancedOcr,
       strategy: plan.strategy,
       expect,
@@ -267,7 +273,7 @@ export async function runExtractionPipeline(buffer: Uint8Array, fileName = "stat
       validationRequiresReview: assembled.validation.requiresReview,
       alreadyAttempted: azureAttempted,
     });
-    pdfLog("route.azure_decision", { needed: azureDecision.needed, reason: azureDecision.reason, strategy: plan.strategy, expect });
+    pdfLog("route.azure_decision", { needed: azureDecision.needed, reason: allowExternalProviders ? azureDecision.reason : BLOCKED_BY_WORKSPACE, strategy: plan.strategy, expect });
 
     if (azureDecision.needed) {
       onStage?.("extracting");
@@ -283,7 +289,7 @@ export async function runExtractionPipeline(buffer: Uint8Array, fileName = "stat
       assembled.accepted && !enhancedOcr
         ? { needed: false, reason: "a previous provider satisfied the acceptance gate" }
         : decideMistralOcr({
-            configured: isMistralConfigured(),
+            configured: allowExternalProviders && isMistralConfigured(),
             enhanced: enhancedOcr,
             strategy: plan.strategy,
             expect,
@@ -300,7 +306,7 @@ export async function runExtractionPipeline(buffer: Uint8Array, fileName = "stat
             hasClosingBalance: assembled.merged.metadata.closingBalance != null,
             validationRequiresReview: assembled.validation.requiresReview,
           });
-    pdfLog("route.mistral_decision", { needed: mistralDecision.needed, reason: mistralDecision.reason, strategy: plan.strategy, expect });
+    pdfLog("route.mistral_decision", { needed: mistralDecision.needed, reason: allowExternalProviders ? mistralDecision.reason : BLOCKED_BY_WORKSPACE, strategy: plan.strategy, expect });
 
     if (mistralDecision.needed) {
       onStage?.("extracting");

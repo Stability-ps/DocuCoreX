@@ -158,9 +158,12 @@ function deterministicCommentary(
 export async function generateCommentary(
   type: AiCommentaryType,
   ctx: AiContext,
+  // The workspace's choice (lib/privacy/external-processing.ts). When false the
+  // commentary is produced locally and nothing is sent to OpenAI.
+  allowExternalProviders: boolean,
 ): Promise<AiCommentaryResult> {
   const openaiKey = process.env.OPENAI_API_KEY;
-  if (!openaiKey) return deterministicCommentary(type, ctx);
+  if (!openaiKey || !allowExternalProviders) return deterministicCommentary(type, ctx);
 
   const typePrompts: Record<AiCommentaryType, string> = {
     "executive-summary": "Write a concise executive summary for the bank statement period. Include key financial figures and any items requiring attention.",
