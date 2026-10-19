@@ -4666,8 +4666,6 @@ def run() -> None:
     test_worker_token_check_raises_on_unconfigured_secret()
     test_workspace_privacy_setting_blocks_every_openai_call()
     test_every_openai_entry_point_receives_the_workspace_choice()
-
-
     test_storage_path_must_belong_to_the_runs_workspace()
     test_statement_download_is_checked_first()
     test_mutating_endpoints_are_all_authenticated()
