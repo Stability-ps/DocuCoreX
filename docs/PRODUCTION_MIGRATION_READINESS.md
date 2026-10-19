@@ -174,11 +174,19 @@ workspace-scoped policy, holds 0 rows and is not referenced by the app.
 The lesson, twice over: migration state is a property of the database, and
 the only reliable way to know it is to ask the database's catalog.
 
-## Environment risk, unchanged
+## Environment risk
 
 `.env.local` and `.env.production` resolve to the same Supabase project, so
 local development runs against production. There is no staging or branch
-database. Recommended separation:
+database.
+
+**Guard (2026-10-19):** `next dev` now refuses to start when
+`NEXT_PUBLIC_SUPABASE_URL` is the production project, unless
+`DOCUCOREX_ALLOW_PRODUCTION_DATABASE=true` is set for that session
+(`lib/database-environment.ts`, applied in `next.config.ts`). Deployments
+(Vercel, Render) and production builds are unaffected. This stops the accident;
+it does not provide a second database. Recommended separation (creating the
+staging project needs an owner decision on plan and cost):
 
 | Environment | Database | Credentials live in |
 |---|---|---|
