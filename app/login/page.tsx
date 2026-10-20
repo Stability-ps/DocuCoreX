@@ -9,7 +9,7 @@ import { isDemoAllowed, isSupabaseConfigured, supabase } from "@/lib/supabase";
 import { profileChecklist } from "@/lib/product-data";
 import { clearDocucorexClientCache } from "@/lib/client-cache";
 import { safeNextPath } from "@/lib/safe-redirect";
-import { passwordResetMessage, SIGN_UP_CHECK_INBOX_MESSAGE } from "@/lib/auth-errors";
+import { passwordResetMessage, SIGN_UP_ACCEPTED_MESSAGE } from "@/lib/auth-errors";
 
 function LoginContent() {
   const searchParams = useSearchParams();
@@ -120,14 +120,15 @@ function LoginContent() {
         return;
       }
 
-      const data = (await response.json().catch(() => null)) as { requiresEmailVerification?: boolean; message?: string } | null;
-      if (data?.requiresEmailVerification) {
-        setStatus(data.message ?? SIGN_UP_CHECK_INBOX_MESSAGE);
-        setIsSubmitting(false);
-        return;
-      }
-
-      window.location.href = nextPath;
+      // Sign-up never signs in and answers every address alike (lib/auth-signup.ts):
+      // move to the sign-in form with the email kept, and let the person sign in
+      // with the password they chose.
+      const data = (await response.json().catch(() => null)) as { message?: string } | null;
+      setMode("signin");
+      setPassword("");
+      setConfirmPassword("");
+      setStatus(data?.message ?? SIGN_UP_ACCEPTED_MESSAGE);
+      setIsSubmitting(false);
       return;
     }
 
