@@ -1,11 +1,12 @@
+import { reconciliationStatusForAmount } from "@/lib/accounting/reconciliation-policy";
 import type { BankStatementCheck, BankStatementValidation, ExtractionResult } from "@/lib/pdf/types";
 
 // Validate an extraction against a bank statement's own figures: opening/closing
 // balance, transaction/credit/debit counts, debit/credit totals, the calculated
 // running balance, and any declared statement totals. Never silently accepts an
-// inconsistent result — any failing rule sets requiresReview.
-
-const TOLERANCE = 0.05;
+// inconsistent result — any failing rule sets requiresReview. Money rules pass
+// only at a difference of exactly 0 cents; R0.01–R0.05 is reported as
+// needs_review (lib/accounting/reconciliation-policy.ts), never as a pass.
 
 function round(value: number): number {
   return Math.round(value * 100) / 100;
@@ -38,7 +39,7 @@ export function validateBankStatement(result: ExtractionResult): BankStatementVa
   if (opening != null && closing != null) {
     check(
       "reconciliation",
-      difference != null && Math.abs(difference) <= TOLERANCE,
+      difference != null && reconciliationStatusForAmount(difference) === "reconciled",
       calculatedClosing,
       closing,
       `opening ${opening} + credits ${totalCredits} − debits ${totalDebits} = ${calculatedClosing}, expected closing ${closing}`,
@@ -61,10 +62,10 @@ export function validateBankStatement(result: ExtractionResult): BankStatementVa
     check("debit_count", debitCount === meta.declaredDebitCount, debitCount, meta.declaredDebitCount, `extracted ${debitCount} of ${meta.declaredDebitCount}`);
   }
   if (typeof meta.declaredCreditTotal === "number") {
-    check("credit_total", Math.abs(totalCredits - meta.declaredCreditTotal) <= TOLERANCE, totalCredits, meta.declaredCreditTotal, `variance ${round(totalCredits - meta.declaredCreditTotal)}`);
+    check("credit_total", reconciliationStatusForAmount(totalCredits - meta.declaredCreditTotal) === "reconciled", totalCredits, meta.declaredCreditTotal, `variance ${round(totalCredits - meta.declaredCreditTotal)}`);
   }
   if (typeof meta.declaredDebitTotal === "number") {
-    check("debit_total", Math.abs(totalDebits - meta.declaredDebitTotal) <= TOLERANCE, totalDebits, meta.declaredDebitTotal, `variance ${round(totalDebits - meta.declaredDebitTotal)}`);
+    check("debit_total", reconciliationStatusForAmount(totalDebits - meta.declaredDebitTotal) === "reconciled", totalDebits, meta.declaredDebitTotal, `variance ${round(totalDebits - meta.declaredDebitTotal)}`);
   }
 
   const missingTransactionCount = expectedCount != null ? Math.max(0, expectedCount - txns.length) : null;
@@ -77,6 +78,7 @@ export function validateBankStatement(result: ExtractionResult): BankStatementVa
     expectedClosingBalance: closing,
     calculatedClosingBalance: calculatedClosing,
     difference,
+    reconciliationStatus: difference != null ? reconciliationStatusForAmount(difference) : null,
     missingTransactionCount,
   };
 }

@@ -257,6 +257,8 @@ export type BankStatementValidation = {
   expectedClosingBalance: number | null;
   calculatedClosingBalance: number | null;
   difference: number | null;
+  /** Opening + credits − debits against closing: exact 0 reconciled, R0.01–R0.05 needs_review, more failed. */
+  reconciliationStatus: "reconciled" | "needs_review" | "failed" | null;
   missingTransactionCount: number | null;
 };
 

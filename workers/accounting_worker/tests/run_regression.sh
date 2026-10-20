@@ -55,6 +55,9 @@ PY
 # breaking change to ProcessRequest could reach Render without any suite noticing.
 "$PYTHON_BIN" "$WORKER_DIR/tests/request_model_check.py"
 
+# Reconciliation policy: exact 0 reconciles, R0.01-R0.05 needs review.
+"$PYTHON_BIN" "$WORKER_DIR/tests/reconciliation_policy_check.py"
+
 # Amount parsing and classification assertions. Also previously wired into
 # nothing, and it had rotted: a category defect plus two call sites left behind
 # by a signature change, none of which any suite would have reported.

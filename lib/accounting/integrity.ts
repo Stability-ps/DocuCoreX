@@ -21,6 +21,7 @@
  */
 
 import type { AccountingTransaction } from "@/lib/accounting/types";
+import { reconciliationStatusForAmount, type ReconciliationStatus } from "@/lib/accounting/reconciliation-policy";
 import { isUnresolvedAccountingCategory } from "@/lib/accounting/review-options";
 
 /** Provenance values that represent a real accounting decision. */
@@ -114,7 +115,10 @@ export type StatementIntegrity = {
   /** Rows carrying the source row they were read from. */
   withSourceRow: number;
   sourceRowComplete: boolean;
+  /** True only for a difference of exactly 0. */
   reconciled: boolean;
+  /** null when the statement has no difference to judge (a balance is missing). */
+  reconciliationStatus: ReconciliationStatus | null;
   reconciliationDifference: number | null;
   /** Extraction-only score from the worker. Never blended with classification. */
   extractionConfidence: number | null;
@@ -135,14 +139,15 @@ export function summarizeStatementIntegrity(input: {
 }): StatementIntegrity {
   const withSourceRow = input.transactions.filter((t) => t.sourceRow != null).length;
   const difference = input.reconciliationDifference;
+  const status = difference != null ? reconciliationStatusForAmount(difference) : null;
 
   return {
     transactionCount: input.transactions.length,
     withSourceRow,
     sourceRowComplete: input.transactions.length > 0 && withSourceRow === input.transactions.length,
-    // A cent tolerance, matching the worker. Exact float equality would report
-    // a reconciled statement as broken over a rounding artefact.
-    reconciled: difference != null && Math.abs(difference) <= 0.05,
+    // Exact in cents. Up to R0.05 needs review; it is never shown as reconciled.
+    reconciled: status === "reconciled",
+    reconciliationStatus: status,
     reconciliationDifference: difference,
     extractionConfidence: input.extractionConfidence,
   };

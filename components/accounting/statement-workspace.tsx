@@ -31,6 +31,7 @@ import type {
   VatTreatment,
 } from "@/lib/accounting/types";
 import { buildAccountingModel } from "@/lib/accounting/model";
+import { reconciliationStatusForAmount } from "@/lib/accounting/reconciliation-policy";
 import { VAT_TREATMENT_OPTIONS, categoryOptionsFor, isUnresolvedAccountingCategory } from "@/lib/accounting/review-options";
 import { cleanStatementLabel, statementDisplayName } from "@/lib/accounting/statement-name";
 import { parserMethodLabel } from "@/lib/pdf/workerHandoff";
@@ -305,7 +306,7 @@ export function StatementWorkspace({ statementId }: { statementId: string }) {
     const closing = run?.closingBalance ?? 0;
     const expectedClosing = opening + moneyIn - moneyOut;
     const difference = expectedClosing - closing;
-    return { moneyIn, moneyOut, charges, opening, closing, expectedClosing, difference, reconciled: Math.abs(difference) < 0.01 };
+    return { moneyIn, moneyOut, charges, opening, closing, expectedClosing, difference, reconciled: reconciliationStatusForAmount(difference) === "reconciled" };
   }, [transactions, run]);
 
   const reviewItems = useMemo(() => transactions.filter(isReviewItem), [transactions]);
