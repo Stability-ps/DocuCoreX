@@ -161,17 +161,28 @@ function vatForTransaction(t: AccountingTransaction) {
   return { outputVat, inputVat, netVat: outputVat - inputVat };
 }
 
+function cents(value: number): number {
+  return Math.round(value * 100);
+}
+
 export function buildStatementMetadata(detail: AccountingRunDetail, resolvedCompany: string): StatementMetadata {
   const { run } = detail;
   const txns = detail.transactions;
-  const totalReceipts = txns.reduce((s, t) => s + (t.creditAmount ?? 0), 0);
-  const totalPayments = txns.reduce((s, t) => s + (t.debitAmount ?? 0), 0);
+  // Reconciliation is decided in integer cents. Summing rand in floating point
+  // and testing `< 0.01` let a statement that is exactly one cent out read as
+  // "Reconciled", difference R0.00, about a third of the time (2026-10-21).
+  const receiptsCents = txns.reduce((s, t) => s + cents(t.creditAmount ?? 0), 0);
+  const paymentsCents = txns.reduce((s, t) => s + cents(t.debitAmount ?? 0), 0);
   const estOutputVat = txns.reduce((s, t) => s + vatForTransaction(t).outputVat, 0);
   const estInputVat = txns.reduce((s, t) => s + vatForTransaction(t).inputVat, 0);
   const opening = run.openingBalance ?? 0;
   const closing = run.closingBalance ?? 0;
-  const expectedClosing = opening + totalReceipts - totalPayments;
-  const reconciliationDifference = expectedClosing - closing;
+  const expectedClosingCents = cents(opening) + receiptsCents - paymentsCents;
+  const differenceCents = expectedClosingCents - cents(closing);
+  const totalReceipts = receiptsCents / 100;
+  const totalPayments = paymentsCents / 100;
+  const expectedClosing = expectedClosingCents / 100;
+  const reconciliationDifference = differenceCents / 100;
   return {
     company: resolvedCompany,
     title: packTitle(resolvedCompany),
@@ -193,7 +204,7 @@ export function buildStatementMetadata(detail: AccountingRunDetail, resolvedComp
     netVat: estOutputVat - estInputVat,
     expectedClosing,
     reconciliationDifference,
-    reconciled: Math.abs(reconciliationDifference) < 0.01,
+    reconciled: differenceCents === 0,
   };
 }
 
