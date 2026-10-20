@@ -34,7 +34,7 @@ export type SignUpAuthClient = {
       password: string;
       options: { emailRedirectTo: string; data: Record<string, unknown> };
     }): Promise<SignUpResult>;
-    signOut(): Promise<unknown>;
+    signOut(options?: { scope?: "global" | "local" | "others" }): Promise<unknown>;
   };
 };
 
@@ -121,7 +121,8 @@ export async function handleSignUp(body: unknown, deps: SignUpDeps): Promise<Nex
       // Email confirmation is off, so Supabase signed the new account in. The
       // session never leaves the server: revoke it so no refresh token lingers.
       try {
-        await deps.client.auth.signOut();
+        // local: revoke only this new session, never the account's others.
+        await deps.client.auth.signOut({ scope: "local" });
       } catch (e) {
         console.warn("[Auth Signup] Could not revoke the sign-up session:", e instanceof Error ? e.message : e);
       }

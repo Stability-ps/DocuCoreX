@@ -1,6 +1,5 @@
 import { createServerClient } from "@supabase/ssr";
 import { NextRequest, NextResponse } from "next/server";
-import { dedupeCookies } from "@/lib/auth-cookies";
 import { enforceRateLimit } from "@/lib/shared-rate-limit";
 import { handleSignUp, type SignUpAuthClient } from "@/lib/auth-signup";
 
@@ -13,16 +12,26 @@ export async function POST(request: NextRequest) {
 
   const body = await request.json().catch(() => null);
 
+  // A private, in-memory cookie jar: the request's own cookies are never read
+  // (a signed-in visitor's session must not be the one signed out below) and
+  // nothing written here reaches the response, so sign-up never sets a cookie.
+  // The new account's session lives only in this jar, which lets
+  // handleSignUp revoke exactly that session.
+  const jar = new Map<string, string>();
   const supabase = createServerClient(
     process.env.NEXT_PUBLIC_SUPABASE_URL as string,
     process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY as string,
     {
       cookies: {
         getAll() {
-          return dedupeCookies(request.cookies.getAll());
+          return Array.from(jar, ([name, value]) => ({ name, value }));
         },
-        // Deliberately dropped: sign-up responses never carry auth cookies.
-        setAll() {},
+        setAll(cookiesToSet) {
+          for (const { name, value } of cookiesToSet) {
+            if (value) jar.set(name, value);
+            else jar.delete(name);
+          }
+        },
       },
     }
   );

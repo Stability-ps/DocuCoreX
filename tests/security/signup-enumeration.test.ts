@@ -32,7 +32,7 @@ const SCENARIOS: Record<string, Result> = {
 };
 
 function fakeClient(result: Result) {
-  const calls = { signUp: [] as unknown[], signOut: 0 };
+  const calls = { signUp: [] as unknown[], signOut: 0, signOutOptions: [] as unknown[] };
   return {
     calls,
     client: {
@@ -41,8 +41,9 @@ function fakeClient(result: Result) {
           calls.signUp.push(credentials);
           return result;
         },
-        async signOut() {
+        async signOut(options?: unknown) {
           calls.signOut += 1;
+          calls.signOutOptions.push(options);
           return { error: null };
         },
       },
@@ -103,6 +104,8 @@ test("every accepted sign-up gets the same status, body and no cookies", async (
 test("a session Supabase opens for a new account is revoked, never handed out", async () => {
   const { calls, json } = await run(SCENARIOS["new address, confirmation off"]);
   assert.equal(calls.signOut, 1);
+  // Only the new session is revoked, never the account's other sessions.
+  assert.deepEqual(calls.signOutOptions, [{ scope: "local" }]);
   assert.equal(JSON.stringify(json).includes("rt"), false);
   for (const name of ["existing address, confirmation off", "new address, confirmation on", "existing address, confirmation on (obfuscated user)"]) {
     assert.equal((await run(SCENARIOS[name])).calls.signOut, 0, name);
@@ -175,10 +178,12 @@ test("the verification link and the profile name are passed to Supabase", async 
   });
 });
 
-test("the route drops Supabase's cookies and keeps the IP-keyed limit first", () => {
+test("the route keeps Supabase's cookies in a private jar and keeps the IP-keyed limit first", () => {
   const route = readFileSync("app/api/auth/signup/route.ts", "utf8");
-  assert.match(route, /setAll\(\) \{\}/);
-  assert.doesNotMatch(route, /setSupabaseAuthCookie|ensureUserWorkspace/);
+  // The request's cookies are never read (a signed-in visitor's session must not
+  // be the one revoked) and nothing reaches the response's cookies.
+  assert.doesNotMatch(route, /request\.cookies|\.cookies\.set|setSupabaseAuthCookie|ensureUserWorkspace/);
+  assert.match(route, /const jar = new Map/);
   assert.ok(route.indexOf('enforceRateLimit("signup", { request }') < route.indexOf("handleSignUp("), "limit before any address-dependent work");
 });
 
