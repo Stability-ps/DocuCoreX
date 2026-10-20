@@ -188,6 +188,9 @@ jobs:
     # exercise the app shell at all.
     name: E2E
     runs-on: ubuntu-latest
+    # Normal runs take ~9 min. Without a cap a stalled run held the job for the
+    # 6 h default (2026-10-20: three runs stuck 30–50 min before cancellation).
+    timeout-minutes: 35
     steps:
       - uses: actions/checkout@v7
 
