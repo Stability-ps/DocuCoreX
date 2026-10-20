@@ -33,6 +33,11 @@ services:
       # the worker loses table-based transaction extraction.
       - key: PDF_PLUMBER_URL
         value: https://docucorex-pdf-plumber.onrender.com
+      # REQUIRED alongside the URL. The pdfplumber service fails closed without a
+      # bearer token, so a runtime with the URL but not the token skips pdfplumber
+      # entirely. Same value as PDF_PLUMBER_TOKEN on the service and on Vercel.
+      - key: PDF_PLUMBER_TOKEN
+        sync: false
       # Azure Document Intelligence. The pipeline runs on this service for
       # proxied generic-document jobs, so the credentials are required here too.
       - key: AZURE_DOCUMENT_INTELLIGENCE_ENDPOINT
@@ -60,6 +65,15 @@ services:
     buildCommand: pip install -r requirements.txt
     startCommand: uvicorn app:app --host 0.0.0.0 --port $PORT
     healthCheckPath: /health
+    envVars:
+      # REQUIRED. auth.py fails closed: with this unset the service answers 503
+      # to every /extract rather than parsing PDFs for anyone who finds the
+      # hostname. Must match PDF_PLUMBER_TOKEN on Vercel and on the conversion
+      # worker exactly. Set it on both CALLERS first: they send the header to the
+      # current service harmlessly, so nothing breaks when this side starts
+      # checking it.
+      - key: PDF_PLUMBER_TOKEN
+        sync: false
 
   # FNB bank-statement processing worker (workers/accounting_worker). Vercel's
   # /api/accounting/fnb/process proxies here and waits up to 120s.

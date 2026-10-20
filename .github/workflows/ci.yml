@@ -93,6 +93,29 @@ jobs:
       - name: Regression suite
         run: ./workers/accounting_worker/tests/run_regression.sh
 
+  pdf-plumber:
+    # The pdfplumber service's own checks, against its own requirements: it is a
+    # separate Render service, so the accounting worker's venv is the wrong place
+    # to test it (that venv has no python-multipart, which /extract needs).
+    name: pdfplumber service (Python)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.11'
+          cache: pip
+          cache-dependency-path: services/pdf-plumber/requirements-dev.txt
+
+      - name: Install service dependencies
+        working-directory: services/pdf-plumber
+        run: python -m pip install -r requirements-dev.txt
+
+      - name: Auth checks
+        working-directory: services/pdf-plumber
+        run: python tests/check_auth.py
+
   malware-scanner:
     # The scanner's own checks (fake clamd), then the real thing: build the
     # image, start ClamAV, and prove it refuses unauthenticated requests, passes

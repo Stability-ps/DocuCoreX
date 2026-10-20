@@ -1,0 +1,3 @@
+-r requirements.txt
+# Test-only: fastapi.testclient needs httpx. Not installed on Render.
+httpx==0.28.1

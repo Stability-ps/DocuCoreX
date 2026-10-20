@@ -12,19 +12,69 @@ Returns the normalized extraction shape the Node pipeline expects:
       "warnings": [str]
     }
 
-Run: uvicorn app:app --reload --port 8001   (set PDF_PLUMBER_URL=http://localhost:8001)
+Every request to /extract must carry `Authorization: Bearer $PDF_PLUMBER_TOKEN`.
+The service fails closed: with PDF_PLUMBER_TOKEN unset it answers 503 to every
+extraction rather than serving everybody (see auth.py).
+
+Run: PDF_PLUMBER_TOKEN=dev uvicorn app:app --reload --port 8001
+     (and set PDF_PLUMBER_URL=http://localhost:8001 and the same PDF_PLUMBER_TOKEN
+     on the caller)
 """
 
 from __future__ import annotations
 
 import io
+import os
 from typing import Any
 
 import pdfplumber
-from fastapi import FastAPI, HTTPException, UploadFile, File
+from fastapi import Depends, FastAPI, File, Header, HTTPException, UploadFile
 from fastapi.responses import JSONResponse
 
-app = FastAPI(title="DocuCoreX pdfplumber service")
+from auth import OK as AUTH_OK, STATUS_FOR_VERDICT, check_bearer
+
+
+def api_docs_enabled() -> bool:
+    """Whether to serve /docs, /redoc and /openapi.json.
+
+    Same rule as the accounting worker's api_docs_enabled: PDF_PLUMBER_DOCS forces
+    the answer either way; without it, docs are served only when no platform
+    marker is present, i.e. on a developer's machine.
+    """
+    override = (os.getenv("PDF_PLUMBER_DOCS") or "").strip().lower()
+    if override:
+        return override in {"1", "true", "yes", "on"}
+
+    platform_markers = (
+        "RENDER",
+        "RENDER_SERVICE_ID",
+        "RENDER_SERVICE_NAME",
+        "VERCEL",
+        "FLY_APP_NAME",
+        "K_SERVICE",
+        "DYNO",
+        "AWS_EXECUTION_ENV",
+    )
+    return not any((os.getenv(marker) or "").strip() for marker in platform_markers)
+
+
+API_DOCS_ENABLED = api_docs_enabled()
+
+app = FastAPI(
+    title="DocuCoreX pdfplumber service",
+    docs_url="/docs" if API_DOCS_ENABLED else None,
+    redoc_url="/redoc" if API_DOCS_ENABLED else None,
+    openapi_url="/openapi.json" if API_DOCS_ENABLED else None,
+)
+
+
+def verify_token(authorization: str | None = Header(default=None)) -> None:
+    """Reject the request unless it carries the shared secret."""
+    verdict = check_bearer(authorization, os.getenv("PDF_PLUMBER_TOKEN"))
+    if verdict == AUTH_OK:
+        return
+    status, detail = STATUS_FOR_VERDICT[verdict]
+    raise HTTPException(status_code=status, detail=detail)
 
 
 @app.get("/health")
@@ -46,7 +96,7 @@ def _line(line: dict[str, Any]) -> dict[str, Any]:
     return {"x0": line.get("x0"), "y0": line.get("top"), "x1": line.get("x1"), "y1": line.get("bottom")}
 
 
-@app.post("/extract")
+@app.post("/extract", dependencies=[Depends(verify_token)])
 async def extract(file: UploadFile = File(...)) -> JSONResponse:
     try:
         raw = await file.read()
