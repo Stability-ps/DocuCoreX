@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { errorResponse } from "@/lib/api-auth";
+import { routeErrorResponse } from "@/lib/api-errors";
 import { recordAuditLog } from "@/lib/audit";
 import { createInvoice, listInvoices } from "@/lib/invoices";
 import type { InvoiceLineItemDraft, InvoicePaymentTerms, InvoiceStatus } from "@/lib/types";
@@ -60,7 +60,7 @@ export async function GET() {
   try {
     return NextResponse.json({ invoices: await listInvoices() });
   } catch (error) {
-    return errorResponse(error, "Unable to load invoices");
+    return routeErrorResponse("docucorex.invoices.list_failed", error, { message: "Unable to load invoices." });
   }
 }
 
@@ -145,6 +145,6 @@ export async function POST(request: Request) {
 
     return NextResponse.json({ invoice });
   } catch (error) {
-    return NextResponse.json({ error: error instanceof Error ? error.message : "Unable to create invoice" }, { status: 400 });
+    return routeErrorResponse("docucorex.invoices.create_failed", error, { message: "Unable to create the invoice. Please try again." });
   }
 }

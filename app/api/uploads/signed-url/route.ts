@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { enforceRateLimit } from "@/lib/shared-rate-limit";
 import { NextResponse } from "next/server";
-import { databaseErrorResponse } from "@/lib/api-errors";
+import { databaseErrorResponse, routeErrorResponse } from "@/lib/api-errors";
 import { isDemoAllowed } from "@/lib/supabase";
 import { createSupabaseServerClient } from "@/lib/supabase-server";
 import { ensureUserWorkspace } from "@/lib/workspace-bootstrap";
@@ -26,7 +26,7 @@ export async function POST(request: Request) {
       { name: body.fileName, type: body.contentType ?? "", size: typeof body.size === "number" ? body.size : 1 },
     ]);
   } catch (error) {
-    return NextResponse.json({ error: error instanceof Error ? error.message : "Unsupported file." }, { status: 400 });
+    return routeErrorResponse("docucorex.upload.signed_url_validation_failed", error, { message: "Unsupported file.", status: 400, code: "UNSUPPORTED_FILE" });
   }
 
   const safeFileName = body.fileName.replace(/[^a-zA-Z0-9._-]/g, "_");

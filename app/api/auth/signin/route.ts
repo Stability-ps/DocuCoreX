@@ -4,6 +4,7 @@ import { NextRequest, NextResponse } from "next/server";
 import type { CookieOptions } from "@supabase/ssr";
 import { dedupeCookies, setSupabaseAuthCookie } from "@/lib/auth-cookies";
 import { enforceRateLimit } from "@/lib/shared-rate-limit";
+import { signInErrorResponse } from "@/lib/auth-errors";
 
 export async function POST(request: NextRequest) {
   const limited = await enforceRateLimit("signin", { request }, "Too many sign-in attempts. Try again later.");
@@ -45,9 +46,11 @@ export async function POST(request: NextRequest) {
     });
 
     if (error) {
+      // One answer for an unknown address and a wrong password (lib/auth-errors.ts).
+      const failure = signInErrorResponse(error);
       return NextResponse.json(
-        { error: error.message },
-        { status: 401 }
+        { error: failure.message },
+        { status: failure.status }
       );
     }
 

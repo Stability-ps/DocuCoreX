@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { databaseErrorResponse } from "@/lib/api-errors";
+import { displayStoredJobText } from "@/lib/jobs/job-error";
 import { processingJobs } from "@/lib/mock-repository";
 import { isDemoAllowed, isSupabaseConfigured } from "@/lib/supabase";
 import { getWorkspaceContext } from "@/lib/server-documents";
@@ -33,7 +34,8 @@ export async function GET() {
   return NextResponse.json({
     jobs: (data ?? []).map((job) => ({
       ...job,
-      message: typeof job.message === "string" ? displayJobMessage(job.message) : job.message,
+      message: typeof job.message === "string" ? displayStoredJobText(displayJobMessage(job.message), job.type) : job.message,
+      error: typeof job.error === "string" ? displayStoredJobText(job.error, job.type) : job.error,
     })),
   });
 }

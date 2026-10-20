@@ -21,6 +21,19 @@ export class ConversionError extends Error {
   }
 }
 
+// A ConversionError's message is shown to the user and stored on the job, so a
+// failing tool's output is logged here instead of being appended to it. Its
+// stderr names temp paths, and Tesseract's stdout is the document's own text —
+// stdout is never logged, stderr only in part.
+function logToolFailure(tool: string, result: { status: number | null; error?: Error; stderr?: string | Buffer | null }) {
+  console.error("docucorex.conversion.tool_failed", {
+    tool,
+    exitStatus: result.status,
+    error: result.error?.message ?? null,
+    stderr: result.stderr ? String(result.stderr).trim().slice(0, 500) : null,
+  });
+}
+
 export type SourceDocument = {
   name: string;
   mimeType: string;
@@ -194,8 +207,8 @@ function convertPdfToImages(source: SourceDocument): GeneratedFile {
     });
 
     if (result.error || result.status !== 0) {
-      const reason = result.error?.message || result.stderr || result.stdout || `pdftoppm exited with status ${result.status}`;
-      throw new ConversionError(`PDF page image export failed: ${reason.trim()}`, "RENDERER_FAILED");
+      logToolFailure("pdftoppm", result);
+      throw new ConversionError("PDF page image export failed.", "RENDERER_FAILED");
     }
 
     const images = readdirSync(tempDir)
@@ -321,8 +334,8 @@ function convertOfficeDocumentToPdf(source: SourceDocument): GeneratedFile {
     );
 
     if (result.error || result.status !== 0) {
-      const reason = result.error?.message || result.stderr || result.stdout || `LibreOffice exited with status ${result.status}`;
-      throw new ConversionError(`Conversion engine unavailable. LibreOffice could not render this file: ${reason.trim()}`, "CONVERSION_ENGINE_UNAVAILABLE");
+      logToolFailure("libreoffice", result);
+      throw new ConversionError("Conversion engine unavailable. LibreOffice could not render this file.", "CONVERSION_ENGINE_UNAVAILABLE");
     }
 
     const outputPath = join(tempDir, `${baseName(source.name)}.pdf`);
@@ -643,8 +656,8 @@ function createSearchablePdfWithOcr(source: SourceDocument): GeneratedFile {
     );
 
     if (result.error || result.status !== 0) {
-      const reason = result.error?.message || result.stderr || result.stdout || `OCRmyPDF exited with status ${result.status}`;
-      throw new ConversionError(`OCR engine failed while creating a searchable PDF: ${reason.trim()}`, "OCR_ENGINE_FAILED");
+      logToolFailure("ocrmypdf", result);
+      throw new ConversionError("OCR engine failed while creating a searchable PDF.", "OCR_ENGINE_FAILED");
     }
 
     if (!existsSync(outputPath)) {
@@ -687,8 +700,8 @@ function extractImageTextWithTesseract(source: SourceDocument): ExtractedContent
     });
 
     if (result.error || result.status !== 0) {
-      const reason = result.error?.message || result.stderr || result.stdout || `Tesseract exited with status ${result.status}`;
-      throw new ConversionError(`OCR engine failed while reading this image: ${reason.trim()}`, "OCR_ENGINE_FAILED");
+      logToolFailure("tesseract", result);
+      throw new ConversionError("OCR engine failed while reading this image.", "OCR_ENGINE_FAILED");
     }
 
     const text = normalizeText(result.stdout);

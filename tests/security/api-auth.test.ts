@@ -75,8 +75,8 @@ for (const route of routes) {
     const source = readFileSync(route, "utf8");
     const wrapped = /export const (GET|POST|PATCH|DELETE) = withUnauthorized\(/.test(source);
     const resolved = /resolveWorkspaceContext\(\)/.test(source) && !/await getWorkspaceContext\(\)/.test(source);
-    const caught = /return errorResponse\(error,/.test(source) && !/status: 500 \}\);\s*\n\s*\}\s*\n\}/.test(source);
-    assert.ok(wrapped || resolved || caught, `${route} must use withUnauthorized, resolveWorkspaceContext or errorResponse`);
+    const caught = /return (errorResponse\(error,|routeErrorResponse\()/.test(source) && !/status: 500 \}\);\s*\n\s*\}\s*\n\}/.test(source);
+    assert.ok(wrapped || resolved || caught, `${route} must use withUnauthorized, resolveWorkspaceContext, errorResponse or routeErrorResponse`);
   });
 }
 

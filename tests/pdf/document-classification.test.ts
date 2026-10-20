@@ -186,5 +186,5 @@ test("images are transcribed directly instead of entering the PDF pipeline", () 
 
 test("a document with no readable text fails with a reason instead of showing ready", () => {
   const source = readFileSync(new URL("../../lib/ocr/extractDocument.ts", import.meta.url), "utf8");
-  assert.ok(source.includes('throw new Error("No text could be read from this document.")'));
+  assert.ok(source.includes('throw new UserFacingError("No text could be read from this document.")'), "a deliberate message, kept on the failed job");
 });

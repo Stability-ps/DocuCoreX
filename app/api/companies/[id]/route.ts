@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { routeErrorResponse } from "@/lib/api-errors";
 import { recordAuditLog } from "@/lib/audit";
 import { deleteCompany, getCompany, updateCompany } from "@/lib/companies";
 import type { CompanyProfileAction, CompanyProfileInput } from "@/lib/companies";
@@ -46,7 +47,7 @@ export async function PATCH(request: Request, { params }: { params: Promise<{ id
 
     return NextResponse.json({ company });
   } catch (error) {
-    return NextResponse.json({ error: error instanceof Error ? error.message : "Unable to update company profile" }, { status: 400 });
+    return routeErrorResponse("docucorex.companies.update_failed", error, { message: "Unable to update the company profile. Please try again.", context: { companyId: id } });
   }
 }
 

@@ -1,4 +1,5 @@
 import { getWorkspaceContext } from "@/lib/server-documents";
+import { UserFacingError } from "@/lib/user-facing-error";
 import { companies, companyInvoiceSequences } from "@/lib/mock-repository";
 import type { CompanyProfile, InvoicePaymentTerms } from "@/lib/types";
 
@@ -163,7 +164,7 @@ async function unsetOtherDefaults(excludeId?: string) {
 
 export async function createCompany(input: CompanyProfileInput): Promise<CompanyProfile> {
   if (!input.businessName?.trim()) {
-    throw new Error("Business name is required.");
+    throw new UserFacingError("Business name is required.");
   }
 
   const context = await getWorkspaceContext();
