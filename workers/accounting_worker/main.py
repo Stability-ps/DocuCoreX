@@ -4618,7 +4618,9 @@ def request_ai_classifications(items: list[dict[str, Any]], diagnostics: dict[st
             body_text = exc.read().decode("utf-8", errors="replace")
             if exc.code != 400:
                 raise
-            log_warning("worker.ai_classification_retrying_without_response_format", status=exc.code, body=body_text[:1200])
+            # Length only: provider error bodies can echo the prompt, which
+            # carries statement transaction text.
+            log_warning("worker.ai_classification_retrying_without_response_format", status=exc.code, body_length=len(body_text))
             fallback_body = {key: value for key, value in body.items() if key != "response_format"}
             payload = send_openai_request(fallback_body)
         content = payload.get("choices", [{}])[0].get("message", {}).get("content", "{}")
@@ -4642,7 +4644,7 @@ def request_ai_classifications(items: list[dict[str, Any]], diagnostics: dict[st
     except urllib.error.HTTPError as exc:
         diagnostics["ai_failures"] += 1
         body_text = exc.read().decode("utf-8", errors="replace")
-        log_warning("worker.ai_classification_http_failed", status=exc.code, body=body_text[:1200])
+        log_warning("worker.ai_classification_http_failed", status=exc.code, body_length=len(body_text))
     except Exception as exc:
         diagnostics["ai_failures"] += 1
         log_warning("worker.ai_classification_failed", error=str(exc))

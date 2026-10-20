@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { databaseErrorResponse } from "@/lib/api-errors";
 import { processingJobs } from "@/lib/mock-repository";
 import { isDemoAllowed, isSupabaseConfigured } from "@/lib/supabase";
 import { getWorkspaceContext } from "@/lib/server-documents";
@@ -26,7 +27,7 @@ export async function GET() {
     .limit(50);
 
   if (error) {
-    return NextResponse.json({ error: error.message }, { status: 500 });
+    return databaseErrorResponse("docucorex.jobs.list_failed", error, { message: "Unable to load processing jobs." });
   }
 
   return NextResponse.json({

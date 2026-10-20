@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { databaseErrorResponse } from "@/lib/api-errors";
 import { enforceRateLimit } from "@/lib/shared-rate-limit";
 import { resolveWorkspaceContext } from "@/lib/api-auth";
 import { documentRecords, extractionResults, ocrResults } from "@/lib/mock-repository";
@@ -49,7 +50,7 @@ export async function GET(request: Request) {
     .limit(50);
 
   if (error) {
-    return NextResponse.json({ error: error.message }, { status: 500 });
+    return databaseErrorResponse("docucorex.search.documents_failed", error, { message: "Search is unavailable right now." });
   }
 
   const documentIds = (documents ?? []).map((document) => document.id);

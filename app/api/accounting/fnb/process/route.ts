@@ -1,5 +1,6 @@
 import { NextResponse, after } from "next/server";
 import { errorResponse } from "@/lib/api-auth";
+import { databaseErrorResponse } from "@/lib/api-errors";
 import { getExternalProcessing, type ExternalProcessing } from "@/lib/privacy/external-processing";
 import { enforceRateLimit } from "@/lib/shared-rate-limit";
 import { recordAuditLog } from "@/lib/audit";
@@ -976,10 +977,10 @@ export async function POST(request: Request) {
         },
       );
       if (replacementJobError || !replacementJobId) {
-        return NextResponse.json(
-          { error: replacementJobError?.message ?? "Unable to create a replacement accounting job." },
-          { status: 500 },
-        );
+        return databaseErrorResponse("docucorex.accounting.reprocess_begin_failed", replacementJobError, {
+          message: "Unable to create a replacement accounting job.",
+          context: { runId },
+        });
       }
       processingJobId = replacementJobId;
     }
@@ -1101,7 +1102,10 @@ export async function POST(request: Request) {
             })
             .eq("id", processingJobId);
         }
-        return NextResponse.json({ error: fallbackMarkError.message }, { status: 500 });
+        return databaseErrorResponse("docucorex.accounting.run_claim_failed", fallbackMarkError, {
+          message: "Unable to start processing this statement. Please try again.",
+          context: { runId, attemptedJobId: processingJobId },
+        });
       }
       claimLanded = (fallbackClaimedRows ?? []).length > 0;
     } else {

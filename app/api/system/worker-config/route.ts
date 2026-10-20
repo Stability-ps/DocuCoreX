@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { getExtractionConfig, getWorkerConfig, getWorkerReachability, logWorkerStartupCheck } from "@/lib/system-worker-config";
+import { getExtractionConfig, getWorkerReachability, logWorkerStartupCheck, toPublicWorkerStatus } from "@/lib/system-worker-config";
 import { getWorkspaceContext } from "@/lib/server-documents";
 
 export async function GET() {
@@ -9,21 +9,12 @@ export async function GET() {
   }
 
   await logWorkerStartupCheck();
-  const config = getWorkerConfig();
   const reachability = await getWorkerReachability();
 
   return NextResponse.json({
-    environment: config.environment,
-    workerConfiguration: {
-      accountingWorkerUrl: config.accountingWorkerUrl,
-      conversionWorkerUrl: config.conversionWorkerUrl,
-      pdfPlumberUrl: config.pdfPlumberUrl,
-    },
-    reachability: {
-      accountingWorker: reachability.accountingWorker,
-      conversionWorker: reachability.conversionWorker,
-      pdfPlumber: reachability.pdfPlumber,
-    },
+    // Configured/reachable booleans only — any signed-in user can call this,
+    // and sign-up is open, so worker hostnames stay in the server log.
+    ...toPublicWorkerStatus(reachability),
     // Booleans only — no keys, no endpoints. Answers "is this provider usable
     // from THIS runtime", which is what was missing when Azure sat inert in
     // production with only half its configuration deployed.

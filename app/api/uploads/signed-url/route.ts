@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { enforceRateLimit } from "@/lib/shared-rate-limit";
 import { NextResponse } from "next/server";
+import { databaseErrorResponse } from "@/lib/api-errors";
 import { isDemoAllowed } from "@/lib/supabase";
 import { createSupabaseServerClient } from "@/lib/supabase-server";
 import { ensureUserWorkspace } from "@/lib/workspace-bootstrap";
@@ -106,7 +107,11 @@ export async function POST(request: Request) {
   const { data, error } = await supabase.storage.from("documents").createSignedUploadUrl(path);
 
   if (error) {
-    return NextResponse.json({ error: error.message }, { status: 500 });
+    return databaseErrorResponse("docucorex.upload.signed_url_failed", error, {
+      message: "Unable to prepare the upload. Please try again.",
+      code: "STORAGE_ERROR",
+      context: { workspaceId: profile.workspace_id },
+    });
   }
 
   return NextResponse.json({

@@ -1,6 +1,7 @@
 import { createHash, randomBytes } from "node:crypto";
 import { enforceRateLimit } from "@/lib/shared-rate-limit";
 import { NextResponse } from "next/server";
+import { databaseErrorResponse } from "@/lib/api-errors";
 import { recordAuditLog } from "@/lib/audit";
 import { apiKeys } from "@/lib/mock-repository";
 import { isDemoAllowed, isSupabaseConfigured } from "@/lib/supabase";
@@ -27,7 +28,7 @@ export async function GET() {
     .order("created_at", { ascending: false });
 
   if (error) {
-    return NextResponse.json({ error: error.message }, { status: 500 });
+    return databaseErrorResponse("docucorex.api_keys.list_failed", error, { message: "Unable to load API keys." });
   }
 
   return NextResponse.json({ apiKeys: data ?? [] });
@@ -109,7 +110,10 @@ export async function POST(request: Request) {
       });
     }
 
-    return NextResponse.json({ error: profileError?.message ?? "Profile workspace not found" }, { status: 500 });
+    return databaseErrorResponse("docucorex.api_keys.profile_lookup_failed", profileError, {
+      message: "Profile workspace not found",
+      code: "WORKSPACE_CONTEXT_UNRESOLVED",
+    });
   }
 
   const limited = await enforceRateLimit("apiKeyCreate", { workspaceId: profile.workspace_id, request }, "Too many API keys created. Try again later.");
@@ -141,7 +145,7 @@ export async function POST(request: Request) {
       });
     }
 
-    return NextResponse.json({ error: error.message }, { status: 500 });
+    return databaseErrorResponse("docucorex.api_keys.create_failed", error, { message: "Unable to create API key." });
   }
 
   await recordAuditLog({ action: "api_key_created", entityType: "api_key", entityId: data.id, metadata: { name: data.name } });
@@ -185,7 +189,7 @@ export async function PATCH(request: Request) {
     .maybeSingle();
 
   if (error) {
-    return NextResponse.json({ error: error.message }, { status: 500 });
+    return databaseErrorResponse("docucorex.api_keys.update_failed", error, { message: "Unable to update API key." });
   }
 
   if (!data) {
