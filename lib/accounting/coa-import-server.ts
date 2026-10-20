@@ -8,6 +8,7 @@
  * partially applied.
  */
 
+import { accountingDbError, notFoundError, rowFailureMessage } from "@/lib/accounting/errors";
 import { getWorkspaceContext } from "@/lib/server-documents";
 import { listChartOfAccounts } from "@/lib/accounting/chart-server";
 import { validateCoaImportRows, type CoaImportOutcome, type CoaImportRow } from "@/lib/accounting/coa-import";
@@ -21,8 +22,8 @@ async function requireEntity(companyId: string) {
     .eq("id", companyId)
     .eq("workspace_id", context.workspaceId)
     .maybeSingle();
-  if (error) throw new Error(error.message);
-  if (!data) throw new Error("Entity not found in this workspace.");
+  if (error) throw accountingDbError(error);
+  if (!data) throw notFoundError("Entity not found in this workspace.");
   return context;
 }
 
@@ -85,7 +86,11 @@ export async function commitCoaImport(input: { companyId: string; filename: stri
         .select("id")
         .single();
       if (error) {
-        failed.push({ rowNumber: row.rowNumber, code: row.code, message: error.message });
+        failed.push({
+          rowNumber: row.rowNumber,
+          code: row.code,
+          message: rowFailureMessage("docucorex.accounting.coa_import_row_failed", accountingDbError(error), "Unable to save this account.", { rowNumber: row.rowNumber }),
+        });
       } else {
         createdCount += 1;
         writtenAccountIds.push(String(data.id));
@@ -105,7 +110,11 @@ export async function commitCoaImport(input: { companyId: string; filename: stri
         .select("id")
         .single();
       if (error) {
-        failed.push({ rowNumber: row.rowNumber, code: row.code, message: error.message });
+        failed.push({
+          rowNumber: row.rowNumber,
+          code: row.code,
+          message: rowFailureMessage("docucorex.accounting.coa_import_row_failed", accountingDbError(error), "Unable to save this account.", { rowNumber: row.rowNumber }),
+        });
       } else {
         updatedCount += 1;
         writtenAccountIds.push(String(data.id));
@@ -127,12 +136,12 @@ export async function commitCoaImport(input: { companyId: string; filename: stri
     })
     .select("id")
     .single();
-  if (batchError) throw new Error(batchError.message);
+  if (batchError) throw accountingDbError(batchError);
   const batchId = String(batch.id);
 
   if (writtenAccountIds.length) {
     const { error } = await context.supabase.from("accounting_accounts").update({ import_batch_id: batchId }).in("id", writtenAccountIds);
-    if (error) throw new Error(error.message);
+    if (error) throw accountingDbError(error);
   }
 
   if (failed.length) {
@@ -146,7 +155,7 @@ export async function commitCoaImport(input: { companyId: string; filename: stri
         message: f.message,
       })),
     );
-    if (error) throw new Error(error.message);
+    if (error) throw accountingDbError(error);
   }
 
   return { batchId, outcomes, createdCount, updatedCount, failedCount: failed.length };

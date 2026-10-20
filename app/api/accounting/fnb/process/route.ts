@@ -63,7 +63,9 @@ async function runPipelineBeforeWorker(
   try {
     const { data: file, error } = await context.supabase.storage.from("documents").download(detail.run.sourceStoragePath);
     if (error || !file) {
-      return { hints: {}, warning: `Extraction pipeline skipped: source unavailable (${error?.message ?? "no file"}).`, debug: null };
+      // The Storage text names the object path; it is logged, not carried on.
+      console.warn("docucorex.accounting.pipeline_source_unavailable", { runId, message: error?.message ?? "no file" });
+      return { hints: {}, warning: "Extraction pipeline skipped: source unavailable.", debug: null };
     }
     const buffer = new Uint8Array(await file.arrayBuffer());
     // Cache identity: same document + identical bytes reuses the prior extraction
@@ -220,7 +222,7 @@ async function runPipelineBeforeWorker(
   } catch (pipelineError) {
     const message = pipelineError instanceof Error ? pipelineError.message : String(pipelineError);
     console.warn("[accounting/process] extraction pipeline failed — using original worker path", { runId, error: message });
-    return { hints: {}, warning: `Extraction pipeline error: ${message}`, debug: null };
+    return { hints: {}, warning: "Extraction pipeline error.", debug: null };
   }
 }
 
@@ -1112,6 +1114,6 @@ export async function POST(request: Request) {
     // Return immediately (well under the 25s initial-response limit).
     return NextResponse.json({ ok: true, status: "processing", runId, jobId: processingJobId });
   } catch (error) {
-    return errorResponse(error, "Unable to process accounting statement.");
+    return errorResponse(error, "Unable to process accounting statement.", 500, "docucorex.accounting.process_failed");
   }
 }

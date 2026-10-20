@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { routeErrorResponse } from "@/lib/api-errors";
 import { addTransactionTag, removeTransactionTag } from "@/lib/accounting/server";
 
 /**
@@ -10,12 +11,6 @@ import { addTransactionTag, removeTransactionTag } from "@/lib/accounting/server
  * never be mistaken for — or accidentally batched with — a change to how a
  * transaction is booked.
  */
-
-function statusFor(message: string): number {
-  if (message === "Unauthorized") return 401;
-  if (message === "Transaction not found.") return 404;
-  return 400;
-}
 
 export async function POST(request: Request, { params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
@@ -29,8 +24,7 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
     const tags = await addTransactionTag(id, body.tag);
     return NextResponse.json({ tags });
   } catch (error) {
-    const message = error instanceof Error ? error.message : "Unable to add tag.";
-    return NextResponse.json({ error: message }, { status: statusFor(message) });
+    return routeErrorResponse("docucorex.accounting.fnb_transactions_id_tags.post_failed", error, { message: "Unable to add tag." });
   }
 }
 
@@ -48,7 +42,6 @@ export async function DELETE(request: Request, { params }: { params: Promise<{ i
     const tags = await removeTransactionTag(id, tag);
     return NextResponse.json({ tags });
   } catch (error) {
-    const message = error instanceof Error ? error.message : "Unable to remove tag.";
-    return NextResponse.json({ error: message }, { status: statusFor(message) });
+    return routeErrorResponse("docucorex.accounting.fnb_transactions_id_tags.delete_failed", error, { message: "Unable to remove tag." });
   }
 }

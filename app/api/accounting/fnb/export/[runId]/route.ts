@@ -86,6 +86,6 @@ export async function GET(request: Request, { params }: { params: Promise<{ runI
       },
     });
   } catch (error) {
-    return errorResponse(error, "Unable to export workbook.");
+    return errorResponse(error, "Unable to export workbook.", 500, "docucorex.accounting.export_failed");
   }
 }

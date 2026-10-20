@@ -9,6 +9,7 @@
  * through the RPC rather than inserting postings directly.
  */
 
+import { accountingDbError, businessRuleError, notFoundError } from "@/lib/accounting/errors";
 import { getWorkspaceContext } from "@/lib/server-documents";
 import { validateJournalLines } from "@/lib/accounting/journals";
 import type { JournalLineInput, JournalStatus, JournalSummary, JournalType } from "@/lib/accounting/journals";
@@ -26,8 +27,8 @@ async function assertCompanyInWorkspace(companyId: string) {
     .eq("workspace_id", context.workspaceId)
     .maybeSingle();
 
-  if (error) throw new Error(error.message);
-  if (!data) throw new Error("Entity not found in this workspace.");
+  if (error) throw accountingDbError(error);
+  if (!data) throw notFoundError("Entity not found in this workspace.");
   return { context, workspaceId: context.workspaceId };
 }
 
@@ -47,7 +48,7 @@ export async function listJournals(companyId: string): Promise<JournalSummary[]>
     .order("journal_date", { ascending: false })
     .order("created_at", { ascending: false });
 
-  if (error) throw new Error(error.message);
+  if (error) throw accountingDbError(error);
 
   return (data ?? []).map((row) => {
     const lines = (row as { accounting_journal_lines?: Array<{ debit: number; credit: number }> }).accounting_journal_lines ?? [];
@@ -91,7 +92,7 @@ export async function createJournal(input: {
   // A draft is allowed to be unbalanced — that is what a draft is for. Only
   // posting requires balance.
   if (input.post && validation.length) {
-    throw new Error(validation.map((issue) => (issue.line ? `Line ${issue.line}: ${issue.message}` : issue.message)).join(" "));
+    throw businessRuleError(validation.map((issue) => (issue.line ? `Line ${issue.line}: ${issue.message}` : issue.message)).join(" "));
   }
 
   const { context, workspaceId } = await assertCompanyInWorkspace(input.companyId);
@@ -111,7 +112,7 @@ export async function createJournal(input: {
     .select("id")
     .single();
 
-  if (journalError) throw new Error(journalError.message);
+  if (journalError) throw accountingDbError(journalError);
   const journalId = String(journal.id);
 
   const { error: linesError } = await context.supabase.from("accounting_journal_lines").insert(
@@ -134,13 +135,13 @@ export async function createJournal(input: {
     // The journal header would otherwise survive with no lines, which reads as
     // a real but empty journal in every list.
     await context.supabase.from("accounting_journals").delete().eq("id", journalId);
-    throw new Error(linesError.message);
+    throw accountingDbError(linesError);
   }
 
   if (!input.post) return { journalId, status: "draft" };
 
   const { error: postError } = await context.supabase.rpc("accounting_post_journal", { target_journal: journalId });
-  if (postError) throw new Error(postError.message);
+  if (postError) throw accountingDbError(postError);
 
   return { journalId, status: "posted" };
 }
@@ -150,7 +151,7 @@ export async function postJournal(journalId: string): Promise<void> {
   if (!context) throw new Error("Supabase is not configured");
 
   const { error } = await context.supabase.rpc("accounting_post_journal", { target_journal: journalId });
-  if (error) throw new Error(error.message);
+  if (error) throw accountingDbError(error);
 }
 
 export async function reverseJournal(journalId: string, reason: string | null): Promise<string> {
@@ -162,6 +163,6 @@ export async function reverseJournal(journalId: string, reason: string | null): 
     reversal_date: null,
     reason,
   });
-  if (error) throw new Error(error.message);
+  if (error) throw accountingDbError(error);
   return String(data);
 }

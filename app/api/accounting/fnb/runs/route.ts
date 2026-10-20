@@ -1,14 +1,11 @@
 import { NextResponse } from "next/server";
+import { routeErrorResponse } from "@/lib/api-errors";
 import { listAccountingRuns } from "@/lib/accounting/server";
 
 export async function GET() {
   try {
     return NextResponse.json({ runs: await listAccountingRuns() });
   } catch (error) {
-    const message = error instanceof Error ? error.message : "Unable to load accounting runs.";
-    return NextResponse.json(
-      { error: message },
-      { status: message === "Unauthorized" ? 401 : 500 },
-    );
+    return routeErrorResponse("docucorex.accounting.fnb_runs.get_failed", error, { message: "Unable to load accounting runs." });
   }
 }

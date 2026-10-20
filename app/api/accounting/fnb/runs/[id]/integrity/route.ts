@@ -39,6 +39,6 @@ export async function GET(_request: Request, { params }: { params: Promise<{ id:
     const bytes = new Uint8Array(await data.arrayBuffer());
     return NextResponse.json(inspectDocumentIntegrity(bytes));
   } catch (error) {
-    return errorResponse(error, "Unable to inspect the document.");
+    return errorResponse(error, "Unable to inspect the document.", 500, "docucorex.accounting.integrity_failed");
   }
 }

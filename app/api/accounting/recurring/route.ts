@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { routeErrorResponse } from "@/lib/api-errors";
 import { decideRecurringPattern, getWorkspaceRecurringPatterns } from "@/lib/accounting/server";
 
 /**
@@ -9,16 +10,11 @@ import { decideRecurringPattern, getWorkspaceRecurringPatterns } from "@/lib/acc
  * /fnb/ — a payment rhythm is not bank-specific.
  */
 
-function statusFor(message: string): number {
-  return message === "Unauthorized" ? 401 : 400;
-}
-
 export async function GET() {
   try {
     return NextResponse.json(await getWorkspaceRecurringPatterns());
   } catch (error) {
-    const message = error instanceof Error ? error.message : "Unable to load recurring patterns.";
-    return NextResponse.json({ error: message }, { status: statusFor(message) });
+    return routeErrorResponse("docucorex.accounting.recurring.get_failed", error, { message: "Unable to load recurring patterns." });
   }
 }
 
@@ -38,7 +34,6 @@ export async function POST(request: Request) {
     await decideRecurringPattern(body.merchant, body.status, body.observed);
     return NextResponse.json(await getWorkspaceRecurringPatterns());
   } catch (error) {
-    const message = error instanceof Error ? error.message : "Unable to record the decision.";
-    return NextResponse.json({ error: message }, { status: statusFor(message) });
+    return routeErrorResponse("docucorex.accounting.recurring.post_failed", error, { message: "Unable to record the decision." });
   }
 }

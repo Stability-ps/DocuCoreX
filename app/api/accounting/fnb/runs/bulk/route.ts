@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { routeErrorResponse } from "@/lib/api-errors";
 import { deleteAccountingRuns } from "@/lib/accounting/server";
 
 type BulkBody = {
@@ -17,10 +18,6 @@ export async function DELETE(request: Request) {
     const result = await deleteAccountingRuns(runIds);
     return NextResponse.json(result);
   } catch (error) {
-    const message = error instanceof Error ? error.message : "Unable to delete selected statements.";
-    return NextResponse.json(
-      { error: message },
-      { status: message === "Unauthorized" ? 401 : 500 },
-    );
+    return routeErrorResponse("docucorex.accounting.fnb_runs_bulk.delete_failed", error, { message: "Unable to delete selected statements." });
   }
 }

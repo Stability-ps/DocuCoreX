@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { routeErrorResponse } from "@/lib/api-errors";
 import { getAccountingAuditTrail } from "@/lib/accounting/server";
 
 /**
@@ -16,7 +17,6 @@ export async function GET(request: Request) {
   try {
     return NextResponse.json({ entries: await getAccountingAuditTrail({ entityId, limit }) });
   } catch (error) {
-    const message = error instanceof Error ? error.message : "Unable to load the audit trail.";
-    return NextResponse.json({ error: message }, { status: message === "Unauthorized" ? 401 : 400 });
+    return routeErrorResponse("docucorex.accounting.audit_trail.get_failed", error, { message: "Unable to load the audit trail." });
   }
 }

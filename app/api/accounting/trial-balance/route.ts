@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { routeErrorResponse } from "@/lib/api-errors";
 import { getTrialBalance } from "@/lib/accounting/ledger-server";
 import { toCsv, trialBalanceTotals } from "@/lib/accounting/ledger";
 
@@ -9,12 +10,6 @@ import { toCsv, trialBalanceTotals } from "@/lib/accounting/ledger";
  * ledger — adjustments are journals, so excluding them is a filter, not a
  * second stored balance set that could disagree.
  */
-function statusFor(message: string): number {
-  if (message === "Unauthorized") return 401;
-  if (message === "Entity not found in this workspace.") return 404;
-  return 500;
-}
-
 export async function GET(request: Request) {
   const url = new URL(request.url);
   const companyId = url.searchParams.get("companyId");
@@ -51,7 +46,6 @@ export async function GET(request: Request) {
 
     return NextResponse.json({ rows, totals });
   } catch (error) {
-    const message = error instanceof Error ? error.message : "Unable to load the trial balance.";
-    return NextResponse.json({ error: message }, { status: statusFor(message) });
+    return routeErrorResponse("docucorex.accounting.trial_balance.get_failed", error, { message: "Unable to load the trial balance." });
   }
 }

@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { routeErrorResponse } from "@/lib/api-errors";
 import {
   createFixedAsset,
   disposeFixedAsset,
@@ -13,13 +14,6 @@ import {
  * journal balances or that a period is open to post into; the existing gate
  * decides both.
  */
-function statusFor(message: string): number {
-  if (message === "Unauthorized") return 401;
-  if (message === "Entity not found in this workspace." || message === "Fixed asset not found.") return 404;
-  if (/already been disposed|proceeds were received|does not balance|is locked|unposted/i.test(message)) return 422;
-  return 500;
-}
-
 export async function GET(request: Request) {
   const url = new URL(request.url);
   const companyId = url.searchParams.get("companyId");
@@ -37,8 +31,7 @@ export async function GET(request: Request) {
     const asAt = url.searchParams.get("asAt") ?? undefined;
     return NextResponse.json({ assets: await listFixedAssets(companyId, asAt) });
   } catch (error) {
-    const message = error instanceof Error ? error.message : "Unable to load fixed assets.";
-    return NextResponse.json({ error: message }, { status: statusFor(message) });
+    return routeErrorResponse("docucorex.accounting.fixed_assets.get_failed", error, { message: "Unable to load fixed assets." });
   }
 }
 
@@ -121,7 +114,6 @@ export async function POST(request: Request) {
         return NextResponse.json({ error: "Unknown action." }, { status: 400 });
     }
   } catch (error) {
-    const message = error instanceof Error ? error.message : "Unable to update fixed assets.";
-    return NextResponse.json({ error: message }, { status: statusFor(message) });
+    return routeErrorResponse("docucorex.accounting.fixed_assets.post_failed", error, { message: "Unable to update fixed assets." });
   }
 }

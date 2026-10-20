@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { routeErrorResponse } from "@/lib/api-errors";
 import { parseCsvWithHeader } from "@/lib/accounting/csv";
 import { readCoaImportRow, summariseCoaOutcomes } from "@/lib/accounting/coa-import";
 import { commitCoaImport, previewCoaImport } from "@/lib/accounting/coa-import-server";
@@ -10,12 +11,6 @@ import { commitCoaImport, previewCoaImport } from "@/lib/accounting/coa-import-s
  * validator (coa-import.ts) — commit never trusts a client-supplied "these
  * rows were valid" list from an earlier preview call.
  */
-function statusFor(message: string): number {
-  if (message === "Unauthorized") return 401;
-  if (message === "Entity not found in this workspace.") return 404;
-  return 500;
-}
-
 export async function POST(request: Request) {
   const body = (await request.json().catch(() => ({}))) as Record<string, unknown>;
   const action = typeof body.action === "string" ? body.action : "";
@@ -46,7 +41,6 @@ export async function POST(request: Request) {
         return NextResponse.json({ error: "Unknown action." }, { status: 400 });
     }
   } catch (error) {
-    const message = error instanceof Error ? error.message : "Unable to process the import.";
-    return NextResponse.json({ error: message }, { status: statusFor(message) });
+    return routeErrorResponse("docucorex.accounting.coa_import.post_failed", error, { message: "Unable to process the import." });
   }
 }

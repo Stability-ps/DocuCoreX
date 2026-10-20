@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { routeErrorResponse } from "@/lib/api-errors";
 import { getWorkspaceCashflow } from "@/lib/accounting/server";
 
 /**
@@ -11,7 +12,6 @@ export async function GET() {
   try {
     return NextResponse.json(await getWorkspaceCashflow());
   } catch (error) {
-    const message = error instanceof Error ? error.message : "Unable to load cashflow.";
-    return NextResponse.json({ error: message }, { status: message === "Unauthorized" ? 401 : 400 });
+    return routeErrorResponse("docucorex.accounting.cashflow.get_failed", error, { message: "Unable to load cashflow." });
   }
 }

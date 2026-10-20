@@ -1,3 +1,4 @@
+import { forbiddenError } from "@/lib/accounting/errors";
 import { getWorkspaceContext } from "@/lib/server-documents";
 
 export async function assertWorkspaceAdmin() {
@@ -16,7 +17,7 @@ export async function assertWorkspaceAdmin() {
   const isAdminRole = role === "admin" || role === "owner";
 
   if (!isOwner && !isAdminRole) {
-    throw new Error("Forbidden");
+    throw forbiddenError("Forbidden");
   }
 
   return context;
