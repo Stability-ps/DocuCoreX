@@ -95,13 +95,16 @@ function openAiConfigured(): boolean {
  */
 export async function extractDocument(
   document: Pick<DocumentRecord, "id" | "workspaceId" | "name" | "storagePath" | "mimeType"> & { detectedType?: DocumentType },
-  options: { useOpenAI: boolean; enhanced?: boolean },
+  // allowExternalProviders is the workspace's choice (lib/privacy/external-processing.ts).
+  // When false, nothing leaves DocuCoreX: no OpenAI, and no Azure or Mistral in the pipeline.
+  options: { useOpenAI: boolean; enhanced?: boolean; allowExternalProviders: boolean },
 ): Promise<DocumentExtraction> {
   const bytes = await loadDocumentBytes(document.storagePath, document.workspaceId);
   if (!bytes || !bytes.length) {
     throw new Error("Original document bytes are unavailable for extraction.");
   }
   const enhanced = options.enhanced === true;
+  const useOpenAI = options.useOpenAI && options.allowExternalProviders;
   const fileHash = computeFileHash(bytes);
   // Only apply the statement checks (transaction rows, opening/closing balance,
   // reconciliation) when the document IS a bank statement. Applying them to an
@@ -113,7 +116,7 @@ export async function extractDocument(
   // satisfied by a standard result that skipped the secondary OCR engine. The
   // expectation is part of the key too: reclassifying a document as a statement
   // must not reuse a result that was accepted under the laxer checks.
-  const cacheKey = `${document.id}:${fileHash}:${options.useOpenAI ? "ai" : "det"}:${enhanced ? "enh" : "std"}:${expect}`;
+  const cacheKey = `${document.id}:${fileHash}:${useOpenAI ? "ai" : "det"}:${enhanced ? "enh" : "std"}:${expect}`;
   const cached = cache.get(cacheKey);
   if (cached) return cached;
 
@@ -121,7 +124,7 @@ export async function extractDocument(
   const isImage = (document.mimeType ?? "").startsWith("image/");
   // Images never enter the PDF pipeline: it cannot parse them, and every PNG
   // or JPEG upload came back with no text at all (production, 2026-10-08).
-  const pipeline = isImage ? null : await runExtractionPipeline(bytes, fileName, { documentId: document.id, fileHash, enhancedOcr: enhanced, expect });
+  const pipeline = isImage ? null : await runExtractionPipeline(bytes, fileName, { documentId: document.id, fileHash, enhancedOcr: enhanced, expect, allowExternalProviders: options.allowExternalProviders });
 
   const warnings = [...(pipeline?.warnings ?? [])];
   let text = pipeline?.merged.combinedText ?? "";
@@ -137,7 +140,7 @@ export async function extractDocument(
   let openaiCostUsd = 0;
 
   if (isImage) {
-    const image = await transcribeImage(document.id, bytes, document.mimeType, fileName, options.useOpenAI && openAiConfigured());
+    const image = await transcribeImage(document.id, bytes, document.mimeType, fileName, useOpenAI && openAiConfigured());
     text = image.text;
     method = image.method;
     openaiCostUsd += image.costUsd;
@@ -145,7 +148,7 @@ export async function extractDocument(
   }
 
   // Scanned path: OpenAI vision, with Tesseract (already in `text`) as the fallback.
-  if (pipeline && options.useOpenAI && openAiConfigured() && pipeline.analysis.kind === "scanned") {
+  if (pipeline && useOpenAI && openAiConfigured() && pipeline.analysis.kind === "scanned") {
     try {
       const images = rasterizePdfToImages(bytes, { dpi: 150, maxPages: 10 });
       if (images.length) {
@@ -180,7 +183,7 @@ export async function extractDocument(
   // Structured extraction: OpenAI when available, else the pipeline's deterministic transactions.
   let structured: StructuredExtraction | null = null;
   let aiWarning: string | null = null;
-  if (options.useOpenAI && openAiConfigured() && text.trim().length > 0) {
+  if (useOpenAI && openAiConfigured() && text.trim().length > 0) {
     try {
       const run = await runStructuredExtraction(text);
       structured = run.data;

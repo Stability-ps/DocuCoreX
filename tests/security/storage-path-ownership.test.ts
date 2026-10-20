@@ -42,6 +42,32 @@ test("anything else is refused", () => {
   assert.equal(isWorkspaceStoragePath(`${WS}/documents/a.pdf`, null), false);
 });
 
+test("encoded or unusual characters are refused, so nothing is decoded into another folder", () => {
+  // Found by the 2026-10-19 audit: "%2e%2e" passed a deny-list of "." and "..",
+  // and the storage client's URL then normalised it into "..".
+  for (const path of [
+    `${WS}/%2e%2e/${OTHER}/documents/a.pdf`,
+    `${WS}/%2E%2E/${OTHER}/documents/a.pdf`,
+    `${WS}/documents%2f..%2f..%2f${OTHER}/a.pdf`,
+    `${WS}/documents/a.pdf?x=../../${OTHER}`,
+    `${WS}/documents/a.pdf#../${OTHER}`,
+    `${WS}/documents/a file.pdf`,
+    `${WS}/documents/naïve.pdf`,
+    // Double encoding, mixed encodings and look-alike dots.
+    `${WS}/%252e%252e/${OTHER}/documents/a.pdf`,
+    `${WS}/..%2f${OTHER}/documents/a.pdf`,
+    `${WS}/%2e./${OTHER}/documents/a.pdf`,
+    `${WS}/.%2e/${OTHER}/documents/a.pdf`,
+    `${WS}/\uff0e\uff0e/${OTHER}/documents/a.pdf`,
+    `${WS}/documents/a.pdf%00.png`,
+    `${WS}/documents/a.pdf\n`,
+  ]) {
+    assert.equal(isWorkspaceStoragePath(path, WS), false, path);
+  }
+  // What the app actually writes still passes.
+  assert.equal(isWorkspaceStoragePath(`${WS}/documents/0b6f-uuid-Bank_Statement.March-2026.pdf`, WS), true);
+});
+
 test("the assertion throws a typed error and never logs the path", () => {
   const original = console.error;
   const lines: string[] = [];

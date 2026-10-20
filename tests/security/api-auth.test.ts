@@ -79,3 +79,21 @@ for (const route of routes) {
     assert.ok(wrapped || resolved || caught, `${route} must use withUnauthorized, resolveWorkspaceContext or errorResponse`);
   });
 }
+
+test("routes that resolve a session map a signed-out request to 401, not 500", () => {
+  // Found by a production smoke test on 2026-10-19: these answered anonymous
+  // requests with 500 because the "Unauthorized" thrown by getWorkspaceContext
+  // reached a generic catch (or no catch at all).
+  const read = (p: string) => readFileSync(new URL(`../../${p}`, import.meta.url), "utf8");
+  const documents = read("app/api/documents/[id]/route.ts");
+  for (const verb of ["GET", "PATCH", "DELETE"]) {
+    assert.match(documents, new RegExp(`export const ${verb} = withUnauthorized\\(handle${verb}\\);`));
+  }
+  for (const route of [
+    "app/api/accounting/fnb/export/[runId]/route.ts",
+    "app/api/accounting/fnb/runs/[id]/integrity/route.ts",
+    "app/api/accounting/fnb/process/route.ts",
+  ]) {
+    assert.match(read(route), /return errorResponse\(error, "Unable to /, `${route} must route its catch through errorResponse`);
+  }
+});

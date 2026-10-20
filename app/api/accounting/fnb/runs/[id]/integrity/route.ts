@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { errorResponse } from "@/lib/api-auth";
 import { getAccountingRunDetail } from "@/lib/accounting/server";
 import { getWorkspaceContext } from "@/lib/server-documents";
 import { inspectDocumentIntegrity } from "@/lib/pdf/documentIntegrity";
@@ -32,7 +33,6 @@ export async function GET(_request: Request, { params }: { params: Promise<{ id:
     const bytes = new Uint8Array(await data.arrayBuffer());
     return NextResponse.json(inspectDocumentIntegrity(bytes));
   } catch (error) {
-    const message = error instanceof Error ? error.message : "Unable to inspect the document.";
-    return NextResponse.json({ error: message }, { status: 500 });
+    return errorResponse(error, "Unable to inspect the document.");
   }
 }

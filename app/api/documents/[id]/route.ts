@@ -1,9 +1,10 @@
 import { NextResponse } from "next/server";
+import { withUnauthorized } from "@/lib/api-auth";
 import { recordAuditLog } from "@/lib/audit";
 import { deleteDocument, getDocumentWithJobs, patchDocument } from "@/lib/server-documents";
 import type { DocumentRecord } from "@/lib/types";
 
-export async function GET(_request: Request, { params }: { params: Promise<{ id: string }> }) {
+async function handleGET(_request: Request, { params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
   const result = await getDocumentWithJobs(id);
 
@@ -16,7 +17,7 @@ export async function GET(_request: Request, { params }: { params: Promise<{ id:
   return NextResponse.json(result);
 }
 
-export async function PATCH(request: Request, { params }: { params: Promise<{ id: string }> }) {
+async function handlePATCH(request: Request, { params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
   const body = (await request.json().catch(() => ({}))) as Partial<
     Pick<DocumentRecord, "name" | "starred" | "shared" | "tags" | "status" | "deletedAt" | "folderId">
@@ -49,7 +50,7 @@ export async function PATCH(request: Request, { params }: { params: Promise<{ id
   return NextResponse.json({ document });
 }
 
-export async function DELETE(_request: Request, { params }: { params: Promise<{ id: string }> }) {
+async function handleDELETE(_request: Request, { params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
   const deleted = await deleteDocument(id);
 
@@ -61,3 +62,9 @@ export async function DELETE(_request: Request, { params }: { params: Promise<{ 
 
   return NextResponse.json({ deleted: true });
 }
+
+// A signed-out request is a 401, not an unhandled 500: the helpers above throw
+// "Unauthorized" when there is no session.
+export const GET = withUnauthorized(handleGET);
+export const PATCH = withUnauthorized(handlePATCH);
+export const DELETE = withUnauthorized(handleDELETE);

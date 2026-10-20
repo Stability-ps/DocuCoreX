@@ -10,12 +10,18 @@
 // Mirrors the rule migration 053 enforces in the database, and the accounting
 // worker's storage_path_belongs_to_workspace.
 
+// Each segment may contain only the characters DocuCoreX itself writes into
+// object names (letters, digits, ".", "_", "-"). An allow-list, not a deny-list:
+// the storage client puts the path into a URL unencoded, so "%2e%2e" (or "?",
+// "#", a space) would be decoded or reinterpreted AFTER this check and could
+// still climb into another workspace's folder (found 2026-10-19).
+const SAFE_SEGMENT = /^[A-Za-z0-9._-]+$/;
+
 export function isWorkspaceStoragePath(path: unknown, workspaceId: string | null | undefined): path is string {
   if (typeof path !== "string" || !workspaceId) return false;
-  if (path.includes("\\") || path.includes("\0")) return false;
   const segments = path.split("/");
   if (segments.length < 2 || segments[0] !== workspaceId) return false;
-  return segments.every((segment) => segment.length > 0 && segment !== "." && segment !== "..");
+  return segments.every((segment) => SAFE_SEGMENT.test(segment) && segment !== "." && segment !== "..");
 }
 
 export class ForeignStoragePathError extends Error {
