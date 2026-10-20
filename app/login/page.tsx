@@ -9,6 +9,7 @@ import { isDemoAllowed, isSupabaseConfigured, supabase } from "@/lib/supabase";
 import { profileChecklist } from "@/lib/product-data";
 import { clearDocucorexClientCache } from "@/lib/client-cache";
 import { safeNextPath } from "@/lib/safe-redirect";
+import { passwordResetMessage } from "@/lib/auth-errors";
 
 function LoginContent() {
   const searchParams = useSearchParams();
@@ -144,13 +145,9 @@ function LoginContent() {
         redirectTo: `${window.location.origin}/auth/callback?next=${encodeURIComponent("/auth/reset-password")}`,
       });
 
-      if (result.error) {
-        setStatus(result.error.message);
-        setIsSubmitting(false);
-        return;
-      }
-
-      setStatus("Recovery link sent. Check your inbox for the secure reset email.");
+      // Never says whether the address has an account, and never shows raw
+      // Auth text (lib/auth-errors.ts).
+      setStatus(passwordResetMessage(result.error));
       setIsSubmitting(false);
       return;
     }

@@ -8,6 +8,7 @@ import type { DocumentRecord } from "@/lib/types";
 import { recordAuditLog } from "@/lib/audit";
 import { createWorkflowAdapters } from "@/lib/workflow-adapters";
 import { settleUploadJobs } from "@/lib/jobs/settle-upload";
+import { userSafeJobError } from "@/lib/jobs/job-error";
 
 export type ProcessingType = "ocr" | "extraction";
 
@@ -160,7 +161,7 @@ export async function runOcrJob(context: WorkspaceContext, document: DocumentRec
     await finalizeDocumentStatus(context, document.id);
     await recordAuditLog({ action: "extraction_completed", entityType: "document", entityId: document.id, metadata: { stage: "ocr", provider: adapters.ocr.name, confidence: ocr.confidence } });
   } catch (error) {
-    await failJob(context, jobId, document.id, error instanceof Error ? error.message : "OCR failed");
+    await failJob(context, jobId, document.id, userSafeJobError(error, "ocr", { jobId, documentId: document.id }));
   }
 }
 
@@ -180,6 +181,6 @@ export async function runExtractionJob(context: WorkspaceContext, document: Docu
     await finalizeDocumentStatus(context, document.id);
     await recordAuditLog({ action: "extraction_completed", entityType: "document", entityId: document.id, metadata: { provider: extraction.fields?.provider ?? "unknown", confidence: extraction.confidence } });
   } catch (error) {
-    await failJob(context, jobId, document.id, error instanceof Error ? error.message : "Extraction failed");
+    await failJob(context, jobId, document.id, userSafeJobError(error, "extraction", { jobId, documentId: document.id }));
   }
 }

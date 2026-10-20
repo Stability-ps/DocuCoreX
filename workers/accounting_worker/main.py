@@ -6006,7 +6006,8 @@ def combine_fnb_statements(payload: CombineRequest, authorization: str | None = 
       raise
     except Exception as exc:
       log_exception("worker.combine_failed", workspace_id=payload.workspace_id, run_ids=payload.run_ids, error=str(exc))
-      raise HTTPException(status_code=422, detail=str(exc))
+      # The detail is logged above; the caller shows this one to the user.
+      raise HTTPException(status_code=422, detail="Unable to combine the selected statements. Please try again.")
 
 
 @app.exception_handler(RequestValidationError)
@@ -6849,8 +6850,14 @@ def process_fnb_statement(payload: ProcessRequest, authorization: str | None = H
             ).eq("id", payload.processing_job_id).execute()
         raise exc
     except Exception as exc:
-        message = str(exc)
-        record_parser_failure(supabase, payload.workspace_id, bank_name, message)
+        # Unexpected, unlike the HTTPException verdicts above: str(exc) is often
+        # a PostgREST/Storage message or a stack-adjacent detail, and the run's
+        # error, the job row and parser health are all shown in the workspace.
+        # The detail stays in the log; what is stored is a fixed sentence (and
+        # the exception class, so parser health can still group failures).
+        detail = str(exc)
+        message = "Statement processing failed unexpectedly. Please try again, or contact support if it keeps failing."
+        record_parser_failure(supabase, payload.workspace_id, bank_name, f"Unexpected {type(exc).__name__}")
         log_exception(
             "worker.process_failed",
             run_id=payload.run_id,
@@ -6858,7 +6865,7 @@ def process_fnb_statement(payload: ProcessRequest, authorization: str | None = H
             document_id=payload.document_id,
             processing_job_id=payload.processing_job_id,
             storage_path=payload.storage_path,
-            error=message,
+            error=detail,
         )
         _write_terminal_run_state(
             supabase,

@@ -3,6 +3,7 @@ import { isAuthRequired, isDemoAllowed } from "@/lib/supabase";
 import { createSupabaseServerClient } from "@/lib/supabase-server";
 import { createDocumentVersionRecord, createWorkspaceBucketPath } from "@/lib/supabase-server-adapter";
 import { ensureUserWorkspace } from "@/lib/workspace-bootstrap";
+import { UserFacingError } from "@/lib/user-facing-error";
 import {
   createProcessingJob,
   deleteDocumentRecord,
@@ -135,26 +136,26 @@ const allowedMimeTypes = new Set([
 
 export function validateUploadFiles(files: UploadFileInput[]) {
   if (!files.length) {
-    throw new Error("At least one file is required.");
+    throw new UserFacingError("At least one file is required.");
   }
 
   for (const file of files) {
     const mimeType = getMimeType(file);
 
     if (!file.name || !allowedExtensions.test(file.name)) {
-      throw new Error(`${file.name || "File"} is not a supported file type.`);
+      throw new UserFacingError(`${file.name || "File"} is not a supported file type.`);
     }
 
     if (file.size <= 0) {
-      throw new Error(`${file.name} is empty.`);
+      throw new UserFacingError(`${file.name} is empty.`);
     }
 
     if (file.size > maxUploadBytes) {
-      throw new Error(`${file.name} is larger than the 200 MB upload limit.`);
+      throw new UserFacingError(`${file.name} is larger than the 200 MB upload limit.`);
     }
 
     if (mimeType !== "application/octet-stream" && !allowedMimeTypes.has(mimeType)) {
-      throw new Error(`${file.name} has an unsupported MIME type.`);
+      throw new UserFacingError(`${file.name} has an unsupported MIME type.`);
     }
   }
 }
@@ -229,7 +230,7 @@ export async function getWorkspaceContext(): Promise<WorkspaceContext | null> {
       return null;
     }
 
-    throw new Error("Your workspace is not ready yet. Please refresh or contact support if this continues.");
+    throw new UserFacingError("Your workspace is not ready yet. Please refresh or contact support if this continues.", { status: 503, code: "WORKSPACE_NOT_READY" });
   }
 
   return {

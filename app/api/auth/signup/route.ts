@@ -4,6 +4,7 @@ import { NextRequest, NextResponse } from "next/server";
 import type { CookieOptions } from "@supabase/ssr";
 import { dedupeCookies, setSupabaseAuthCookie } from "@/lib/auth-cookies";
 import { enforceRateLimit } from "@/lib/shared-rate-limit";
+import { signUpErrorResponse } from "@/lib/auth-errors";
 
 export async function POST(request: NextRequest) {
   const limited = await enforceRateLimit("signup", { request }, "Too many sign-up attempts from this address. Try again later.");
@@ -58,9 +59,13 @@ export async function POST(request: NextRequest) {
     });
 
     if (error) {
+      // Validation verdicts keep their wording; anything else (SMTP, a database
+      // trigger) is logged and answered generically (lib/auth-errors.ts).
+      const failure = signUpErrorResponse(error);
+      console.warn("[Auth Signup] Sign-up refused:", { status: error.status ?? null, code: error.code ?? null, message: error.message });
       return NextResponse.json(
-        { error: error.message },
-        { status: 400 }
+        { error: failure.message },
+        { status: failure.status }
       );
     }
 

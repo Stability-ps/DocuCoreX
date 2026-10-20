@@ -8,6 +8,7 @@
 // No document content or extracted values are logged.
 import type { DocumentRecord, DocumentType } from "@/lib/types";
 import { loadDocumentBytes } from "@/lib/ocr/loadDocumentBytes";
+import { UserFacingError } from "@/lib/user-facing-error";
 import { computeFileHash } from "@/lib/pdf/extractionCache";
 import { runExtractionPipeline } from "@/lib/pdf/runExtractionPipeline";
 import type { OcrEngineId } from "@/lib/pdf/types";
@@ -78,7 +79,7 @@ async function transcribeImage(
   const extension = fileName.includes(".") ? fileName.slice(fileName.lastIndexOf(".") + 1) : mimeType.split("/")[1] ?? "png";
   const tesseract = runTesseractOnImage(bytes, extension);
   if (!tesseract) {
-    throw new Error("Image text recognition is unavailable here: AI vision is not configured and Tesseract is not installed.");
+    throw new UserFacingError("Image text recognition is unavailable here: AI vision is not configured and Tesseract is not installed.");
   }
   return { text: tesseract.text, method: "tesseract", costUsd: 0, warnings };
 }
@@ -177,7 +178,7 @@ export async function extractDocument(
   // Nothing readable at all is a failed job with a reason, not an empty
   // extraction on a document shown as "ready".
   if (!text.trim()) {
-    throw new Error("No text could be read from this document.");
+    throw new UserFacingError("No text could be read from this document.");
   }
 
   // Structured extraction: OpenAI when available, else the pipeline's deterministic transactions.

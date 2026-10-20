@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { errorResponse } from "@/lib/api-auth";
+import { routeErrorResponse } from "@/lib/api-errors";
 import { recordAuditLog } from "@/lib/audit";
 import { createCompany, listCompanies } from "@/lib/companies";
 import type { CompanyProfileInput } from "@/lib/companies";
@@ -8,7 +8,7 @@ export async function GET() {
   try {
     return NextResponse.json({ companies: await listCompanies() });
   } catch (error) {
-    return errorResponse(error, "Unable to load company profiles");
+    return routeErrorResponse("docucorex.companies.list_failed", error, { message: "Unable to load company profiles." });
   }
 }
 
@@ -37,6 +37,6 @@ export async function POST(request: Request) {
 
     return NextResponse.json({ company });
   } catch (error) {
-    return NextResponse.json({ error: error instanceof Error ? error.message : "Unable to create company profile" }, { status: 400 });
+    return routeErrorResponse("docucorex.companies.create_failed", error, { message: "Unable to create the company profile. Please try again." });
   }
 }
