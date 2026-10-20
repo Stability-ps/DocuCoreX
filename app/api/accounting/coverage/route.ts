@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { routeErrorResponse } from "@/lib/api-errors";
 import { getWorkspaceCoverage, saveWorkspaceEngagement } from "@/lib/accounting/server";
 
 /**
@@ -9,16 +10,11 @@ import { getWorkspaceCoverage, saveWorkspaceEngagement } from "@/lib/accounting/
  * month is missing has nothing to do with which bank issued it.
  */
 
-function statusFor(message: string): number {
-  return message === "Unauthorized" ? 401 : 400;
-}
-
 export async function GET() {
   try {
     return NextResponse.json(await getWorkspaceCoverage());
   } catch (error) {
-    const message = error instanceof Error ? error.message : "Unable to load statement coverage.";
-    return NextResponse.json({ error: message }, { status: statusFor(message) });
+    return routeErrorResponse("docucorex.accounting.coverage.get_failed", error, { message: "Unable to load statement coverage." });
   }
 }
 
@@ -44,7 +40,6 @@ export async function PUT(request: Request) {
     });
     return NextResponse.json(await getWorkspaceCoverage());
   } catch (error) {
-    const message = error instanceof Error ? error.message : "Unable to save the engagement.";
-    return NextResponse.json({ error: message }, { status: statusFor(message) });
+    return routeErrorResponse("docucorex.accounting.coverage.put_failed", error, { message: "Unable to save the engagement." });
   }
 }

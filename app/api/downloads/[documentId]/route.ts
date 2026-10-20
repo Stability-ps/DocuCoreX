@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { databaseErrorResponse } from "@/lib/api-errors";
 import { resolveWorkspaceContext } from "@/lib/api-auth";
 import { getDocumentDownloads } from "@/lib/mock-repository";
 
@@ -18,7 +19,7 @@ export async function GET(_request: Request, { params }: { params: Promise<{ doc
     .order("created_at", { ascending: false });
 
   if (error) {
-    return NextResponse.json({ error: error.message }, { status: 500 });
+    return databaseErrorResponse("docucorex.downloads.list_failed", error, { message: "Unable to load downloads.", context: { documentId } });
   }
 
   const downloads = await Promise.all(

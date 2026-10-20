@@ -1,5 +1,7 @@
+import { accountingDbError, notFoundError } from "@/lib/accounting/errors";
 import { randomUUID } from "node:crypto";
 import { recordAuditLog } from "@/lib/audit";
+import { UserFacingError } from "@/lib/user-facing-error";
 import { PENDING_BANK_NAME, PENDING_PARSER_PROFILE } from "@/lib/accounting/engine/bank-detection";
 import { BASE_MERCHANT_KNOWLEDGE } from "@/lib/accounting/engine/merchant-kb";
 import { canonicaliseCategory } from "@/lib/accounting/categories";
@@ -479,15 +481,15 @@ async function ensureMerchantKnowledgeBase() {
 
 function assertFnbPdf(file: File) {
   if (!file.name.toLowerCase().endsWith(".pdf") && file.type !== "application/pdf") {
-    throw new Error("Upload a bank statement PDF.");
+    throw new UserFacingError("Upload a bank statement PDF.");
   }
 
   if (file.size <= 0) {
-    throw new Error("The uploaded PDF is empty.");
+    throw new UserFacingError("The uploaded PDF is empty.");
   }
 
   if (file.size > accountingMaxUploadBytes) {
-    throw new Error("The statement is larger than the 200 MB upload limit.");
+    throw new UserFacingError("The statement is larger than the 200 MB upload limit.");
   }
 }
 
@@ -509,7 +511,7 @@ export async function createFnbAccountingRun(file: File) {
 
   const context = await getWorkspaceContext();
   if (!context) {
-    throw new Error("Sign in is required to upload accounting statements.");
+    throw new UserFacingError("Sign in is required to upload accounting statements.", { status: 401, code: "UNAUTHORIZED" });
   }
 
   const storagePath = accountingStoragePath(context.workspaceId, file.name);
@@ -524,7 +526,7 @@ export async function createFnbAccountingRun(file: File) {
   });
 
   if (upload.error) {
-    throw new Error(upload.error.message);
+    throw accountingDbError(upload.error);
   }
 
   const { data: document, error: documentError } = await context.supabase
@@ -545,7 +547,7 @@ export async function createFnbAccountingRun(file: File) {
     .single();
 
   if (documentError || !document) {
-    throw new Error(documentError?.message ?? "Unable to create accounting document.");
+    throw accountingDbError(documentError ?? { message: "Unable to create accounting document." });
   }
 
   await createDocumentVersionRecord(document.id, storagePath, "Original statement upload");
@@ -574,7 +576,7 @@ export async function createFnbAccountingRun(file: File) {
     .single();
 
   if (jobError || !job) {
-    throw new Error(jobError?.message ?? "Unable to create accounting processing job.");
+    throw accountingDbError(jobError ?? { message: "Unable to create accounting processing job." });
   }
 
   const { data: run, error: runError } = await context.supabase
@@ -594,7 +596,7 @@ export async function createFnbAccountingRun(file: File) {
     .single();
 
   if (runError || !run) {
-    throw new Error(runError?.message ?? "Unable to create accounting statement run.");
+    throw accountingDbError(runError ?? { message: "Unable to create accounting statement run." });
   }
 
   await recordAuditLog({
@@ -629,7 +631,7 @@ export async function listAccountingRuns() {
     .order("created_at", { ascending: false });
 
   if (error) {
-    throw new Error(error.message);
+    throw accountingDbError(error);
   }
 
   const healed = await Promise.all(((data ?? []) as AccountingRunRow[]).map((row) => markRunStuckIfNeeded(context, row)));
@@ -669,7 +671,7 @@ export async function getAccountingRunDetail(runId: string): Promise<AccountingR
     .order("created_at", { ascending: true });
 
   if (transactionError) {
-    throw new Error(transactionError.message);
+    throw accountingDbError(transactionError);
   }
 
   return {
@@ -694,7 +696,7 @@ export async function repairStuckAccountingRuns(options?: { runId?: string }) {
   }
   const { data, error } = await query;
   if (error) {
-    throw new Error(error.message);
+    throw accountingDbError(error);
   }
 
   const rows = (data ?? []) as AccountingRunRow[];
@@ -723,7 +725,7 @@ export async function deleteAccountingRuns(runIds: string[]) {
     .in("id", ids);
 
   if (runError) {
-    throw new Error(runError.message);
+    throw accountingDbError(runError);
   }
 
   const foundRuns = runs ?? [];
@@ -816,7 +818,7 @@ export async function updateAccountingTransaction(transactionId: string, patch: 
     .single();
 
   if (error || !data) {
-    throw new Error(error?.message ?? "Unable to update transaction.");
+    throw accountingDbError(error ?? { message: "Unable to update transaction." });
   }
 
   const transaction = mapTransaction(data as AccountingTransactionRow);
@@ -923,7 +925,7 @@ export async function listAccountingReviewQueue(status?: ReviewQueueStatus): Pro
 
   const { data: rows, error } = await query;
   if (error) {
-    throw new Error(error.message);
+    throw accountingDbError(error);
   }
 
   const runIds = Array.from(new Set((rows ?? []).map((row) => row.run_id))).filter(Boolean);
@@ -978,7 +980,7 @@ export async function updateAccountingReviewWorkflow(transactionId: string, stat
     .single();
 
   if (error || !data) {
-    throw new Error(error?.message ?? "Unable to update review workflow.");
+    throw accountingDbError(error ?? { message: "Unable to update review workflow." });
   }
 
   const transaction = mapTransaction(data as AccountingTransactionRow);
@@ -1014,7 +1016,7 @@ export async function listAccountingReviewComments(transactionId: string) {
     .order("created_at", { ascending: false });
 
   if (error) {
-    throw new Error(error.message);
+    throw accountingDbError(error);
   }
 
   return (data ?? []).map((row) => ({
@@ -1044,7 +1046,7 @@ export async function addAccountingReviewComment(transactionId: string, body: st
     .single();
 
   if (error || !data) {
-    throw new Error(error?.message ?? "Unable to add review comment.");
+    throw accountingDbError(error ?? { message: "Unable to add review comment." });
   }
 
   await recordAuditLog({
@@ -1131,7 +1133,7 @@ export async function addTransactionTag(transactionId: string, rawTag: string): 
   if (!context) throw new Error("Unauthorized");
   const tag = normalizeTag(rawTag);
   const rejection = tagRejection(rawTag);
-  if (rejection) throw new Error(rejection === "empty" ? "A tag cannot be empty." : `A tag cannot exceed ${MAX_TAG_LENGTH} characters.`);
+  if (rejection) throw new UserFacingError(rejection === "empty" ? "A tag cannot be empty." : `A tag cannot exceed ${MAX_TAG_LENGTH} characters.`);
 
   // Confirm the transaction is in this workspace before writing. RLS would
   // reject a foreign id anyway, but a 404 is a truthful answer and an RLS
@@ -1142,7 +1144,7 @@ export async function addTransactionTag(transactionId: string, rawTag: string): 
     .eq("id", transactionId)
     .eq("workspace_id", context.workspaceId)
     .maybeSingle();
-  if (!transaction) throw new Error("Transaction not found.");
+  if (!transaction) throw notFoundError("Transaction not found.");
 
   const { error } = await context.supabase.from("accounting_transaction_tags").insert({
     workspace_id: context.workspaceId,
@@ -1153,7 +1155,7 @@ export async function addTransactionTag(transactionId: string, rawTag: string): 
 
   // 23505 is the case-insensitive unique index: the tag is already there, which
   // is the state the caller asked for. Re-adding is not an error.
-  if (error && error.code !== "23505") throw new Error(error.message);
+  if (error && error.code !== "23505") throw accountingDbError(error);
 
   await recordAccountingActionAudit({
     action: "transaction_tag_added",
@@ -1185,7 +1187,7 @@ export async function removeTransactionTag(transactionId: string, rawTag: string
       .delete()
       .eq("id", match.id as string)
       .eq("workspace_id", context.workspaceId);
-    if (error) throw new Error(error.message);
+    if (error) throw accountingDbError(error);
 
     await recordAccountingActionAudit({
       action: "transaction_tag_removed",
@@ -1294,7 +1296,7 @@ export async function decideTransferMatch(input: {
   if (!context) throw new Error("Unauthorized");
 
   if (input.outboundTransactionId === input.inboundTransactionId) {
-    throw new Error("A transaction cannot be transferred to itself.");
+    throw new UserFacingError("A transaction cannot be transferred to itself.");
   }
 
   // Both legs must belong to this workspace. RLS enforces it too, but a
@@ -1305,7 +1307,7 @@ export async function decideTransferMatch(input: {
     .select("id")
     .eq("workspace_id", context.workspaceId)
     .in("id", [input.outboundTransactionId, input.inboundTransactionId]);
-  if ((legs ?? []).length !== 2) throw new Error("Transaction not found.");
+  if ((legs ?? []).length !== 2) throw notFoundError("Transaction not found.");
 
   const { error } = await context.supabase.from("accounting_transfer_matches").upsert(
     {
@@ -1319,7 +1321,7 @@ export async function decideTransferMatch(input: {
     },
     { onConflict: "outbound_transaction_id,inbound_transaction_id" },
   );
-  if (error) throw new Error(error.message);
+  if (error) throw accountingDbError(error);
 
   // A transfer decision changes reported profit, so it is never anonymous.
   await recordAccountingActionAudit({
@@ -1341,7 +1343,7 @@ export async function clearTransferMatch(outboundTransactionId: string, inboundT
     .eq("workspace_id", context.workspaceId)
     .eq("outbound_transaction_id", outboundTransactionId)
     .eq("inbound_transaction_id", inboundTransactionId);
-  if (error) throw new Error(error.message);
+  if (error) throw accountingDbError(error);
 
   await recordAccountingActionAudit({
     action: "transfer_decision_cleared",
@@ -1410,7 +1412,7 @@ export async function decideRecurringPattern(merchant: string, status: "confirme
   if (!context) throw new Error("Unauthorized");
 
   const trimmed = merchant.trim();
-  if (!trimmed) throw new Error("A merchant is required.");
+  if (!trimmed) throw new UserFacingError("A merchant is required.");
 
   const { error } = await context.supabase.from("accounting_recurring_decisions").upsert(
     {
@@ -1423,7 +1425,7 @@ export async function decideRecurringPattern(merchant: string, status: "confirme
     },
     { onConflict: "workspace_id,merchant" },
   );
-  if (error) throw new Error(error.message);
+  if (error) throw accountingDbError(error);
 
   await recordAccountingActionAudit({
     action: status === "confirmed" ? "recurring_confirmed" : "recurring_dismissed",
@@ -1569,7 +1571,7 @@ export async function saveWorkspaceEngagement(input: {
   if (!context) throw new Error("Unauthorized");
 
   if (input.startDate && input.endDate && input.startDate > input.endDate) {
-    throw new Error("The engagement start date must not be after the end date.");
+    throw new UserFacingError("The engagement start date must not be after the end date.");
   }
 
   const { error } = await context.supabase.from("accounting_engagement").upsert(
@@ -1583,7 +1585,7 @@ export async function saveWorkspaceEngagement(input: {
     },
     { onConflict: "workspace_id" },
   );
-  if (error) throw new Error(error.message);
+  if (error) throw accountingDbError(error);
 
   // Changing the engagement changes which statements are considered owed, so
   // it is recorded like any other decision that moves a reported figure.

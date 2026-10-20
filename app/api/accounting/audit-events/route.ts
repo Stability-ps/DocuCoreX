@@ -1,11 +1,6 @@
 import { NextResponse } from "next/server";
+import { routeErrorResponse } from "@/lib/api-errors";
 import { listAuditEvents } from "@/lib/accounting/audit-trail-server";
-
-function statusFor(message: string): number {
-  if (message === "Unauthorized") return 401;
-  if (message === "Entity not found in this workspace.") return 404;
-  return 500;
-}
 
 export async function GET(request: Request) {
   const url = new URL(request.url);
@@ -24,7 +19,6 @@ export async function GET(request: Request) {
     });
     return NextResponse.json(result);
   } catch (error) {
-    const message = error instanceof Error ? error.message : "Unable to load the audit trail.";
-    return NextResponse.json({ error: message }, { status: statusFor(message) });
+    return routeErrorResponse("docucorex.accounting.audit_events.get_failed", error, { message: "Unable to load the audit trail." });
   }
 }

@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { routeErrorResponse } from "@/lib/api-errors";
 import { clearTransferMatch, decideTransferMatch, getWorkspaceTransferCandidates } from "@/lib/accounting/server";
 
 /**
@@ -9,19 +10,12 @@ import { clearTransferMatch, decideTransferMatch, getWorkspaceTransferCandidates
  * rather than /api/accounting/fnb/... — this is not bank-specific.
  */
 
-function statusFor(message: string): number {
-  if (message === "Unauthorized") return 401;
-  if (message === "Transaction not found.") return 404;
-  return 400;
-}
-
 export async function GET() {
   try {
     const result = await getWorkspaceTransferCandidates();
     return NextResponse.json(result);
   } catch (error) {
-    const message = error instanceof Error ? error.message : "Unable to load transfer candidates.";
-    return NextResponse.json({ error: message }, { status: statusFor(message) });
+    return routeErrorResponse("docucorex.accounting.transfers.get_failed", error, { message: "Unable to load transfer candidates." });
   }
 }
 
@@ -51,8 +45,7 @@ export async function POST(request: Request) {
     });
     return NextResponse.json(await getWorkspaceTransferCandidates());
   } catch (error) {
-    const message = error instanceof Error ? error.message : "Unable to record the transfer decision.";
-    return NextResponse.json({ error: message }, { status: statusFor(message) });
+    return routeErrorResponse("docucorex.accounting.transfers.post_failed", error, { message: "Unable to record the transfer decision." });
   }
 }
 
@@ -69,7 +62,6 @@ export async function DELETE(request: Request) {
     await clearTransferMatch(outbound, inbound);
     return NextResponse.json(await getWorkspaceTransferCandidates());
   } catch (error) {
-    const message = error instanceof Error ? error.message : "Unable to clear the transfer decision.";
-    return NextResponse.json({ error: message }, { status: statusFor(message) });
+    return routeErrorResponse("docucorex.accounting.transfers.delete_failed", error, { message: "Unable to clear the transfer decision." });
   }
 }

@@ -12,6 +12,7 @@
  * asserts it stays the only such reference and that it stays a count.
  */
 
+import { accountingDbError, notFoundError } from "@/lib/accounting/errors";
 import { getWorkspaceContext } from "@/lib/server-documents";
 import type { TaxDirection, VatRegisterRow, VatSummaryRow } from "@/lib/accounting/vat";
 
@@ -21,8 +22,8 @@ async function requireEntity(companyId: string) {
   const { data, error } = await context.supabase
     .from("companies").select("id").eq("id", companyId)
     .eq("workspace_id", context.workspaceId).maybeSingle();
-  if (error) throw new Error(error.message);
-  if (!data) throw new Error("Entity not found in this workspace.");
+  if (error) throw accountingDbError(error);
+  if (!data) throw notFoundError("Entity not found in this workspace.");
   return context;
 }
 
@@ -31,7 +32,7 @@ export async function getVatSummary(companyId: string, from: string, to: string)
   const { data, error } = await context.supabase.rpc("accounting_vat_summary", {
     target_company: companyId, from_date: from, to_date: to,
   });
-  if (error) throw new Error(error.message);
+  if (error) throw accountingDbError(error);
   return ((data ?? []) as Array<Record<string, unknown>>).map((row) => ({
     taxCodeId: String(row.tax_code_id),
     code: String(row.code),
@@ -55,7 +56,7 @@ export async function getVatRegister(
     target_company: companyId, from_date: from, to_date: to,
     page_limit: Math.min(Math.max(limit, 1), 1000), page_offset: Math.max(offset, 0),
   });
-  if (error) throw new Error(error.message);
+  if (error) throw accountingDbError(error);
   const rows = ((data ?? []) as Array<Record<string, unknown>>).map((row) => ({
     postingId: String(row.posting_id),
     postingDate: String(row.posting_date),
@@ -81,7 +82,7 @@ export async function listTaxCodes(companyId: string) {
     .eq("company_id", companyId)
     .order("direction")
     .order("code");
-  if (error) throw new Error(error.message);
+  if (error) throw accountingDbError(error);
   return (data ?? []).map((row) => ({
     id: String(row.id),
     code: String(row.code),

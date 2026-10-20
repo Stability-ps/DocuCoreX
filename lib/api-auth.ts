@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { getWorkspaceContext } from "@/lib/server-documents";
+import { isUserFacingError } from "@/lib/user-facing-error";
 
 // getWorkspaceContext() signals "configured backend, no valid session" by
 // throwing Error("Unauthorized"). Routes that let that escape, or caught it
@@ -15,10 +16,28 @@ export function unauthorizedResponse() {
   return NextResponse.json({ error: "Your session has expired. Sign in again to continue." }, { status: 401 });
 }
 
-/** A caught route error as a response: 401 for a missing session, `status` otherwise. */
-export function errorResponse(error: unknown, fallbackMessage: string, status = 500) {
+/**
+ * A caught route error as a response.
+ *
+ * - A missing session → 401.
+ * - A UserFacingError → its own message, status and code, unchanged: it was
+ *   written for the person using the app (validation, not found, a refused
+ *   posting rule).
+ * - Anything else → `fallbackMessage` with `status` and code INTERNAL_ERROR.
+ *   This used to return `error.message`, which handed PostgREST, Storage and
+ *   worker text (table, column and constraint names, object paths, hosts) to
+ *   the client. The detail is logged under `event` instead.
+ */
+export function errorResponse(error: unknown, fallbackMessage: string, status = 500, event = "docucorex.api.unexpected_error") {
   if (isUnauthorizedError(error)) return unauthorizedResponse();
-  return NextResponse.json({ error: error instanceof Error ? error.message : fallbackMessage }, { status });
+  if (isUserFacingError(error)) {
+    return NextResponse.json({ error: error.message, code: error.code }, { status: error.status });
+  }
+  console.error(event, {
+    name: error instanceof Error ? error.name : typeof error,
+    message: error instanceof Error ? error.message : String(error),
+  });
+  return NextResponse.json({ error: fallbackMessage, code: "INTERNAL_ERROR" }, { status });
 }
 
 /**

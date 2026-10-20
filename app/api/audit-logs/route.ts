@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { databaseErrorResponse } from "@/lib/api-errors";
 import { auditLogs } from "@/lib/mock-repository";
 import { isDemoAllowed, isSupabaseConfigured } from "@/lib/supabase";
 import { getWorkspaceContext } from "@/lib/server-documents";
@@ -25,7 +26,7 @@ export async function GET() {
     .limit(100);
 
   if (error) {
-    return NextResponse.json({ error: error.message }, { status: 500 });
+    return databaseErrorResponse("docucorex.audit_logs.list_failed", error, { message: "Unable to load audit logs." });
   }
 
   return NextResponse.json({ auditLogs: data ?? [] });

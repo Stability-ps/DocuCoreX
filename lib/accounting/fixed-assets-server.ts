@@ -7,6 +7,7 @@
  * balance or period-lock checks that gate already makes.
  */
 
+import { accountingDbError, businessRuleError, notFoundError, rowFailureMessage } from "@/lib/accounting/errors";
 import { getWorkspaceContext } from "@/lib/server-documents";
 import { createJournal } from "@/lib/accounting/journals-server";
 import { disposalEntry, monthlyDepreciationCharge, type DepreciationMethod, type FixedAsset } from "@/lib/accounting/fixed-assets";
@@ -20,8 +21,8 @@ async function requireEntity(companyId: string) {
     .eq("id", companyId)
     .eq("workspace_id", context.workspaceId)
     .maybeSingle();
-  if (error) throw new Error(error.message);
-  if (!data) throw new Error("Entity not found in this workspace.");
+  if (error) throw accountingDbError(error);
+  if (!data) throw notFoundError("Entity not found in this workspace.");
   return context;
 }
 
@@ -53,7 +54,7 @@ export async function listFixedAssets(companyId: string, asAt?: string): Promise
     target_company: companyId,
     as_at: asAt ?? new Date().toISOString().slice(0, 10),
   });
-  if (error) throw new Error(error.message);
+  if (error) throw accountingDbError(error);
   return (data ?? []).map(mapAsset);
 }
 
@@ -89,7 +90,7 @@ export async function createFixedAsset(input: {
     .select("id")
     .single();
 
-  if (error) throw new Error(error.message);
+  if (error) throw accountingDbError(error);
   return String(data.id);
 }
 
@@ -192,11 +193,14 @@ export async function runDepreciationBatch(input: {
         movement_type: "depreciation",
         movement_date: monthEndDate,
       });
-      if (movementError) throw new Error(movementError.message);
+      if (movementError) throw accountingDbError(movementError);
 
       posted.push(entry.assetId);
     } catch (error) {
-      failed.push({ assetId: entry.assetId, message: error instanceof Error ? error.message : "Unable to post depreciation." });
+      failed.push({
+        assetId: entry.assetId,
+        message: rowFailureMessage("docucorex.accounting.depreciation_post_failed", error, "Unable to post depreciation.", { assetId: entry.assetId }),
+      });
     }
   }
 
@@ -215,10 +219,10 @@ export async function disposeFixedAsset(input: {
 
   const assets = await listFixedAssets(input.companyId, input.disposalDate);
   const asset = assets.find((candidate) => candidate.id === input.assetId);
-  if (!asset) throw new Error("Fixed asset not found.");
-  if (asset.disposalDate) throw new Error("This asset has already been disposed.");
+  if (!asset) throw notFoundError("Fixed asset not found.");
+  if (asset.disposalDate) throw businessRuleError("This asset has already been disposed.");
   if (input.proceeds > 0 && !input.proceedsAccountId) {
-    throw new Error("An account is required for where the proceeds were received.");
+    throw businessRuleError("An account is required for where the proceeds were received.");
   }
 
   const entry = disposalEntry({ cost: asset.cost, accumulatedDepreciation: asset.accumulatedDepreciation, proceeds: input.proceeds });
@@ -254,11 +258,11 @@ export async function disposeFixedAsset(input: {
     movement_type: "disposal",
     movement_date: input.disposalDate,
   });
-  if (movementError) throw new Error(movementError.message);
+  if (movementError) throw accountingDbError(movementError);
 
   const { error: updateError } = await context.supabase
     .from("accounting_fixed_assets")
     .update({ disposal_date: input.disposalDate, disposal_proceeds: input.proceeds, is_active: false, updated_at: new Date().toISOString() })
     .eq("id", input.assetId);
-  if (updateError) throw new Error(updateError.message);
+  if (updateError) throw accountingDbError(updateError);
 }

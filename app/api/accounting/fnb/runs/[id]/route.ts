@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { routeErrorResponse } from "@/lib/api-errors";
 import { deleteAccountingRuns, getAccountingRunDetail, getRunTransactionTags, getWorkspaceTagVocabulary } from "@/lib/accounting/server";
 
 export async function GET(_request: Request, { params }: { params: Promise<{ id: string }> }) {
@@ -17,11 +18,7 @@ export async function GET(_request: Request, { params }: { params: Promise<{ id:
     const [tags, tagVocabulary] = await Promise.all([getRunTransactionTags(id), getWorkspaceTagVocabulary()]);
     return NextResponse.json({ ...detail, tags, tagVocabulary });
   } catch (error) {
-    const message = error instanceof Error ? error.message : "Unable to load accounting run.";
-    return NextResponse.json(
-      { error: message },
-      { status: message === "Unauthorized" ? 401 : 500 },
-    );
+    return routeErrorResponse("docucorex.accounting.fnb_runs_id.get_failed", error, { message: "Unable to load accounting run." });
   }
 }
 
@@ -36,10 +33,6 @@ export async function DELETE(_request: Request, { params }: { params: Promise<{ 
 
     return NextResponse.json(result);
   } catch (error) {
-    const message = error instanceof Error ? error.message : "Unable to delete accounting run.";
-    return NextResponse.json(
-      { error: message },
-      { status: message === "Unauthorized" ? 401 : 500 },
-    );
+    return routeErrorResponse("docucorex.accounting.fnb_runs_id.delete_failed", error, { message: "Unable to delete accounting run." });
   }
 }

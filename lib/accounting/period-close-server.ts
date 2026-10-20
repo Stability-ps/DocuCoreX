@@ -7,6 +7,7 @@
  * judgment here would create a second opinion about when books may be closed.
  */
 
+import { accountingDbError, notFoundError } from "@/lib/accounting/errors";
 import { getWorkspaceContext } from "@/lib/server-documents";
 import type { AccountingPeriod, PeriodReadiness, PeriodStatus } from "@/lib/accounting/period-close";
 
@@ -19,8 +20,8 @@ async function requireEntity(companyId: string) {
     .eq("id", companyId)
     .eq("workspace_id", context.workspaceId)
     .maybeSingle();
-  if (error) throw new Error(error.message);
-  if (!data) throw new Error("Entity not found in this workspace.");
+  if (error) throw accountingDbError(error);
+  if (!data) throw notFoundError("Entity not found in this workspace.");
   return context;
 }
 
@@ -43,7 +44,7 @@ export async function listAccountingPeriods(companyId: string): Promise<Accounti
     .select("*")
     .eq("company_id", companyId)
     .order("period_start", { ascending: false });
-  if (error) throw new Error(error.message);
+  if (error) throw accountingDbError(error);
   return (data ?? []).map(mapPeriod);
 }
 
@@ -52,7 +53,7 @@ export async function getPeriodReadiness(companyId: string, from: string, to: st
   const { data, error } = await context.supabase
     .rpc("accounting_period_close_readiness", { target_company: companyId, from_date: from, to_date: to })
     .maybeSingle();
-  if (error) throw new Error(error.message);
+  if (error) throw accountingDbError(error);
   return {
     unpostedJournalCount: Number((data as Record<string, unknown> | null)?.unposted_journal_count ?? 0),
     openReconciliationCount: Number((data as Record<string, unknown> | null)?.open_reconciliation_count ?? 0),
@@ -75,7 +76,7 @@ export async function closeAccountingPeriod(input: {
     target_status: input.status,
     note_input: input.note ?? null,
   });
-  if (error) throw new Error(error.message);
+  if (error) throw accountingDbError(error);
   return String(data);
 }
 
@@ -86,5 +87,5 @@ export async function reopenAccountingPeriod(periodId: string, reason: string): 
     target_period: periodId,
     reason,
   });
-  if (error) throw new Error(error.message);
+  if (error) throw accountingDbError(error);
 }

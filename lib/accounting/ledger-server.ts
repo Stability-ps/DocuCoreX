@@ -7,6 +7,7 @@
  * would not be a report of the books.
  */
 
+import { accountingDbError, notFoundError } from "@/lib/accounting/errors";
 import { getWorkspaceContext } from "@/lib/server-documents";
 import type { LedgerRow, TrialBalanceRow } from "@/lib/accounting/ledger";
 
@@ -33,8 +34,8 @@ async function requireEntity(companyId: string) {
     .eq("workspace_id", context.workspaceId)
     .maybeSingle();
 
-  if (error) throw new Error(error.message);
-  if (!data) throw new Error("Entity not found in this workspace.");
+  if (error) throw accountingDbError(error);
+  if (!data) throw notFoundError("Entity not found in this workspace.");
   return context;
 }
 
@@ -56,7 +57,7 @@ export async function getGeneralLedger(filters: LedgerFilters): Promise<{ rows: 
     page_offset: Math.max(filters.offset ?? 0, 0),
   });
 
-  if (error) throw new Error(error.message);
+  if (error) throw accountingDbError(error);
 
   const rows = ((data ?? []) as Array<Record<string, unknown>>).map((row) => ({
     postingId: String(row.posting_id),
@@ -99,7 +100,7 @@ export async function getTrialBalance(input: {
     include_adjustments: input.includeAdjustments ?? true,
   });
 
-  if (error) throw new Error(error.message);
+  if (error) throw accountingDbError(error);
 
   return ((data ?? []) as Array<Record<string, unknown>>).map((row) => ({
     accountId: row.account_id == null ? null : String(row.account_id),
@@ -123,6 +124,6 @@ export async function getAccountOpeningBalance(companyId: string, accountId: str
     target_account: accountId,
     before_date: before,
   });
-  if (error) throw new Error(error.message);
+  if (error) throw accountingDbError(error);
   return Number(data ?? 0);
 }

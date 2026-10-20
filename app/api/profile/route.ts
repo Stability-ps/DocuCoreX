@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { databaseErrorResponse } from "@/lib/api-errors";
 import { isDemoAllowed } from "@/lib/supabase";
 import { createSupabaseServerClient } from "@/lib/supabase-server";
 import { ensureUserWorkspace } from "@/lib/workspace-bootstrap";
@@ -109,7 +110,7 @@ export async function PATCH(request: Request) {
     .single();
 
   if (error) {
-    return NextResponse.json({ error: error.message }, { status: 500 });
+    return databaseErrorResponse("docucorex.profile.update_failed", error, { message: "Unable to save your profile." });
   }
 
   return NextResponse.json({ profile: data, mode: "live" });

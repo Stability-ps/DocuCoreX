@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { databaseErrorResponse } from "@/lib/api-errors";
 import { getExternalProcessing } from "@/lib/privacy/external-processing";
 import { enforceRateLimit } from "@/lib/shared-rate-limit";
 import { getWorkspaceContext } from "@/lib/server-documents";
@@ -40,7 +41,12 @@ export async function GET(request: Request, { params }: { params: Promise<{ docu
 
     const { data: file, error: fileError } = await context.supabase.storage.from("documents").download(row.storage_path);
     if (fileError || !file) {
-      return NextResponse.json({ error: fileError?.message ?? "Unable to load document." }, { status: 404 });
+      return databaseErrorResponse("docucorex.pdf_analyze.storage_download_failed", fileError, {
+        message: "Unable to load document.",
+        code: "FILE_UNAVAILABLE",
+        status: 404,
+        context: { documentId },
+      });
     }
 
     const buffer = new Uint8Array(await file.arrayBuffer());

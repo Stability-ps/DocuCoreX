@@ -9,6 +9,7 @@ import { isDemoAllowed, isSupabaseConfigured, supabase } from "@/lib/supabase";
 import { profileChecklist } from "@/lib/product-data";
 import { clearDocucorexClientCache } from "@/lib/client-cache";
 import { safeNextPath } from "@/lib/safe-redirect";
+import { passwordResetMessage, SIGN_UP_CHECK_INBOX_MESSAGE } from "@/lib/auth-errors";
 
 function LoginContent() {
   const searchParams = useSearchParams();
@@ -121,7 +122,7 @@ function LoginContent() {
 
       const data = (await response.json().catch(() => null)) as { requiresEmailVerification?: boolean; message?: string } | null;
       if (data?.requiresEmailVerification) {
-        setStatus(data.message ?? "Account created. Check your inbox to verify your email address.");
+        setStatus(data.message ?? SIGN_UP_CHECK_INBOX_MESSAGE);
         setIsSubmitting(false);
         return;
       }
@@ -144,13 +145,9 @@ function LoginContent() {
         redirectTo: `${window.location.origin}/auth/callback?next=${encodeURIComponent("/auth/reset-password")}`,
       });
 
-      if (result.error) {
-        setStatus(result.error.message);
-        setIsSubmitting(false);
-        return;
-      }
-
-      setStatus("Recovery link sent. Check your inbox for the secure reset email.");
+      // Never says whether the address has an account, and never shows raw
+      // Auth text (lib/auth-errors.ts).
+      setStatus(passwordResetMessage(result.error));
       setIsSubmitting(false);
       return;
     }
@@ -176,7 +173,8 @@ function LoginContent() {
     });
 
     if (error) {
-      setStatus(`${error.message}. Google and Microsoft also need to be enabled inside Supabase Auth providers.`);
+      console.error("[Login] OAuth sign-in failed:", error);
+      setStatus("That sign-in option is not available right now. Use your email and password instead.");
     }
   }
 

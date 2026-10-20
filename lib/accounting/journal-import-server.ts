@@ -7,6 +7,7 @@
  * Import is a bulk CLIENT of the existing gate, not a second one.
  */
 
+import { accountingDbError, notFoundError, rowFailureMessage } from "@/lib/accounting/errors";
 import { getWorkspaceContext } from "@/lib/server-documents";
 import { createJournal } from "@/lib/accounting/journals-server";
 import { listChartOfAccounts } from "@/lib/accounting/chart-server";
@@ -28,8 +29,8 @@ async function requireEntity(companyId: string) {
     .eq("id", companyId)
     .eq("workspace_id", context.workspaceId)
     .maybeSingle();
-  if (error) throw new Error(error.message);
-  if (!data) throw new Error("Entity not found in this workspace.");
+  if (error) throw accountingDbError(error);
+  if (!data) throw notFoundError("Entity not found in this workspace.");
   return context;
 }
 
@@ -46,7 +47,7 @@ async function loadImportContext(companyId: string) {
     context.supabase.from("accounting_journals").select("reference").eq("company_id", companyId).not("import_batch_id", "is", null),
   ]);
 
-  if (importedReferences.error) throw new Error(importedReferences.error.message);
+  if (importedReferences.error) throw accountingDbError(importedReferences.error);
 
   const accountCodeToId = new Map(accounts.map((a) => [key(a.code), a.id]));
   const taxCodeToId = new Map(taxCodes.map((t) => [key(t.code), t.id]));
@@ -114,7 +115,8 @@ export async function commitJournalImport(input: { companyId: string; filename: 
       });
       postedJournalIds.push(journalId);
     } catch (error) {
-      failed.push({ reference: group.reference, rowNumbers: group.rowNumbers, message: error instanceof Error ? error.message : "Unable to post this journal." });
+      failed.push({ reference: group.reference, rowNumbers: group.rowNumbers, message: rowFailureMessage("docucorex.accounting.journal_import_post_failed", error, "Unable to post this journal.", { reference: group.reference }),
+      });
     }
   }
 
@@ -132,12 +134,12 @@ export async function commitJournalImport(input: { companyId: string; filename: 
     })
     .select("id")
     .single();
-  if (batchError) throw new Error(batchError.message);
+  if (batchError) throw accountingDbError(batchError);
   const batchId = String(batch.id);
 
   if (postedJournalIds.length) {
     const { error } = await context.supabase.from("accounting_journals").update({ import_batch_id: batchId }).in("id", postedJournalIds);
-    if (error) throw new Error(error.message);
+    if (error) throw accountingDbError(error);
   }
 
   if (failed.length) {
@@ -151,7 +153,7 @@ export async function commitJournalImport(input: { companyId: string; filename: 
         message: f.message,
       })),
     );
-    if (error) throw new Error(error.message);
+    if (error) throw accountingDbError(error);
   }
 
   return { batchId, outcomes, postedCount: postedJournalIds.length, failedCount: failed.length };

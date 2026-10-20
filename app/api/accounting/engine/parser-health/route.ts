@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { routeErrorResponse } from "@/lib/api-errors";
 import { assertWorkspaceAdmin } from "@/lib/accounting/engine/admin";
 import { listRegisteredParsers } from "@/lib/accounting/engine/registry";
 
@@ -40,8 +41,6 @@ export async function GET() {
 
     return NextResponse.json({ parserHealth: persisted.length ? persisted : fallback });
   } catch (error) {
-    const message = error instanceof Error ? error.message : "Unable to load parser health.";
-    const status = message === "Unauthorized" ? 401 : message === "Forbidden" ? 403 : 500;
-    return NextResponse.json({ error: message }, { status });
+    return routeErrorResponse("docucorex.accounting.engine_parser_health.get_failed", error, { message: "Unable to load parser health." });
   }
 }

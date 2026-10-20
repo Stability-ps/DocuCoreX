@@ -51,7 +51,9 @@ test("the route refuses to call the worker unauthenticated", () => {
   );
   assert.match(route, /Authorization: `Bearer \$\{workerToken\}`/, "header is built from the trimmed token");
   assert.match(route, /kind: "config"/, "an absent token returns a config outcome before any request");
-  assert.match(route, /Worker said: \$\{detail\}/, "the worker's own 401 detail is preserved, not discarded");
+  // normalizeWorkerFailure moved to lib/accounting/workerFailure.ts (T-016).
+  assert.match(route, /normalizeWorkerFailure\(/);
+  assert.match(read("lib/accounting/workerFailure.ts"), /Worker said: \$\{detail\}/, "the worker's own 401 detail is preserved, not discarded");
 });
 
 // ── /api/system/worker-config extraction diagnostics ─────────────────────────

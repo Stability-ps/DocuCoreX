@@ -10,6 +10,7 @@
  * missing entry creates a JOURNAL and posts it through the gate.
  */
 
+import { accountingDbError, notFoundError } from "@/lib/accounting/errors";
 import { getWorkspaceContext } from "@/lib/server-documents";
 import type {
   BankAccountSummary,
@@ -29,8 +30,8 @@ async function requireEntity(companyId: string) {
     .eq("id", companyId)
     .eq("workspace_id", context.workspaceId)
     .maybeSingle();
-  if (error) throw new Error(error.message);
-  if (!data) throw new Error("Entity not found in this workspace.");
+  if (error) throw accountingDbError(error);
+  if (!data) throw notFoundError("Entity not found in this workspace.");
   return context;
 }
 
@@ -52,7 +53,7 @@ export async function listBankAccounts(companyId: string, asAt: string): Promise
     .eq("is_active", true)
     .order("label");
 
-  if (error) throw new Error(error.message);
+  if (error) throw accountingDbError(error);
 
   const summaries: BankAccountSummary[] = [];
 
@@ -64,7 +65,7 @@ export async function listBankAccounts(companyId: string, asAt: string): Promise
       target_bank_account: row.id,
       as_at: asAt,
     });
-    if (balanceError) throw new Error(balanceError.message);
+    if (balanceError) throw accountingDbError(balanceError);
 
     // The bank's own figure, from the latest statement covering the date.
     const { data: run } = await context.supabase
@@ -114,7 +115,7 @@ export async function listMappableAccounts(companyId: string) {
     .eq("account_type", "asset")
     .eq("is_active", true)
     .order("code");
-  if (error) throw new Error(error.message);
+  if (error) throw accountingDbError(error);
   return (data ?? []).map((row) => ({ id: String(row.id), code: String(row.code), name: String(row.name) }));
 }
 
@@ -145,7 +146,7 @@ export async function createBankAccountMapping(input: {
     .select("id")
     .single();
 
-  if (error) throw new Error(error.message);
+  if (error) throw accountingDbError(error);
   return String(data.id);
 }
 
@@ -182,7 +183,7 @@ export async function getOrCreateReconciliation(input: {
     .select("*")
     .single();
 
-  if (error) throw new Error(error.message);
+  if (error) throw accountingDbError(error);
   return mapReconciliation(data);
 }
 
@@ -215,8 +216,8 @@ export async function getReconciliationWorkspace(reconciliationId: string): Prom
     .select("*, accounting_bank_accounts(ledger_account_id, account_number)")
     .eq("id", reconciliationId)
     .maybeSingle();
-  if (error) throw new Error(error.message);
-  if (!rec) throw new Error("Reconciliation not found.");
+  if (error) throw accountingDbError(error);
+  if (!rec) throw notFoundError("Reconciliation not found.");
 
   const bankAccountRaw = (rec as Record<string, unknown>).accounting_bank_accounts;
   const bankAccount = (Array.isArray(bankAccountRaw) ? bankAccountRaw[0] : bankAccountRaw) as {
@@ -336,14 +337,14 @@ export async function recordReconciliationItems(input: {
       note: entry.note ?? null,
     })),
   );
-  if (error) throw new Error(error.message);
+  if (error) throw accountingDbError(error);
 }
 
 export async function removeReconciliationItem(itemId: string) {
   const context = await getWorkspaceContext();
   if (!context) throw new Error("Supabase is not configured");
   const { error } = await context.supabase.from("accounting_reconciliation_items").delete().eq("id", itemId);
-  if (error) throw new Error(error.message);
+  if (error) throw accountingDbError(error);
 }
 
 /**
@@ -361,7 +362,7 @@ export async function completeReconciliation(reconciliationId: string, statement
     target_reconciliation: reconciliationId,
     statement_balance_input: statementBalance,
   });
-  if (error) throw new Error(error.message);
+  if (error) throw accountingDbError(error);
 }
 
 export async function reopenReconciliation(reconciliationId: string) {
@@ -371,7 +372,7 @@ export async function reopenReconciliation(reconciliationId: string) {
     .from("accounting_reconciliations")
     .update({ status: "reopened", updated_at: new Date().toISOString() })
     .eq("id", reconciliationId);
-  if (error) throw new Error(error.message);
+  if (error) throw accountingDbError(error);
 }
 
 /**
@@ -390,7 +391,7 @@ export async function listReconciliationHistory(companyId: string) {
     .select("id, period_start, period_end, status, statement_balance, ledger_balance_at_completion, completed_at, accounting_bank_accounts(label)")
     .eq("company_id", companyId)
     .order("period_end", { ascending: false });
-  if (error) throw new Error(error.message);
+  if (error) throw accountingDbError(error);
 
   return (data ?? []).map((row) => {
     const raw = (row as Record<string, unknown>).accounting_bank_accounts;

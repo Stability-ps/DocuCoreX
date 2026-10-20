@@ -149,6 +149,37 @@ export async function getWorkerReachability() {
   };
 }
 
+/**
+ * What /api/system/worker-config may tell a signed-in user: whether each
+ * worker is configured and answering, never where it lives.
+ *
+ * Sign-up is open, so "signed in" means anyone. Worker hostnames are
+ * infrastructure detail no customer needs, and a raw fetch error
+ * ("getaddrinfo ENOTFOUND <host>") would leak the same hostname, so the error
+ * is reduced to a fixed code. The full picture, URLs included, still goes to
+ * the server log via logWorkerStartupCheck.
+ */
+export function toPublicWorkerStatus(reachability: Awaited<ReturnType<typeof getWorkerReachability>>) {
+  const summarize = (entry: Reachability) => ({
+    reachable: entry.reachable,
+    status: entry.status,
+    error: entry.url === null ? "not_configured" : entry.reachable ? null : entry.status !== null ? `http_${entry.status}` : "unreachable",
+  });
+  return {
+    environment: reachability.environment,
+    workerConfiguration: {
+      accountingWorkerConfigured: reachability.accountingWorker.url !== null,
+      conversionWorkerConfigured: reachability.conversionWorker.url !== null,
+      pdfPlumberConfigured: reachability.pdfPlumber.url !== null,
+    },
+    reachability: {
+      accountingWorker: summarize(reachability.accountingWorker),
+      conversionWorker: summarize(reachability.conversionWorker),
+      pdfPlumber: summarize(reachability.pdfPlumber),
+    },
+  };
+}
+
 export async function logWorkerStartupCheck(force = false) {
   const stamp = globalThis.__docucorexWorkerStartupLoggedAt;
   if (stamp && !force) return;

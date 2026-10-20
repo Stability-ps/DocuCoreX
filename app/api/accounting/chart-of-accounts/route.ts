@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { routeErrorResponse } from "@/lib/api-errors";
 import { listAccountingEntities, listChartOfAccounts } from "@/lib/accounting/chart-server";
 import { listTaxCodes } from "@/lib/accounting/vat-server";
 import { listCustomers, listSuppliers } from "@/lib/accounting/receivables-payables-server";
@@ -13,12 +14,6 @@ import { toCsv } from "@/lib/accounting/ledger";
  * several clients in one workspace must never see one client's chart while
  * looking at another.
  */
-function statusFor(message: string): number {
-  if (message === "Unauthorized") return 401;
-  if (message === "Entity not found in this workspace.") return 404;
-  return 500;
-}
-
 export async function GET(request: Request) {
   const companyId = new URL(request.url).searchParams.get("companyId");
 
@@ -56,7 +51,6 @@ export async function GET(request: Request) {
     ]);
     return NextResponse.json({ entities, accounts, taxCodes, customers, suppliers });
   } catch (error) {
-    const message = error instanceof Error ? error.message : "Unable to load the chart of accounts.";
-    return NextResponse.json({ error: message }, { status: statusFor(message) });
+    return routeErrorResponse("docucorex.accounting.chart_of_accounts.get_failed", error, { message: "Unable to load the chart of accounts." });
   }
 }

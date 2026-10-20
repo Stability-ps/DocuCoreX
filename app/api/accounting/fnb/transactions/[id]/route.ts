@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { routeErrorResponse } from "@/lib/api-errors";
 import { updateAccountingTransaction } from "@/lib/accounting/server";
 import type { AccountingTransactionPatch } from "@/lib/accounting/types";
 
@@ -21,7 +22,6 @@ export async function PATCH(request: Request, { params }: { params: Promise<{ id
     const transaction = await updateAccountingTransaction(id, body);
     return NextResponse.json({ transaction });
   } catch (error) {
-    const message = error instanceof Error ? error.message : "Unable to update transaction.";
-    return NextResponse.json({ error: message }, { status: message === "Unauthorized" ? 401 : 400 });
+    return routeErrorResponse("docucorex.accounting.fnb_transactions_id.patch_failed", error, { message: "Unable to update transaction." });
   }
 }

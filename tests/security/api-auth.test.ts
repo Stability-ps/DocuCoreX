@@ -39,10 +39,21 @@ test("withUnauthorized passes through a successful response and its arguments", 
 
 test("errorResponse maps only the missing session to 401", async () => {
   assert.equal(errorResponse(new Error("Unauthorized"), "x").status, 401);
-  const failure = errorResponse(new Error("relation does not exist"), "Unable to load");
-  assert.equal(failure.status, 500);
-  assert.equal((await failure.json()).error, "relation does not exist");
-  assert.equal(errorResponse("not an error", "Unable to load", 400).status, 400);
+  // Changed deliberately (accounting error exposure): an unexpected error's own
+  // text is no longer the response body. This test used to pin "relation does
+  // not exist" coming back verbatim, which is exactly the PostgREST detail the
+  // client must not see. The full classification is in
+  // tests/security/accounting-error-exposure.test.ts.
+  const originalError = console.error;
+  console.error = () => {};
+  try {
+    const failure = errorResponse(new Error("relation does not exist"), "Unable to load");
+    assert.equal(failure.status, 500);
+    assert.deepEqual(await failure.json(), { error: "Unable to load", code: "INTERNAL_ERROR" });
+    assert.equal(errorResponse("not an error", "Unable to load", 400).status, 400);
+  } finally {
+    console.error = originalError;
+  }
   assert.equal(isUnauthorizedError(new Error("Unauthorized!")), false, "exact message only");
 });
 
@@ -75,8 +86,8 @@ for (const route of routes) {
     const source = readFileSync(route, "utf8");
     const wrapped = /export const (GET|POST|PATCH|DELETE) = withUnauthorized\(/.test(source);
     const resolved = /resolveWorkspaceContext\(\)/.test(source) && !/await getWorkspaceContext\(\)/.test(source);
-    const caught = /return errorResponse\(error,/.test(source) && !/status: 500 \}\);\s*\n\s*\}\s*\n\}/.test(source);
-    assert.ok(wrapped || resolved || caught, `${route} must use withUnauthorized, resolveWorkspaceContext or errorResponse`);
+    const caught = /return (errorResponse\(error,|routeErrorResponse\()/.test(source) && !/status: 500 \}\);\s*\n\s*\}\s*\n\}/.test(source);
+    assert.ok(wrapped || resolved || caught, `${route} must use withUnauthorized, resolveWorkspaceContext, errorResponse or routeErrorResponse`);
   });
 }
 

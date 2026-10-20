@@ -1,10 +1,12 @@
 import { NextResponse, after } from "next/server";
 import { errorResponse } from "@/lib/api-auth";
+import { databaseErrorResponse } from "@/lib/api-errors";
 import { getExternalProcessing, type ExternalProcessing } from "@/lib/privacy/external-processing";
 import { enforceRateLimit } from "@/lib/shared-rate-limit";
 import { recordAuditLog } from "@/lib/audit";
 import { bankDetectionHints, detectBankFromText } from "@/lib/accounting/engine/bank-detection";
-import { isNoTransactionsFailure } from "@/lib/accounting/workerFailure";
+import { isUserFacingError } from "@/lib/user-facing-error";
+import { getWorkerError, isNoTransactionsFailure, normalizeWorkerFailure, type WorkerResponseBody } from "@/lib/accounting/workerFailure";
 import { getAccountingRunDetail } from "@/lib/accounting/server";
 import { isDispatchableJobStatus } from "@/lib/accounting/run-status";
 import { getWorkspaceContext } from "@/lib/server-documents";
@@ -61,7 +63,9 @@ async function runPipelineBeforeWorker(
   try {
     const { data: file, error } = await context.supabase.storage.from("documents").download(detail.run.sourceStoragePath);
     if (error || !file) {
-      return { hints: {}, warning: `Extraction pipeline skipped: source unavailable (${error?.message ?? "no file"}).`, debug: null };
+      // The Storage text names the object path; it is logged, not carried on.
+      console.warn("docucorex.accounting.pipeline_source_unavailable", { runId, message: error?.message ?? "no file" });
+      return { hints: {}, warning: "Extraction pipeline skipped: source unavailable.", debug: null };
     }
     const buffer = new Uint8Array(await file.arrayBuffer());
     // Cache identity: same document + identical bytes reuses the prior extraction
@@ -218,7 +222,7 @@ async function runPipelineBeforeWorker(
   } catch (pipelineError) {
     const message = pipelineError instanceof Error ? pipelineError.message : String(pipelineError);
     console.warn("[accounting/process] extraction pipeline failed — using original worker path", { runId, error: message });
-    return { hints: {}, warning: `Extraction pipeline error: ${message}`, debug: null };
+    return { hints: {}, warning: "Extraction pipeline error.", debug: null };
   }
 }
 
@@ -354,47 +358,6 @@ type ProcessBody = {
   reprocess?: boolean;
 };
 
-type WorkerResponseBody = {
-  detail?: unknown;
-  error?: string;
-  status?: string;
-  worker?: unknown;
-  [key: string]: unknown;
-};
-
-function getWorkerError(result: WorkerResponseBody, responseText: string, status: number) {
-  if (typeof result.error === "string" && result.error) {
-    return result.error;
-  }
-
-  if (typeof result.detail === "string" && result.detail) {
-    return result.detail;
-  }
-
-  if (Array.isArray(result.detail)) {
-    return result.detail
-      .map((item) => {
-        if (item && typeof item === "object") {
-          const record = item as { loc?: unknown; msg?: unknown; type?: unknown };
-          const loc = Array.isArray(record.loc) ? record.loc.join(".") : "field";
-          return `${loc}: ${String(record.msg ?? record.type ?? "Invalid value")}`;
-        }
-        return String(item);
-      })
-      .join("; ");
-  }
-
-  if (result.detail && typeof result.detail === "object") {
-    return JSON.stringify(result.detail);
-  }
-
-  if (responseText.trim()) {
-    return `Accounting worker returned HTTP ${status}: ${responseText.slice(0, 800)}`;
-  }
-
-  return `Accounting worker returned HTTP ${status} without an error body. Check Render worker logs for this run.`;
-}
-
 function asRecord(value: unknown): Record<string, unknown> | null {
   return value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : null;
 }
@@ -407,43 +370,6 @@ function describeWorkerVersion(worker: unknown) {
   const serviceId = typeof record.render_service_id === "string" ? record.render_service_id : null;
   if (!service && !commit && !serviceId) return null;
   return { service, commit, serviceId };
-}
-
-function normalizeWorkerFailure(input: {
-  status: number;
-  message: string;
-  workerUrl: string;
-  workerEndpoint: string;
-  worker: unknown;
-}) {
-  const detail = input.message.trim();
-  const isNotFound = input.status === 404 && (detail === "Not Found" || detail.toLowerCase() === "not found");
-  const workerMeta = describeWorkerVersion(input.worker);
-  const workerMetaSuffix = workerMeta
-    ? ` Worker reported service=${workerMeta.service ?? "unknown"} commit=${workerMeta.commit ?? "unknown"} service_id=${workerMeta.serviceId ?? "unknown"}.`
-    : "";
-
-  if (isNotFound) {
-    return `Accounting worker endpoint not found at ${input.workerEndpoint}. ACCOUNTING_WORKER_URL is misconfigured (current: ${input.workerUrl}).${workerMetaSuffix}`;
-  }
-
-  // The worker's auth fails closed, so these two statuses mean a configuration
-  // mismatch, not a bad statement. Say so — otherwise an operator reads
-  // "Invalid credentials" on an upload screen and goes looking at the PDF.
-  if (input.status === 503 && /not configured for authenticated access/i.test(detail)) {
-    return `Accounting worker has no ACCOUNTING_WORKER_TOKEN configured, so it is refusing all requests. Set it on the worker service.${workerMetaSuffix}`;
-  }
-  if (input.status === 401) {
-    // The worker's own detail is APPENDED, not discarded. Its three 401 verdicts
-    // mean different things — "Missing Authorization header." says this runtime
-    // sent nothing, "Invalid credentials." says it sent the wrong value — and
-    // collapsing them into one message made an absent token indistinguishable
-    // from a mismatched one during the 2026-08-06 investigation.
-    const verdict = detail ? ` Worker said: ${detail}` : "";
-    return `Accounting worker rejected our credentials. ACCOUNTING_WORKER_TOKEN must be set to the same value here and on the worker service.${verdict}${workerMetaSuffix}`;
-  }
-
-  return `${detail || `Accounting worker returned HTTP ${input.status}.`} (endpoint: ${input.workerEndpoint}).${workerMetaSuffix}`;
 }
 
 // The CEILING for a single worker call. The real limit is whatever remains of
@@ -720,18 +646,21 @@ async function processStatementInBackground(
       // Report the slice actually granted, not the ceiling — on a retry, or
       // after slow pre-extraction, they differ, and the ceiling would send
       // someone hunting for a timeout that never applied.
-      const message = aborted ? `Accounting worker timed out after ${Math.round(sliceMs / 1000)}s.` : `Accounting worker unreachable: ${fetchError instanceof Error ? fetchError.message : String(fetchError)}`;
-      console.error("[accounting/process] worker fetch failed", { requestId, endpoint: workerEndpoint, runId, message });
+      const message = aborted ? `Accounting worker timed out after ${Math.round(sliceMs / 1000)}s.` : "Accounting worker unreachable. Please try again shortly.";
+      // The fetch error names the worker host: logged, not stored on the run.
+      console.error("[accounting/process] worker fetch failed", { requestId, endpoint: workerEndpoint, runId, message, cause: fetchError instanceof Error ? fetchError.message : String(fetchError) });
       return { kind: "unreachable", error: message };
     } finally {
       clearTimeout(timer);
     }
 
-    let result: WorkerResponseBody = {};
+    // null when the body is empty or not a JSON object: a proxy or crash page,
+    // whose text is never copied into the run (lib/accounting/workerFailure.ts).
+    let result: WorkerResponseBody | null = null;
     try {
-      result = responseText ? (JSON.parse(responseText) as WorkerResponseBody) : {};
+      result = responseText ? (asRecord(JSON.parse(responseText)) as WorkerResponseBody | null) : null;
     } catch {
-      result = { detail: responseText };
+      result = null;
     }
     console.info("docucorex.accounting.worker.response", { requestId, endpoint: workerEndpoint, runId, status: response.status, ok: response.ok });
 
@@ -754,12 +683,17 @@ async function processStatementInBackground(
       return { kind: "ok" };
     }
 
-    const error = normalizeWorkerFailure({
+    const error = normalizeWorkerFailure({ status: response.status, message: getWorkerError(result, response.status) });
+    // The endpoint, the worker's service metadata and the shape of a non-JSON
+    // body are for operators: logged here, never stored on the run.
+    console.error("[accounting/process] worker returned an error", {
+      requestId,
+      runId,
       status: response.status,
-      message: getWorkerError(result, responseText, response.status),
-      workerUrl,
-      workerEndpoint,
-      worker: result.worker ?? asRecord(result.detail)?.worker ?? null,
+      endpoint: workerEndpoint,
+      jsonBody: Boolean(result),
+      bodyLength: responseText.length,
+      worker: describeWorkerVersion(result?.worker ?? asRecord(result?.detail)?.worker ?? null),
     });
     return { kind: "failed", status: response.status, error };
   };
@@ -868,8 +802,12 @@ async function processStatementInBackground(
     // that has already succeeded.
     await runShadowComparison(context, detail, pipelineDebug, externalProcessing);
   } catch (error) {
-    const message = error instanceof Error ? error.message : "Unable to process accounting statement.";
-    console.error("[accounting/process] background failure", { runId, message });
+    // Usually a Storage or database message from pre-extraction. The run's error
+    // is shown in the workspace, so only a UserFacingError keeps its wording;
+    // the detail is logged.
+    const cause = error instanceof Error ? error.message : String(error);
+    const message = isUserFacingError(error) ? error.message : "Unable to process this statement. Please try again.";
+    console.error("[accounting/process] background failure", { runId, message: cause });
     await failRun(message, toParserDebug(pipelineDebug));
   }
 }
@@ -976,10 +914,10 @@ export async function POST(request: Request) {
         },
       );
       if (replacementJobError || !replacementJobId) {
-        return NextResponse.json(
-          { error: replacementJobError?.message ?? "Unable to create a replacement accounting job." },
-          { status: 500 },
-        );
+        return databaseErrorResponse("docucorex.accounting.reprocess_begin_failed", replacementJobError, {
+          message: "Unable to create a replacement accounting job.",
+          context: { runId },
+        });
       }
       processingJobId = replacementJobId;
     }
@@ -1101,7 +1039,10 @@ export async function POST(request: Request) {
             })
             .eq("id", processingJobId);
         }
-        return NextResponse.json({ error: fallbackMarkError.message }, { status: 500 });
+        return databaseErrorResponse("docucorex.accounting.run_claim_failed", fallbackMarkError, {
+          message: "Unable to start processing this statement. Please try again.",
+          context: { runId, attemptedJobId: processingJobId },
+        });
       }
       claimLanded = (fallbackClaimedRows ?? []).length > 0;
     } else {
@@ -1173,6 +1114,6 @@ export async function POST(request: Request) {
     // Return immediately (well under the 25s initial-response limit).
     return NextResponse.json({ ok: true, status: "processing", runId, jobId: processingJobId });
   } catch (error) {
-    return errorResponse(error, "Unable to process accounting statement.");
+    return errorResponse(error, "Unable to process accounting statement.", 500, "docucorex.accounting.process_failed");
   }
 }

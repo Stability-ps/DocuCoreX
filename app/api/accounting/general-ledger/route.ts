@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { routeErrorResponse } from "@/lib/api-errors";
 import { getAccountOpeningBalance, getGeneralLedger } from "@/lib/accounting/ledger-server";
 import { toCsv, formatLedgerDate } from "@/lib/accounting/ledger";
 
@@ -9,12 +10,6 @@ import { toCsv, formatLedgerDate } from "@/lib/accounting/ledger";
  * `format=csv` exports the CURRENT FILTERS rather than everything, because an
  * export that ignores the filters is not the report the accountant is looking at.
  */
-function statusFor(message: string): number {
-  if (message === "Unauthorized") return 401;
-  if (message === "Entity not found in this workspace.") return 404;
-  return 500;
-}
-
 export async function GET(request: Request) {
   const url = new URL(request.url);
   const companyId = url.searchParams.get("companyId");
@@ -65,7 +60,6 @@ export async function GET(request: Request) {
 
     return NextResponse.json({ rows, totalRows, openingBalance });
   } catch (error) {
-    const message = error instanceof Error ? error.message : "Unable to load the general ledger.";
-    return NextResponse.json({ error: message }, { status: statusFor(message) });
+    return routeErrorResponse("docucorex.accounting.general_ledger.get_failed", error, { message: "Unable to load the general ledger." });
   }
 }

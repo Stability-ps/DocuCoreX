@@ -9,6 +9,7 @@
  * opinion about when an allocation may be recorded.
  */
 
+import { accountingDbError, notFoundError } from "@/lib/accounting/errors";
 import { getWorkspaceContext } from "@/lib/server-documents";
 import type { AgeingRow, OpenItem, Party, UnallocatedPosting } from "@/lib/accounting/receivables-payables";
 
@@ -21,8 +22,8 @@ async function requireEntity(companyId: string) {
     .eq("id", companyId)
     .eq("workspace_id", context.workspaceId)
     .maybeSingle();
-  if (error) throw new Error(error.message);
-  if (!data) throw new Error("Entity not found in this workspace.");
+  if (error) throw accountingDbError(error);
+  if (!data) throw notFoundError("Entity not found in this workspace.");
   return context;
 }
 
@@ -88,7 +89,7 @@ export async function getControlAccounts(companyId: string): Promise<{ arControl
     .select("ar_control_account_id, ap_control_account_id")
     .eq("company_id", companyId)
     .maybeSingle();
-  if (error) throw new Error(error.message);
+  if (error) throw accountingDbError(error);
   return {
     arControlAccountId: (data?.ar_control_account_id as string | null) ?? null,
     apControlAccountId: (data?.ap_control_account_id as string | null) ?? null,
@@ -101,7 +102,7 @@ export async function setArControlAccount(companyId: string, accountId: string):
     .from("accounting_entity_settings")
     .update({ ar_control_account_id: accountId, updated_at: new Date().toISOString() })
     .eq("company_id", companyId);
-  if (error) throw new Error(error.message);
+  if (error) throw accountingDbError(error);
 }
 
 export async function setApControlAccount(companyId: string, accountId: string): Promise<void> {
@@ -110,7 +111,7 @@ export async function setApControlAccount(companyId: string, accountId: string):
     .from("accounting_entity_settings")
     .update({ ap_control_account_id: accountId, updated_at: new Date().toISOString() })
     .eq("company_id", companyId);
-  if (error) throw new Error(error.message);
+  if (error) throw accountingDbError(error);
 }
 
 export async function listCustomers(companyId: string): Promise<Party[]> {
@@ -120,7 +121,7 @@ export async function listCustomers(companyId: string): Promise<Party[]> {
     .select("*")
     .eq("company_id", companyId)
     .order("name");
-  if (error) throw new Error(error.message);
+  if (error) throw accountingDbError(error);
   return (data ?? []).map(mapParty);
 }
 
@@ -131,7 +132,7 @@ export async function listSuppliers(companyId: string): Promise<Party[]> {
     .select("*")
     .eq("company_id", companyId)
     .order("name");
-  if (error) throw new Error(error.message);
+  if (error) throw accountingDbError(error);
   return (data ?? []).map(mapParty);
 }
 
@@ -149,7 +150,7 @@ export async function createCustomer(input: { companyId: string; name: string; e
     })
     .select("id")
     .single();
-  if (error) throw new Error(error.message);
+  if (error) throw accountingDbError(error);
   return String(data.id);
 }
 
@@ -167,7 +168,7 @@ export async function createSupplier(input: { companyId: string; name: string; e
     })
     .select("id")
     .single();
-  if (error) throw new Error(error.message);
+  if (error) throw accountingDbError(error);
   return String(data.id);
 }
 
@@ -177,7 +178,7 @@ export async function listArOpenItems(companyId: string, asAt?: string): Promise
     target_company: companyId,
     as_at: asAt ?? new Date().toISOString().slice(0, 10),
   });
-  if (error) throw new Error(error.message);
+  if (error) throw accountingDbError(error);
   return (data ?? []).map((row: Record<string, unknown>) => mapOpenItem(row, "customer"));
 }
 
@@ -187,7 +188,7 @@ export async function listApOpenItems(companyId: string, asAt?: string): Promise
     target_company: companyId,
     as_at: asAt ?? new Date().toISOString().slice(0, 10),
   });
-  if (error) throw new Error(error.message);
+  if (error) throw accountingDbError(error);
   return (data ?? []).map((row: Record<string, unknown>) => mapOpenItem(row, "supplier"));
 }
 
@@ -197,7 +198,7 @@ export async function listArAgeing(companyId: string, asAt?: string): Promise<Ag
     target_company: companyId,
     as_at: asAt ?? new Date().toISOString().slice(0, 10),
   });
-  if (error) throw new Error(error.message);
+  if (error) throw accountingDbError(error);
   return (data ?? []).map((row: Record<string, unknown>) => mapAgeingRow(row, "customer"));
 }
 
@@ -207,7 +208,7 @@ export async function listApAgeing(companyId: string, asAt?: string): Promise<Ag
     target_company: companyId,
     as_at: asAt ?? new Date().toISOString().slice(0, 10),
   });
-  if (error) throw new Error(error.message);
+  if (error) throw accountingDbError(error);
   return (data ?? []).map((row: Record<string, unknown>) => mapAgeingRow(row, "supplier"));
 }
 
@@ -217,7 +218,7 @@ export async function listArUnallocatedReceipts(companyId: string, asAt?: string
     target_company: companyId,
     as_at: asAt ?? new Date().toISOString().slice(0, 10),
   });
-  if (error) throw new Error(error.message);
+  if (error) throw accountingDbError(error);
   return (data ?? []).map((row: Record<string, unknown>) => mapUnallocatedPosting(row, "customer"));
 }
 
@@ -227,7 +228,7 @@ export async function listApUnallocatedPayments(companyId: string, asAt?: string
     target_company: companyId,
     as_at: asAt ?? new Date().toISOString().slice(0, 10),
   });
-  if (error) throw new Error(error.message);
+  if (error) throw accountingDbError(error);
   return (data ?? []).map((row: Record<string, unknown>) => mapUnallocatedPosting(row, "supplier"));
 }
 
@@ -238,7 +239,7 @@ export async function allocateAr(input: { companyId: string; invoicePostingId: s
     receipt_posting: input.receiptPostingId,
     amount: input.amount,
   });
-  if (error) throw new Error(error.message);
+  if (error) throw accountingDbError(error);
   return String(data);
 }
 
@@ -249,7 +250,7 @@ export async function allocateAp(input: { companyId: string; billPostingId: stri
     payment_posting: input.paymentPostingId,
     amount: input.amount,
   });
-  if (error) throw new Error(error.message);
+  if (error) throw accountingDbError(error);
   return String(data);
 }
 
@@ -261,12 +262,12 @@ export async function deallocateAr(allocationId: string): Promise<void> {
   const context = await getWorkspaceContext();
   if (!context) throw new Error("Supabase is not configured");
   const { error } = await context.supabase.from("accounting_ar_allocations").delete().eq("id", allocationId);
-  if (error) throw new Error(error.message);
+  if (error) throw accountingDbError(error);
 }
 
 export async function deallocateAp(allocationId: string): Promise<void> {
   const context = await getWorkspaceContext();
   if (!context) throw new Error("Supabase is not configured");
   const { error } = await context.supabase.from("accounting_ap_allocations").delete().eq("id", allocationId);
-  if (error) throw new Error(error.message);
+  if (error) throw accountingDbError(error);
 }

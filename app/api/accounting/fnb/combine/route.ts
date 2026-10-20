@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { getAccountingRunDetail } from "@/lib/accounting/server";
 import { getWorkspaceContext } from "@/lib/server-documents";
+import { combineWorkerFailure } from "@/lib/accounting/combine-failure";
 import { buildWorkerEndpoint, createWorkerRequestId, getWorkerConfig, logWorkerStartupCheck } from "@/lib/system-worker-config";
 
 type CombineBody = {
@@ -140,16 +141,14 @@ export async function POST(request: Request) {
       ? "Accounting worker is offline or refused the connection."
       : "Accounting worker is temporarily unavailable.";
 
-    return NextResponse.json(
-      {
-        status,
-        message,
-        workerUrl,
-        workerEndpoint,
-        requestId,
-      },
-      { status: 503 },
-    );
+    // The worker's address and the low-level cause are for operators.
+    console.error("docucorex.accounting.combine_worker_unreachable", {
+      requestId,
+      endpoint: workerEndpoint,
+      status,
+      cause: code ?? known.name,
+    });
+    return NextResponse.json({ error: message, status, requestId }, { status: 503 });
   } finally {
     clearTimeout(timeout);
   }
@@ -163,51 +162,18 @@ export async function POST(request: Request) {
     contentType: response.headers.get("content-type"),
   });
   if (!response.ok) {
-    const text = new TextDecoder().decode(responseBuffer);
-    let error = text || "Combined workbook generation failed.";
-    let status = "combine_failed";
-    let allowOverride = false;
-    let continuity: unknown;
-    try {
-      const parsed = JSON.parse(text) as {
-        detail?: unknown;
-        error?: string;
-        status?: string;
-        message?: string;
-        allow_override?: boolean;
-        continuity?: unknown;
-      };
-      const detailObj = typeof parsed.detail === "object" && parsed.detail ? (parsed.detail as Record<string, unknown>) : null;
-      const detailMessage = typeof parsed.detail === "string" ? parsed.detail : null;
-      error =
-        (typeof detailObj?.message === "string" ? detailObj.message : null) ??
-        detailMessage ??
-        parsed.message ??
-        parsed.error ??
-        JSON.stringify(parsed.detail ?? parsed);
-      status =
-        (typeof detailObj?.status === "string" ? detailObj.status : null) ??
-        parsed.status ??
-        status;
-      allowOverride =
-        (typeof detailObj?.allow_override === "boolean" ? detailObj.allow_override : null) ??
-        Boolean(parsed.allow_override);
-      continuity = detailObj?.continuity ?? parsed.continuity;
-    } catch {
-      // keep text body
-    }
+    const failure = combineWorkerFailure(response.status, new TextDecoder().decode(responseBuffer));
+    // The raw body, the worker's address and its own status are for operators.
+    console.error("docucorex.accounting.combine_worker_failed", {
+      requestId,
+      endpoint: workerEndpoint,
+      workerStatus: response.status,
+      bodyLength: responseBuffer.byteLength,
+      passedThrough: failure.passedThrough,
+    });
     return NextResponse.json(
-      {
-        error,
-        status,
-        allowOverride,
-        continuity,
-        workerStatus: response.status,
-        workerUrl,
-        workerEndpoint,
-        requestId,
-      },
-      { status: response.status },
+      { error: failure.error, status: failure.status, allowOverride: failure.allowOverride, requestId },
+      { status: failure.httpStatus },
     );
   }
 

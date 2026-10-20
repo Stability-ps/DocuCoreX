@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { routeErrorResponse } from "@/lib/api-errors";
 import { parseCsvWithHeader } from "@/lib/accounting/csv";
 import { readJournalImportRow, summariseJournalOutcomes } from "@/lib/accounting/journal-import";
 import { commitJournalImport, previewJournalImport } from "@/lib/accounting/journal-import-server";
@@ -12,12 +13,6 @@ import { commitJournalImport, previewJournalImport } from "@/lib/accounting/jour
  * posts goes through createJournal / accounting_post_journal, the same gate
  * as a hand-typed journal.
  */
-function statusFor(message: string): number {
-  if (message === "Unauthorized") return 401;
-  if (message === "Entity not found in this workspace.") return 404;
-  return 500;
-}
-
 export async function POST(request: Request) {
   const body = (await request.json().catch(() => ({}))) as Record<string, unknown>;
   const action = typeof body.action === "string" ? body.action : "";
@@ -48,7 +43,6 @@ export async function POST(request: Request) {
         return NextResponse.json({ error: "Unknown action." }, { status: 400 });
     }
   } catch (error) {
-    const message = error instanceof Error ? error.message : "Unable to process the import.";
-    return NextResponse.json({ error: message }, { status: statusFor(message) });
+    return routeErrorResponse("docucorex.accounting.journal_import.post_failed", error, { message: "Unable to process the import." });
   }
 }

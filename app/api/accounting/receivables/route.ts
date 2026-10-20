@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { routeErrorResponse } from "@/lib/api-errors";
 import {
   allocateAr,
   createCustomer,
@@ -15,13 +16,6 @@ import {
  * Accounts receivable. Allocation is delegated to accounting_allocate_ar —
  * this route never decides that an invoice and a receipt may be matched.
  */
-function statusFor(message: string): number {
-  if (message === "Unauthorized") return 401;
-  if (message === "Entity not found in this workspace." || /not found/i.test(message)) return 404;
-  if (/exceeds|must name|must be a|different entities|positive/i.test(message)) return 422;
-  return 500;
-}
-
 export async function GET(request: Request) {
   const url = new URL(request.url);
   const companyId = url.searchParams.get("companyId");
@@ -38,8 +32,7 @@ export async function GET(request: Request) {
     ]);
     return NextResponse.json({ controlAccountId: arControlAccountId, parties: customers, openItems, unallocated, ageing });
   } catch (error) {
-    const message = error instanceof Error ? error.message : "Unable to load accounts receivable.";
-    return NextResponse.json({ error: message }, { status: statusFor(message) });
+    return routeErrorResponse("docucorex.accounting.receivables.get_failed", error, { message: "Unable to load accounts receivable." });
   }
 }
 
@@ -97,7 +90,6 @@ export async function POST(request: Request) {
         return NextResponse.json({ error: "Unknown action." }, { status: 400 });
     }
   } catch (error) {
-    const message = error instanceof Error ? error.message : "Unable to update accounts receivable.";
-    return NextResponse.json({ error: message }, { status: statusFor(message) });
+    return routeErrorResponse("docucorex.accounting.receivables.post_failed", error, { message: "Unable to update accounts receivable." });
   }
 }

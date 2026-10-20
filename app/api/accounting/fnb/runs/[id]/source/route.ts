@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { databaseErrorResponse, routeErrorResponse } from "@/lib/api-errors";
 import { getAccountingRunDetail } from "@/lib/accounting/server";
 import { getWorkspaceContext } from "@/lib/server-documents";
 
@@ -37,7 +38,12 @@ export async function GET(request: Request, { params }: { params: Promise<{ id: 
 
     const { data, error } = await resolved.context.supabase.storage.from("documents").download(resolved.path);
     if (error || !data) {
-      return NextResponse.json({ error: error?.message ?? "Preview unavailable." }, { status: 404 });
+      return databaseErrorResponse("docucorex.accounting.source_storage_failed", error, {
+        message: "Preview unavailable.",
+        code: "FILE_UNAVAILABLE",
+        status: 404,
+        context: { runId: id },
+      });
     }
 
     const fileName = resolved.path.split("/").pop() || "statement.pdf";
@@ -49,7 +55,6 @@ export async function GET(request: Request, { params }: { params: Promise<{ id: 
       },
     });
   } catch (error) {
-    const message = error instanceof Error ? error.message : "Unable to load statement source.";
-    return NextResponse.json({ error: message }, { status: message === "Unauthorized" ? 401 : 500 });
+    return routeErrorResponse("docucorex.accounting.fnb_runs_id_source.get_failed", error, { message: "Unable to load statement source." });
   }
 }
