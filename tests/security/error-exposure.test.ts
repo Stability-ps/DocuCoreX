@@ -13,10 +13,10 @@ register("../accounting/alias-hook.mjs", pathToFileURL(new URL(".", import.meta.
 const root = new URL("../../", import.meta.url).pathname;
 const read = (path: string) => readFileSync(join(root, path), "utf8");
 
-const { signInErrorResponse, signUpErrorResponse, passwordResetMessage, INVALID_CREDENTIALS_MESSAGE, PASSWORD_RESET_SENT_MESSAGE } = await import("../../lib/auth-errors.ts");
+const { signInErrorResponse, signUpErrorResponse, passwordResetMessage, isExistingAccountSignUpError, INVALID_CREDENTIALS_MESSAGE, PASSWORD_RESET_SENT_MESSAGE, SIGN_UP_CHECK_INBOX_MESSAGE } = await import("../../lib/auth-errors.ts");
 const { UserFacingError, isUserFacingError } = await import("../../lib/user-facing-error.ts");
 const { routeErrorResponse } = await import("../../lib/api-errors.ts");
-const { userSafeJobError, genericJobFailureMessage } = await import("../../lib/jobs/job-error.ts");
+const { userSafeJobError, genericJobFailureMessage, displayStoredJobText } = await import("../../lib/jobs/job-error.ts");
 const { ConversionError } = await import("../../lib/document-conversion-engine.ts");
 const { getWorkerError, normalizeWorkerFailure, workerStatusMessage, isNoTransactionsFailure } = await import("../../lib/accounting/workerFailure.ts");
 const { validateUploadFiles } = await import("../../lib/server-documents.ts");
@@ -61,9 +61,34 @@ test("sign-up keeps validation verdicts and hides unexpected Auth text", () => {
   // A failing database trigger or SMTP relay.
   const unexpected = signUpErrorResponse({ status: 500, code: "unexpected_failure", message: "Database error saving new user" });
   assert.doesNotMatch(unexpected.message, /database/i);
-  // Product decision, documented in lib/auth-errors.ts: still disclosed.
-  assert.match(signUpErrorResponse({ code: "user_already_exists", message: "User already registered" }).message, /already exists/);
-  assert.match(signUpErrorResponse({ status: 422, message: "User already registered" }).message, /already exists/, "older responses without a code");
+});
+
+test("sign-up does not reveal whether an address is already registered", () => {
+  assert.ok(isExistingAccountSignUpError({ code: "user_already_exists", message: "User already registered" }));
+  assert.ok(isExistingAccountSignUpError({ code: "email_exists" }));
+  assert.ok(isExistingAccountSignUpError({ status: 422, message: "User already registered" }), "older responses without a code");
+  assert.ok(!isExistingAccountSignUpError({ code: "weak_password", message: "Password should be at least 8 characters." }));
+  // The shared answer is conditional: it never claims an account was created or an email sent.
+  assert.match(SIGN_UP_CHECK_INBOX_MESSAGE, /^Check your inbox\. If this email can be used/);
+  assert.doesNotMatch(SIGN_UP_CHECK_INBOX_MESSAGE, /already exists|account created/i);
+
+  const route = read("app/api/auth/signup/route.ts");
+  // An existing address (error, or the identity-less user Supabase returns) gets the same response as a new one.
+  assert.match(route, /isExistingAccountSignUpError\(error\)/);
+  assert.match(route, /identities\.length === 0/);
+  assert.match(route, /if \(!data\.session\) return checkInboxResponse\(\)/);
+  assert.doesNotMatch(route, /user: data\.user/, "the response must not carry the user object");
+  assert.doesNotMatch(read("app/login/page.tsx"), /already exists/i);
+});
+
+test("stored job text with internal detail is shown as a generic sentence", () => {
+  assert.equal(displayStoredJobText("Extracting text…", "ocr"), "Extracting text…");
+  assert.equal(displayStoredJobText("Conversion failed: request to https://docucorex-1.onrender.com/api/ocr-text failed", "conversion"), genericJobFailureMessage("conversion"));
+  assert.equal(displayStoredJobText('insert or update on table "documents" violates foreign key constraint "x_fkey"', "upload"), genericJobFailureMessage("upload"));
+  assert.equal(displayStoredJobText('column "foo" does not exist', "extraction"), genericJobFailureMessage("extraction"));
+  const route = read("app/api/jobs/route.ts");
+  assert.match(route, /error: typeof job\.error === "string" \? displayStoredJobText\(job\.error, job\.type\)/);
+  assert.match(route, /displayStoredJobText\(displayJobMessage\(job\.message\), job\.type\)/);
 });
 
 test("password reset never says whether the address has an account", () => {

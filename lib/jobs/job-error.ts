@@ -33,3 +33,15 @@ export function userSafeJobError(error: unknown, jobType: string, context: Recor
   });
   return genericJobFailureMessage(jobType);
 }
+
+// Rows written before this sanitising existed still hold raw text: worker
+// URLs, constraint and column names, fetch failures. Production had them on
+// 2026-10-20. Anything that reads like infrastructure or database output is
+// shown as the per-job-type sentence; ordinary progress text passes through.
+const INTERNAL_DETAIL_PATTERN =
+  /https?:\/\/|\bonrender\b|supabase\.co|violates|\bconstraint\b|\brelation\s|\bcolumn\s|duplicate key|invalid input syntax|PGRST|permission denied|row-level security|ECONN|ETIMEDOUT|fetch failed|\bat\s+\S+\s+\(|Traceback/i;
+
+/** Stored job text as it may be shown to the workspace: internal detail never reaches the client. */
+export function displayStoredJobText(text: string, jobType: string): string {
+  return INTERNAL_DETAIL_PATTERN.test(text) ? genericJobFailureMessage(jobType) : text;
+}

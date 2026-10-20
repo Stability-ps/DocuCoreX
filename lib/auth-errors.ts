@@ -33,20 +33,29 @@ export function signInErrorResponse(error: AuthErrorLike): { message: string; st
 }
 
 /**
+ * What every accepted sign-up hears, whether the address is new or already has
+ * an account (owner decision 2026-10-20: sign-up must not reveal which
+ * addresses are registered). It promises nothing it cannot keep: a new address
+ * gets a verification email, an existing one gets none, so the wording is
+ * conditional and points existing users at sign-in and password reset.
+ */
+export const SIGN_UP_CHECK_INBOX_MESSAGE =
+  "Check your inbox. If this email can be used for a new account, we sent a link to verify it. Already have an account? Sign in or reset your password.";
+
+/** An "address already registered" refusal, which must be answered like a success. */
+export function isExistingAccountSignUpError(error: AuthErrorLike) {
+  // Older GoTrue responses carry no code, only the sentence.
+  return error?.code === "user_already_exists" || error?.code === "email_exists" || /already registered/i.test(error?.message ?? "");
+}
+
+/**
  * Sign-up. Validation verdicts keep Supabase's wording, which is written for
- * people ("Password should be at least 8 characters."). An address that is
- * already registered is still reported — product decision: telling someone to
- * sign in instead is worth more than hiding which addresses have accounts, and
- * the route is rate limited.
+ * people ("Password should be at least 8 characters."). An existing address is
+ * not a failure here (see isExistingAccountSignUpError).
  */
 export function signUpErrorResponse(error: AuthErrorLike): { message: string; status: number } {
   if (isRateLimited(error)) return { message: AUTH_RATE_LIMIT_MESSAGE, status: 429 };
-  // Older GoTrue responses carry no code, only the sentence.
-  const code = error?.code ?? (/already registered/i.test(error?.message ?? "") ? "user_already_exists" : undefined);
-  switch (code) {
-    case "user_already_exists":
-    case "email_exists":
-      return { message: "An account with this email already exists. Sign in or reset your password.", status: 400 };
+  switch (error?.code) {
     case "weak_password":
       return { message: error?.message || "Choose a stronger password.", status: 400 };
     case "email_address_invalid":

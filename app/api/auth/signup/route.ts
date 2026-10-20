@@ -4,7 +4,7 @@ import { NextRequest, NextResponse } from "next/server";
 import type { CookieOptions } from "@supabase/ssr";
 import { dedupeCookies, setSupabaseAuthCookie } from "@/lib/auth-cookies";
 import { enforceRateLimit } from "@/lib/shared-rate-limit";
-import { signUpErrorResponse } from "@/lib/auth-errors";
+import { isExistingAccountSignUpError, SIGN_UP_CHECK_INBOX_MESSAGE, signUpErrorResponse } from "@/lib/auth-errors";
 
 export async function POST(request: NextRequest) {
   const limited = await enforceRateLimit("signup", { request }, "Too many sign-up attempts from this address. Try again later.");
@@ -58,6 +58,18 @@ export async function POST(request: NextRequest) {
       },
     });
 
+    // An address that already has an account is answered exactly like a new
+    // one awaiting verification, so sign-up does not reveal who is registered.
+    // Supabase signals it either as an error or, with email confirmation on,
+    // as a user with no identities.
+    const existingAccount =
+      (error && isExistingAccountSignUpError(error)) ||
+      (!error && data.user && !data.session && Array.isArray(data.user.identities) && data.user.identities.length === 0);
+    if (existingAccount) {
+      console.info("[Auth Signup] Sign-up for an existing address answered neutrally");
+      return checkInboxResponse();
+    }
+
     if (error) {
       // Validation verdicts keep their wording; anything else (SMTP, a database
       // trigger) is logged and answered generically (lib/auth-errors.ts).
@@ -85,13 +97,11 @@ export async function POST(request: NextRequest) {
       }
     }
 
+    if (!data.session) return checkInboxResponse();
+
+    // No user object in the body: the client only needs to know it is signed in.
     const response = NextResponse.json(
-      {
-        success: true,
-        user: data.user,
-        requiresEmailVerification: !data.session,
-        message: "Account created. Check your inbox to verify your email address.",
-      },
+      { success: true, requiresEmailVerification: false, message: "Account created." },
       { status: 200 }
     );
 
@@ -110,4 +120,12 @@ export async function POST(request: NextRequest) {
       { status: 500 }
     );
   }
+}
+
+/** The one answer for a new address awaiting verification and an existing one. */
+function checkInboxResponse() {
+  return NextResponse.json(
+    { success: true, requiresEmailVerification: true, message: SIGN_UP_CHECK_INBOX_MESSAGE },
+    { status: 200 }
+  );
 }
