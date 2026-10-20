@@ -20,7 +20,7 @@ const read = (path: string) => readFileSync(join(root, path), "utf8");
 const { errorResponse } = await import("../../lib/api-auth.ts");
 const { routeErrorResponse } = await import("../../lib/api-errors.ts");
 const { UserFacingError, isUserFacingError } = await import("../../lib/user-facing-error.ts");
-const { accountingDbError, notFoundError, businessRuleError, forbiddenError, rowFailureMessage } = await import("../../lib/accounting/errors.ts");
+const { accountingDbError, notFoundError, businessRuleError, forbiddenError, rowFailureMessage, APPROVED_BUSINESS_RULE_MESSAGES, APPROVED_NOT_FOUND_MESSAGES, isApprovedBusinessRuleMessage, isApprovedNotFoundMessage } = await import("../../lib/accounting/errors.ts");
 const { combineWorkerFailure } = await import("../../lib/accounting/combine-failure.ts");
 
 async function quietly<T>(run: () => T | Promise<T>): Promise<{ result: T; logged: unknown[][] }> {
@@ -319,4 +319,65 @@ test("deliberate accounting messages keep their wording and get the right status
     ["lib/accounting/journals-server.ts", /throw businessRuleError\(validation\.map\(/],
   ];
   for (const [file, pattern] of expectations) assert.match(read(file), pattern, `${file} ${pattern}`);
+});
+
+
+// Every person-readable rule the migrations raise must be on the allow-list, and
+// nothing else under restrict_violation / no_data_found may reach the client.
+function raisedMessages(errcode: string) {
+  const dir = join(root, "supabase/migrations");
+  const found = new Set<string>();
+  for (const file of readdirSync(dir).filter((f) => f.endsWith(".sql"))) {
+    const sql = readFileSync(join(dir, file), "utf8");
+    for (const m of sql.matchAll(/raise exception\s+'((?:[^']|'')*)'([\s\S]*?);/g)) {
+      if (m[2].includes(errcode)) found.add(m[1].replace(/''/g, "'"));
+    }
+  }
+  return found;
+}
+
+test("every restrict_violation the migrations raise is approved, or deliberately internal", () => {
+  const internal = /append-only|may only be written by/;
+  const approved = new Set<string>(APPROVED_BUSINESS_RULE_MESSAGES);
+  for (const message of raisedMessages("restrict_violation")) {
+    if (internal.test(message)) {
+      assert.ok(!approved.has(message), `internal trigger text must not be approved: ${message}`);
+      continue;
+    }
+    assert.ok(approved.has(message), `new business-rule message needs review and approval: ${message}`);
+  }
+});
+
+test("every no_data_found the migrations raise is an approved not-found sentence", () => {
+  const approved = new Set<string>(APPROVED_NOT_FOUND_MESSAGES);
+  for (const message of raisedMessages("no_data_found")) assert.ok(approved.has(message), message);
+});
+
+test("only approved business-rule text reaches the client as 422", () => {
+  for (const message of [
+    "journal does not balance: debits 1000.00, credits 900.00, difference 100.00",
+    "the period containing 2026-03-31 is locked; reopen it or post to an open period",
+    "amount 250.00 exceeds the invoice's unallocated balance of 100.00",
+  ]) {
+    assert.ok(isApprovedBusinessRuleMessage(message), message);
+    const error = accountingDbError({ code: "23001", message });
+    assert.equal((error as { status?: number }).status, 422);
+    assert.equal(error.message, message);
+  }
+  for (const message of [
+    'new row for relation "accounting_journals" violates check constraint "journals_status_check"',
+    "journal does not balance: debits (select secret from vault), credits 1, difference 1",
+    "journal is already posted\nDETAIL: Key (id)=(abc)",
+    "some future rule nobody reviewed",
+  ]) {
+    assert.ok(!isApprovedBusinessRuleMessage(message), message);
+    const error = accountingDbError({ code: "23001", message });
+    assert.notEqual((error as { status?: number }).status, 422, message);
+  }
+});
+
+test("unapproved no_data_found text becomes the fixed not-found sentence", () => {
+  assert.ok(isApprovedNotFoundMessage("journal 5f0c2a8e-0000-4000-8000-000000000001 not found"));
+  assert.equal(accountingDbError({ code: "P0002", message: "journal 42 not found" }).message, "journal 42 not found");
+  assert.equal(accountingDbError({ code: "P0002", message: 'relation "x" row missing' }).message, "This record was not found.");
 });
