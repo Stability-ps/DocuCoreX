@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { routeErrorResponse } from "@/lib/api-errors";
 import { getWorkspaceFlowOfFunds } from "@/lib/accounting/server";
 
 /**
@@ -12,7 +13,6 @@ export async function GET() {
   try {
     return NextResponse.json(await getWorkspaceFlowOfFunds());
   } catch (error) {
-    const message = error instanceof Error ? error.message : "Unable to build flow of funds.";
-    return NextResponse.json({ error: message }, { status: message === "Unauthorized" ? 401 : 400 });
+    return routeErrorResponse("docucorex.accounting.flow_of_funds.get_failed", error, { message: "Unable to build flow of funds." });
   }
 }

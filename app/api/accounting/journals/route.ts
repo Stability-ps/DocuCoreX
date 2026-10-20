@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { routeErrorResponse } from "@/lib/api-errors";
 import { createJournal, listJournals } from "@/lib/accounting/journals-server";
 import { toCsv } from "@/lib/accounting/ledger";
 import type { JournalLineInput, JournalType } from "@/lib/accounting/journals";
@@ -19,14 +20,6 @@ const JOURNAL_TYPES = new Set<JournalType>([
   "general", "adjustment", "opening_balance", "depreciation", "disposal",
   "accrual", "prepayment", "tax", "closing", "reversal",
 ]);
-
-function statusFor(message: string): number {
-  if (message === "Unauthorized") return 401;
-  if (message === "Entity not found in this workspace.") return 404;
-  // A refused post is the caller's request being wrong, not the server failing.
-  if (/does not balance|cannot be posted|already posted|is locked|is soft_closed|reopen it|must name/i.test(message)) return 422;
-  return 500;
-}
 
 export async function GET(request: Request) {
   const url = new URL(request.url);
@@ -50,8 +43,7 @@ export async function GET(request: Request) {
 
     return NextResponse.json({ journals });
   } catch (error) {
-    const message = error instanceof Error ? error.message : "Unable to load journals.";
-    return NextResponse.json({ error: message }, { status: statusFor(message) });
+    return routeErrorResponse("docucorex.accounting.journals.get_failed", error, { message: "Unable to load journals." });
   }
 }
 
@@ -91,7 +83,6 @@ export async function POST(request: Request) {
     });
     return NextResponse.json(result, { status: 201 });
   } catch (error) {
-    const message = error instanceof Error ? error.message : "Unable to create the journal.";
-    return NextResponse.json({ error: message }, { status: statusFor(message) });
+    return routeErrorResponse("docucorex.accounting.journals.post_failed", error, { message: "Unable to create the journal." });
   }
 }

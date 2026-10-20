@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { routeErrorResponse } from "@/lib/api-errors";
 import { toCsv } from "@/lib/accounting/ledger";
 import {
   completeReconciliation,
@@ -20,14 +21,6 @@ import {
  * that the difference is EXPLAINED rather than merely zero. This route never
  * decides that a reconciliation may be signed off.
  */
-function statusFor(message: string): number {
-  if (message === "Unauthorized") return 401;
-  if (message === "Entity not found in this workspace." || message === "Reconciliation not found.") return 404;
-  // A refused completion is the request being wrong, not the server failing.
-  if (/does not explain|missing from the ledger|already completed|reopen it/i.test(message)) return 422;
-  return 500;
-}
-
 export async function GET(request: Request) {
   const url = new URL(request.url);
   const reconciliationId = url.searchParams.get("reconciliationId");
@@ -68,8 +61,7 @@ export async function GET(request: Request) {
     ]);
     return NextResponse.json({ accounts, mappableAccounts: mappable });
   } catch (error) {
-    const message = error instanceof Error ? error.message : "Unable to load reconciliation.";
-    return NextResponse.json({ error: message }, { status: statusFor(message) });
+    return routeErrorResponse("docucorex.accounting.reconciliation.get_failed", error, { message: "Unable to load reconciliation." });
   }
 }
 
@@ -141,7 +133,6 @@ export async function POST(request: Request) {
         return NextResponse.json({ error: "Unknown action." }, { status: 400 });
     }
   } catch (error) {
-    const message = error instanceof Error ? error.message : "Unable to update the reconciliation.";
-    return NextResponse.json({ error: message }, { status: statusFor(message) });
+    return routeErrorResponse("docucorex.accounting.reconciliation.post_failed", error, { message: "Unable to update the reconciliation." });
   }
 }

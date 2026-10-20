@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { routeErrorResponse } from "@/lib/api-errors";
 import { repairStuckAccountingRuns } from "@/lib/accounting/server";
 
 type RepairBody = {
@@ -11,7 +12,6 @@ export async function POST(request: Request) {
     const result = await repairStuckAccountingRuns({ runId: body.runId });
     return NextResponse.json(result);
   } catch (error) {
-    const message = error instanceof Error ? error.message : "Unable to repair stuck runs.";
-    return NextResponse.json({ error: message }, { status: message === "Unauthorized" ? 401 : 500 });
+    return routeErrorResponse("docucorex.accounting.fnb_runs_repair.post_failed", error, { message: "Unable to repair stuck runs." });
   }
 }

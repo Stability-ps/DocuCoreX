@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { routeErrorResponse } from "@/lib/api-errors";
 import { addAccountingReviewComment, listAccountingReviewComments } from "@/lib/accounting/server";
 
 export async function GET(request: Request) {
@@ -13,8 +14,7 @@ export async function GET(request: Request) {
     const comments = await listAccountingReviewComments(transactionId);
     return NextResponse.json({ comments });
   } catch (error) {
-    const message = error instanceof Error ? error.message : "Unable to load review comments.";
-    return NextResponse.json({ error: message }, { status: message === "Unauthorized" ? 401 : 500 });
+    return routeErrorResponse("docucorex.accounting.engine_review_queue_comments.get_failed", error, { message: "Unable to load review comments." });
   }
 }
 
@@ -32,7 +32,6 @@ export async function POST(request: Request) {
     const comment = await addAccountingReviewComment(body.transactionId, body.body.trim());
     return NextResponse.json({ comment });
   } catch (error) {
-    const message = error instanceof Error ? error.message : "Unable to add review comment.";
-    return NextResponse.json({ error: message }, { status: message === "Unauthorized" ? 401 : 400 });
+    return routeErrorResponse("docucorex.accounting.engine_review_queue_comments.post_failed", error, { message: "Unable to add review comment." });
   }
 }

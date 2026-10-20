@@ -62,16 +62,19 @@ test.describe("Journals action buttons", () => {
     await page.route("**/api/accounting/journals**", (route) =>
       route.fulfill({
         status: 500,
-        json: { error: "Could not embed because more than one relationship was found for 'accounting_journals' and 'accounting_journal_lines'" },
+        // What the route answers now: the PostgREST text ("Could not embed
+        // because more than one relationship was found...") is logged, and the
+        // client gets the route's own sentence.
+        json: { error: "Unable to load journals.", code: "INTERNAL_ERROR" },
       }),
     );
 
     await page.goto("/accounting/journals");
 
     // The buttons are disabled (accounts never populated because the
-    // Promise.all rejected), but the real API error is surfaced on screen —
+    // Promise.all rejected), but the API error is surfaced on screen —
     // proving this isn't a silent failure, just a legitimately blocked action.
-    await expect(page.getByText("Could not embed because more than one relationship was found", { exact: false })).toBeVisible();
+    await expect(page.getByText("Unable to load journals.", { exact: false })).toBeVisible();
     await expect(page.getByRole("button", { name: "New Journal" })).toBeDisabled();
     await expect(page.getByRole("button", { name: "Import CSV" })).toBeDisabled();
   });

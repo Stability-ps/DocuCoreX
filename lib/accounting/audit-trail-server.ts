@@ -4,6 +4,7 @@
  * produced by the triggers in migration 041, never by application code.
  */
 
+import { accountingDbError, notFoundError } from "@/lib/accounting/errors";
 import { getWorkspaceContext } from "@/lib/server-documents";
 import type { AuditEvent } from "@/lib/accounting/audit-trail";
 
@@ -16,8 +17,8 @@ async function requireEntity(companyId: string) {
     .eq("id", companyId)
     .eq("workspace_id", context.workspaceId)
     .maybeSingle();
-  if (error) throw new Error(error.message);
-  if (!data) throw new Error("Entity not found in this workspace.");
+  if (error) throw accountingDbError(error);
+  if (!data) throw notFoundError("Entity not found in this workspace.");
   return context;
 }
 
@@ -61,6 +62,6 @@ export async function listAuditEvents(input: {
   if (input.toDate) query = query.lte("created_at", input.toDate);
 
   const { data, error, count } = await query;
-  if (error) throw new Error(error.message);
+  if (error) throw accountingDbError(error);
   return { events: (data ?? []).map(mapEvent), total: count ?? 0 };
 }

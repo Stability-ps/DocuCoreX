@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { routeErrorResponse } from "@/lib/api-errors";
 import {
   closeAccountingPeriod,
   getPeriodReadiness,
@@ -14,13 +15,6 @@ import {
  * period refuses to be created over unposted journals, and a reopen refuses
  * without a reason. This route never decides either of those for itself.
  */
-function statusFor(message: string): number {
-  if (message === "Unauthorized") return 401;
-  if (message === "Entity not found in this workspace." || message === "period not found" || /not found/i.test(message)) return 404;
-  if (/unposted journal|a reason is required|must not be after|status must be/i.test(message)) return 422;
-  return 500;
-}
-
 export async function GET(request: Request) {
   const url = new URL(request.url);
   const companyId = url.searchParams.get("companyId");
@@ -38,8 +32,7 @@ export async function GET(request: Request) {
 
     return NextResponse.json({ periods: await listAccountingPeriods(companyId) });
   } catch (error) {
-    const message = error instanceof Error ? error.message : "Unable to load periods.";
-    return NextResponse.json({ error: message }, { status: statusFor(message) });
+    return routeErrorResponse("docucorex.accounting.periods.get_failed", error, { message: "Unable to load periods." });
   }
 }
 
@@ -78,7 +71,6 @@ export async function POST(request: Request) {
         return NextResponse.json({ error: "Unknown action." }, { status: 400 });
     }
   } catch (error) {
-    const message = error instanceof Error ? error.message : "Unable to update the period.";
-    return NextResponse.json({ error: message }, { status: statusFor(message) });
+    return routeErrorResponse("docucorex.accounting.periods.post_failed", error, { message: "Unable to update the period." });
   }
 }

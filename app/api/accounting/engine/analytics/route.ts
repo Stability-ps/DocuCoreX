@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { routeErrorResponse } from "@/lib/api-errors";
 import { assertWorkspaceAdmin } from "@/lib/accounting/engine/admin";
 
 export async function GET() {
@@ -47,8 +48,6 @@ export async function GET() {
 
     return NextResponse.json({ analytics });
   } catch (error) {
-    const message = error instanceof Error ? error.message : "Unable to load statement analytics.";
-    const status = message === "Unauthorized" ? 401 : message === "Forbidden" ? 403 : 500;
-    return NextResponse.json({ error: message }, { status });
+    return routeErrorResponse("docucorex.accounting.engine_analytics.get_failed", error, { message: "Unable to load statement analytics." });
   }
 }

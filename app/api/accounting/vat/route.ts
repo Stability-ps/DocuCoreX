@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { routeErrorResponse } from "@/lib/api-errors";
 import {
   countTransactionsAwaitingReview,
   getVatPeriod,
@@ -16,12 +17,6 @@ import { vatPosition, vatReadiness } from "@/lib/accounting/vat";
  * VAT position without them invites filing from numbers the system knows are
  * not final.
  */
-function statusFor(message: string): number {
-  if (message === "Unauthorized") return 401;
-  if (message === "Entity not found in this workspace.") return 404;
-  return 500;
-}
-
 export async function GET(request: Request) {
   const url = new URL(request.url);
   const companyId = url.searchParams.get("companyId");
@@ -70,7 +65,6 @@ export async function GET(request: Request) {
 
     return NextResponse.json({ rows, register: register.rows, totalRegisterRows: register.totalRows, taxCodes, period, position, readiness });
   } catch (error) {
-    const message = error instanceof Error ? error.message : "Unable to load VAT.";
-    return NextResponse.json({ error: message }, { status: statusFor(message) });
+    return routeErrorResponse("docucorex.accounting.vat.get_failed", error, { message: "Unable to load VAT." });
   }
 }

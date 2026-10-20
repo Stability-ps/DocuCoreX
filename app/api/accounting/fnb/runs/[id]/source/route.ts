@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { databaseErrorResponse } from "@/lib/api-errors";
+import { databaseErrorResponse, routeErrorResponse } from "@/lib/api-errors";
 import { getAccountingRunDetail } from "@/lib/accounting/server";
 import { getWorkspaceContext } from "@/lib/server-documents";
 
@@ -55,7 +55,6 @@ export async function GET(request: Request, { params }: { params: Promise<{ id: 
       },
     });
   } catch (error) {
-    const message = error instanceof Error ? error.message : "Unable to load statement source.";
-    return NextResponse.json({ error: message }, { status: message === "Unauthorized" ? 401 : 500 });
+    return routeErrorResponse("docucorex.accounting.fnb_runs_id_source.get_failed", error, { message: "Unable to load statement source." });
   }
 }

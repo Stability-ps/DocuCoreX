@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { routeErrorResponse } from "@/lib/api-errors";
 import { listAccountingReviewQueue, updateAccountingReviewWorkflow } from "@/lib/accounting/server";
 import type { ReviewQueueStatus } from "@/lib/accounting/engine/types";
 
@@ -12,8 +13,7 @@ export async function GET(request: Request) {
     const items = await listAccountingReviewQueue(status && allowedStatuses.has(status as ReviewQueueStatus) ? (status as ReviewQueueStatus) : undefined);
     return NextResponse.json({ items });
   } catch (error) {
-    const message = error instanceof Error ? error.message : "Unable to load review queue.";
-    return NextResponse.json({ error: message }, { status: message === "Unauthorized" ? 401 : 500 });
+    return routeErrorResponse("docucorex.accounting.engine_review_queue.get_failed", error, { message: "Unable to load review queue." });
   }
 }
 
@@ -35,7 +35,6 @@ export async function PATCH(request: Request) {
     const transaction = await updateAccountingReviewWorkflow(body.transactionId, body.status, body.comment ?? "");
     return NextResponse.json({ transaction });
   } catch (error) {
-    const message = error instanceof Error ? error.message : "Unable to update review workflow.";
-    return NextResponse.json({ error: message }, { status: message === "Unauthorized" ? 401 : 400 });
+    return routeErrorResponse("docucorex.accounting.engine_review_queue.patch_failed", error, { message: "Unable to update review workflow." });
   }
 }
