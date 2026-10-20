@@ -74,6 +74,7 @@ import { computeBalanceContinuity } from "@/lib/accounting/balance-continuity";
 import { ProcessingSteps } from "@/components/accounting/processing-steps";
 import { formatCount, formatMoney, formatStatementDate, formatStatementDateTime } from "@/lib/accounting/format";
 import { summarizeAccountingCoverage, summarizeStatementIntegrity } from "@/lib/accounting/integrity";
+import { reconciliationStatusForAmount } from "@/lib/accounting/reconciliation-policy";
 import { DocumentViewer } from "@/components/document-viewer";
 import { WorkspaceInsights } from "@/components/accounting/workspace-insights";
 import { WorkspaceForecast } from "@/components/accounting/workspace-forecast";
@@ -2073,7 +2074,12 @@ function StatementEvidencePanel({
             {tick(integrity.sourceRowComplete)} source rows {plainNumber(integrity.withSourceRow)}/{plainNumber(integrity.transactionCount)}
           </li>
           <li className={tone(integrity.reconciled)}>
-            {tick(integrity.reconciled)} {integrity.reconciled ? "Reconciled" : `Difference ${money(integrity.reconciliationDifference)}`}
+            {tick(integrity.reconciled)}{" "}
+            {integrity.reconciled
+              ? "Reconciled"
+              : integrity.reconciliationStatus === "needs_review"
+                ? `Needs review: difference ${money(integrity.reconciliationDifference)}`
+                : `Difference ${money(integrity.reconciliationDifference)}`}
           </li>
         </ul>
       </div>
@@ -2933,7 +2939,7 @@ function BankRecPanel({
     ["= Expected Closing Balance", money(expectedClosing)],
     ["Statement Closing Balance", money(run.closingBalance)],
     ["Difference", money(difference)],
-    ["Status", Math.abs(difference) < 0.01 ? "Reconciled" : "Needs review"],
+    ["Status", { reconciled: "Reconciled", needs_review: "Needs review", failed: "Reconciliation failed" }[reconciliationStatusForAmount(difference)]],
     ["Service Fees", money(totals.bankCharges)],
     ["Bank VAT", run.bankChargesTotal ? money(run.bankChargesTotal * (15 / 115)) : "-"],
   ];

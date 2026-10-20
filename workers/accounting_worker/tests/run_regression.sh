@@ -65,4 +65,7 @@ PY
 # that needs an institution name will not travel to the next country.
 "$PYTHON_BIN" "$WORKER_DIR/tests/ledger_repair_check.py"
 
+# Reconciliation policy: exact 0 reconciles, R0.01-R0.05 needs review.
+"$PYTHON_BIN" "$WORKER_DIR/tests/reconciliation_policy_check.py"
+
 "$PYTHON_BIN" "$WORKER_DIR/tests/regression_suite.py"

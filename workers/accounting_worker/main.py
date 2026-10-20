@@ -146,6 +146,19 @@ ACCOUNTING_REPORT_DISCLAIMER = (
 )
 MAX_DATABASE_AMOUNT = Decimal("999999999999.99")
 CENT = Decimal("0.01")
+#: Reconciliation policy (lib/accounting/reconciliation-policy.ts): a difference
+#: of exactly 0 reconciles; R0.01-R0.05 needs review; more fails. A nonzero
+#: difference never passes as reconciled.
+RECONCILIATION_REVIEW_BAND = Decimal("0.05")
+
+
+def reconciliation_status(difference: Decimal | None) -> str | None:
+    if difference is None:
+        return None
+    size = difference.quantize(CENT).copy_abs()
+    if size == 0:
+        return "reconciled"
+    return "needs_review" if size <= RECONCILIATION_REVIEW_BAND else "failed"
 
 register_default_parsers()
 
@@ -3233,7 +3246,7 @@ def derive_closing_balance(
     expected = (
         decimal_amount(opening) + decimal_amount(declared_credits) - decimal_amount(declared_debits)
     ).quantize(CENT)
-    if abs(expected - decimal_amount(last_balance)) > Decimal("0.05"):
+    if reconciliation_status(expected - decimal_amount(last_balance)) != "reconciled":
         log_warning(
             "worker.closing_balance_not_verified",
             opening=str(decimal_amount(opening)),
@@ -3261,15 +3274,13 @@ def validate_extraction(metadata: dict[str, Any], transactions: list[ParsedTrans
         if not ok:
             failures.append(name)
 
-    tolerance = Decimal("0.05")
-
     opening = metadata.get("opening_balance")
     closing = metadata.get("closing_balance")
     recon_diff = None
     if opening is not None and closing is not None:
         expected_close = (decimal_amount(opening) + summary["total_credits"] - summary["total_debits"]).quantize(CENT)
         recon_diff = (expected_close - decimal_amount(closing)).quantize(CENT)
-        check("reconciliation", abs(recon_diff) <= tolerance, f"difference {recon_diff}", str(expected_close), str(decimal_amount(closing)))
+        check("reconciliation", reconciliation_status(recon_diff) == "reconciled", f"difference {recon_diff}", str(expected_close), str(decimal_amount(closing)))
 
     expected_count = metadata.get("expected_transaction_count")
     if expected_count is not None:
@@ -3289,11 +3300,11 @@ def validate_extraction(metadata: dict[str, Any], transactions: list[ParsedTrans
     if metadata.get("declared_credit_total") is not None:
         declared = decimal_amount(metadata["declared_credit_total"])
         diff = (summary["total_credits"] - declared).quantize(CENT)
-        check("credit_total", abs(diff) <= tolerance, f"variance {diff}", str(summary["total_credits"]), str(declared))
+        check("credit_total", reconciliation_status(diff) == "reconciled", f"variance {diff}", str(summary["total_credits"]), str(declared))
     if metadata.get("declared_debit_total") is not None:
         declared = decimal_amount(metadata["declared_debit_total"])
         diff = (summary["total_debits"] - declared).quantize(CENT)
-        check("debit_total", abs(diff) <= tolerance, f"variance {diff}", str(summary["total_debits"]), str(declared))
+        check("debit_total", reconciliation_status(diff) == "reconciled", f"variance {diff}", str(summary["total_debits"]), str(declared))
 
     # Running-balance continuity — a SUBSTITUTE for declared evidence, not an
     # extra hurdle on top of it.
@@ -3345,6 +3356,7 @@ def validate_extraction(metadata: dict[str, Any], transactions: list[ParsedTrans
         "evidence_checks_run": evidence_checks,
         "balance_gap_count": len(gaps),
         "reconciliation_difference": str(recon_diff) if recon_diff is not None else None,
+        "reconciliation_status": reconciliation_status(recon_diff),
         "extracted_transaction_count": len(transactions),
         "expected_transaction_count": expected_count,
         "extracted_credits": str(summary["total_credits"]),
@@ -6687,6 +6699,13 @@ def process_fnb_statement(payload: ProcessRequest, authorization: str | None = H
             )
         elif review_issue:
             run_error = review_error_message(review_issue)
+        elif extraction_incomplete and extraction_check.get("reconciliation_status") == "needs_review" and set(
+            extraction_check.get("failures") or []
+        ) <= {"reconciliation", "credit_total", "debit_total"}:
+            run_error = (
+                f"Needs review: the statement is out by R{extraction_check.get('reconciliation_difference')}. "
+                "That is within R0.05, so probably rounding, but it is not reconciled until someone confirms it."
+            )
         elif extraction_incomplete:
             expected_count = extraction_check.get("expected_transaction_count")
             extracted_count = extraction_check.get("extracted_transaction_count")
