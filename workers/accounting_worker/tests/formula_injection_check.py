@@ -53,7 +53,8 @@ for column, value in enumerate(LITERAL, start=1):
     assert cell.value == value, f"literal text changed: {value!r} -> {cell.value!r}"
 for column, value in enumerate(EDGE, start=1):
     cell = reloaded.cell(row=7, column=column)
-    assert cell.data_type == "s" and cell.value == value, f"edge text must stay text: {value!r} -> {cell.data_type} {cell.value!r}"
+    # XML normalises a carriage return to a line feed on reload (with lxml); the cell must still be text.
+    assert cell.data_type == "s" and cell.value.replace("\r", "\n") == value.replace("\r", "\n"), f"edge text must stay text: {value!r} -> {cell.data_type} {cell.value!r}"
 assert reloaded["A4"].data_type == "s" and reloaded["A4"].value == HOSTILE[0], "a directly assigned title must stay text"
 
 # The combined pack's title is built from the company name the PDF supplied.
