@@ -32,8 +32,12 @@ for (const route of routes) {
     for (const width of widths) {
       await page.setViewportSize({ width, height: 800 });
       await page.goto(route);
-      await page.waitForLoadState("networkidle");
-      await expect(page.getByRole("heading", { level: 1 }), `${route} @${width}`).toHaveCount(1);
+      // Not "networkidle": a page that polls (live document statuses every 2.5 s)
+      // never goes idle, and each wait then burned the whole 90 s test timeout —
+      // seventeen routes, twice with the CI retry, ~50 min of a "hung" E2E job.
+      // The heading assertion already waits for the page to render.
+      await page.waitForLoadState("load");
+      await expect(page.getByRole("heading", { level: 1 }), `${route} @${width}`).toHaveCount(1, { timeout: 15_000 });
       const overflow = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
       expect(overflow, `${route} @${width} horizontal overflow`).toBeLessThanOrEqual(0);
     }
