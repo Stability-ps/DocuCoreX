@@ -35,12 +35,13 @@ export function signInErrorResponse(error: AuthErrorLike): { message: string; st
 /**
  * What every accepted sign-up hears, whether the address is new or already has
  * an account (owner decision 2026-10-20: sign-up must not reveal which
- * addresses are registered). It promises nothing it cannot keep: a new address
- * gets a verification email, an existing one gets none, so the wording is
- * conditional and points existing users at sign-in and password reset.
+ * addresses are registered). Sign-up never signs anyone in, so the person goes
+ * on to sign in. The wording holds with email confirmation off (a new account
+ * can sign in at once) and on (a new account must open the link first), and
+ * points existing users at sign-in and password reset.
  */
-export const SIGN_UP_CHECK_INBOX_MESSAGE =
-  "Check your inbox. If this email can be used for a new account, we sent a link to verify it. Already have an account? Sign in or reset your password.";
+export const SIGN_UP_ACCEPTED_MESSAGE =
+  "Thanks. If this email can be used for a new account, sign in below with the password you just chose (if we emailed you a verification link, open it first). Already have an account? Sign in with your existing password or reset it.";
 
 /** An "address already registered" refusal, which must be answered like a success. */
 export function isExistingAccountSignUpError(error: AuthErrorLike) {

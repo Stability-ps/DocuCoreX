@@ -13,7 +13,7 @@ register("../accounting/alias-hook.mjs", pathToFileURL(new URL(".", import.meta.
 const root = new URL("../../", import.meta.url).pathname;
 const read = (path: string) => readFileSync(join(root, path), "utf8");
 
-const { signInErrorResponse, signUpErrorResponse, passwordResetMessage, isExistingAccountSignUpError, INVALID_CREDENTIALS_MESSAGE, PASSWORD_RESET_SENT_MESSAGE, SIGN_UP_CHECK_INBOX_MESSAGE } = await import("../../lib/auth-errors.ts");
+const { signInErrorResponse, signUpErrorResponse, passwordResetMessage, isExistingAccountSignUpError, INVALID_CREDENTIALS_MESSAGE, PASSWORD_RESET_SENT_MESSAGE, SIGN_UP_ACCEPTED_MESSAGE } = await import("../../lib/auth-errors.ts");
 const { UserFacingError, isUserFacingError } = await import("../../lib/user-facing-error.ts");
 const { routeErrorResponse } = await import("../../lib/api-errors.ts");
 const { userSafeJobError, genericJobFailureMessage, displayStoredJobText } = await import("../../lib/jobs/job-error.ts");
@@ -69,15 +69,15 @@ test("sign-up does not reveal whether an address is already registered", () => {
   assert.ok(isExistingAccountSignUpError({ status: 422, message: "User already registered" }), "older responses without a code");
   assert.ok(!isExistingAccountSignUpError({ code: "weak_password", message: "Password should be at least 8 characters." }));
   // The shared answer is conditional: it never claims an account was created or an email sent.
-  assert.match(SIGN_UP_CHECK_INBOX_MESSAGE, /^Check your inbox\. If this email can be used/);
-  assert.doesNotMatch(SIGN_UP_CHECK_INBOX_MESSAGE, /already exists|account created/i);
+  assert.match(SIGN_UP_ACCEPTED_MESSAGE, /If this email can be used for a new account/);
+  assert.doesNotMatch(SIGN_UP_ACCEPTED_MESSAGE, /already exists|account created/i);
 
-  const route = read("app/api/auth/signup/route.ts");
+  const handler = read("lib/auth-signup.ts");
   // An existing address (error, or the identity-less user Supabase returns) gets the same response as a new one.
-  assert.match(route, /isExistingAccountSignUpError\(error\)/);
-  assert.match(route, /identities\.length === 0/);
-  assert.match(route, /if \(!data\.session\) return checkInboxResponse\(\)/);
-  assert.doesNotMatch(route, /user: data\.user/, "the response must not carry the user object");
+  assert.match(handler, /isExistingAccountSignUpError\(error\)/);
+  assert.match(handler, /identities\.length === 0/);
+  assert.doesNotMatch(handler, /user: data\.user/, "the response must not carry the user object");
+  assert.doesNotMatch(read("app/api/auth/signup/route.ts"), /setSupabaseAuthCookie/, "sign-up never sets auth cookies");
   assert.doesNotMatch(read("app/login/page.tsx"), /already exists/i);
 });
 
@@ -104,7 +104,7 @@ test("the auth routes and the login page no longer return Auth's raw message", (
     assert.doesNotMatch(read(path), /\{ error: error\.message \}/, path);
   }
   assert.match(read("app/api/auth/signin/route.ts"), /signInErrorResponse\(error\)/);
-  assert.match(read("app/api/auth/signup/route.ts"), /signUpErrorResponse\(error\)/);
+  assert.match(read("lib/auth-signup.ts"), /signUpErrorResponse\(error\)/);
   const login = read("app/login/page.tsx");
   assert.doesNotMatch(login, /setStatus\(result\.error\.message\)/);
   assert.match(login, /passwordResetMessage\(result\.error\)/);
