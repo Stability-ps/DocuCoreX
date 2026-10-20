@@ -7,7 +7,7 @@ import { register } from "node:module";
 import { pathToFileURL } from "node:url";
 
 register("../accounting/alias-hook.mjs", pathToFileURL(new URL(".", import.meta.url).pathname));
-const { cronAuthorization, runCronSweep, SWEEP_MAX_DOCUMENTS } = await import("@/lib/jobs/cron-sweep.ts");
+const { cronAuthorization, isDryRunRequest, runCronSweep, SWEEP_MAX_DOCUMENTS } = await import("@/lib/jobs/cron-sweep.ts");
 const read = (path: string) => readFileSync(new URL(`../../${path}`, import.meta.url), "utf8");
 
 test("the cron is refused without the exact bearer secret, and fails closed when unset", () => {
@@ -88,4 +88,30 @@ test("GET authenticates before it touches the database, and the worker never swe
   assert.equal(get.split("return POST(").length - 1, 1);
   assert.match(get, /if \(!isSupabaseConfigured\) \{\s+return POST\(/, "POST is reachable only without Supabase");
   assert.match(read("vercel.json"), /"path": "\/api\/jobs\/process"/);
+});
+
+test("a dry run lists the candidates and dispatches nothing", async () => {
+  let dispatches = 0;
+  const result = await runCronSweep(
+    { findDocumentIds: async () => ["a", "b", "a"], dispatch: async () => ((dispatches += 1), { ok: true, status: 200 }) },
+    undefined,
+    { dryRun: true },
+  );
+  assert.equal(dispatches, 0);
+  assert.deepEqual(result, { candidates: 2, dispatched: 0, succeeded: 0, failed: 0, skippedForTime: 0, dryRun: true, candidateDocumentIds: ["a", "b"] });
+});
+
+test("only an explicit dryRun=1|true query selects a dry run", () => {
+  assert.equal(isDryRunRequest("https://x.test/api/jobs/process?dryRun=1"), true);
+  assert.equal(isDryRunRequest("https://x.test/api/jobs/process?dryRun=true"), true);
+  assert.equal(isDryRunRequest("https://x.test/api/jobs/process"), false);
+  assert.equal(isDryRunRequest("https://x.test/api/jobs/process?dryRun=0"), false);
+  assert.equal(isDryRunRequest("not a url"), false);
+});
+
+test("the dry-run flag is read only after the cron is authorised, and ids are not logged", () => {
+  const route = read("app/api/jobs/process/route.ts");
+  const get = route.slice(route.indexOf("export async function GET(request: Request)"), route.indexOf("async function proxyToConversionWorker"));
+  assert.ok(get.indexOf("isDryRunRequest(request.url)") > get.indexOf("cronAuthorization("));
+  assert.match(get, /console\.info\("docucorex\.cron\.sweep", summary\)/);
 });

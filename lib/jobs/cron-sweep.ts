@@ -37,7 +37,22 @@ export type SweepResult = {
   succeeded: number;
   failed: number;
   skippedForTime: number;
+  // Present only on a dry run: what a real run would hand to the worker.
+  dryRun?: true;
+  candidateDocumentIds?: string[];
 };
+
+// GET /api/jobs/process?dryRun=1 (still behind CRON_SECRET) reports the
+// candidates without dispatching anything, so the schedule can be verified
+// against production without processing customer documents.
+export function isDryRunRequest(url: string): boolean {
+  try {
+    const value = new URL(url).searchParams.get("dryRun");
+    return value === "1" || value === "true";
+  } catch {
+    return false;
+  }
+}
 
 export const SWEEP_MAX_DOCUMENTS = 25;
 // Leaves headroom under the route's 300 s maxDuration for the query and response.
@@ -45,11 +60,12 @@ export const SWEEP_BUDGET_MS = 240_000;
 const PER_DOCUMENT_TIMEOUT_MS = 120_000;
 const MIN_TIME_TO_START_MS = 30_000;
 
-export async function runCronSweep(deps: SweepDeps, budgetMs = SWEEP_BUDGET_MS): Promise<SweepResult> {
+export async function runCronSweep(deps: SweepDeps, budgetMs = SWEEP_BUDGET_MS, options: { dryRun?: boolean } = {}): Promise<SweepResult> {
   const now = deps.now ?? Date.now;
   const started = now();
   const ids = Array.from(new Set(await deps.findDocumentIds(SWEEP_MAX_DOCUMENTS)));
   const result: SweepResult = { candidates: ids.length, dispatched: 0, succeeded: 0, failed: 0, skippedForTime: 0 };
+  if (options.dryRun) return { ...result, dryRun: true, candidateDocumentIds: ids };
 
   for (const id of ids) {
     const remaining = budgetMs - (now() - started);
