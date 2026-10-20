@@ -37,6 +37,7 @@ for (const route of routes) {
       // seventeen routes, twice with the CI retry, ~50 min of a "hung" E2E job.
       // The heading assertion already waits for the page to render.
       await page.waitForLoadState("load");
+      await page.waitForLoadState("networkidle", { timeout: 5_000 }).catch(() => undefined);
       await expect(page.getByRole("heading", { level: 1 }), `${route} @${width}`).toHaveCount(1, { timeout: 15_000 });
       const overflow = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
       expect(overflow, `${route} @${width} horizontal overflow`).toBeLessThanOrEqual(0);

@@ -14,6 +14,9 @@ for (const route of routes) {
     // reaches (see page-heading.spec.ts).
     await page.waitForLoadState("load");
     await page.getByRole("heading", { level: 1 }).first().waitFor({ timeout: 15_000 });
+    // Still give late-loading controls the same chance as before, bounded so a
+    // polling page cannot stall the run.
+    await page.waitForLoadState("networkidle", { timeout: 5_000 }).catch(() => undefined);
 
     const unnamed = await page
       .locator("button, input:not([type=hidden]), select, textarea, [role=switch]")
