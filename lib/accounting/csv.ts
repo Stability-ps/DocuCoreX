@@ -17,7 +17,9 @@ export function parseCsv(text: string): string[][] {
   const n = text.length;
 
   const endField = () => {
-    row.push(field);
+    // Undo the apostrophe toCsv adds in front of formula-shaped text, so an
+    // export re-imports with its values unchanged.
+    row.push(/^'[\s\u00a0\u200b\ufeff]*[=+\-@\uff1d\uff0b\uff0d\uff20\t\r\n]/.test(field) ? field.slice(1) : field);
     field = "";
   };
   const endRow = () => {

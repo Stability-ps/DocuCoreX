@@ -28,3 +28,15 @@ test("the accounting export's CSV cells go through the same guard", () => {
   const src = readFileSync(join(root, "lib/accounting/export.ts"), "utf8");
   assert.match(src, /!cell\.num \? neutraliseSpreadsheetFormula\(String\(cell\.v\)\)/);
 });
+
+test("formulas hidden behind whitespace, a BOM, line breaks or full-width signs open as text", () => {
+  for (const hostile of ["=SUM(1,1)", "+SUM(1,1)", "-1+2", "@SUM(1,1)", " =SUM(1,1)", " =1+1", "﻿=1+1", "\n=1+1", "＝SUM(1,1)", "＋1+1", "＠SUM(1,1)", "  -2+3+cmd|' /C calc'!A0"]) {
+    assert.equal(neutraliseSpreadsheetFormula(hostile), `'${hostile}`, JSON.stringify(hostile));
+  }
+});
+
+test("placeholders, dates and ordinary multiline text keep no apostrophe", () => {
+  for (const plain of ["-", "+", " -12.50", "2026-10-21", "21/10/2026", "Line one\n=not first", "Café — Rosebank", "R 1 090,00"]) {
+    assert.equal(neutraliseSpreadsheetFormula(plain), plain, JSON.stringify(plain));
+  }
+});
