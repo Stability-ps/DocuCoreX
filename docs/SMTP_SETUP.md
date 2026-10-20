@@ -105,6 +105,12 @@ The order matters. Each step has a gate, and nothing after a gate starts until i
 
 **Why step 3 is needed.** Sign-up runs on the server, and since #195 it keeps no cookies. The PKCE code verifier that `{{ .ConfirmationURL }}` → `/auth/callback?code=` needs therefore never reaches the browser. The email is still confirmed when the link is clicked, but the callback would then show `exchange_failed`. The `token_hash` link needs no verifier and also works when the link is opened on another device. Password reset is unaffected: it starts in the browser, which keeps its own verifier.
 
+**Redirect security.**
+- **Allowlist.** Supabase only follows redirects on the Auth redirect allowlist. Today that is `https://www.docucorex.com/**` and `http://localhost:3000/**`. Before step 8, remove `localhost` from the **production** project, or move it to a separate dev project, so that a production email can never send someone to a local address.
+- **Link host.** Sign-up builds `emailRedirectTo` from the request origin (`lib/auth-signup.ts`), and password reset builds `redirectTo` from `window.location.origin` (`app/login/page.tsx`). The allowlist bounds both. Step 3's `token_hash` link uses `{{ .SiteURL }}`, so the confirmation host is fixed to the Site URL and comes from no request at all.
+- **Next path.** After the link, `/auth/callback` and `/auth/confirm` only redirect to same-origin paths. The callback already uses `safeNextPath`; the new route must use it too, and its tests must include `//evil.example` and `https://evil.example` as `next` values.
+- **Template.** Never put a raw `{{ .RedirectTo }}` in a template.
+
 **Account recovery after confirmation is on.**
 - An unconfirmed user who lost the email uses **Forgot password**. With confirmation on, Supabase sends the recovery link, and opening it confirms the address.
 - A user locked out by a mistyped address signs up again with the right one. The neutral answer does not tell anyone that the first account exists.
