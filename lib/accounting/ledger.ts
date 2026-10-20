@@ -106,11 +106,23 @@ export const JOURNAL_TYPE_LABELS: Record<string, string> = {
  * `Consulting, "special"` must not become three columns. Amounts are written
  * unformatted so a spreadsheet reads them as numbers rather than as text.
  */
+// Spreadsheet formula injection: Excel, Sheets and LibreOffice run a CSV cell
+// that starts with = + - @ (or a tab/CR that hides one) as a formula. Exported
+// text includes descriptions read from uploaded statements, so such a cell gets
+// a leading apostrophe and opens as text. A plain number such as "-12.50" is
+// left alone so amounts still import as numbers.
+const FORMULA_START = /^[=+\-@\t\r]/;
+const PLAIN_NUMBER = /^[+-]?(\d+([.,]\d+)*|\d*\.\d+)$/;
+
+export function neutraliseSpreadsheetFormula(text: string): string {
+  return FORMULA_START.test(text) && !PLAIN_NUMBER.test(text) ? `'${text}` : text;
+}
+
 export function toCsv(headers: string[], rows: Array<Array<string | number | null>>): string {
   const cell = (value: string | number | null) => {
     if (value === null || value === undefined) return "";
     if (typeof value === "number") return String(value);
-    return `"${value.replace(/"/g, '""')}"`;
+    return `"${neutraliseSpreadsheetFormula(value).replace(/"/g, '""')}"`;
   };
   return [headers.map(cell).join(","), ...rows.map((row) => row.map(cell).join(","))].join("\r\n");
 }

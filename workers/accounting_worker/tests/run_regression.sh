@@ -65,4 +65,8 @@ PY
 # that needs an institution name will not travel to the next country.
 "$PYTHON_BIN" "$WORKER_DIR/tests/ledger_repair_check.py"
 
+# Statement text written into the exported workbook must stay text: only the
+# worker's own Formula(...) values may become live formulas.
+"$PYTHON_BIN" "$WORKER_DIR/tests/formula_injection_check.py"
+
 "$PYTHON_BIN" "$WORKER_DIR/tests/regression_suite.py"
