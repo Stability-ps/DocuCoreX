@@ -3,6 +3,7 @@
 // return 202 immediately and process heavy OCR after the response (via Next's
 // `after()`), instead of holding the browser request open for ~43s.
 import type { WorkspaceContext } from "@/lib/server-documents";
+import { getExternalProcessing } from "@/lib/privacy/external-processing";
 import type { DocumentRecord } from "@/lib/types";
 import { recordAuditLog } from "@/lib/audit";
 import { createWorkflowAdapters } from "@/lib/workflow-adapters";
@@ -133,7 +134,10 @@ export async function finalizeDocumentStatus(context: WorkspaceContext, document
 // the job completed/failed. Called from `after()` so the browser is not blocked.
 export async function runOcrJob(context: WorkspaceContext, document: DocumentRecord, jobId: string, options: { enhanced?: boolean } = {}): Promise<void> {
   try {
-    const adapters = createWorkflowAdapters({ enhanced: options.enhanced });
+    const adapters = createWorkflowAdapters({
+      enhanced: options.enhanced,
+      externalProcessing: await getExternalProcessing(context.supabase, context.workspaceId),
+    });
     const ocr = await adapters.ocr.run(document);
     await context.supabase.from("ocr_results").insert({
       document_id: document.id,
@@ -162,7 +166,7 @@ export async function runOcrJob(context: WorkspaceContext, document: DocumentRec
 
 export async function runExtractionJob(context: WorkspaceContext, document: DocumentRecord, jobId: string): Promise<void> {
   try {
-    const adapters = createWorkflowAdapters();
+    const adapters = createWorkflowAdapters({ externalProcessing: await getExternalProcessing(context.supabase, context.workspaceId) });
     const extraction = await adapters.extraction.run(document);
     await context.supabase.from("extraction_results").insert({
       document_id: document.id,

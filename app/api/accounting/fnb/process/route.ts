@@ -1,4 +1,6 @@
 import { NextResponse, after } from "next/server";
+import { errorResponse } from "@/lib/api-auth";
+import { getExternalProcessing, type ExternalProcessing } from "@/lib/privacy/external-processing";
 import { enforceRateLimit } from "@/lib/shared-rate-limit";
 import { recordAuditLog } from "@/lib/audit";
 import { bankDetectionHints, detectBankFromText } from "@/lib/accounting/engine/bank-detection";
@@ -17,8 +19,7 @@ import { buildWorkerInput, extractionProcessingMetadata } from "@/lib/pdf/worker
 import { buildWorkerEndpoint, createWorkerRequestId, getWorkerConfig, logWorkerStartupCheck } from "@/lib/system-worker-config";
 import type { WorkspaceContext } from "@/lib/server-documents";
 import type { AccountingRunDetail } from "@/lib/accounting/types";
-// TEMPORARY (2026-08-06) — remove with the worker-side auth_compare logging.
-import { buildOutboundDiagnostics, diagnosticsEnabled, WorkerTokenMissingError } from "@/lib/accounting/workerAuthDiagnostics";
+import { WorkerTokenMissingError } from "@/lib/accounting/workerToken";
 
 // Auto-run the multi-parser extraction pipeline before the worker: analyse the
 // PDF, choose the best source, persist the summary, and hand the worker the best
@@ -54,7 +55,7 @@ type PipelineDebug = {
 async function runPipelineBeforeWorker(
   context: WorkspaceContext,
   detail: AccountingRunDetail,
-  options: { force: boolean; enhancedOcr?: boolean; onStage: (step: ProcessingStep) => void },
+  options: { force: boolean; enhancedOcr?: boolean; onStage: (step: ProcessingStep) => void; allowExternalProviders: boolean },
 ): Promise<{ hints: Record<string, unknown>; warning: string | null; debug: PipelineDebug | null }> {
   const runId = detail.run.id;
   try {
@@ -75,6 +76,7 @@ async function runPipelineBeforeWorker(
       // so completeness and reconciliation must gate acceptance.
       expect: "bank_statement",
       onStage: options.onStage,
+      allowExternalProviders: options.allowExternalProviders,
     });
     const meta = extractionProcessingMetadata(pipeline);
     const workerInput = buildWorkerInput(pipeline);
@@ -232,8 +234,16 @@ const SHADOW_AZURE_ENABLED = process.env.ACCOUNTING_SHADOW_AZURE === "true";
  * failure — Azure down, comparison bug, missing migration — is logged and
  * discarded. It returns nothing and mutates no run field.
  */
-async function runShadowComparison(context: WorkspaceContext, detail: AccountingRunDetail, pipelineDebug: PipelineDebug | null): Promise<void> {
+async function runShadowComparison(
+  context: WorkspaceContext,
+  detail: AccountingRunDetail,
+  pipelineDebug: PipelineDebug | null,
+  externalProcessing: ExternalProcessing,
+): Promise<void> {
   if (!SHADOW_AZURE_ENABLED) return;
+  // Shadow mode sends the statement to Azure purely to measure; a workspace that
+  // has blocked external processing is never measured.
+  if (!externalProcessing.allowed) return;
   const runId = detail.run.id;
   try {
     // Only meaningful when the pipeline actually ran and produced a winner. If
@@ -254,6 +264,7 @@ async function runShadowComparison(context: WorkspaceContext, detail: Accounting
       documentId: detail.run.documentId,
       fileHash: computeFileHash(buffer),
       expect: "bank_statement",
+      allowExternalProviders: externalProcessing.allowed,
     });
 
     // Sampling gate — only spend an Azure call where it could realistically help.
@@ -533,6 +544,11 @@ async function processStatementInBackground(
   const deadlineAt = Date.now() + ACCOUNTING_REQUEST_BUDGET_MS;
   const remainingBudgetMs = () => deadlineAt - Date.now();
 
+  // The workspace's choice about external AI, read once for the whole run: the
+  // Node pipeline (Azure, Mistral), the accounting worker (OpenAI) and shadow
+  // mode all honour it.
+  const externalProcessing = await getExternalProcessing(context.supabase, context.workspaceId);
+
   // Report the current processing step so the UI can show it with an elapsed
   // timer. Writes the human label to the run (processing_step) and mirrors it to
   // the processing job's message/progress. Best-effort: a missing column (Req:
@@ -643,6 +659,8 @@ async function processStatementInBackground(
       document_id: detail.run.documentId,
       processing_job_id: jobId,
       storage_path: detail.run.sourceStoragePath,
+      // The worker skips every OpenAI call when this is false.
+      allow_external_ai: externalProcessing.allowed,
       ...hints,
     };
     const requestId = createWorkerRequestId("acct_process");
@@ -656,21 +674,12 @@ async function processStatementInBackground(
       declaredBank: detail.run.bank,
     });
 
-    // TEMPORARY (2026-08-06) — outbound half of the shared-secret comparison.
-    // Digest/length/presence only; never the token or the header. Remove with
-    // the worker-side counterpart. Disable without a deploy:
-    // WORKER_AUTH_DIAGNOSTICS=false.
-    const rawWorkerToken = process.env.ACCOUNTING_WORKER_TOKEN;
-    if (diagnosticsEnabled()) {
-      console.info(JSON.stringify(buildOutboundDiagnostics({ rawToken: rawWorkerToken, workerEndpoint })));
-    }
-
     // Fail loudly rather than sending an unauthenticated request. Previously the
     // header was spread in conditionally, so an unset token produced a request
     // with NO Authorization at all — which the worker answers 401 "Missing
     // Authorization header.", and which normalizeWorkerFailure then reports as
     // "rejected our credentials", i.e. indistinguishable from a wrong value.
-    const workerToken = (rawWorkerToken ?? "").trim();
+    const workerToken = (process.env.ACCOUNTING_WORKER_TOKEN ?? "").trim();
     if (!workerToken) {
       const message = new WorkerTokenMissingError().message;
       console.error("[accounting/process] refusing to call the worker unauthenticated", { requestId, runId });
@@ -761,7 +770,7 @@ async function processStatementInBackground(
     // much work follows — a genuine digital statement takes the native path and
     // never calls OCR. ACCOUNTING_PRE_EXTRACT=false is the emergency bypass.
     const { hints, debug } = ACCOUNTING_PRE_EXTRACT_ENABLED
-      ? await runPipelineBeforeWorker(context, detail, { force, onStage: updateStep })
+      ? await runPipelineBeforeWorker(context, detail, { force, onStage: updateStep, allowExternalProviders: externalProcessing.allowed })
       : { hints: {}, debug: null };
     pipelineDebug = debug;
     updateStep("parsing");
@@ -786,7 +795,7 @@ async function processStatementInBackground(
         previousStrategy: pipelineDebug?.strategy ?? null,
       });
       updateStep("extracting");
-      const retry = await runPipelineBeforeWorker(context, detail, { force: true, enhancedOcr: true, onStage: updateStep });
+      const retry = await runPipelineBeforeWorker(context, detail, { force: true, enhancedOcr: true, onStage: updateStep, allowExternalProviders: externalProcessing.allowed });
       pipelineDebug = retry.debug ?? pipelineDebug;
       if (Object.keys(retry.hints).length > 0) {
         updateStep("parsing");
@@ -857,7 +866,7 @@ async function processStatementInBackground(
     // so it can never influence the exported output, the acceptance verdict or
     // the transactions. Fully swallowed: a shadow failure must never fail a run
     // that has already succeeded.
-    await runShadowComparison(context, detail, pipelineDebug);
+    await runShadowComparison(context, detail, pipelineDebug, externalProcessing);
   } catch (error) {
     const message = error instanceof Error ? error.message : "Unable to process accounting statement.";
     console.error("[accounting/process] background failure", { runId, message });
@@ -1164,9 +1173,6 @@ export async function POST(request: Request) {
     // Return immediately (well under the 25s initial-response limit).
     return NextResponse.json({ ok: true, status: "processing", runId, jobId: processingJobId });
   } catch (error) {
-    return NextResponse.json(
-      { error: error instanceof Error ? error.message : "Unable to process accounting statement." },
-      { status: 500 },
-    );
+    return errorResponse(error, "Unable to process accounting statement.");
   }
 }
