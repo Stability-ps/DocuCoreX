@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { extname, join } from "node:path";
 import type { GeneratedFile } from "@/lib/file-output";
 import { createDocxFile, createPdfFile, createTextFile, createXlsxFile, createZip } from "@/lib/file-output";
+import { neutraliseSpreadsheetFormula } from "@/lib/accounting/ledger";
 
 export type ConversionTargetFormat = "pdf" | "word" | "excel" | "text" | "csv" | "html" | "image" | "images" | "zip";
 
@@ -858,7 +859,8 @@ function parseCsvLine(line: string) {
 }
 
 function csvEscape(value: string) {
-  return /[",\n]/.test(value) ? `"${value.replace(/"/g, "\"\"")}"` : value;
+  const text = neutraliseSpreadsheetFormula(value);
+  return /[",\r\n]/.test(text) ? `"${text.replace(/"/g, "\"\"")}"` : text;
 }
 
 function createCsvFile(sourceName: string, rows: string[][]): GeneratedFile {

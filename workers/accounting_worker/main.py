@@ -3861,9 +3861,23 @@ THIN_BORDER = Border(bottom=Side(style="thin", color="D8E1F0"))
 CURRENCY_FORMAT = '"R"#,##0.00;[Red]-"R"#,##0.00'
 
 
+class Formula(str):
+    """A formula this module writes on purpose. Any other string is stored as text."""
+
+
+def store_as_text_unless_formula(cell, value: Any) -> None:
+    # openpyxl turns any string starting with "=" into a formula. Statement
+    # descriptions, references and company names come from uploaded PDFs, so
+    # "=HYPERLINK(...)" in a description must stay text (spreadsheet formula
+    # injection). Only values wrapped in Formula(...) are written as formulas.
+    if isinstance(value, str) and not isinstance(value, Formula) and cell.data_type == "f":
+        cell.data_type = "s"
+
+
 def write_row(sheet, values: list[Any], row_index: int, header: bool = False) -> None:
     for column_index, value in enumerate(values, start=1):
         cell = sheet.cell(row=row_index, column=column_index, value=value)
+        store_as_text_unless_formula(cell, value)
         cell.alignment = Alignment(vertical="top", wrap_text=True)
         cell.border = THIN_BORDER
         if header:
@@ -3874,6 +3888,7 @@ def write_row(sheet, values: list[Any], row_index: int, header: bool = False) ->
 def write_row_at(sheet, values: list[Any], row_index: int, start_column: int, header: bool = False) -> None:
     for offset, value in enumerate(values):
         cell = sheet.cell(row=row_index, column=start_column + offset, value=value)
+        store_as_text_unless_formula(cell, value)
         cell.alignment = Alignment(vertical="top", wrap_text=True)
         cell.border = THIN_BORDER
         if header:
@@ -5090,6 +5105,7 @@ def build_workbook(
         else "Bank Statement Accounting Pack"
     )
     dashboard["A1"] = workbook_title
+    store_as_text_unless_formula(dashboard["A1"], workbook_title)
     dashboard["A1"].font = Font(bold=True, size=14, color="FFFFFF")
     dashboard["A1"].fill = HEADER_FILL
     dashboard["A1"].alignment = Alignment(horizontal="center")
@@ -5200,16 +5216,16 @@ def build_workbook(
         trial,
         [
             "Totals",
-            f"=SUM(B2:B{total_row - 1})",
-            f"=SUM(C2:C{total_row - 1})",
-            f"=SUM(D2:D{total_row - 1})",
-            f"=SUM(E2:E{total_row - 1})",
+            Formula(f"=SUM(B2:B{total_row - 1})"),
+            Formula(f"=SUM(C2:C{total_row - 1})"),
+            Formula(f"=SUM(D2:D{total_row - 1})"),
+            Formula(f"=SUM(E2:E{total_row - 1})"),
         ],
         total_row,
     )
     write_row(
         trial,
-        ["Balance Check", "", "", f"=D{total_row}-E{total_row}", "Balanced when zero"],
+        ["Balance Check", "", "", Formula(f"=D{total_row}-E{total_row}"), "Balanced when zero"],
         total_row + 1,
     )
     for cell in trial[total_row]:
@@ -5222,10 +5238,10 @@ def build_workbook(
         ("Opening Balance", opening),
         ("+ Receipts", totals["total_credits"]),
         ("- Payments", totals["total_debits"]),
-        ("Expected Closing Balance", "=B2+B3-B4"),
+        ("Expected Closing Balance", Formula("=B2+B3-B4")),
         ("Statement Closing Balance", closing),
-        ("Difference", f"=B5-B6"),
-        ("Status", '=IF(B7=0,"Reconciled","Review required")'),
+        ("Difference", Formula(f"=B5-B6")),
+        ("Status", Formula('=IF(B7=0,"Reconciled","Review required")')),
         ("Service Fees", bank_charge_total),
         ("Bank VAT", bank_vat),
     ]
@@ -5722,7 +5738,9 @@ def build_combined_workbook(
     dashboard = workbook.active
     dashboard.title = "Dashboard"
     dashboard.merge_cells("A1:H1")
-    dashboard["A1"] = f"{company_name} - Combined Bank Statement Accounting Pack"
+    combined_title = f"{company_name} - Combined Bank Statement Accounting Pack"
+    dashboard["A1"] = combined_title
+    store_as_text_unless_formula(dashboard["A1"], combined_title)
     dashboard["A1"].font = Font(bold=True, size=14, color="FFFFFF")
     dashboard["A1"].fill = HEADER_FILL
     dashboard["A1"].alignment = Alignment(horizontal="center")

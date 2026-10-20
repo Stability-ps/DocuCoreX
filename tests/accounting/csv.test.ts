@@ -54,3 +54,11 @@ test("a header-only file has no rows", () => {
   const { rows } = parseCsvWithHeader("code,name\n");
   assert.deepEqual(rows, []);
 });
+
+test("an exported CSV re-imports with formula-shaped text unchanged", async () => {
+  const { toCsv } = await import("../../lib/accounting/ledger.ts");
+  const values = ["=SUM(1,1)", "- Payments", "@handle", "'quoted on purpose", "Rent"];
+  const [header, ...rows] = parseCsv(toCsv(["Name"], values.map((value) => [value])));
+  assert.deepEqual(header, ["Name"]);
+  assert.deepEqual(rows.map((row) => row[0]), values);
+});

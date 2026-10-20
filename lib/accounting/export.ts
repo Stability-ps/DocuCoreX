@@ -9,6 +9,7 @@ import {
   type AccountType,
 } from "@/lib/accounting/analytics";
 import { buildAccountingModel } from "@/lib/accounting/model";
+import { neutraliseSpreadsheetFormula } from "@/lib/accounting/ledger";
 
 // ─── Cell model ─────────────────────────────────────────────────────────────
 // One cell model drives BOTH the multi-sheet XLSX and per-section CSV so Cover,
@@ -889,8 +890,8 @@ function cellNumber(cell: Cell): number {
 // ─── CSV renderer ───────────────────────────────────────────────────────────
 
 function csvCell(cell: Cell): string {
-  const text = !cell.num ? String(cell.v) : isMoney(cell) ? cellNumber(cell).toFixed(2) : String(cellNumber(cell));
-  return /[",\n]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
+  const text = !cell.num ? neutraliseSpreadsheetFormula(String(cell.v)) : isMoney(cell) ? cellNumber(cell).toFixed(2) : String(cellNumber(cell));
+  return /[",\r\n]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
 }
 
 export function sectionToCsv(section: ExportSection): string {

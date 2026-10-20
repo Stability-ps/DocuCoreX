@@ -106,11 +106,29 @@ export const JOURNAL_TYPE_LABELS: Record<string, string> = {
  * `Consulting, "special"` must not become three columns. Amounts are written
  * unformatted so a spreadsheet reads them as numbers rather than as text.
  */
+// Spreadsheet formula injection: Excel, Sheets and LibreOffice run a CSV cell
+// that starts with = + - @ (or a tab/CR that hides one) as a formula. Exported
+// text includes descriptions read from uploaded statements, so such a cell gets
+// a leading apostrophe and opens as text. A plain number such as "-12.50" is
+// left alone so amounts still import as numbers. Spreadsheets trim leading
+// whitespace (and a BOM) on import and some accept full-width operators, so the
+// check looks past both. A lone "-" or "+" is a placeholder no spreadsheet runs.
+const LEADING_BLANKS = /^[\s\u00a0\u200b\ufeff]+/;
+const FORMULA_START = /^[=+\-@\uff1d\uff0b\uff0d\uff20]/;
+const PLAIN_NUMBER = /^[+-]?(\d+([.,]\d+)*|\d*\.\d+)$/;
+
+export function neutraliseSpreadsheetFormula(text: string): string {
+  if (/^[\t\r\n]/.test(text)) return `'${text}`;
+  const visible = text.replace(LEADING_BLANKS, "");
+  if (!FORMULA_START.test(visible) || visible === "-" || visible === "+" || PLAIN_NUMBER.test(visible)) return text;
+  return `'${text}`;
+}
+
 export function toCsv(headers: string[], rows: Array<Array<string | number | null>>): string {
   const cell = (value: string | number | null) => {
     if (value === null || value === undefined) return "";
     if (typeof value === "number") return String(value);
-    return `"${value.replace(/"/g, '""')}"`;
+    return `"${neutraliseSpreadsheetFormula(value).replace(/"/g, '""')}"`;
   };
   return [headers.map(cell).join(","), ...rows.map((row) => row.map(cell).join(","))].join("\r\n");
 }
