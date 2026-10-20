@@ -64,7 +64,8 @@ export async function GET(request: Request, { params }: { params: Promise<{ down
         supabasePath: data.download_path,
         message: fileError?.message ?? "Missing converted file",
       });
-      return downloadError(request, fileError?.message ?? "The converted file is missing. Please run the conversion again.", 404);
+      // The Storage message stays in the log above; it can name bucket paths.
+      return downloadError(request, "The converted file is missing. Please run the conversion again.", 404);
     }
 
     console.info("docucorex.conversion.download_ready", {

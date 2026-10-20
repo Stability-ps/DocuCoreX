@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { databaseErrorResponse } from "@/lib/api-errors";
 import { EXTERNAL_PROCESSING_DEMO, getExternalProcessing } from "@/lib/privacy/external-processing";
 import { cronAuthorization, runCronSweep } from "@/lib/jobs/cron-sweep";
 import { enforceRateLimit } from "@/lib/shared-rate-limit";
@@ -156,7 +157,7 @@ export async function POST(request: Request) {
   const { data: jobs, error } = await jobsQuery;
 
   if (error) {
-    return NextResponse.json({ error: error.message }, { status: 500 });
+    return databaseErrorResponse("docucorex.jobs.process_list_failed", error, { message: "Unable to load processing jobs." });
   }
 
   console.info("docucorex.conversion_worker.jobs_selected", {
@@ -680,7 +681,8 @@ async function proxyToConversionWorker(request: Request, processRequest: Process
     workerHost: target.host,
     status: response.status,
     ok: response.ok,
-    bodyPreview: body.slice(0, 1000),
+    // Length only: the worker's response can carry extracted document text.
+    bodyLength: body.length,
   });
   return new NextResponse(body, {
     status: response.status,

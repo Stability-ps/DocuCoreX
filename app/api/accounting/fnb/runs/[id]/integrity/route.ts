@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { databaseErrorResponse } from "@/lib/api-errors";
 import { errorResponse } from "@/lib/api-auth";
 import { getAccountingRunDetail } from "@/lib/accounting/server";
 import { getWorkspaceContext } from "@/lib/server-documents";
@@ -27,7 +28,12 @@ export async function GET(_request: Request, { params }: { params: Promise<{ id:
 
     const { data, error } = await context.supabase.storage.from("documents").download(detail.run.sourceStoragePath);
     if (error || !data) {
-      return NextResponse.json({ error: error?.message ?? "Statement source not available." }, { status: 404 });
+      return databaseErrorResponse("docucorex.accounting.integrity_storage_failed", error, {
+        message: "Statement source not available.",
+        code: "FILE_UNAVAILABLE",
+        status: 404,
+        context: { runId: id },
+      });
     }
 
     const bytes = new Uint8Array(await data.arrayBuffer());

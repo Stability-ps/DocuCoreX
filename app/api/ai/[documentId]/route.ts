@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { databaseErrorResponse } from "@/lib/api-errors";
 import { enforceRateLimit } from "@/lib/shared-rate-limit";
 import { resolveWorkspaceContext } from "@/lib/api-auth";
 import { answerAiPrompt, getAiInsights } from "@/lib/mock-repository";
@@ -19,7 +20,7 @@ export async function GET(_request: Request, { params }: { params: Promise<{ doc
     .order("created_at", { ascending: false });
 
   if (error) {
-    return NextResponse.json({ error: error.message }, { status: 500 });
+    return databaseErrorResponse("docucorex.ai_insights.list_failed", error, { message: "Unable to load insights.", context: { documentId } });
   }
 
   return NextResponse.json({
@@ -58,7 +59,7 @@ export async function POST(request: Request, { params }: { params: Promise<{ doc
     .single();
 
   if (error) {
-    return NextResponse.json({ error: error.message }, { status: 500 });
+    return databaseErrorResponse("docucorex.ai_insights.create_failed", error, { message: "Unable to save the insight.", context: { documentId } });
   }
 
   return NextResponse.json({

@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { databaseErrorResponse } from "@/lib/api-errors";
 import { resolveWorkspaceContext } from "@/lib/api-auth";
 import { recordAuditLog } from "@/lib/audit";
 import { settleUploadJobs } from "@/lib/jobs/settle-upload";
@@ -74,7 +75,7 @@ export async function GET() {
     .limit(50);
 
   if (error) {
-    return NextResponse.json({ error: error.message }, { status: 500 });
+    return databaseErrorResponse("docucorex.upload_workflow.list_failed", error, { message: "Unable to load the upload queue." });
   }
 
   return NextResponse.json({
@@ -155,7 +156,7 @@ export async function POST(request: Request) {
     .in("id", body.documentIds);
 
   if (documentError) {
-    return NextResponse.json({ error: documentError.message }, { status: 500 });
+    return databaseErrorResponse("docucorex.upload_workflow.documents_lookup_failed", documentError, { message: "Unable to load the selected documents." });
   }
 
   if (!documents?.length) {
@@ -175,7 +176,7 @@ export async function POST(request: Request) {
     .select("id, document_id, from_format, to_format, status, download_path, created_at");
 
   if (conversionError) {
-    return NextResponse.json({ error: conversionError.message }, { status: 500 });
+    return databaseErrorResponse("docucorex.upload_workflow.conversions_create_failed", conversionError, { message: "Unable to create conversions." });
   }
 
   const conversionByDocument = new Map((insertedConversions ?? []).map((conversion) => [conversion.document_id, conversion.id]));
@@ -194,7 +195,7 @@ export async function POST(request: Request) {
     .select("id, document_id, type, status, progress, message, created_at, updated_at");
 
   if (jobError) {
-    return NextResponse.json({ error: jobError.message }, { status: 500 });
+    return databaseErrorResponse("docucorex.upload_workflow.jobs_create_failed", jobError, { message: "Unable to queue conversions." });
   }
   await settleUploadJobs(context, documents.map((document) => document.id), "conversion");
 
@@ -264,7 +265,10 @@ export async function DELETE(request: Request) {
     .maybeSingle();
 
   if (documentError) {
-    return NextResponse.json({ error: documentError.message }, { status: 500 });
+    return databaseErrorResponse("docucorex.upload_workflow.remove_lookup_failed", documentError, {
+      message: "Unable to remove the document.",
+      context: { documentId: body.documentId },
+    });
   }
 
   if (!document) {
