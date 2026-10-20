@@ -5738,7 +5738,9 @@ def build_combined_workbook(
     dashboard = workbook.active
     dashboard.title = "Dashboard"
     dashboard.merge_cells("A1:H1")
-    dashboard["A1"] = f"{company_name} - Combined Bank Statement Accounting Pack"
+    combined_title = f"{company_name} - Combined Bank Statement Accounting Pack"
+    dashboard["A1"] = combined_title
+    store_as_text_unless_formula(dashboard["A1"], combined_title)
     dashboard["A1"].font = Font(bold=True, size=14, color="FFFFFF")
     dashboard["A1"].fill = HEADER_FILL
     dashboard["A1"].alignment = Alignment(horizontal="center")

