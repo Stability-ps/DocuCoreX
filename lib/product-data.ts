@@ -302,7 +302,6 @@ export const comments = [
 
 export const historyEvents = [
   "Uploaded original document",
-  "Virus scan completed",
   "OCR text layer generated",
   "Document type detected automatically",
   "Excel and JSON exports created",

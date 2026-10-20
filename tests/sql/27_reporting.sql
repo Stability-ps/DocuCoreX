@@ -161,10 +161,10 @@ declare
 begin
   select workspace_id into ws from public.companies where id = '22222222-0000-0000-0000-00000000000a';
   insert into public.documents (workspace_id, owner_id, name, storage_path, mime_type, size_bytes)
-  values (ws, '00000000-0000-0000-0000-0000000000a1','trace.pdf','ws/trace.pdf','application/pdf',10)
+  values (ws, '00000000-0000-0000-0000-0000000000a1','trace.pdf',ws::text || '/documents/trace.pdf','application/pdf',10)
   returning id into doc_id;
   insert into public.accounting_statement_runs (workspace_id, document_id, bank, status, source_storage_path)
-  values (ws, doc_id, 'FNB', 'completed', 'ws/trace.pdf') returning id into run_id;
+  values (ws, doc_id, 'FNB', 'completed', ws::text || '/documents/trace.pdf') returning id into run_id;
   insert into public.accounting_transactions (run_id, workspace_id, transaction_date, description, debit_amount)
   values (run_id, ws, '2026-04-02', 'Bank charge', 60.00) returning id into txn_id;
 

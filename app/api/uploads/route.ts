@@ -2,20 +2,19 @@ import { NextRequest, NextResponse } from "next/server";
 import { recordAuditLog } from "@/lib/audit";
 import { getWorkspaceContext, registerUploads, validateUploadFiles } from "@/lib/server-documents";
 import { createWorkspaceBucketPath } from "@/lib/supabase-server-adapter";
-import { checkRateLimit } from "@/lib/rate-limit";
+import { enforceRateLimit } from "@/lib/shared-rate-limit";
 import { isOwnDocumentsPath } from "@/lib/direct-upload";
+import { SIGNATURE_HEAD_BYTES, checkFileSignature, readResponseHead } from "@/lib/file-signature";
+import { scanBytes, scanStoredObject, scanningMode, uploadScanDecision, type UploadScanDecision } from "@/lib/malware-scan";
 
 const MAX_UPLOAD_SIZE_BYTES = 200 * 1024 * 1024; // 200 MB
 
+// A signed upload of up to 200 MB may be scanned before it is registered.
+export const maxDuration = 300;
+
 export async function POST(request: NextRequest) {
-  const ip = request.headers.get("x-forwarded-for")?.split(",")[0]?.trim() ?? "unknown";
-  const rate = checkRateLimit(`upload:${ip}`, { limit: 30, windowMs: 60 * 1000 });
-  if (!rate.ok) {
-    return NextResponse.json(
-      { error: "Upload rate limit exceeded. Try again in a moment." },
-      { status: 429, headers: { "Retry-After": String(Math.ceil(rate.retryAfterMs / 1000)) } },
-    );
-  }
+  const limited = await enforceRateLimit("upload", { request }, "Upload rate limit exceeded. Try again in a moment.");
+  if (limited) return limited;
 
   const contentType = request.headers.get("content-type") ?? "";
 
@@ -33,6 +32,25 @@ export async function POST(request: NextRequest) {
       // its bytes in the bucket with no document row, invisible and never
       // cleaned up.
       validateUploadFiles(uploadedFiles.map((file) => ({ name: file.name, size: file.size, type: file.type })));
+      // The name and declared type are the client's word. Check the bytes too,
+      // before anything is written.
+      for (const file of uploadedFiles) {
+        const head = new Uint8Array(await file.slice(0, SIGNATURE_HEAD_BYTES).arrayBuffer());
+        const signature = checkFileSignature(file.name, head);
+        if (!signature.ok) throw new Error(signature.reason);
+      }
+      // Malware: scanned before anything is written, so an infected file is
+      // never stored (lib/malware-scan.ts; off unless MALWARE_SCANNING=required).
+      const scanMode = scanningMode();
+      if (scanMode === "required") {
+        for (const file of uploadedFiles) {
+          const decision = uploadScanDecision(scanMode, file.name, await scanBytes(new Uint8Array(await file.arrayBuffer())));
+          if (decision.action === "reject") {
+            await recordScanRejection(file.name, decision);
+            return NextResponse.json({ error: decision.message, code: decision.infected ? "MALWARE_DETECTED" : "SCAN_UNAVAILABLE" }, { status: decision.status });
+          }
+        }
+      }
       const context = await getWorkspaceContext();
       const files = [];
 
@@ -110,6 +128,31 @@ export async function POST(request: NextRequest) {
         await context.supabase.storage.from("documents").remove([file.storagePath]);
         return NextResponse.json({ error: error instanceof Error ? error.message : "Unsupported file." }, { status: 400 });
       }
+      // And the stored bytes, not just the stored metadata: a signed upload
+      // accepts whatever the client sends. A file that cannot be read back is
+      // refused too, rather than registered unchecked.
+      const head = await readStoredHead(context.supabase, file.storagePath);
+      const signature = head
+        ? checkFileSignature(file.name, head)
+        : { ok: false as const, reason: `${file.name || "File"} could not be verified. Upload it again.` };
+      if (!signature.ok) {
+        await context.supabase.storage.from("documents").remove([file.storagePath]);
+        return NextResponse.json({ error: signature.reason }, { status: 400 });
+      }
+      // Malware: the object is already in storage (a signed upload), so the
+      // scanner fetches it itself through a 60 s signed URL rather than this
+      // function streaming up to 200 MB. Anything but "clean" removes it.
+      const scanMode = scanningMode();
+      if (scanMode === "required") {
+        const { data: signed } = await context.supabase.storage.from("documents").createSignedUrl(file.storagePath, 60);
+        const result = signed?.signedUrl ? await scanStoredObject(signed.signedUrl) : null;
+        const decision = uploadScanDecision(scanMode, file.name || "File", result);
+        if (decision.action === "reject") {
+          await context.supabase.storage.from("documents").remove([file.storagePath]);
+          await recordScanRejection(file.name || "File", decision);
+          return NextResponse.json({ error: decision.message, code: decision.infected ? "MALWARE_DETECTED" : "SCAN_UNAVAILABLE" }, { status: decision.status });
+        }
+      }
       verified.push(actual);
     }
     files = verified;
@@ -139,4 +182,35 @@ export async function POST(request: NextRequest) {
   } catch (error) {
     return NextResponse.json({ error: error instanceof Error ? error.message : "Unable to register upload" }, { status: 400 });
   }
+}
+
+type WorkspaceSupabase = NonNullable<Awaited<ReturnType<typeof getWorkspaceContext>>>["supabase"];
+
+// The first bytes of a stored object, through a short-lived signed URL and a
+// Range request, so a 200 MB upload is not downloaded to check 8 KB of it.
+async function readStoredHead(supabase: WorkspaceSupabase, storagePath: string): Promise<Uint8Array | null> {
+  const { data, error } = await supabase.storage.from("documents").createSignedUrl(storagePath, 60);
+  if (error || !data?.signedUrl) return null;
+  try {
+    const response = await fetch(data.signedUrl, {
+      headers: { Range: `bytes=0-${SIGNATURE_HEAD_BYTES - 1}` },
+      cache: "no-store",
+      signal: AbortSignal.timeout(15_000),
+    });
+    if (!response.ok) return null;
+    return await readResponseHead(response);
+  } catch {
+    return null;
+  }
+}
+
+// An infected file is recorded (name and signature only, never content) so the
+// workspace's audit log shows what was blocked; an unavailable scanner is not.
+async function recordScanRejection(fileName: string, decision: Extract<UploadScanDecision, { action: "reject" }>) {
+  if (!decision.infected) {
+    console.error("docucorex.malware_scan.unavailable", { status: decision.status });
+    return;
+  }
+  console.warn("docucorex.malware_scan.blocked", { fileName, signature: decision.signature ?? null });
+  await recordAuditLog({ action: "upload_blocked_malware", entityType: "upload", metadata: { fileName, signature: decision.signature ?? null } }).catch(() => undefined);
 }

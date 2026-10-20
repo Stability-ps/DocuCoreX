@@ -1,4 +1,9 @@
 import { NextResponse } from "next/server";
+import { EXTERNAL_PROCESSING_DEMO, getExternalProcessing } from "@/lib/privacy/external-processing";
+import { cronAuthorization, runCronSweep } from "@/lib/jobs/cron-sweep";
+import { enforceRateLimit } from "@/lib/shared-rate-limit";
+import { assertWorkspaceStoragePath } from "@/lib/storage-paths";
+import { workerSecretMatches } from "@/lib/worker-secret";
 import { recordAuditLog } from "@/lib/audit";
 import {
   documentDownloads,
@@ -44,6 +49,10 @@ export async function POST(request: Request) {
     if (!(await requestTargetsWorkspace(caller, processRequest))) {
       return NextResponse.json({ error: "Document not found.", code: "NOT_FOUND" }, { status: 404 });
     }
+    // Callers only, never the worker: the worker receives jobs this branch has
+    // already counted, and limiting it would fail work the user was allowed.
+    const limited = await enforceRateLimit("processJobs", { workspaceId: caller.workspaceId, request });
+    if (limited) return limited;
   }
 
   const proxied = await proxyToConversionWorker(request, processRequest);
@@ -69,7 +78,7 @@ export async function POST(request: Request) {
       console.error("docucorex.conversion_worker.secret_not_configured");
       return NextResponse.json({ error: "Document processing is temporarily unavailable.", code: "WORKER_SECRET_NOT_CONFIGURED" }, { status: 503 });
     }
-    if (providedSecret !== configuredSecret) {
+    if (!workerSecretMatches(providedSecret, configuredSecret)) {
       return NextResponse.json({ error: "Unauthorized worker request" }, { status: 401 });
     }
   }
@@ -77,7 +86,11 @@ export async function POST(request: Request) {
   const context =
     (await getWorkspaceContext().catch(() => null)) ??
     (process.env.CONVERSION_WORKER_MODE === "true" ? await getServiceRoleContextForJob(processRequest).catch(() => null) : null);
-  const providers = createWorkflowAdapters();
+  // One workspace per request, so one decision: the workspace's own choice, or
+  // demo when there is no backend at all.
+  const providers = createWorkflowAdapters({
+    externalProcessing: context ? await getExternalProcessing(context.supabase, context.workspaceId) : EXTERNAL_PROCESSING_DEMO,
+  });
 
   const isWorker = process.env.CONVERSION_WORKER_MODE === "true";
   if (isWorker && !isSupabaseConfigured) {
@@ -340,6 +353,9 @@ export async function POST(request: Request) {
           .from("conversions")
           .update({ status: "running", updated_at: new Date().toISOString() })
           .eq("id", conversion.id);
+        // On the worker this client is the service role, which bypasses storage
+        // RLS: prove the path is this workspace's before reading it.
+        assertWorkspaceStoragePath(document.storagePath, context.workspaceId, { reader: "conversion", conversionId: conversion.id });
         const { data: sourceFile, error: sourceError } = await context.supabase.storage.from("documents").download(document.storagePath);
         if (sourceError || !sourceFile) {
           throw new Error(sourceError?.message ?? "Original file could not be downloaded for conversion.");
@@ -571,8 +587,61 @@ async function readPipelineState(context: NonNullable<Awaited<ReturnType<typeof 
   };
 }
 
-export async function GET() {
-  return POST(new Request("http://localhost/api/jobs/process", { method: "POST" }));
+// The scheduled sweep (vercel.json cron). See lib/jobs/cron-sweep.ts.
+export const maxDuration = 300;
+
+export async function GET(request: Request) {
+  // Local demo (no Supabase backend): the old behaviour, processing demo jobs.
+  if (!isSupabaseConfigured) {
+    return POST(new Request("http://localhost/api/jobs/process", { method: "POST" }));
+  }
+  // The worker never runs the sweep; only the frontend's cron does.
+  if (process.env.CONVERSION_WORKER_MODE === "true") {
+    return NextResponse.json({ error: "Not found" }, { status: 404 });
+  }
+
+  const auth = cronAuthorization(request.headers.get("authorization"), process.env.CRON_SECRET);
+  if (auth === "unconfigured") {
+    console.error("docucorex.cron.secret_not_configured");
+    return NextResponse.json({ error: "Scheduled processing is not configured.", code: "CRON_SECRET_NOT_CONFIGURED" }, { status: 503 });
+  }
+  if (auth === "invalid") {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+
+  const workerUrl = process.env.CONVERSION_WORKER_URL?.trim();
+  const workerSecret = process.env.CONVERSION_WORKER_SECRET?.trim();
+  const admin = createSupabaseServiceRoleClient();
+  if (!workerUrl || !workerSecret || !admin) {
+    console.error("docucorex.cron.not_configured", { workerUrl: Boolean(workerUrl), workerSecret: Boolean(workerSecret), serviceRole: Boolean(admin) });
+    return NextResponse.json({ error: "Scheduled processing is not configured.", code: "CRON_DEPENDENCIES_MISSING" }, { status: 503 });
+  }
+
+  const result = await runCronSweep({
+    async findDocumentIds(limit) {
+      const { data, error } = await admin
+        .from("processing_jobs")
+        .select("document_id")
+        .in("status", ["queued", "running"])
+        .not("document_id", "is", null)
+        .order("created_at", { ascending: true })
+        .limit(limit * 4);
+      if (error) throw new Error(error.message);
+      return Array.from(new Set((data ?? []).map((row) => row.document_id as string))).slice(0, limit);
+    },
+    async dispatch(documentId, timeoutMs) {
+      const response = await fetch(new URL("/api/jobs/process", workerUrl), {
+        method: "POST",
+        headers: { "content-type": "application/json", "x-docucorex-worker-secret": workerSecret },
+        body: JSON.stringify({ documentId }),
+        cache: "no-store",
+        signal: AbortSignal.timeout(timeoutMs),
+      });
+      return { ok: response.ok, status: response.status };
+    },
+  });
+  console.info("docucorex.cron.sweep", result);
+  return NextResponse.json(result);
 }
 
 async function proxyToConversionWorker(request: Request, processRequest: ProcessJobRequest) {

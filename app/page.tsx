@@ -1,41 +1,22 @@
 import Image from "next/image";
 import {
-  Activity,
   ArrowRight,
   BadgeCheck,
   Banknote,
   Bot,
-  Braces,
   Check,
   ChevronRight,
-  CloudUpload,
-  Code2,
-  Download,
-  Edit3,
-  FileCheck2,
-  FileClock,
   FileSpreadsheet,
   FileText,
-  Fingerprint,
-  Gauge,
-  Highlighter,
-  KeyRound,
-  Layers3,
   LockKeyhole,
-  MessageSquareText,
-  PanelsTopLeft,
-  PenLine,
   ReceiptText,
   RefreshCcw,
   ScanText,
   Search,
   ShieldCheck,
   Sparkles,
-  SplitSquareHorizontal,
   Tags,
   Upload,
-  UsersRound,
-  WandSparkles,
   type LucideIcon,
 } from "lucide-react";
 
@@ -44,7 +25,6 @@ const navItems = [
   "Features",
   "Solutions",
   "Pricing",
-  "Developers",
   "Resources",
   "Blog",
   "Contact",
@@ -60,38 +40,21 @@ const products = [
   {
     icon: FileSpreadsheet,
     title: "Document Extraction",
-    body: "Bank statements, invoices, receipts, payslips, tax certificates, financial statements, contracts, utility bills and purchase orders.",
-    chips: ["Excel", "CSV", "JSON", "XML"],
+    body: "Bank statements, invoices, receipts, payslips, tax certificates, financial statements, contracts and purchase orders.",
+    chips: ["Excel", "CSV", "JSON"],
   },
   {
     icon: ScanText,
     title: "OCR Workspace",
-    body: "Extract searchable text from images, PDFs, scanned documents and camera uploads with copy, edit, translate and export flows.",
-    chips: ["Search", "Copy", "Edit", "Translate"],
-  },
-  {
-    icon: Edit3,
-    title: "Adobe-Class PDF Editor",
-    body: "Edit text, numbers, names, logos, images, signatures, links, pages, comments, annotations, watermarks and page numbering.",
-    chips: ["Fonts", "Tables", "Margins", "Headers"],
+    body: "Extract searchable text from images, PDFs and scanned documents, then search it or export it.",
+    chips: ["Scans", "Images", "Search", "Export"],
   },
   {
     icon: RefreshCcw,
     title: "File Converter",
-    body: "Convert PDF, Word, Excel, PowerPoint, images, HTML, CSV and XML with precise formatting preservation.",
+    body: "Convert between PDF, Word, Excel, CSV, HTML, text and images, and turn PowerPoint files into PDF.",
     chips: ["PDF", "Word", "Excel", "Images"],
   },
-];
-
-const editorTools: Array<[string, LucideIcon]> = [
-  ["Edit text", Edit3],
-  ["Replace logos", Layers3],
-  ["Signatures", PenLine],
-  ["Merge PDFs", SplitSquareHorizontal],
-  ["Highlight", Highlighter],
-  ["Comments", MessageSquareText],
-  ["Watermarks", PanelsTopLeft],
-  ["Protect", KeyRound],
 ];
 
 const intelligence = [
@@ -124,50 +87,33 @@ const statementCapabilities = [
   "Duplicate detection",
 ];
 
-const platformStats = [
-  { label: "Documents processed", value: "48.2k", icon: FileCheck2, delta: "+18%" },
-  { label: "Pages processed", value: "1.8M", icon: FileText, delta: "+31%" },
-  { label: "Storage used", value: "2.4 TB", icon: CloudUpload, delta: "72%" },
-  { label: "Exports", value: "12.9k", icon: Download, delta: "+24%" },
-];
-
-const features = [
+const features: Array<{ title: string; icon: LucideIcon; body: string; comingSoon?: boolean }> = [
   {
     title: "Financial Intelligence",
     icon: Banknote,
     body: "Generate cash flow, VAT summaries, monthly reports, income analysis, expense categories and risk reports automatically.",
   },
   {
-    title: "AI Assistant",
+    title: "AI Document Assistant",
     icon: Bot,
-    body: "Ask for fuel expenses, VAT transactions, duplicate payments, cash flow summaries and unusual transaction explanations.",
+    body: "Ask questions about your documents and get answers that cite the page they came from.",
+    comingSoon: true,
   },
   {
     title: "Reconciliation",
     icon: BadgeCheck,
-    body: "Match bank transactions to invoices and receipts with automatic duplicate detection and reconciliation queues.",
+    body: "Reconcile bank statement lines against your ledger, with duplicate detection and a review queue for anything that does not match.",
   },
   {
     title: "Secure Vault",
     icon: LockKeyhole,
-    body: "Folders, tags, version history, sharing, permissions, activity logs and encrypted document storage.",
-  },
-  {
-    title: "eSign",
-    icon: PenLine,
-    body: "Create and request signatures with audit trails, certificates and trusted timestamps.",
+    body: "Tags, version history, sharing, activity history and encrypted document storage.",
   },
   {
     title: "Enterprise Security",
     icon: ShieldCheck,
-    body: "Role permissions, two-factor authentication, virus scanning, secure downloads and audit controls.",
+    body: "Workspace isolation, role permissions, time-limited secure downloads and audit logs.",
   },
-];
-
-const queues = [
-  { label: "OCR queue", value: "18 files", pct: "74%" },
-  { label: "Processing queue", value: "42 jobs", pct: "61%" },
-  { label: "Conversion queue", value: "9 exports", pct: "88%" },
 ];
 
 function Pill({ children }: { children: React.ReactNode }) {
@@ -250,7 +196,7 @@ export default function Home() {
               </a>
             </div>
             <div className="mt-9 grid max-w-xl grid-cols-3 gap-4">
-              {["99.9% OCR uptime", "Bank-grade security", "Automatic bank detection"].map((item) => (
+              {["Scanned-PDF OCR", "Workspace-isolated data", "Automatic bank detection"].map((item) => (
                 <div key={item} className="rounded-2xl border border-white bg-white/72 p-3 text-sm font-bold text-navy-800 shadow-sm">
                   <Check className="mb-2 h-4 w-4 text-emerald-500" />
                   {item}
@@ -266,11 +212,8 @@ export default function Home() {
                   <Image src="/docucorex-mark.png" alt="" width={56} height={56} className="h-11 w-11 rounded-2xl bg-white object-contain p-1" />
                   <div>
                     <p className="text-sm font-bold text-white">DocuCoreX Command Center</p>
-                    <p className="text-xs text-blue-100">Live extraction workspace</p>
+                    <p className="text-xs text-blue-100">Example workspace</p>
                   </div>
-                </div>
-                <div className="hidden rounded-full border border-white/15 bg-white/10 px-3 py-1 text-xs font-bold text-blue-100 sm:block">
-                  6 jobs active
                 </div>
               </div>
 
@@ -309,7 +252,6 @@ export default function Home() {
                     <div className="flex items-end justify-between">
                       <div>
                         <p className="text-4xl font-semibold">2,418</p>
-                        <p className="text-xs font-bold text-emerald-600">98.7% field confidence</p>
                       </div>
                       <div className="flex h-16 items-end gap-1.5">
                         {[38, 52, 31, 68, 44, 77, 61].map((height, index) => (
@@ -326,9 +268,9 @@ export default function Home() {
                       <p className="mt-1 text-2xl font-semibold">Ready</p>
                     </div>
                     <div className="rounded-xl border border-white/10 bg-white/[0.09] p-4">
-                      <WandSparkles className="mb-3 h-5 w-5 text-amber-200" />
-                      <p className="text-xs font-bold text-blue-100">AI insights</p>
-                      <p className="mt-1 text-2xl font-semibold">14</p>
+                      <FileText className="mb-3 h-5 w-5 text-amber-200" />
+                      <p className="text-xs font-bold text-blue-100">CSV export</p>
+                      <p className="mt-1 text-2xl font-semibold">Ready</p>
                     </div>
                   </div>
                 </div>
@@ -336,14 +278,7 @@ export default function Home() {
 
               <div className="mt-4 rounded-xl border border-white/10 bg-white/[0.08] p-4">
                 <div className="mb-4 flex items-center justify-between">
-                  <p className="text-sm font-bold">PDF editing preview</p>
-                  <div className="flex gap-2">
-                    {editorTools.slice(0, 4).map(([label, Icon]) => (
-                      <button key={label as string} className="rounded-xl bg-white/10 p-2 text-blue-100 transition hover:bg-white hover:text-royal-700" title={label as string}>
-                        <Icon className="h-4 w-4" />
-                      </button>
-                    ))}
-                  </div>
+                  <p className="text-sm font-bold">Document preview</p>
                 </div>
                 <div className="rounded-2xl bg-white p-4 text-navy-950">
                   <div className="mb-3 flex items-center justify-between border-b border-slate-100 pb-3">
@@ -402,7 +337,7 @@ export default function Home() {
                 Built for accountants, auditors and finance teams.
               </h2>
               <p className="mt-5 text-lg leading-8 text-slate-600">
-                DocuCoreX detects financial patterns, reconciles supporting documents, and turns messy statements into analysis-ready exports for reporting and accounting systems.
+                DocuCoreX detects financial patterns, reconciles statements against your ledger, and turns messy statements into analysis-ready exports for reporting and accounting systems.
               </p>
               <div className="mt-8 flex flex-wrap gap-2">
                 {intelligence.map((item) => (
@@ -414,100 +349,13 @@ export default function Home() {
               {features.map((feature) => (
                 <article key={feature.title} className="rounded-xl border border-slate-200 bg-white p-6 shadow-sm">
                   <feature.icon className="mb-4 h-6 w-6 text-royal-600" />
-                  <h3 className="text-lg font-semibold text-navy-950">{feature.title}</h3>
+                  <h3 className="flex flex-wrap items-center gap-2 text-lg font-semibold text-navy-950">
+                    {feature.title}
+                    {feature.comingSoon ? <Pill>Coming soon</Pill> : null}
+                  </h3>
                   <p className="mt-2 text-sm leading-6 text-slate-600">{feature.body}</p>
                 </article>
               ))}
-            </div>
-          </div>
-        </div>
-      </section>
-
-      <section className="bg-navy-950 py-20 text-white navy-grid sm:py-24">
-        <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8">
-          <div className="grid gap-10 lg:grid-cols-[0.8fr_1.2fr] lg:items-start">
-            <div>
-              <p className="text-sm font-semibold uppercase tracking-[0.18em] text-sky-300">Flagship PDF editor</p>
-              <h2 className="mt-4 text-4xl font-semibold tracking-normal sm:text-5xl">Preserve every font, table, margin and logo.</h2>
-              <p className="mt-5 text-lg leading-8 text-blue-100">
-                Edit PDFs with the fidelity teams expect from Acrobat: original layout, spacing, headers, footers, images, forms, annotations and export quality stay intact.
-              </p>
-            </div>
-            <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-              {editorTools.map(([label, Icon]) => (
-                <button
-                  key={label as string}
-                  className="flex items-center gap-3 rounded-2xl border border-white/10 bg-white/[0.08] p-4 text-left font-bold text-blue-50 transition hover:-translate-y-0.5 hover:bg-white hover:text-royal-700"
-                >
-                  <Icon className="h-5 w-5 shrink-0" />
-                  <span>{label}</span>
-                </button>
-              ))}
-            </div>
-          </div>
-        </div>
-      </section>
-
-      <section id="developers" className="py-20 sm:py-24">
-        <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8">
-          <div className="grid gap-6 md:grid-cols-4">
-            {platformStats.map((stat) => (
-              <article key={stat.label} className="rounded-xl border border-slate-200 bg-white p-6 shadow-sm">
-                <stat.icon className="h-6 w-6 text-royal-600" />
-                <p className="mt-5 text-3xl font-semibold text-navy-950">{stat.value}</p>
-                <p className="mt-1 text-sm font-semibold text-slate-500">{stat.label}</p>
-                <p className="mt-4 inline-flex rounded-full bg-emerald-50 px-3 py-1 text-xs font-semibold text-emerald-700">{stat.delta}</p>
-              </article>
-            ))}
-          </div>
-
-          <div className="mt-8 grid gap-6 lg:grid-cols-[1.1fr_0.9fr]">
-            <div className="rounded-[2rem] border border-slate-200 bg-white p-6 shadow-soft">
-              <div className="mb-6 flex items-center justify-between">
-                <div>
-                  <h2 className="text-2xl font-semibold text-navy-950">Processing dashboard</h2>
-                  <p className="mt-1 text-sm text-slate-500">Usage analytics, queues, activity and subscription controls.</p>
-                </div>
-                <Gauge className="h-7 w-7 text-royal-600" />
-              </div>
-              <div className="grid gap-4 sm:grid-cols-3">
-                {queues.map((queue) => (
-                  <div key={queue.label} className="rounded-2xl border border-slate-100 bg-slate-50 p-4">
-                    <p className="text-sm font-semibold text-navy-950">{queue.label}</p>
-                    <p className="mt-1 text-xs font-semibold text-slate-500">{queue.value}</p>
-                    <div className="mt-4 h-2 rounded-full bg-white">
-                      <div className="h-full rounded-full bg-royal-500" style={{ width: queue.pct }} />
-                    </div>
-                  </div>
-                ))}
-              </div>
-              <div className="mt-5 rounded-2xl border border-slate-100 p-4">
-                <div className="flex items-center gap-3">
-                  <Activity className="h-5 w-5 text-emerald-500" />
-                  <p className="text-sm font-bold text-navy-950">Bank reconciliation completed for 1,284 transactions.</p>
-                </div>
-              </div>
-            </div>
-
-            <div className="rounded-[2rem] bg-navy-950 p-6 text-white shadow-soft">
-              <div className="flex items-center justify-between">
-                <div>
-                  <h2 className="text-2xl font-semibold">Developer ready</h2>
-                  <p className="mt-1 text-sm text-blue-100">Next.js 15, TypeScript, Supabase, Stripe, server actions and edge-ready workflows.</p>
-                </div>
-                <Code2 className="h-7 w-7 text-sky-300" />
-              </div>
-              <div className="mt-6 rounded-2xl border border-white/10 bg-white/[0.08] p-4 font-mono text-sm leading-7 text-blue-100">
-                <p><span className="text-sky-300">POST</span> /v1/extractions</p>
-                <p><span className="text-emerald-300">status</span>: processing</p>
-                <p><span className="text-amber-200">export</span>: excel, csv, json</p>
-                <p><span className="text-pink-200">confidence</span>: 98.7%</p>
-              </div>
-              <div className="mt-5 grid grid-cols-3 gap-3 text-center text-xs font-semibold text-blue-100">
-                <div className="rounded-2xl bg-white/10 p-3"><Braces className="mx-auto mb-2 h-4 w-4" />API</div>
-                <div className="rounded-2xl bg-white/10 p-3"><Fingerprint className="mx-auto mb-2 h-4 w-4" />RBAC</div>
-                <div className="rounded-2xl bg-white/10 p-3"><Tags className="mx-auto mb-2 h-4 w-4" />Tags</div>
-              </div>
             </div>
           </div>
         </div>
@@ -546,7 +394,6 @@ export default function Home() {
           <div className="flex flex-wrap gap-3 text-sm font-bold text-blue-100">
             <a href="#features" className="hover:text-white">Features</a>
             <a href="#solutions" className="hover:text-white">Solutions</a>
-            <a href="#developers" className="hover:text-white">Developers</a>
             <a href="#pricing" className="hover:text-white">Pricing</a>
             <a href="mailto:hello@docucorex.com" className="hover:text-white">hello@docucorex.com</a>
           </div>

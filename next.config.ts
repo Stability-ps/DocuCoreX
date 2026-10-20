@@ -1,4 +1,10 @@
 import type { NextConfig } from "next";
+import { productionDatabaseRefusal } from "./lib/database-environment";
+
+// `next dev` against the production database is refused unless explicitly
+// allowed. See lib/database-environment.ts.
+const databaseRefusal = productionDatabaseRefusal(process.env);
+if (databaseRefusal) throw new Error(databaseRefusal);
 
 // Base hardening applied to every route (no framing directive here).
 const baseSecurityHeaders = [

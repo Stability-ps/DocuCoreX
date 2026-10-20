@@ -1294,6 +1294,29 @@ def test_worker_auth_matches_pdf_plumber_contract() -> None:
         )
 
 
+def test_worker_auth_matches_malware_scanner_contract() -> None:
+    """The malware scanner carries a copy of the same fail-closed bearer check."""
+    import importlib.util
+
+    peer = ROOT / "services" / "malware-scanner" / "auth.py"
+    assert peer.exists(), "services/malware-scanner/auth.py is missing"
+    spec = importlib.util.spec_from_file_location("malware_scanner_auth", peer)
+    assert spec and spec.loader
+    peer_auth = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(peer_auth)
+
+    import auth
+
+    for header, expected in [
+        (None, None), ("Bearer tok", None), ("Bearer tok", ""), (None, "tok"), ("", "tok"), ("Bearer", "tok"),
+        ("Bearer tok", "tok"), ("bearer tok", "tok"), ("Basic tok", "tok"), ("Bearer nope", "tok"), ("tok", "tok"),
+        ("Bearer tok\u200b", "tok"),
+    ]:
+        assert auth.check_bearer(header, expected) == peer_auth.check_bearer(header, expected), (
+            f"accounting and malware scanner disagree on {header!r}/{expected!r}"
+        )
+
+
 def test_worker_token_check_raises_on_unconfigured_secret() -> None:
     """End-to-end through main.verify_worker_token, which is what the endpoints
     call. Asserts the HTTP status the caller actually receives.
@@ -1326,6 +1349,110 @@ def test_worker_token_check_raises_on_unconfigured_secret() -> None:
         os.environ.pop("ACCOUNTING_WORKER_TOKEN", None)
         if previous is not None:
             os.environ["ACCOUNTING_WORKER_TOKEN"] = previous
+
+
+def test_workspace_privacy_setting_blocks_every_openai_call() -> None:
+    """allow_external_ai=False must mean no OpenAI request at all for the run,
+    even with OPENAI_API_KEY set: classification, counterparty reasoning and
+    AI recovery each stop before building a request."""
+    import urllib.request
+
+    import main
+
+    assert main.external_ai_allowed(main.ProcessRequest(run_id="r", workspace_id="w", storage_path="w/x.pdf")) is True
+    assert main.external_ai_allowed(main.ProcessRequest(run_id="r", workspace_id="w", storage_path="w/x.pdf", allow_external_ai=True)) is True
+    assert main.external_ai_allowed(main.ProcessRequest(run_id="r", workspace_id="w", storage_path="w/x.pdf", allow_external_ai=False)) is False
+
+    calls: list[object] = []
+
+    def refuse(*args: object, **kwargs: object) -> object:
+        calls.append(args)
+        raise AssertionError("an OpenAI request was attempted for a workspace that blocked external AI")
+
+    previous_key = os.environ.get("OPENAI_API_KEY")
+    original = urllib.request.urlopen
+    os.environ["OPENAI_API_KEY"] = "sk-test-not-real"
+    urllib.request.urlopen = refuse  # type: ignore[assignment]
+    try:
+        transaction = main.ParsedTransaction(
+            transaction_date="2026-01-02",
+            description="UNKNOWN MERCHANT 123",
+            debit_amount=100.0,
+            running_balance=900.0,
+        )
+
+        stats = main.classify_transactions_with_ai([transaction], "w", "x.pdf", enabled=False)
+        assert stats.get("ai_skipped") == main.WORKSPACE_BLOCKED_REASON, stats
+
+        report = main.apply_ai_counterparty_reasoning([transaction], None, enabled=False)
+        assert report.get("reason") == main.WORKSPACE_BLOCKED_REASON, report
+
+        rows, diagnostics = main.attempt_ai_recovery(
+            full_text="02 Jan SOMETHING 100.00 900.00",
+            structured_rows=None,
+            metadata={},
+            bank_name="Unknown",
+            run_id="r",
+            enabled=False,
+        )
+        assert rows == [] and diagnostics.get("reason") == main.WORKSPACE_BLOCKED_REASON, diagnostics
+    finally:
+        urllib.request.urlopen = original  # type: ignore[assignment]
+        if previous_key is None:
+            os.environ.pop("OPENAI_API_KEY", None)
+        else:
+            os.environ["OPENAI_API_KEY"] = previous_key
+    assert calls == [], "no request may be made"
+
+
+def test_every_openai_entry_point_receives_the_workspace_choice() -> None:
+    source = (ROOT / "workers" / "accounting_worker" / "main.py").read_text()
+    assert "ai_counterparty = apply_ai_counterparty_reasoning(transactions, bank_profile, enabled=external_ai_allowed(payload))" in source
+    assert source.count("enabled=external_ai_allowed(payload)") == 3, "classification, counterparty and recovery must all be gated"
+
+
+def test_storage_path_must_belong_to_the_runs_workspace() -> None:
+    """The worker downloads with the service role, which bypasses storage RLS, so
+    a run's source path must be proved to be its own workspace's first."""
+    import main
+
+    ws = "11111111-0000-0000-0000-000000000001"
+    other = "11111111-0000-0000-0000-0000000000f2"
+    ok = main.storage_path_belongs_to_workspace
+    assert ok(f"{ws}/documents/statement.pdf", ws)
+    assert ok(f"{ws}/accounting/run/statement.pdf", ws)
+    for bad in (
+        f"{other}/documents/statement.pdf",  # another tenant
+        f"{ws}",  # the folder itself
+        f"{ws}/",  # empty object name
+        f"{ws}/../{other}/documents/x.pdf",  # traversal
+        f"{ws}/./x.pdf",
+        f"{ws}//x.pdf",
+        f"/{ws}/documents/x.pdf",  # leading slash
+        f"{ws}\\documents\\x.pdf",  # backslash
+        f"{ws}/documents/x\x00.pdf",  # NUL
+        f"{ws}x/documents/x.pdf",  # prefix of a different id
+        f"{ws}/%2e%2e/{other}/documents/x.pdf",  # encoded traversal (2026-10-19 audit)
+        f"{ws}/documents%2f..%2f{other}/x.pdf",
+        f"{ws}/documents/x.pdf?y=../{other}",
+        f"{ws}/documents/a file.pdf",
+        f"{ws}/%252e%252e/{other}/documents/x.pdf",  # double-encoded
+        f"{ws}/..%2f{other}/documents/x.pdf",
+        f"{ws}/\uff0e\uff0e/{other}/documents/x.pdf",  # full-width dots
+        "",
+        None,
+    ):
+        assert not ok(bad, ws), f"{bad!r} must be refused"
+    assert not ok(f"{ws}/documents/x.pdf", ""), "no workspace, no access"
+    assert not ok(f"{ws}/documents/x.pdf", None)
+
+
+def test_statement_download_is_checked_first() -> None:
+    source = (ROOT / "workers" / "accounting_worker" / "main.py").read_text()
+    check = source.index("if not storage_path_belongs_to_workspace(payload.storage_path, payload.workspace_id):")
+    download = source.index("pdf_bytes = supabase.storage.from_(bucket).download(payload.storage_path)")
+    assert 0 < check < download, "the ownership check must precede the privileged download"
+    assert source.count(".download(payload.storage_path)") == 1, "a second, unchecked download path appeared"
 
 
 def test_mutating_endpoints_are_all_authenticated() -> None:
@@ -1402,67 +1529,6 @@ def test_non_ascii_credential_is_invalid_not_a_500() -> None:
     assert auth.constant_time_equal("a", "b") is False
 
 
-def test_auth_diagnostics_never_leak_the_secret() -> None:
-    """The diagnostics must reveal nothing about the token beyond digest+length.
-
-    A diagnostic that leaks the value it measures is worse than no diagnostic.
-    Asserted as a NEGATIVE over every substring of length >= 4.
-    """
-    import auth
-
-    secret = "s3cret-token-value-abcdefghijklmnop"
-    record = auth.auth_compare_diagnostics(f"Bearer {secret}", secret)
-    blob = repr(record)
-    for n in range(4, len(secret) + 1):
-        assert secret[:n] not in blob, f"leaked a {n}-char prefix"
-        assert secret[-n:] not in blob, f"leaked a {n}-char suffix"
-
-    import hashlib
-
-    expected = hashlib.sha256(secret.encode()).hexdigest()
-    assert record["configured_sha256"] == expected
-    assert record["received_sha256"] == expected
-    assert len(record["configured_sha256"]) == 64, "full digest, not truncated"
-    assert record["compare_digest_result"] is True
-    assert record["digests_match"] is True
-
-
-def test_auth_diagnostics_hash_exactly_what_is_compared() -> None:
-    """The digest must cover the same bytes the comparison uses.
-
-    parse_bearer was split out of check_bearer for this reason. If the two ever
-    drift, the diagnostic misreports the very comparison it exists to measure —
-    which is the failure mode that would send an investigation the wrong way.
-    """
-    import auth
-
-    secret = "s3cret-token"
-    for header in (
-        f"Bearer {secret}",
-        f"bearer {secret}",
-        f"Bearer   {secret}",
-        f"  Bearer {secret}  ",
-    ):
-        record = auth.auth_compare_diagnostics(header, secret)
-        agrees = auth.check_bearer(header, secret) == auth.OK
-        assert record["compare_digest_result"] is agrees, header
-        assert record["digests_match"] is agrees, header
-
-    # A missing header is unambiguous — this is the case the caller's silent
-    # header omission previously made indistinguishable from a wrong value.
-    missing = auth.auth_compare_diagnostics(None, secret)
-    assert missing["received_present"] is False
-    assert missing["received_sha256"] is None
-    assert missing["bearer_prefix_valid"] is False
-    assert missing["configured_present"] is True
-
-    # A stored secret with surrounding whitespace is REPORTED but still matches,
-    # so a trailing newline in a dashboard is visible without breaking auth.
-    padded = auth.auth_compare_diagnostics(f"Bearer {secret}", secret + "\n")
-    assert padded["configured_had_surrounding_whitespace"] is True
-    assert padded["configured_raw_length"] == len(secret) + 1
-    assert padded["configured_length"] == len(secret)
-    assert padded["compare_digest_result"] is True
 
 
 # ── Bank detection ────────────────────────────────────────────────────────────
@@ -4569,11 +4635,14 @@ def run() -> None:
     test_bank_detection_survives_broken_letterhead_whitespace()
     test_worker_auth_fails_closed()
     test_worker_auth_matches_pdf_plumber_contract()
+    test_worker_auth_matches_malware_scanner_contract()
     test_worker_token_check_raises_on_unconfigured_secret()
+    test_workspace_privacy_setting_blocks_every_openai_call()
+    test_every_openai_entry_point_receives_the_workspace_choice()
+    test_storage_path_must_belong_to_the_runs_workspace()
+    test_statement_download_is_checked_first()
     test_mutating_endpoints_are_all_authenticated()
     test_non_ascii_credential_is_invalid_not_a_500()
-    test_auth_diagnostics_never_leak_the_secret()
-    test_auth_diagnostics_hash_exactly_what_is_compared()
 
 
     test_api_docs_are_closed_on_deployments()

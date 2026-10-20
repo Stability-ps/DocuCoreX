@@ -1,4 +1,6 @@
 import { NextResponse, after } from "next/server";
+import { EXTERNAL_PROCESSING_DEMO } from "@/lib/privacy/external-processing";
+import { enforceRateLimit } from "@/lib/shared-rate-limit";
 import { withUnauthorized } from "@/lib/api-auth";
 import { recordAuditLog } from "@/lib/audit";
 import { ocrResults } from "@/lib/mock-repository";
@@ -47,10 +49,13 @@ async function handlePOST(request: Request, { params }: { params: Promise<{ docu
   }
 
   const context = await getWorkspaceContext();
+  // OCR can escalate to paid engines on every call.
+  const limited = await enforceRateLimit("ocr", { workspaceId: context?.workspaceId, request });
+  if (limited) return limited;
 
   // Demo mode (no Supabase backend): keep the fast in-memory synchronous path.
   if (!context) {
-    const adapters = createWorkflowAdapters({ enhanced });
+    const adapters = createWorkflowAdapters({ enhanced, externalProcessing: EXTERNAL_PROCESSING_DEMO });
     const ocr = await adapters.ocr.run(workspaceDocument.document);
     ocrResults.unshift(ocr);
     await recordAuditLog({ action: "extraction_completed", entityType: "document", entityId: documentId, metadata: { stage: "ocr", provider: adapters.ocr.name, confidence: ocr.confidence } });

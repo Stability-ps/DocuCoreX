@@ -326,20 +326,12 @@ export async function patchDocument(id: string, patch: DocumentPatch) {
   return mapDocumentRow(data as DocumentRow);
 }
 
+// One document is the bulk path with one id. This used to delete only the row:
+// the stored file and any conversion outputs stayed in the bucket, and a delete
+// that matched no row (wrong workspace, already gone) still reported success.
 export async function deleteDocument(id: string) {
-  const context = await getWorkspaceContext();
-
-  if (!context) {
-    return deleteDocumentRecord(id);
-  }
-
-  const { error } = await context.supabase
-    .from("documents")
-    .delete()
-    .eq("workspace_id", context.workspaceId)
-    .eq("id", id);
-
-  return !error;
+  const { deletedIds } = await bulkDeleteDocuments([id]);
+  return deletedIds.includes(id);
 }
 
 export async function bulkDeleteDocuments(ids: string[]) {

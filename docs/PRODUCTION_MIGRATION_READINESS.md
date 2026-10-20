@@ -69,6 +69,19 @@ removed nothing under RLS. 049 adds the workspace-scoped policy. Apply it
 by hand, then record it as version `049`, name `storage_delete_policy`, so
 the history keeps matching the files.
 
+## 050 shared rate limits (written 2026-10-19, NOT applied)
+
+Adds `rate_limit_windows` and `consume_rate_limit(text, integer, integer)`, so
+rate limits are counted once across every Vercel instance instead of once per
+instance. Only `service_role` may execute the function or touch the table; RLS
+is on with no policies. It touches no existing object and no customer row.
+
+Order does not matter: until 050 exists, `lib/shared-rate-limit.ts` gets an
+RPC error and falls back to the per-process limiter the app uses today (and
+logs `docucorex.rate_limit.shared_unavailable` once per instance). Apply it
+by hand after the PR merges, record it as version `050`, name
+`shared_rate_limits`, then confirm in the function logs that the warning stops.
+
 ## How parity was established (2026-10-07)
 
 Every table, function, trigger, named constraint, index, RLS policy and
@@ -161,11 +174,19 @@ workspace-scoped policy, holds 0 rows and is not referenced by the app.
 The lesson, twice over: migration state is a property of the database, and
 the only reliable way to know it is to ask the database's catalog.
 
-## Environment risk, unchanged
+## Environment risk
 
 `.env.local` and `.env.production` resolve to the same Supabase project, so
 local development runs against production. There is no staging or branch
-database. Recommended separation:
+database.
+
+**Guard (2026-10-19):** `next dev` now refuses to start when
+`NEXT_PUBLIC_SUPABASE_URL` is the production project, unless
+`DOCUCOREX_ALLOW_PRODUCTION_DATABASE=true` is set for that session
+(`lib/database-environment.ts`, applied in `next.config.ts`). Deployments
+(Vercel, Render) and production builds are unaffected. This stops the accident;
+it does not provide a second database. Recommended separation (creating the
+staging project needs an owner decision on plan and cost):
 
 | Environment | Database | Credentials live in |
 |---|---|---|
