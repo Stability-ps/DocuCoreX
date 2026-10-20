@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { databaseErrorResponse } from "@/lib/api-errors";
 import { resolveWorkspaceContext } from "@/lib/api-auth";
 import { createDocumentComment, getDocumentComments } from "@/lib/mock-repository";
 
@@ -18,7 +19,7 @@ export async function GET(_request: Request, { params }: { params: Promise<{ doc
     .order("created_at", { ascending: false });
 
   if (error) {
-    return NextResponse.json({ error: error.message }, { status: 500 });
+    return databaseErrorResponse("docucorex.comments.list_failed", error, { message: "Unable to load comments.", context: { documentId } });
   }
 
   return NextResponse.json({
@@ -54,7 +55,7 @@ export async function POST(request: Request, { params }: { params: Promise<{ doc
     .single();
 
   if (error) {
-    return NextResponse.json({ error: error.message }, { status: 500 });
+    return databaseErrorResponse("docucorex.comments.create_failed", error, { message: "Unable to save comment.", context: { documentId } });
   }
 
   return NextResponse.json({

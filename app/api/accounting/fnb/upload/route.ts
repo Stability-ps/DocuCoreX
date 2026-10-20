@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { createFnbAccountingRun } from "@/lib/accounting/server";
+import { routeErrorResponse } from "@/lib/api-errors";
 
 export async function POST(request: Request) {
   try {
@@ -13,8 +14,8 @@ export async function POST(request: Request) {
     const run = await createFnbAccountingRun(file);
     return NextResponse.json({ run });
   } catch (error) {
-    const message = error instanceof Error ? error.message : "Unable to upload FNB statement.";
-    const status = message === "Unauthorized" || message.includes("Sign in") ? 401 : 400;
-    return NextResponse.json({ error: message }, { status });
+    // The file checks and the sign-in requirement are UserFacingErrors and keep
+    // their message and status; a Storage or database failure is logged only.
+    return routeErrorResponse("docucorex.accounting.upload_failed", error, { message: "Unable to upload the statement. Please try again.", code: "UPLOAD_FAILED" });
   }
 }

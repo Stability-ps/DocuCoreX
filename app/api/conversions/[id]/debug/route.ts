@@ -51,7 +51,9 @@ export async function GET(_request: Request, { params }: { params: Promise<{ id:
     downloadPath: storagePath,
     storageBucket: "documents",
     storageFileExists: Boolean(fileCheck.data),
+    storageError: fileCheck.error?.message ?? null,
     signedUrlSuccess: Boolean(signedUrlCheck.data?.signedUrl),
+    signedUrlError: signedUrlCheck.error?.message ?? null,
     matchingJobIds: matchingJobs.map((job) => job.id),
     workerHealthStatus: workerHealth?.status ?? null,
   });
@@ -87,11 +89,12 @@ export async function GET(_request: Request, { params }: { params: Promise<{ id:
       path: storagePath,
       fileExists: Boolean(fileCheck.data),
       fileBytes: fileCheck.data?.size ?? 0,
-      fileError: fileCheck.error?.message ?? null,
+      // Codes, not Storage messages; the detail is in the server log.
+      fileError: fileCheck.error ? "storage_download_failed" : null,
     },
     signedUrl: {
       success: Boolean(signedUrlCheck.data?.signedUrl),
-      error: signedUrlCheck.error?.message ?? null,
+      error: signedUrlCheck.error ? "signed_url_failed" : null,
     },
     processing: {
       processorMode: workerHealth?.workerMode === true ? "worker" : process.env.CONVERSION_WORKER_URL?.trim() ? "remote-worker" : "local",
@@ -110,22 +113,31 @@ export async function GET(_request: Request, { params }: { params: Promise<{ id:
     worker: workerHealth,
     app: {
       vercelCommit: process.env.VERCEL_GIT_COMMIT_SHA ?? null,
+      // Configured or not; the worker hostname is infrastructure detail.
       workerUrlConfigured: Boolean(process.env.CONVERSION_WORKER_URL?.trim()),
-      workerHost: safeHost(process.env.CONVERSION_WORKER_URL),
     },
   });
 }
 
-async function fetchWorkerHealth() {
+async function fetchWorkerHealth(): Promise<{ status?: string; httpStatus?: number; ok?: boolean; workerMode?: boolean }> {
   const workerUrl = process.env.CONVERSION_WORKER_URL?.trim();
   if (!workerUrl) return { status: "not_configured" };
 
   try {
     const response = await fetch(new URL("/api/conversion-worker/health", workerUrl), { cache: "no-store" });
-    const body = await response.json().catch(() => null);
-    return { httpStatus: response.status, ok: response.ok, ...body };
+    const body = (await response.json().catch(() => null)) as { status?: unknown; workerMode?: unknown } | null;
+    // Only the fields this page reads. Spreading the whole health body, or a
+    // fetch error ("getaddrinfo ENOTFOUND <host>"), handed worker runtime
+    // details to any signed-in user.
+    return {
+      status: typeof body?.status === "string" ? body.status : undefined,
+      httpStatus: response.status,
+      ok: response.ok,
+      workerMode: body?.workerMode === true,
+    };
   } catch (error) {
-    return { status: "unreachable", error: error instanceof Error ? error.message : String(error) };
+    console.error("docucorex.conversion.debug_worker_health_failed", { message: error instanceof Error ? error.message : String(error) });
+    return { status: "unreachable" };
   }
 }
 
@@ -135,13 +147,4 @@ function getConversionIdFromMessage(message: string) {
 
 function displayJobMessage(message: string) {
   return message.replace(/\s+·\s+conversion:[0-9a-f-]{36}\b/i, "");
-}
-
-function safeHost(value?: string) {
-  if (!value) return null;
-  try {
-    return new URL(value).host;
-  } catch {
-    return "invalid-url";
-  }
 }

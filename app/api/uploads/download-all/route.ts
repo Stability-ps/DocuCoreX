@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { databaseErrorResponse } from "@/lib/api-errors";
 import { resolveWorkspaceContext } from "@/lib/api-auth";
 import { createZip } from "@/lib/file-output";
 
@@ -23,7 +24,7 @@ export async function POST(request: Request) {
     .eq("status", "output_ready");
 
   if (error) {
-    return NextResponse.json({ error: error.message }, { status: 500 });
+    return databaseErrorResponse("docucorex.download_all.lookup_failed", error, { message: "Unable to prepare the download bundle." });
   }
 
   const entries = [];

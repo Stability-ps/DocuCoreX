@@ -1,4 +1,7 @@
 import { NextResponse } from "next/server";
+import { databaseErrorResponse } from "@/lib/api-errors";
+import { userSafeJobError } from "@/lib/jobs/job-error";
+import { UserFacingError } from "@/lib/user-facing-error";
 import { EXTERNAL_PROCESSING_DEMO, getExternalProcessing } from "@/lib/privacy/external-processing";
 import { cronAuthorization, runCronSweep } from "@/lib/jobs/cron-sweep";
 import { enforceRateLimit } from "@/lib/shared-rate-limit";
@@ -156,7 +159,7 @@ export async function POST(request: Request) {
   const { data: jobs, error } = await jobsQuery;
 
   if (error) {
-    return NextResponse.json({ error: error.message }, { status: 500 });
+    return databaseErrorResponse("docucorex.jobs.process_list_failed", error, { message: "Unable to load processing jobs." });
   }
 
   console.info("docucorex.conversion_worker.jobs_selected", {
@@ -329,7 +332,7 @@ export async function POST(request: Request) {
         const conversionId = processRequest.conversionId ?? getConversionIdFromMessage(job.message);
         const conversion = await getNextQueuedConversion(context, document.id, conversionId);
         if (!conversion) {
-          throw new Error("Conversion record is missing or no longer queued. Please start the conversion again.");
+          throw new UserFacingError("Conversion record is missing or no longer queued. Please start the conversion again.");
         }
         const toFormat = conversion?.to_format ?? getTargetFormat(job.message);
         const conversionLogBase = {
@@ -358,7 +361,8 @@ export async function POST(request: Request) {
         assertWorkspaceStoragePath(document.storagePath, context.workspaceId, { reader: "conversion", conversionId: conversion.id });
         const { data: sourceFile, error: sourceError } = await context.supabase.storage.from("documents").download(document.storagePath);
         if (sourceError || !sourceFile) {
-          throw new Error(sourceError?.message ?? "Original file could not be downloaded for conversion.");
+          console.error("docucorex.conversion.source_download_failed", { ...conversionLogBase, message: sourceError?.message ?? null });
+          throw new UserFacingError("Original file could not be downloaded for conversion. Please try again.");
         }
 
         await context.supabase
@@ -395,7 +399,7 @@ export async function POST(request: Request) {
             supabasePath: converted.downloadPath,
             message: upload.error.message,
           });
-          throw new Error(`Converted file upload failed: ${upload.error.message}`);
+          throw new UserFacingError("The converted file could not be saved. Please try again.");
         }
 
         console.info("docucorex.conversion.storage_uploaded", {
@@ -413,7 +417,8 @@ export async function POST(request: Request) {
           .eq("id", conversion.id);
 
         if (conversionUpdateError) {
-          throw new Error(`Converted file was uploaded, but the download record could not be saved: ${conversionUpdateError.message}`);
+          console.error("docucorex.conversion.output_record_failed", { ...conversionLogBase, message: conversionUpdateError.message });
+          throw new UserFacingError("Converted file was uploaded, but the download record could not be saved. Please try again.");
         }
 
         console.info("docucorex.conversion.output_record_saved", {
@@ -431,12 +436,12 @@ export async function POST(request: Request) {
           error: signedUrlCheck.error?.message ?? null,
         });
         if (signedUrlCheck.error || !signedUrlCheck.data?.signedUrl) {
-          const reason = signedUrlCheck.error?.message ?? "Signed URL could not be generated for converted output.";
+          // The Storage reason is in the signed_url_after_save log line above.
           await context.supabase
             .from("conversions")
             .update({ status: "failed", updated_at: new Date().toISOString() })
             .eq("id", conversion.id);
-          throw new Error(`Converted file was uploaded, but download access could not be verified: ${reason}`);
+          throw new UserFacingError("Converted file was uploaded, but download access could not be verified. Please try again.");
         }
 
         await addConvertedVersion(context, document.id, converted.downloadPath, converted.fileName);
@@ -487,7 +492,10 @@ export async function POST(request: Request) {
 
       results.push({ jobId: job.id, type: job.type, status: "completed" });
     } catch (error) {
-      const message = error instanceof Error ? error.message : "Job failed";
+      // Stored on the job and the audit log, and returned below: only a
+      // deliberate message survives; any other detail is logged
+      // (lib/jobs/job-error.ts).
+      const message = userSafeJobError(error, job.type, { jobId: job.id, documentId: document.id });
       if (job.type === "conversion") {
         console.error("docucorex.conversion.failed", {
           jobId: job.id,
@@ -680,7 +688,8 @@ async function proxyToConversionWorker(request: Request, processRequest: Process
     workerHost: target.host,
     status: response.status,
     ok: response.ok,
-    bodyPreview: body.slice(0, 1000),
+    // Length only: the worker's response can carry extracted document text.
+    bodyLength: body.length,
   });
   return new NextResponse(body, {
     status: response.status,
@@ -985,11 +994,11 @@ function validateConvertedFile(
   source?: Pick<DocumentRecord, "name" | "mimeType">,
 ) {
   if (!file.downloadPath?.trim()) {
-    throw new Error("Conversion failed because no output file path was produced.");
+    throw new UserFacingError("Conversion failed because no output file path was produced.");
   }
 
   if (!file.content?.byteLength) {
-    throw new Error("Conversion failed because the output file was empty.");
+    throw new UserFacingError("Conversion failed because the output file was empty.");
   }
 
   const sample = new TextDecoder("utf-8", { fatal: false }).decode(file.content.slice(0, Math.min(file.content.byteLength, 4096)));
@@ -1003,30 +1012,30 @@ function validateConvertedFile(
   ];
 
   if (metadataOnlyMarkers.some((marker) => sample.includes(marker))) {
-    throw new Error("Conversion failed because no readable document content was extracted.");
+    throw new UserFacingError("Conversion failed because no readable document content was extracted.");
   }
 
   if (targetFormat === "pdf") {
     if (!startsWithPdfHeader(file.content)) {
-      throw new Error("Conversion failed because the output is not a valid PDF file.");
+      throw new UserFacingError("Conversion failed because the output is not a valid PDF file.");
     }
 
     const pageCount = countPdfPages(file.content);
     if (pageCount < 1) {
-      throw new Error("Conversion failed because the output PDF has no pages.");
+      throw new UserFacingError("Conversion failed because the output PDF has no pages.");
     }
 
     if (source && isOfficeSource(source) && looksLikeGeneratedTextDumpPdf(file.content)) {
-      throw new Error("Conversion failed because Office files must be rendered by a real PDF conversion engine, not exported as a text-only PDF.");
+      throw new UserFacingError("Conversion failed because Office files must be rendered by a real PDF conversion engine, not exported as a text-only PDF.");
     }
   }
 
   if ((targetFormat === "excel" || targetFormat === "xlsx") && !startsWithZipHeader(file.content)) {
-    throw new Error("Conversion failed because the output is not a valid Excel workbook.");
+    throw new UserFacingError("Conversion failed because the output is not a valid Excel workbook.");
   }
 
   if ((targetFormat === "word" || targetFormat === "docx") && !startsWithZipHeader(file.content)) {
-    throw new Error("Conversion failed because the output is not a valid Word document.");
+    throw new UserFacingError("Conversion failed because the output is not a valid Word document.");
   }
 }
 

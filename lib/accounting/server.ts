@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { recordAuditLog } from "@/lib/audit";
+import { UserFacingError } from "@/lib/user-facing-error";
 import { PENDING_BANK_NAME, PENDING_PARSER_PROFILE } from "@/lib/accounting/engine/bank-detection";
 import { BASE_MERCHANT_KNOWLEDGE } from "@/lib/accounting/engine/merchant-kb";
 import { canonicaliseCategory } from "@/lib/accounting/categories";
@@ -479,15 +480,15 @@ async function ensureMerchantKnowledgeBase() {
 
 function assertFnbPdf(file: File) {
   if (!file.name.toLowerCase().endsWith(".pdf") && file.type !== "application/pdf") {
-    throw new Error("Upload a bank statement PDF.");
+    throw new UserFacingError("Upload a bank statement PDF.");
   }
 
   if (file.size <= 0) {
-    throw new Error("The uploaded PDF is empty.");
+    throw new UserFacingError("The uploaded PDF is empty.");
   }
 
   if (file.size > accountingMaxUploadBytes) {
-    throw new Error("The statement is larger than the 200 MB upload limit.");
+    throw new UserFacingError("The statement is larger than the 200 MB upload limit.");
   }
 }
 
@@ -509,7 +510,7 @@ export async function createFnbAccountingRun(file: File) {
 
   const context = await getWorkspaceContext();
   if (!context) {
-    throw new Error("Sign in is required to upload accounting statements.");
+    throw new UserFacingError("Sign in is required to upload accounting statements.", { status: 401, code: "UNAUTHORIZED" });
   }
 
   const storagePath = accountingStoragePath(context.workspaceId, file.name);

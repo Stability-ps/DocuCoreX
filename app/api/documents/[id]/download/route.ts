@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { databaseErrorResponse } from "@/lib/api-errors";
 import { withUnauthorized } from "@/lib/api-auth";
 import { getDocument } from "@/lib/mock-repository";
 import { isDemoAllowed } from "@/lib/supabase";
@@ -47,7 +48,12 @@ async function handleGET(_request: Request, { params }: { params: Promise<{ id: 
   const { data: fileData, error: fileError } = await context.supabase.storage.from("documents").download(documentRow.storage_path);
 
   if (fileError || !fileData) {
-    return NextResponse.json({ error: fileError?.message ?? "Unable to download document" }, { status: 404 });
+    return databaseErrorResponse("docucorex.document.download_storage_failed", fileError, {
+      message: "Unable to download document",
+      code: "FILE_UNAVAILABLE",
+      status: 404,
+      context: { documentId: id },
+    });
   }
 
   return new NextResponse(fileData, {

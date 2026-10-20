@@ -1,4 +1,6 @@
 import { NextResponse } from "next/server";
+import { databaseErrorResponse } from "@/lib/api-errors";
+import { displayStoredJobText } from "@/lib/jobs/job-error";
 import { processingJobs } from "@/lib/mock-repository";
 import { isDemoAllowed, isSupabaseConfigured } from "@/lib/supabase";
 import { getWorkspaceContext } from "@/lib/server-documents";
@@ -26,13 +28,14 @@ export async function GET() {
     .limit(50);
 
   if (error) {
-    return NextResponse.json({ error: error.message }, { status: 500 });
+    return databaseErrorResponse("docucorex.jobs.list_failed", error, { message: "Unable to load processing jobs." });
   }
 
   return NextResponse.json({
     jobs: (data ?? []).map((job) => ({
       ...job,
-      message: typeof job.message === "string" ? displayJobMessage(job.message) : job.message,
+      message: typeof job.message === "string" ? displayStoredJobText(displayJobMessage(job.message), job.type) : job.message,
+      error: typeof job.error === "string" ? displayStoredJobText(job.error, job.type) : job.error,
     })),
   });
 }

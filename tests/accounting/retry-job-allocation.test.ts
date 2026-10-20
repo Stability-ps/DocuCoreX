@@ -137,7 +137,7 @@ test("only a job this request created may be marked failed on cleanup", () => {
   // to "we created this job". Now that Retry can create one too, the condition
   // has to be the allocation itself — otherwise a failure path could retire a
   // job it merely inherited from a still-running attempt.
-  const cleanup = route.slice(route.indexOf("if (fallbackMarkError)"), route.indexOf("return NextResponse.json({ error: fallbackMarkError.message }"));
+  const cleanup = route.slice(route.indexOf("if (fallbackMarkError)"), route.indexOf("return databaseErrorResponse(\"docucorex.accounting.run_claim_failed\""));
   assert.match(cleanup, /if \(allocatedReplacementJob\)/);
   assert.doesNotMatch(cleanup, /if \(body\.reprocess\)/);
 });

@@ -1,5 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
+import { routeErrorResponse } from "@/lib/api-errors";
 import { recordAuditLog } from "@/lib/audit";
+import { UserFacingError } from "@/lib/user-facing-error";
 import { getWorkspaceContext, registerUploads, validateUploadFiles } from "@/lib/server-documents";
 import { createWorkspaceBucketPath } from "@/lib/supabase-server-adapter";
 import { enforceRateLimit } from "@/lib/shared-rate-limit";
@@ -37,7 +39,7 @@ export async function POST(request: NextRequest) {
       for (const file of uploadedFiles) {
         const head = new Uint8Array(await file.slice(0, SIGNATURE_HEAD_BYTES).arrayBuffer());
         const signature = checkFileSignature(file.name, head);
-        if (!signature.ok) throw new Error(signature.reason);
+        if (!signature.ok) throw new UserFacingError(signature.reason);
       }
       // Malware: scanned before anything is written, so an infected file is
       // never stored (lib/malware-scan.ts; off unless MALWARE_SCANNING=required).
@@ -70,6 +72,7 @@ export async function POST(request: NextRequest) {
           });
 
           if (error) {
+            // Storage's message stays in the log (routeErrorResponse below).
             throw new Error(`${file.name}: ${error.message}`);
           }
         }
@@ -90,7 +93,9 @@ export async function POST(request: NextRequest) {
       );
       return NextResponse.json(result);
     } catch (error) {
-      return NextResponse.json({ error: error instanceof Error ? error.message : "Unable to register upload" }, { status: 400 });
+      // Validation messages (UserFacingError) are returned as they are; a
+      // Storage or database failure is logged and answered generically.
+      return routeErrorResponse("docucorex.upload.multipart_failed", error, { message: "Unable to upload the file. Please try again.", code: "UPLOAD_FAILED" });
     }
   }
 
@@ -126,7 +131,7 @@ export async function POST(request: NextRequest) {
         validateUploadFiles([actual]);
       } catch (error) {
         await context.supabase.storage.from("documents").remove([file.storagePath]);
-        return NextResponse.json({ error: error instanceof Error ? error.message : "Unsupported file." }, { status: 400 });
+        return routeErrorResponse("docucorex.upload.validation_failed", error, { message: "Unsupported file.", status: 400, code: "UNSUPPORTED_FILE" });
       }
       // And the stored bytes, not just the stored metadata: a signed upload
       // accepts whatever the client sends. A file that cannot be read back is
@@ -180,7 +185,7 @@ export async function POST(request: NextRequest) {
     );
     return NextResponse.json(result);
   } catch (error) {
-    return NextResponse.json({ error: error instanceof Error ? error.message : "Unable to register upload" }, { status: 400 });
+    return routeErrorResponse("docucorex.upload.register_failed", error, { message: "Unable to register the upload. Please try again.", code: "UPLOAD_FAILED" });
   }
 }
 

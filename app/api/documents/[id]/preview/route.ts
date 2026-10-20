@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { databaseErrorResponse } from "@/lib/api-errors";
 import { withUnauthorized } from "@/lib/api-auth";
 import { getDocument } from "@/lib/mock-repository";
 import { isDemoAllowed } from "@/lib/supabase";
@@ -60,7 +61,12 @@ async function handleGET(_request: Request, { params }: { params: Promise<{ id: 
   const { context, row } = resolved;
   const { data: fileData, error: fileError } = await context.supabase.storage.from("documents").download(row.storage_path);
   if (fileError || !fileData) {
-    return NextResponse.json({ error: fileError?.message ?? "Unable to load document" }, { status: 404 });
+    return databaseErrorResponse("docucorex.document.preview_storage_failed", fileError, {
+      message: "Unable to load document",
+      code: "FILE_UNAVAILABLE",
+      status: 404,
+      context: { documentId: id },
+    });
   }
 
   const contentType = row.mime_type || fileData.type || "application/octet-stream";

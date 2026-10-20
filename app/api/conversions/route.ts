@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { databaseErrorResponse } from "@/lib/api-errors";
 import { resolveWorkspaceContext } from "@/lib/api-auth";
 import { recordAuditLog } from "@/lib/audit";
 import { settleUploadJobs } from "@/lib/jobs/settle-upload";
@@ -86,7 +87,10 @@ export async function POST(request: Request) {
     .single();
 
   if (conversionError || !conversion) {
-    return NextResponse.json({ error: conversionError?.message ?? "Unable to create conversion" }, { status: 500 });
+    return databaseErrorResponse("docucorex.conversion.create_failed", conversionError, {
+      message: "Unable to create conversion",
+      context: { documentId: body.documentId },
+    });
   }
 
   const { data: job, error: jobError } = await context.supabase
@@ -102,7 +106,10 @@ export async function POST(request: Request) {
     .single();
 
   if (jobError) {
-    return NextResponse.json({ error: jobError.message }, { status: 500 });
+    return databaseErrorResponse("docucorex.conversion.job_create_failed", jobError, {
+      message: "Unable to queue conversion",
+      context: { documentId: body.documentId, conversionId: conversion.id },
+    });
   }
   await settleUploadJobs(context, [body.documentId], "conversion");
 

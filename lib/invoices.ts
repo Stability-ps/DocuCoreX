@@ -1,4 +1,5 @@
 import { getWorkspaceContext } from "@/lib/server-documents";
+import { UserFacingError } from "@/lib/user-facing-error";
 import { invoiceItems, invoiceSequences, invoices } from "@/lib/mock-repository";
 import { getCompany, nextCompanyInvoiceSequence } from "@/lib/companies";
 import { createNotification } from "@/lib/notifications";
@@ -356,11 +357,11 @@ export async function createInvoice(input: CreateInvoiceInput): Promise<InvoiceW
   );
 
   if (!cleanedLineItems.length) {
-    throw new Error("At least one invoice line item is required.");
+    throw new UserFacingError("At least one invoice line item is required.");
   }
 
   if (!input.clientName.trim()) {
-    throw new Error("Client name is required.");
+    throw new UserFacingError("Client name is required.");
   }
 
   // When a company profile is selected, it is the single source of truth for the
@@ -370,11 +371,11 @@ export async function createInvoice(input: CreateInvoiceInput): Promise<InvoiceW
   const company = input.companyId ? await getCompany(input.companyId) : null;
 
   if (input.companyId && !company) {
-    throw new Error("Selected company profile was not found.");
+    throw new UserFacingError("Selected company profile was not found.");
   }
 
   if (company?.isArchived) {
-    throw new Error("Selected company profile is archived. Choose an active company profile.");
+    throw new UserFacingError("Selected company profile is archived. Choose an active company profile.");
   }
 
   const status: InvoiceStatus = input.status ?? "draft";
