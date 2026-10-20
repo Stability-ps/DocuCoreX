@@ -27,28 +27,50 @@ import { isClaimable } from "@/lib/ocr/jobAction";
 import { finalizeDocumentStatus } from "@/lib/ocr/asyncJobs";
 
 export async function POST(request: Request) {
+  const workerMode = process.env.CONVERSION_WORKER_MODE === "true";
+  // Authenticate BEFORE looking at the body (F-34): an anonymous caller gets the
+  // same 401 whatever it sends, instead of a 400 that describes the request
+  // shape. The frontend authorises the caller before anything reaches the
+  // worker. The worker trusts the shared secret this route adds and, without a
+  // session in the forwarded cookies, resolves the document's workspace with the
+  // service role, so an unchecked proxy let an anonymous request process any
+  // document whose id it knew (release audit, 2026-10-08).
+  let caller: Awaited<ReturnType<typeof getWorkspaceContext>> = null;
+  if (process.env.CONVERSION_WORKER_MODE !== "true" && isSupabaseConfigured) {
+    caller = await getWorkspaceContext().catch(() => null);
+    if (!caller) {
+      return NextResponse.json({ error: "Sign in to process documents.", code: "UNAUTHENTICATED" }, { status: 401 });
+    }
+  }
+
+  if (workerMode) {
+    const configuredSecret = process.env.CONVERSION_WORKER_SECRET?.trim();
+    const providedSecret = request.headers.get("x-docucorex-worker-secret")?.trim();
+    // Fail closed: without a configured secret the worker cannot tell the
+    // frontend from anyone else, and it would fall back to the service role.
+    if (!configuredSecret) {
+      console.error("docucorex.conversion_worker.secret_not_configured");
+      return NextResponse.json({ error: "Document processing is temporarily unavailable.", code: "WORKER_SECRET_NOT_CONFIGURED" }, { status: 503 });
+    }
+    if (!workerSecretMatches(providedSecret, configuredSecret)) {
+      return NextResponse.json({ error: "Unauthorized worker request" }, { status: 401 });
+    }
+  }
+
   const validated = validateProcessRequest(await request.clone().json().catch(() => ({})));
   if (!validated.ok) {
     return NextResponse.json({ error: validated.error, code: "INVALID_REQUEST" }, { status: 400 });
   }
   const processRequest = validated.request;
   console.info("docucorex.conversion_worker.process_called", {
-    processorMode: process.env.CONVERSION_WORKER_MODE === "true" ? "worker" : "app",
+    processorMode: workerMode ? "worker" : "app",
     conversionId: processRequest.conversionId ?? null,
     jobId: processRequest.jobId ?? null,
     documentId: processRequest.documentId ?? null,
     hasWorkerSecret: Boolean(process.env.CONVERSION_WORKER_SECRET?.trim()),
   });
-  // The frontend authorises the caller before anything reaches the worker. The
-  // worker trusts the shared secret this route adds and, without a session in
-  // the forwarded cookies, resolves the document's workspace with the service
-  // role, so an unchecked proxy let an anonymous request process any document
-  // whose id it knew (release audit, 2026-10-08).
-  if (process.env.CONVERSION_WORKER_MODE !== "true" && isSupabaseConfigured) {
-    const caller = await getWorkspaceContext().catch(() => null);
-    if (!caller) {
-      return NextResponse.json({ error: "Sign in to process documents.", code: "UNAUTHENTICATED" }, { status: 401 });
-    }
+
+  if (caller) {
     if (!(await requestTargetsWorkspace(caller, processRequest))) {
       return NextResponse.json({ error: "Document not found.", code: "NOT_FOUND" }, { status: 404 });
     }
@@ -70,20 +92,6 @@ export async function POST(request: Request) {
       },
       { status: 503 },
     );
-  }
-
-  if (process.env.CONVERSION_WORKER_MODE === "true") {
-    const configuredSecret = process.env.CONVERSION_WORKER_SECRET?.trim();
-    const providedSecret = request.headers.get("x-docucorex-worker-secret")?.trim();
-    // Fail closed: without a configured secret the worker cannot tell the
-    // frontend from anyone else, and it would fall back to the service role.
-    if (!configuredSecret) {
-      console.error("docucorex.conversion_worker.secret_not_configured");
-      return NextResponse.json({ error: "Document processing is temporarily unavailable.", code: "WORKER_SECRET_NOT_CONFIGURED" }, { status: 503 });
-    }
-    if (!workerSecretMatches(providedSecret, configuredSecret)) {
-      return NextResponse.json({ error: "Unauthorized worker request" }, { status: 401 });
-    }
   }
 
   const context =
