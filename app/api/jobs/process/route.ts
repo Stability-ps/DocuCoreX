@@ -3,7 +3,7 @@ import { databaseErrorResponse } from "@/lib/api-errors";
 import { userSafeJobError } from "@/lib/jobs/job-error";
 import { UserFacingError } from "@/lib/user-facing-error";
 import { EXTERNAL_PROCESSING_DEMO, getExternalProcessing } from "@/lib/privacy/external-processing";
-import { cronAuthorization, runCronSweep } from "@/lib/jobs/cron-sweep";
+import { cronAuthorization, isDryRunRequest, runCronSweep } from "@/lib/jobs/cron-sweep";
 import { enforceRateLimit } from "@/lib/shared-rate-limit";
 import { assertWorkspaceStoragePath } from "@/lib/storage-paths";
 import { workerSecretMatches } from "@/lib/worker-secret";
@@ -625,6 +625,7 @@ export async function GET(request: Request) {
     return NextResponse.json({ error: "Scheduled processing is not configured.", code: "CRON_DEPENDENCIES_MISSING" }, { status: 503 });
   }
 
+  const dryRun = isDryRunRequest(request.url);
   const result = await runCronSweep({
     async findDocumentIds(limit) {
       const { data, error } = await admin
@@ -647,8 +648,9 @@ export async function GET(request: Request) {
       });
       return { ok: response.ok, status: response.status };
     },
-  });
-  console.info("docucorex.cron.sweep", result);
+  }, undefined, { dryRun });
+  const { candidateDocumentIds: _ids, ...summary } = result;
+  console.info("docucorex.cron.sweep", summary);
   return NextResponse.json(result);
 }
 
