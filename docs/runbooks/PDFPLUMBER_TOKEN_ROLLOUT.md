@@ -27,7 +27,7 @@ Render auto-deploys `docucorex-pdf-plumber` from `main`, so **merging is the mom
    chmod 600 ~/.config/docucorex/pdf-plumber-token
    ```
 2. **Set `PDF_PLUMBER_TOKEN` on every caller**, using the same value everywhere:
-   - Render `DocuCoreX-1` (`srv-d94n1su7r5hc73fbodi0`): the legacy conversion worker, which **currently serves production**. *Unverified:* whether it has `PDF_PLUMBER_URL` at all. Check its env var names in the dashboard.
+   - Render `DocuCoreX-1` (`srv-d94n1su7r5hc73fbodi0`): the legacy conversion worker, which **currently serves production**. Verified 2026-10-20 (dashboard, names only): it has **no** `PDF_PLUMBER_URL`, so production does not call pdfplumber today. Add `PDF_PLUMBER_URL` with the token, or do the conversion worker cutover first.
    - Render `docucorex-conversion-worker` (`srv-d95nd7navr4c73al5it0`): it has `PDF_PLUMBER_URL`.
    - Vercel **Production**. Env vars are bound per deployment, so **redeploy Production** afterwards. Add Preview only if previews should call pdfplumber.
 3. **Set `PDF_PLUMBER_TOKEN` on `docucorex-pdf-plumber`** and let it redeploy. It still runs the old code, which ignores the token.
