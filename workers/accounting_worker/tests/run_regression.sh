@@ -55,6 +55,9 @@ PY
 # breaking change to ProcessRequest could reach Render without any suite noticing.
 "$PYTHON_BIN" "$WORKER_DIR/tests/request_model_check.py"
 
+# Reconciliation policy: exact 0 reconciles, R0.01-R0.05 needs review.
+"$PYTHON_BIN" "$WORKER_DIR/tests/reconciliation_policy_check.py"
+
 # Amount parsing and classification assertions. Also previously wired into
 # nothing, and it had rotted: a category defect plus two call sites left behind
 # by a signature change, none of which any suite would have reported.
@@ -64,8 +67,5 @@ PY
 # Bank-neutral by construction, and one of its checks asserts that — a repair
 # that needs an institution name will not travel to the next country.
 "$PYTHON_BIN" "$WORKER_DIR/tests/ledger_repair_check.py"
-
-# Reconciliation policy: exact 0 reconciles, R0.01-R0.05 needs review.
-"$PYTHON_BIN" "$WORKER_DIR/tests/reconciliation_policy_check.py"
 
 "$PYTHON_BIN" "$WORKER_DIR/tests/regression_suite.py"
