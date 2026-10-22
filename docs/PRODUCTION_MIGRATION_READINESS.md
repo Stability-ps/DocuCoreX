@@ -1,13 +1,13 @@
 # Production migration state — accounting schema
 
-**Status: Production is at 001–048 and its history records exactly 001–048. 049 (storage DELETE policy) is applied on merge of its PR; see "049" below.**
+**Status (2026-10-19): production's history records 001–050 and 052. 051, 053 and 054 are written and awaiting the owner's approval; see each section below.**
 
 | | |
 |---|---|
-| Live Supabase project | `efprtqcpglsawifrsmcc`, applied through **048** |
-| This repository | contains through **048** |
-| Gap | none |
-| Verified | 2026-10-07, direct catalog queries (`pg_class`, `pg_proc`, `pg_trigger`, `pg_constraint`, `pg_indexes`, `pg_policies`, `information_schema.columns`) |
+| Live Supabase project | `efprtqcpglsawifrsmcc` (PostgreSQL 17, eu-west-2) |
+| Applied in production | **001–050, 052** |
+| In this repository, not applied | **051** (#180), **053** (#176), **054** (#177) |
+| Verified | 2026-10-19, `supabase_migrations.schema_migrations` and catalog queries; 001–048 by direct catalog queries on 2026-10-07 |
 
 Migrations were applied by hand, not by the Supabase CLI, so until
 2026-10-08 the `supabase_migrations.schema_migrations` table recorded only six
@@ -69,7 +69,16 @@ removed nothing under RLS. 049 adds the workspace-scoped policy. Apply it
 by hand, then record it as version `049`, name `storage_delete_policy`, so
 the history keeps matching the files.
 
-## 050 shared rate limits (written 2026-10-19, NOT applied)
+## 050 shared rate limits (applied 2026-10-19)
+
+Applied atomically with its history row (`050` / `shared_rate_limits`,
+created_by `security-remediation-2026-10-19`, rollback steps stored in the
+row). Verified after applying: RLS on, no `anon`/`authenticated` access to the
+table or function, `service_role` can call it; a rolled-back call sequence
+allowed 3 of 4 at limit 3; the deployed app then refused the 11th sign-in
+attempt from one address with 429 and `Retry-After: 300`.
+
+Original notes:
 
 Adds `rate_limit_windows` and `consume_rate_limit(text, integer, integer)`, so
 rate limits are counted once across every Vercel instance instead of once per
@@ -81,6 +90,36 @@ RPC error and falls back to the per-process limiter the app uses today (and
 logs `docucorex.rate_limit.shared_unavailable` once per instance). Apply it
 by hand after the PR merges, record it as version `050`, name
 `shared_rate_limits`, then confirm in the function logs that the warning stops.
+
+## 052 pin profile workspace (applied 2026-10-19, CRITICAL)
+
+Before 052 any signed-in user could change their own `profiles.workspace_id`
+through PostgREST and join any workspace. Applied after a dry run inside a
+rolled-back transaction against the live schema, then recorded as `052` /
+`pin_profile_workspace` with rollback steps in the history row. Verified after
+applying, with synthetic accounts in a rolled-back transaction: hijack refused,
+clearing the workspace refused, another workspace's documents, companies, chart
+of accounts and files invisible (0 each), deleting its document affects 0 rows,
+own profile edits save, the service role can still assign a workspace, signup
+still creates a profile and workspace.
+
+Historical check (read-only): 0 of 26 profiles were attached to a workspace
+they do not own, and no `team_members` row ties a user to someone else's
+workspace. A user who hopped and hopped back would leave no trace in
+`profiles`; API gateway logs were not available to check.
+
+## 051, 053, 054 (written 2026-10-19, NOT applied)
+
+* **051** `workspace_privacy_settings` (#180): per-workspace choice about
+  external AI providers. No row means allowed (today's behaviour).
+* **053** `storage_paths_stay_in_workspace` (#176): storage path columns must
+  point inside their own workspace folder. All 735 existing production paths
+  were checked first and conform.
+* **054** `team_role_enforcement` (#177): only the owner and Admins manage the
+  team.
+
+Each needs the owner's approval. Apply each as 050 and 052 were: a rolled-back
+dry run against production first, then one transaction with its history row.
 
 ## How parity was established (2026-10-07)
 
