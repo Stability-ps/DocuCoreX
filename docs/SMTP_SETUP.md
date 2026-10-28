@@ -1,6 +1,6 @@
 # Production email (SMTP) for Supabase Auth
 
-**Status (2026-10-08): not configured.** Production Auth uses Supabase's
+**Status (2026-10-20): not configured.** See the implementation plan below. Production Auth uses Supabase's
 built-in mailer. That mailer only delivers to members of the Supabase
 organisation and is rate-limited to a handful of messages an hour. So:
 
@@ -85,6 +85,40 @@ template.
 Only after all four pass: **Authentication → Providers → Email → Confirm
 email: ON**, then sign up with another outside address and confirm that the
 confirmation email arrives and the link signs the user in.
+
+## Implementation plan (2026-10-20)
+
+The order matters. Each step has a gate, and nothing after a gate starts until it passes.
+
+| # | Step | Who | Gate |
+|---|---|---|---|
+| 1 | Merge PR #195 (sign-up never signs in; one neutral answer for every address) | owner approval | CI green; signed-out sign-up returns 200 with no `Set-Cookie`, for new and existing addresses alike |
+| 2 | Pick a provider (§1) and verify the sending domain: SPF, DKIM, DMARC at `p=none` (§2) | owner (DNS access) | provider shows the domain **verified** |
+| 3 | Add the confirmation route: `GET /auth/confirm?token_hash=…&type=email` calls `supabase.auth.verifyOtp({ token_hash, type })`, then redirects to `/login?confirmed=1`. On failure it redirects to `/login?error=link_invalid`. Change `confirmation.html` to link `{{ .SiteURL }}/auth/confirm?token_hash={{ .TokenHash }}&type=email` | code PR | unit tests; the route answers the same for invalid and expired tokens |
+| 4 | Enter the SMTP credentials in Supabase (§3). Credentials go only into the dashboard | owner | n/a |
+| 5 | Paste the templates (§3). Raise the hourly email limit | owner | n/a |
+| 6 | Password-reset test to an outside mailbox (§4, steps 1–4) | owner + Claude | inbox not spam; `spf/dkim/dmarc=pass`; old password 401, new 200 |
+| 7 | Neutral-reset check: request a reset for an unregistered address and for a registered one | Claude | the UI shows the same message for both. Only the registered mailbox receives an email |
+| 8 | Turn on **Confirm email** | owner approval | steps 6 and 7 passed |
+| 9 | Confirmation test: sign up with a new outside address → email → link → `/login?confirmed=1` → sign in works. Sign up again with the same address → same UI answer, and no second account | Claude | all pass |
+| 10 | Move DMARC to `p=quarantine` after a week of clean aggregate reports | owner | reports show only the provider |
+
+**Why step 3 is needed.** Sign-up runs on the server, and since #195 it keeps no cookies. The PKCE code verifier that `{{ .ConfirmationURL }}` → `/auth/callback?code=` needs therefore never reaches the browser. The email is still confirmed when the link is clicked, but the callback would then show `exchange_failed`. The `token_hash` link needs no verifier and also works when the link is opened on another device. Password reset is unaffected: it starts in the browser, which keeps its own verifier.
+
+**Redirect security.**
+- **Allowlist.** Supabase only follows redirects on the Auth redirect allowlist. Today that is `https://www.docucorex.com/**` and `http://localhost:3000/**`. Before step 8, remove `localhost` from the **production** project, or move it to a separate dev project, so that a production email can never send someone to a local address.
+- **Link host.** Sign-up builds `emailRedirectTo` from the request origin (`lib/auth-signup.ts`), and password reset builds `redirectTo` from `window.location.origin` (`app/login/page.tsx`). The allowlist bounds both. Step 3's `token_hash` link uses `{{ .SiteURL }}`, so the confirmation host is fixed to the Site URL and comes from no request at all.
+- **Next path.** After the link, `/auth/callback` and `/auth/confirm` only redirect to same-origin paths. The callback already uses `safeNextPath`; the new route must use it too, and its tests must include `//evil.example` and `https://evil.example` as `next` values.
+- **Template.** Never put a raw `{{ .RedirectTo }}` in a template.
+
+**Account recovery after confirmation is on.**
+- An unconfirmed user who lost the email uses **Forgot password**. With confirmation on, Supabase sends the recovery link, and opening it confirms the address.
+- A user locked out by a mistyped address signs up again with the right one. The neutral answer does not tell anyone that the first account exists.
+- Support never confirms or denies that an address is registered.
+
+**Enumeration still possible after these steps.** None of these is a blocker, but they should be known:
+- Supabase's email-send limit (429) only triggers for addresses that would receive mail. The reset page shows "Too many attempts" in that case (`lib/auth-errors.ts`).
+- Response timing on Supabase's own `/auth/v1/recover`.
 
 ## Rollback
 

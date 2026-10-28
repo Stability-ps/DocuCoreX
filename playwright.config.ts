@@ -12,6 +12,9 @@ export default defineConfig({
   // a flake is visible while you are working on it rather than silently passing
   // on the second attempt.
   retries: process.env.CI ? 1 : 0,
+  // A stalled run fails loudly instead of holding a runner: the whole suite
+  // normally finishes in ~9 min on CI.
+  globalTimeout: process.env.CI ? 25 * 60_000 : 0,
   reporter: [["list"], ["html", { open: "never", outputFolder: "playwright-report" }]],
   use: {
     baseURL: "http://127.0.0.1:3100",
