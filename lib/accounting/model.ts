@@ -10,6 +10,10 @@ import { accountType, type AccountType } from "@/lib/accounting/analytics";
 
 const VAT_RATE = 15 / 115;
 
+function cents(value: number): number {
+  return Math.round(value * 100);
+}
+
 export type AccountGroup = "asset" | "liability" | "equity" | "revenue" | "expense";
 export type StatementSide = "balance_sheet" | "profit_loss";
 
@@ -338,9 +342,9 @@ export function buildTrialBalance(ledger: LedgerAccount[]): TrialBalance {
     debit: a.movement > 0 ? a.movement : 0,
     credit: a.movement < 0 ? Math.abs(a.movement) : 0,
   }));
-  const totalDebit = rows.reduce((s, r) => s + r.debit, 0);
-  const totalCredit = rows.reduce((s, r) => s + r.credit, 0);
-  return { rows, totalDebit, totalCredit, balanced: Math.abs(totalDebit - totalCredit) < 0.01 };
+  const debitCents = rows.reduce((s, r) => s + cents(r.debit), 0);
+  const creditCents = rows.reduce((s, r) => s + cents(r.credit), 0);
+  return { rows, totalDebit: debitCents / 100, totalCredit: creditCents / 100, balanced: debitCents === creditCents };
 }
 
 // ─── VAT201 boxes ────────────────────────────────────────────────────────────
@@ -434,18 +438,20 @@ export type ModelValidation = {
 };
 
 export function buildValidation(detail: AccountingRunDetail, model: ModelTransaction[]): ModelValidation {
-  const totalCredits = model.reduce((s, t) => s + t.credit, 0);
-  const totalDebits = model.reduce((s, t) => s + t.debit, 0);
+  // Decided in integer cents, like buildStatementMetadata: a float sum tested
+  // against `< 0.01` passed a statement that was exactly one cent out.
+  const creditCents = model.reduce((s, t) => s + cents(t.credit), 0);
+  const debitCents = model.reduce((s, t) => s + cents(t.debit), 0);
   const opening = detail.run.openingBalance ?? 0;
   const closing = detail.run.closingBalance ?? 0;
-  const expectedClosing = opening + totalCredits - totalDebits;
-  const reconciliationDifference = expectedClosing - closing;
+  const expectedClosingCents = cents(opening) + creditCents - debitCents;
+  const differenceCents = expectedClosingCents - cents(closing);
   return {
-    reconciled: Math.abs(reconciliationDifference) < 0.01,
-    reconciliationDifference,
-    expectedClosing,
-    totalCredits,
-    totalDebits,
+    reconciled: differenceCents === 0,
+    reconciliationDifference: differenceCents / 100,
+    expectedClosing: expectedClosingCents / 100,
+    totalCredits: creditCents / 100,
+    totalDebits: debitCents / 100,
     transactionCount: model.length,
   };
 }
